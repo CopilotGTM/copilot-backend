@@ -23,6 +23,9 @@ from src.domain.models.organisation_tables.sync.crm.leads import (
     CRMLeadSourceType,
 )
 
+_IDEMPOTENCY_KEY_MAX_LENGTH = 255
+_PRIVATE_KEY_ID_MAX_LENGTH = 128
+
 
 class PrivateLeadIngestionServiceError(Exception):
     """Private lead ingestion validation or persistence error."""
@@ -63,6 +66,18 @@ class PrivateLeadIngestionService:
                 400,
             )
         idempotency_key = idempotency_key.strip()
+        if len(idempotency_key) > _IDEMPOTENCY_KEY_MAX_LENGTH:
+            raise PrivateLeadIngestionServiceError(
+                "invalid_idempotency_key",
+                "Idempotency-Key header is too long",
+                400,
+            )
+        if len(key_id) > _PRIVATE_KEY_ID_MAX_LENGTH:
+            raise PrivateLeadIngestionServiceError(
+                "invalid_key_id",
+                "Private key id is too long",
+                400,
+            )
         self._validate_payload(payload)
         existing = await self._find_existing(key_id=key_id, idempotency_key=idempotency_key)
         if existing:

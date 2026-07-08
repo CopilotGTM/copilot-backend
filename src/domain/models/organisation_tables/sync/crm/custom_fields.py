@@ -17,6 +17,7 @@ class CRMCustomFieldEntity(str, Enum):
     """Supported entity scopes for custom fields."""
 
     DEAL = "deal"
+    LEAD = "lead"
 
 
 class CRMCustomFieldDataType(str, Enum):
@@ -113,7 +114,7 @@ class CRMCustomFieldDefinition(TimestampMixin, table=True):
     entity_type: CRMCustomFieldEntity = Field(
         default=CRMCustomFieldEntity.DEAL,
         sa_column=Column(String(32), nullable=False, index=True),
-        description="CRM entity this definition applies to (currently deal).",
+        description="CRM entity this definition applies to.",
     )
     field_source: CRMCustomFieldSource = Field(
         default=CRMCustomFieldSource.INTERNAL,

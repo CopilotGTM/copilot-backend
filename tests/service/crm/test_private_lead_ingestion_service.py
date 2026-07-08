@@ -18,12 +18,12 @@ from src.domain.models.master_tables import (
     PublicIngressResourceType,
 )
 from src.domain.models.organisation_tables.sync.crm.leads import CRMLeadSourceType
-from src.service.crm.access.lead_ingestion_key_service import LeadIngestionKeyService
-from src.service.crm.access.private_lead_ingestion_auth_service import (
+from src.service.crm.leads.ingestion_auth_service import (
     PrivateLeadIngestionAuthError,
     PrivateLeadIngestionAuthService,
 )
-from src.service.crm.access.private_lead_ingestion_service import (
+from src.service.crm.leads.ingestion_key_service import LeadIngestionKeyService
+from src.service.crm.leads.private_ingestion_service import (
     PrivateLeadIngestionService,
     PrivateLeadIngestionServiceError,
 )
@@ -197,6 +197,74 @@ async def test_private_ingestion_requires_idempotency_key() -> None:
         )
 
     assert exc_info.value.code == "missing_idempotency_key"
+
+
+@pytest.mark.asyncio
+async def test_private_ingestion_rejects_oversized_idempotency_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Header replay tokens should be bounded before they hit String(255) storage."""
+    session = RecordingAsyncSession()
+    service = PrivateLeadIngestionService(
+        org_session=session,  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+    )
+    replay_lookup_called = False
+
+    async def _find_existing(
+        self: PrivateLeadIngestionService, *, key_id: str, idempotency_key: str
+    ):
+        nonlocal replay_lookup_called
+        replay_lookup_called = True
+        return None
+
+    monkeypatch.setattr(PrivateLeadIngestionService, "_find_existing", _find_existing)
+
+    with pytest.raises(PrivateLeadIngestionServiceError) as exc_info:
+        await service.ingest(
+            payload=PrivateLeadIngestionRequest(email="buyer@example.com"),
+            key_id="skid_direct",
+            idempotency_key="x" * 256,
+        )
+
+    assert exc_info.value.code == "invalid_idempotency_key"
+    assert exc_info.value.status_code == 400
+    assert replay_lookup_called is False
+    assert session.added == []
+
+
+@pytest.mark.asyncio
+async def test_private_ingestion_rejects_oversized_key_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Private key ids should be bounded before they hit String(128) storage."""
+    session = RecordingAsyncSession()
+    service = PrivateLeadIngestionService(
+        org_session=session,  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+    )
+    replay_lookup_called = False
+
+    async def _find_existing(
+        self: PrivateLeadIngestionService, *, key_id: str, idempotency_key: str
+    ):
+        nonlocal replay_lookup_called
+        replay_lookup_called = True
+        return None
+
+    monkeypatch.setattr(PrivateLeadIngestionService, "_find_existing", _find_existing)
+
+    with pytest.raises(PrivateLeadIngestionServiceError) as exc_info:
+        await service.ingest(
+            payload=PrivateLeadIngestionRequest(email="buyer@example.com"),
+            key_id="x" * 129,
+            idempotency_key="lead-123",
+        )
+
+    assert exc_info.value.code == "invalid_key_id"
+    assert exc_info.value.status_code == 400
+    assert replay_lookup_called is False
+    assert session.added == []
 
 
 @pytest.mark.asyncio

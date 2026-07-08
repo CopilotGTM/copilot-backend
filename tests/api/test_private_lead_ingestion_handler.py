@@ -15,7 +15,7 @@ from src.api.routers.crm.leads.private_lead_ingestion_handler import (
     ingest_private_lead,
 )
 from src.domain.models.master_tables import PublicIngressResourceType
-from src.service.crm.access.private_lead_ingestion_auth_service import (
+from src.service.crm.leads.ingestion_auth_service import (
     PrivateLeadIngestionAuthService,
 )
 

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from src.domain.models.organisation_tables.sync.crm.lead_forms import LeadFormSubmission
 
 
 def _org_migration_head_source() -> str:
@@ -36,18 +37,22 @@ def _org_migration_paths() -> list[Path]:
 
 def _crm_mutation_events_migration_source() -> str:
     migrations_dir = Path(__file__).resolve().parents[2] / "migrations" / "org_migrations"
-    migration_path = (
-        migrations_dir / "versions" / "3c7f79637737_062_add_crm_mutation_events.py"
-    )
+    migration_path = migrations_dir / "versions" / "3c7f79637737_062_add_crm_mutation_events.py"
     return migration_path.read_text(encoding="utf-8")
 
 
 def _crm_stage_key_migration_source() -> str:
     migrations_dir = Path(__file__).resolve().parents[2] / "migrations" / "org_migrations"
     migration_path = (
-        migrations_dir
-        / "versions"
-        / "3c7f79637727_072_add_internal_stage_key_uniqueness.py"
+        migrations_dir / "versions" / "3c7f79637727_072_add_internal_stage_key_uniqueness.py"
+    )
+    return migration_path.read_text(encoding="utf-8")
+
+
+def _public_lead_form_idempotency_source() -> str:
+    migrations_dir = Path(__file__).resolve().parents[2] / "migrations" / "org_migrations"
+    migration_path = (
+        migrations_dir / "versions" / "3c7f79637724_075_add_public_lead_form_idempotency_index.py"
     )
     return migration_path.read_text(encoding="utf-8")
 
@@ -98,6 +103,37 @@ def test_org_migration_head_adds_internal_stage_key_uniqueness() -> None:
     assert "is_active = true" in head_source
 
 
+def test_public_lead_form_idempotency_migration_adds_partial_unique_index() -> None:
+    """Public form replay tokens need a database guard for concurrent retries."""
+    source = _public_lead_form_idempotency_source()
+
+    assert "Revises: 3c7f79637725" in source
+    assert 'down_revision: str | None = "3c7f79637725"' in source
+    assert "uq_lead_form_submission_public_idempotency" in source
+    assert "lead_form_submissions" in source
+    assert "organisation_id" in source
+    assert "form_id" in source
+    assert "idempotency_key" in source
+    assert "ingestion_key_id IS NULL" in source
+    assert "idempotency_key IS NOT NULL" in source
+
+
+def test_public_lead_form_idempotency_model_declares_partial_unique_index() -> None:
+    """Fresh tenant schemas need the same public replay guard as migrated schemas."""
+    indexes = {index.name: index for index in LeadFormSubmission.__table__.indexes}
+    index = indexes["uq_lead_form_submission_public_idempotency"]
+
+    assert index.unique is True
+    assert [column.name for column in index.columns] == [
+        "organisation_id",
+        "form_id",
+        "idempotency_key",
+    ]
+    assert str(index.dialect_options["postgresql"]["where"]) == (
+        "ingestion_key_id IS NULL AND idempotency_key IS NOT NULL"
+    )
+
+
 def test_org_migration_revisions_and_sequence_numbers_are_unique() -> None:
     """Alembic revision IDs and numbered filenames must not collide after rebases."""
     revisions: dict[str, Path] = {}
@@ -123,8 +159,7 @@ def test_org_migration_revisions_and_sequence_numbers_are_unique() -> None:
 
         sequence = sequence_match.group(1)
         assert sequence not in sequence_numbers, (
-            f"{path.name} duplicates sequence {sequence} from "
-            f"{sequence_numbers[sequence].name}"
+            f"{path.name} duplicates sequence {sequence} from {sequence_numbers[sequence].name}"
         )
         sequence_numbers[sequence] = path
 

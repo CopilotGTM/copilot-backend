@@ -246,6 +246,15 @@ Key points:
 - Multiple endpoints can share the same service dependency.
 - For sync routes, use `get_org_session()` and a sync `close()` method.
 
+CRM Service Package Rule
+
+- New CRM domain services must live in domain packages under `src/service/crm/<domain>/`, for example `src/service/crm/leads/`, `src/service/crm/deals/`, and `src/service/crm/notes/`.
+- `src/service/crm/access/` is deprecated for new CRM code. It may contain temporary compatibility imports during migrations, but routers and tests should import the real domain package.
+- Routers own FastAPI wiring only: route declarations, dependencies, rate limits, auth/scope checks, service calls, rollbacks, and returning response helpers.
+- API presenters under `src/api/presenters/crm/` own response DTO construction, public/private error body construction, URL construction, and structured log payload construction.
+- Services own domain behavior, database reads/writes, validation at service trust boundaries, idempotency, and cross-domain orchestration.
+- Lead-specific target architecture is documented in `docs/Technical Documentation/deal/leads-service-architecture.md`.
+
 Reusable Permission Rules
 
 - Always filter by `organisation_id` and `user_id` when data is user‑owned.

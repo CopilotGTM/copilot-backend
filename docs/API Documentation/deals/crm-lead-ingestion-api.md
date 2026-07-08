@@ -44,7 +44,11 @@ Request:
   "status": "active",
   "allowed_origins": ["https://www.example.com"],
   "settings": {
-    "submit_label": "Book demo"
+    "submit_label": "Book demo",
+    "spam_protection": {
+      "honeypot_field": "website",
+      "min_fill_seconds": 3
+    }
   },
   "fields": [
     {
@@ -72,9 +76,11 @@ Request:
 Rules:
 
 - `external_key` values must be unique per form.
-- `target_type = "lead_field"` must use a supported `CRMLead` column mapping.
-- `target_type = "property"` requires `target_key`.
+- `target_type = "lead_field"` must use a supported `CRMLead` column mapping and a compatible form `data_type`.
+- `target_type = "property"` requires `target_key`; for new/updated forms it must resolve to an active internal lead custom-field definition.
 - `target_type = "ignore"` accepts the field but does not write it to the lead.
+- Ignored fields cannot be marked `required`.
+- Existing legacy property-mapped forms without definition rows continue to submit; `scripts/maintenance/backfill_lead_form_custom_fields.py` can create definitions for supported legacy property fields when explicitly run.
 
 The response includes `public_form_key` and `public_form_url`.
 
@@ -127,7 +133,9 @@ Base path: `/public/v1`
 `GET /forms/{public_form_key}`
 
 Returns browser-safe field metadata only. Internal `target_type` and
-`target_key` mappings are not exposed.
+`target_key` mappings are not exposed. Select and multiselect lead custom fields
+include active option metadata in `fields[].options`; inactive options are
+filtered out.
 
 ### Submit Public Form
 
@@ -139,11 +147,14 @@ Request:
 {
   "fields": {
     "email": "buyer@example.com",
-    "company_size": 250
+    "company_size": 250,
+    "website": ""
   },
   "context": {
-    "landing_page": "https://www.example.com/demo"
-  }
+    "landing_page": "https://www.example.com/demo",
+    "rendered_at": "2026-07-07T09:00:00Z"
+  },
+  "idempotency_key": "browser-submit-98765"
 }
 ```
 
@@ -163,7 +174,19 @@ Rules:
 - Origins that are not listed on the form do not receive CORS headers and
   browser preflight requests are rejected.
 - Public rate limits are scoped by form key and client IP.
+- `idempotency_key` is optional. When present, it is scoped to the public form
+  and retries with the same value return the existing accepted submission/lead
+  pair instead of creating a duplicate.
 - Unknown submitted field keys are rejected.
+- If `settings.spam_protection.honeypot_field` is configured, that field may be submitted but must be empty; it is removed before normal field mapping.
+- If `settings.spam_protection.min_fill_seconds` is configured, callers must send `context.rendered_at`; submissions faster than the configured threshold are rejected.
+- Email, date, datetime, number, boolean, and JSON-typed values are coerced or rejected before persistence.
+- Lead-column mappings are capped to the target `CRMLead` column size before persistence.
+- Phone-typed lead-field values are trimmed and capped at 64 characters.
+- `company_domain` lead-field mappings are normalized from URLs to lowercase hostnames.
+- `budget_amount` lead-field mappings must be non-negative.
+- `budget_currency` lead-field mappings must be exactly 3 characters.
+- Property values are validated against active lead custom-field definitions when one exists, including select/multiselect option membership.
 - Public submissions create `CRMLead.source_type = "form"`.
 
 ## Private Mapped Form API
@@ -216,6 +239,13 @@ Rules:
   replay token is immutable and is not freed by later soft deletion.
 - Key status, expiry, IP allowlist, and key-scoped rate limits are enforced.
 - Unknown submitted field keys are rejected.
+- Email, date, datetime, number, boolean, and JSON-typed values are coerced or rejected before persistence.
+- Lead-column mappings are capped to the target `CRMLead` column size before persistence.
+- Phone-typed lead-field values are trimmed and capped at 64 characters.
+- `company_domain` lead-field mappings are normalized from URLs to lowercase hostnames.
+- `budget_amount` lead-field mappings must be non-negative.
+- `budget_currency` lead-field mappings must be exactly 3 characters.
+- Property values are validated against active lead custom-field definitions when one exists, including select/multiselect option membership.
 - Private mapped form submissions create `CRMLead.source_type = "api"` while
   still linking `form_id` and `form_submission_id`.
 

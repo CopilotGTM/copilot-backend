@@ -10,12 +10,18 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from src.api.dependencies.crm_write_guard import is_crm_write_scope_enabled
 from src.api.dependencies.rate_limit import client_ip_for_external_ingress
+from src.api.presenters.crm.private_lead_ingestion_presenter import (
+    log_private_form_failure,
+    present_private_lead_form_submit_response,
+    present_private_lead_ingestion_response,
+    private_ingestion_error_response,
+    validation_error_message_and_field,
+)
 from src.api.schemas.lead_form_models import (
     PrivateLeadFormSubmitRequest,
     PrivateLeadFormSubmitResponse,
 )
 from src.api.schemas.private_lead_ingestion_models import (
-    PrivateLeadIngestionError,
     PrivateLeadIngestionErrorResponse,
     PrivateLeadIngestionRequest,
     PrivateLeadIngestionResponse,
@@ -23,15 +29,15 @@ from src.api.schemas.private_lead_ingestion_models import (
 from src.domain.models.master_tables import PublicIngressResourceType
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
-from src.service.crm.access.lead_forms_service import (
+from src.service.crm.leads.form_management_service import (
     LeadFormsServiceError,
     PublicLeadFormSubmissionService,
 )
-from src.service.crm.access.private_lead_ingestion_auth_service import (
+from src.service.crm.leads.ingestion_auth_service import (
     PrivateLeadIngestionAuthError,
     PrivateLeadIngestionAuthService,
 )
-from src.service.crm.access.private_lead_ingestion_service import (
+from src.service.crm.leads.private_ingestion_service import (
     PrivateLeadIngestionService,
     PrivateLeadIngestionServiceError,
 )
@@ -40,35 +46,6 @@ logger = get_logger("private_lead_ingestion_handler")
 
 private_lead_ingestion_router = APIRouter()
 _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your request"
-
-
-def _error_response(
-    *,
-    code: str,
-    message: str,
-    status_code: int,
-    field: str | None = None,
-    headers: dict[str, str] | None = None,
-) -> JSONResponse:
-    error = PrivateLeadIngestionErrorResponse(
-        error=PrivateLeadIngestionError(code=code, message=message, field=field)
-    )
-    return JSONResponse(
-        status_code=status_code,
-        content=error.model_dump(exclude_none=True),
-        headers=headers,
-    )
-
-
-def _validation_error_payload(
-    exc: ValidationError, fallback_message: str
-) -> tuple[str, str | None]:
-    errors = exc.errors()
-    first_error = dict(errors[0]) if errors else {}
-    loc_value = first_error.get("loc")
-    loc = loc_value if isinstance(loc_value, list | tuple) else []
-    field = ".".join(str(part) for part in loc if part)
-    return str(first_error.get("msg") or fallback_message), field or None
 
 
 @private_lead_ingestion_router.post(
@@ -97,13 +74,26 @@ async def ingest_private_lead(
     """Authenticate private ingest request and persist normalized lead payload for an org."""
     try:
         if not key_id or not key_id.startswith("skid_"):
-            return _error_response(
+            log_private_form_failure(
+                logger,
+                stage="auth",
+                code="missing_key_id",
+                status_code=401,
+            )
+            return private_ingestion_error_response(
                 code="missing_key_id",
                 message="Missing ingestion key id",
                 status_code=401,
             )
         if not authorization or not authorization.lower().startswith("bearer "):
-            return _error_response(
+            log_private_form_failure(
+                logger,
+                stage="auth",
+                code="missing_secret",
+                status_code=401,
+                key_id=key_id,
+            )
+            return private_ingestion_error_response(
                 code="missing_secret",
                 message="Missing ingestion bearer secret",
                 status_code=401,
@@ -117,7 +107,7 @@ async def ingest_private_lead(
             )
             break
         else:
-            return _error_response(
+            return private_ingestion_error_response(
                 code="internal_error",
                 message=_UNEXPECTED_ERR_MSG,
                 status_code=500,
@@ -125,8 +115,8 @@ async def ingest_private_lead(
         try:
             lead_payload = PrivateLeadIngestionRequest.model_validate(body)
         except ValidationError as exc:
-            message, field = _validation_error_payload(exc, "Invalid lead payload")
-            return _error_response(
+            message, field = validation_error_message_and_field(exc, "Invalid lead payload")
+            return private_ingestion_error_response(
                 code="invalid_payload",
                 message=message,
                 status_code=422,
@@ -136,7 +126,7 @@ async def ingest_private_lead(
             ingress_key.organisation_id,
             "leads:create",
         ):
-            return _error_response(
+            return private_ingestion_error_response(
                 code="internal_crm_writes_disabled",
                 message="Internal CRM writes are disabled for this organisation",
                 status_code=403,
@@ -153,15 +143,15 @@ async def ingest_private_lead(
             )
             if replayed:
                 response.status_code = 200
-            return PrivateLeadIngestionResponse(lead_id=lead.lead_id)
-        return _error_response(
+            return present_private_lead_ingestion_response(lead)
+        return private_ingestion_error_response(
             code="internal_error",
             message=_UNEXPECTED_ERR_MSG,
             status_code=500,
         )
     except PrivateLeadIngestionAuthError as exc:
         headers = {"Retry-After": "60"} if exc.code == "rate_limited" else None
-        return _error_response(
+        return private_ingestion_error_response(
             code=exc.code,
             message=exc.message,
             status_code=exc.status_code,
@@ -169,7 +159,7 @@ async def ingest_private_lead(
             headers=headers,
         )
     except PrivateLeadIngestionServiceError as exc:
-        return _error_response(
+        return private_ingestion_error_response(
             code=exc.code,
             message=exc.message,
             status_code=exc.status_code,
@@ -177,7 +167,7 @@ async def ingest_private_lead(
         )
     except Exception:
         logger.error("Error ingesting private lead", exc_info=True)
-        return _error_response(
+        return private_ingestion_error_response(
             code="internal_error",
             message=_UNEXPECTED_ERR_MSG,
             status_code=500,
@@ -210,13 +200,13 @@ async def ingest_private_form_submission(
     """Authenticate a form-scoped key and create a mapped lead through the form contract."""
     try:
         if not key_id or not key_id.startswith("skid_"):
-            return _error_response(
+            return private_ingestion_error_response(
                 code="missing_key_id",
                 message="Missing ingestion key id",
                 status_code=401,
             )
         if not authorization or not authorization.lower().startswith("bearer "):
-            return _error_response(
+            return private_ingestion_error_response(
                 code="missing_secret",
                 message="Missing ingestion bearer secret",
                 status_code=401,
@@ -231,13 +221,28 @@ async def ingest_private_form_submission(
             )
             break
         else:
-            return _error_response(
+            log_private_form_failure(
+                logger,
+                stage="auth",
+                code="internal_error",
+                status_code=500,
+                key_id=key_id,
+            )
+            return private_ingestion_error_response(
                 code="internal_error",
                 message=_UNEXPECTED_ERR_MSG,
                 status_code=500,
             )
         if not idempotency_key or not idempotency_key.strip():
-            return _error_response(
+            log_private_form_failure(
+                logger,
+                stage="validation",
+                code="missing_idempotency_key",
+                status_code=400,
+                key_id=key_id,
+                form_id=ingress_key.resource_id,
+            )
+            return private_ingestion_error_response(
                 code="missing_idempotency_key",
                 message="Idempotency-Key header is required",
                 status_code=400,
@@ -245,8 +250,19 @@ async def ingest_private_form_submission(
         try:
             mapped_payload = PrivateLeadFormSubmitRequest.model_validate(body)
         except ValidationError as exc:
-            message, field = _validation_error_payload(exc, "Invalid form submission payload")
-            return _error_response(
+            message, field = validation_error_message_and_field(
+                exc, "Invalid form submission payload"
+            )
+            log_private_form_failure(
+                logger,
+                stage="validation",
+                code="invalid_payload",
+                status_code=422,
+                key_id=key_id,
+                form_id=ingress_key.resource_id,
+                field=field,
+            )
+            return private_ingestion_error_response(
                 code="invalid_payload",
                 message=message,
                 status_code=422,
@@ -256,7 +272,15 @@ async def ingest_private_form_submission(
             ingress_key.organisation_id,
             "lead_forms:ingest",
         ):
-            return _error_response(
+            log_private_form_failure(
+                logger,
+                stage="auth",
+                code="internal_crm_writes_disabled",
+                status_code=403,
+                key_id=key_id,
+                form_id=ingress_key.resource_id,
+            )
+            return private_ingestion_error_response(
                 code="internal_crm_writes_disabled",
                 message="Internal CRM writes are disabled for this organisation",
                 status_code=403,
@@ -278,18 +302,23 @@ async def ingest_private_form_submission(
             )
             if replayed:
                 response.status_code = 200
-            return PrivateLeadFormSubmitResponse(
-                lead_id=lead.lead_id,
-                submission_id=submission.submission_id,
-            )
-        return _error_response(
+            return present_private_lead_form_submit_response(lead=lead, submission=submission)
+        return private_ingestion_error_response(
             code="internal_error",
             message=_UNEXPECTED_ERR_MSG,
             status_code=500,
         )
     except PrivateLeadIngestionAuthError as exc:
+        log_private_form_failure(
+            logger,
+            stage="auth",
+            code=exc.code,
+            status_code=exc.status_code,
+            key_id=key_id,
+            field=exc.field,
+        )
         headers = {"Retry-After": "60"} if exc.code == "rate_limited" else None
-        return _error_response(
+        return private_ingestion_error_response(
             code=exc.code,
             message=exc.message,
             status_code=exc.status_code,
@@ -299,15 +328,27 @@ async def ingest_private_form_submission(
     except LeadFormsServiceError as exc:
         code = exc.data.get("code") if exc.data else None
         error_field = exc.data.get("field") if exc.data else None
-        return _error_response(
+        log_private_form_failure(
+            logger,
+            stage="validation",
+            code=code if isinstance(code, str) else "invalid_submission",
+            status_code=exc.status_code,
+            key_id=key_id,
+            field=error_field if isinstance(error_field, str) else None,
+        )
+        return private_ingestion_error_response(
             code=code if isinstance(code, str) else "invalid_submission",
             message=exc.message,
             status_code=exc.status_code,
             field=error_field if isinstance(error_field, str) else None,
         )
     except Exception:
-        logger.error("Error ingesting private form submission", exc_info=True)
-        return _error_response(
+        logger.error(
+            "Error ingesting private form submission",
+            extra={"stage": "persistence", **({"key_id": key_id} if key_id else {})},
+            exc_info=True,
+        )
+        return private_ingestion_error_response(
             code="internal_error",
             message=_UNEXPECTED_ERR_MSG,
             status_code=500,

@@ -8,7 +8,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
     CRMParticipantType,
 )
-from src.service.crm.access.leads_access_service import LeadsAccessService
+from src.service.crm.leads.participant_service import LeadParticipantService
 
 
 class _FakeOrgSession:
@@ -28,14 +28,14 @@ async def test_copy_participants_to_deal_dedupes_contact_identity() -> None:
     organisation_id = uuid4()
     contact_id = uuid4()
     lead_id = uuid4()
-    service = LeadsAccessService(
+    service = LeadParticipantService(
         org_session=session,
         organisation_id=organisation_id,
         actor_user_id=uuid4(),
         master_session=SimpleNamespace(),
     )
 
-    copied_count = await service._copy_participants_to_deal(
+    copied_count = await service.copy_participants_to_deal(
         lead_participants=[
             SimpleNamespace(
                 lead_id=lead_id,
@@ -73,14 +73,14 @@ async def test_copy_participants_to_deal_preserves_email_only_contact() -> None:
     session = _FakeOrgSession()
     organisation_id = uuid4()
     lead_id = uuid4()
-    service = LeadsAccessService(
+    service = LeadParticipantService(
         org_session=session,
         organisation_id=organisation_id,
         actor_user_id=uuid4(),
         master_session=SimpleNamespace(),
     )
 
-    copied_count = await service._copy_participants_to_deal(
+    copied_count = await service.copy_participants_to_deal(
         lead_participants=[
             SimpleNamespace(
                 lead_id=lead_id,

@@ -17,7 +17,7 @@ from src.domain.models.master_tables import (
     PublicIngressKeyType,
     PublicIngressResourceType,
 )
-from src.service.crm.access.lead_ingestion_key_service import LeadIngestionKeyService
+from src.service.crm.leads.ingestion_key_service import LeadIngestionKeyService
 
 
 class PrivateLeadIngestionAuthError(Exception):

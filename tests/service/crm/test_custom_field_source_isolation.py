@@ -193,6 +193,12 @@ def test_deal_custom_property_key_normalizer_accepts_custom_prefix() -> None:
     assert DealCustomFieldWriteService.normalize_custom_key(" custom_Our Revenue ") == "our_revenue"
 
 
+def test_custom_field_request_accepts_lead_entity() -> None:
+    request = CreateCustomFieldRequest(entity="lead", key="company_size", label="Company size")
+
+    assert request.entity == CRMCustomFieldEntity("lead")
+
+
 @pytest.mark.asyncio
 async def test_deal_custom_property_required_create_rejects_missing_internal_fields() -> None:
     session = AsyncMock()
@@ -792,6 +798,25 @@ async def test_custom_field_create_records_settings_mutation_event() -> None:
 
 
 @pytest.mark.asyncio
+async def test_custom_field_create_allows_lead_entity() -> None:
+    session = _CustomFieldSession()
+    service = CustomFieldWriteService(
+        session=session,  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        user_id=uuid4(),
+    )
+    service._key_exists = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+    field = await service.create_field(
+        CreateCustomFieldRequest(entity="lead", key="company_size", label="Company size")
+    )
+
+    assert field.entity_type == CRMCustomFieldEntity("lead")
+    assert field.key == "company_size"
+    assert session.committed == 1
+
+
+@pytest.mark.asyncio
 async def test_custom_field_update_records_archive_settings_mutation_event() -> None:
     session = _CustomFieldSession()
     service = CustomFieldWriteService(
@@ -1001,6 +1026,35 @@ async def test_custom_field_write_service_counts_deal_usage_by_field_key() -> No
 
 
 @pytest.mark.asyncio
+async def test_custom_field_write_service_deletes_lead_field_without_deal_usage_check() -> None:
+    session = _CustomFieldSession()
+    service = CustomFieldWriteService(
+        session=session,  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        user_id=uuid4(),
+    )
+    field = SimpleNamespace(
+        field_id=uuid4(),
+        key="company_size",
+        entity_type=CRMCustomFieldEntity("lead"),
+        is_active=True,
+        is_deleted=False,
+        is_predefined=False,
+    )
+    service._load_field = AsyncMock(return_value=field)  # type: ignore[method-assign]
+    service._count_deals_using_field = AsyncMock(  # type: ignore[method-assign]
+        side_effect=AssertionError("lead fields must not query deal usage")
+    )
+
+    await service.delete_field(field.field_id)
+
+    assert field.is_deleted is True
+    assert field.is_active is False
+    service._count_deals_using_field.assert_not_called()
+    assert session.committed == 1
+
+
+@pytest.mark.asyncio
 async def test_custom_field_write_service_clears_values_for_archived_field() -> None:
     session = _CustomFieldSession()
     session.execute = AsyncMock()
@@ -1009,7 +1063,12 @@ async def test_custom_field_write_service_clears_values_for_archived_field() -> 
         organisation_id=uuid4(),
         user_id=uuid4(),
     )
-    field = SimpleNamespace(key="priority", is_active=False, is_predefined=False)
+    field = SimpleNamespace(
+        key="priority",
+        entity_type=CRMCustomFieldEntity.DEAL,
+        is_active=False,
+        is_predefined=False,
+    )
     service._load_field = AsyncMock(return_value=field)  # type: ignore[method-assign]
     service._count_deals_using_field = AsyncMock(return_value=2)  # type: ignore[method-assign]
 
@@ -1018,6 +1077,36 @@ async def test_custom_field_write_service_clears_values_for_archived_field() -> 
     assert cleared_count == 2
     assert session.execute.await_count == 1
     assert "crm_deals.properties - :properties_1" in str(session.execute.await_args.args[0])
+    assert session.committed == 1
+
+
+@pytest.mark.asyncio
+async def test_custom_field_write_service_clears_lead_values_for_archived_lead_field() -> None:
+    session = _CustomFieldSession()
+    session.execute = AsyncMock()
+    service = CustomFieldWriteService(
+        session=session,  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        user_id=uuid4(),
+    )
+    field = SimpleNamespace(
+        key="company_size",
+        entity_type=CRMCustomFieldEntity.LEAD,
+        is_active=False,
+        is_predefined=False,
+    )
+    service._load_field = AsyncMock(return_value=field)  # type: ignore[method-assign]
+    service._count_deals_using_field = AsyncMock(  # type: ignore[method-assign]
+        side_effect=AssertionError("lead fields must not query deal usage")
+    )
+    service._count_leads_using_field = AsyncMock(return_value=3)  # type: ignore[method-assign]
+
+    cleared_count = await service.clear_field_values(uuid4())
+
+    assert cleared_count == 3
+    assert session.execute.await_count == 1
+    assert "crm_leads.properties - :properties_1" in str(session.execute.await_args.args[0])
+    service._count_deals_using_field.assert_not_called()
     assert session.committed == 1
 
 

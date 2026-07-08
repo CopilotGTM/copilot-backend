@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from fastapi import HTTPException
 from src.api.dependencies import rate_limit
-from src.api.routers.crm.leads.lead_forms_handler import _public_rate_limit_error_response
+from src.api.presenters.crm.lead_form_presenter import public_rate_limit_error_response
 
 
 class _Request:
@@ -82,7 +82,7 @@ def test_public_form_submit_rate_limit_uses_higher_public_write_budget(monkeypat
 
 def test_public_rate_limit_error_uses_public_error_contract():
     """404/429 responses from public rate limit helpers should use stable JSON shape."""
-    response = _public_rate_limit_error_response(
+    response = public_rate_limit_error_response(
         HTTPException(
             status_code=429,
             detail="Too many requests (per-minute limit exceeded)",

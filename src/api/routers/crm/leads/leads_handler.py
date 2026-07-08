@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
@@ -16,6 +15,13 @@ from src.api.dependencies.organisation_dependencies import (
     get_org_async_session,
 )
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
+from src.api.presenters.crm.lead_presenter import (
+    present_lead_conversion_response,
+    present_lead_detail,
+    present_lead_list_item,
+    present_lead_participant_item,
+    present_leads_page,
+)
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.crm_lead_models import (
     ConvertLeadRequest,
@@ -29,32 +35,31 @@ from src.api.schemas.crm_lead_models import (
     UpdateLeadRequest,
 )
 from src.api.utils.http_response import Response
-from src.domain.models.organisation_tables.sync.crm.leads import (
-    CRMLead,
-    CRMLeadParticipant,
-    CRMLeadSourceType,
-    CRMLeadStatus,
-)
+from src.domain.models.organisation_tables.sync.crm.leads import CRMLeadSourceType, CRMLeadStatus
 from src.infra.utils.logger import get_logger
-from src.service.crm.access.leads_access_service import (
-    LeadsAccessService,
-    LeadsAccessServiceError,
-)
+from src.service.crm.leads.contracts import LeadServiceError
+from src.service.crm.leads.conversion_service import LeadConversionService
+from src.service.crm.leads.participant_service import LeadParticipantService
+from src.service.crm.leads.read_service import LeadReadService
+from src.service.crm.leads.write_service import LeadWriteService
 
 logger = get_logger("leads_handler")
 
 _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your request"
 
 leads_router = APIRouter()
+require_leads_create_scope = require_crm_write_scope("leads:create")
+require_leads_update_scope = require_crm_write_scope("leads:update")
+require_leads_convert_scope = require_crm_write_scope("leads:convert")
 
 
-async def get_leads_access_service(
+async def get_lead_read_service(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: AsyncSession = Depends(get_org_async_session),
     master_session: AsyncSession = Depends(get_master_async_session),
 ):
-    """Dependency that yields a LeadsAccessService instance for the current org."""
-    service = LeadsAccessService(
+    """Dependency that yields a LeadReadService instance for the current org."""
+    service = LeadReadService(
         org_session,
         user_ids.organisation_id,
         user_ids.user_id,
@@ -69,29 +74,67 @@ async def get_leads_access_service(
             logger.debug("Leads service close failed", exc_info=True)
 
 
-def _lead_item(lead: CRMLead) -> LeadListItem:
-    return LeadListItem.model_validate(lead)
-
-
-def _participant_item(participant: CRMLeadParticipant) -> LeadParticipantItem:
-    return LeadParticipantItem.model_validate(participant)
-
-
-def _lead_detail(lead: CRMLead, participants: list[CRMLeadParticipant]) -> LeadDetail:
-    data = LeadDetail.model_validate(lead)
-    data.participants = [_participant_item(participant) for participant in participants]
-    return data
-
-
-def _conversion_response(result: dict) -> LeadConversionResponse:
-    lead = result["lead"]
-    return LeadConversionResponse(
-        lead_id=lead.lead_id,
-        status=lead.status,
-        converted_deal_id=lead.converted_deal_id,
-        converted_at=lead.converted_at,
-        copied_participant_count=result.get("copied_participant_count", 0),
+async def get_lead_write_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    org_session: AsyncSession = Depends(get_org_async_session),
+    master_session: AsyncSession = Depends(get_master_async_session),
+):
+    """Dependency that yields a LeadWriteService instance for the current org."""
+    service = LeadWriteService(
+        org_session,
+        user_ids.organisation_id,
+        user_ids.user_id,
+        master_session,
     )
+    try:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:
+            logger.debug("Lead write service close failed", exc_info=True)
+
+
+async def get_lead_participant_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    org_session: AsyncSession = Depends(get_org_async_session),
+    master_session: AsyncSession = Depends(get_master_async_session),
+):
+    """Dependency that yields a LeadParticipantService instance for the current org."""
+    service = LeadParticipantService(
+        org_session,
+        user_ids.organisation_id,
+        user_ids.user_id,
+        master_session,
+    )
+    try:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:
+            logger.debug("Lead participant service close failed", exc_info=True)
+
+
+async def get_lead_conversion_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    org_session: AsyncSession = Depends(get_org_async_session),
+    master_session: AsyncSession = Depends(get_master_async_session),
+):
+    """Dependency that yields a LeadConversionService instance for the current org."""
+    service = LeadConversionService(
+        org_session,
+        user_ids.organisation_id,
+        user_ids.user_id,
+        master_session,
+    )
+    try:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:
+            logger.debug("Lead conversion service close failed", exc_info=True)
 
 
 @leads_router.get(
@@ -107,7 +150,7 @@ async def list_leads(
     status: CRMLeadStatus | None = Query(None, description="Filter leads by lifecycle status"),
     owner_id: UUID | None = Query(None, description="Filter leads by owner UUID"),
     source_type: CRMLeadSourceType | None = Query(None, description="Filter leads by source type"),
-    service: LeadsAccessService = Depends(get_leads_access_service),
+    service: LeadWriteService = Depends(get_lead_write_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[LeadsPage]:
     """List CRM leads with optional filters and pagination."""
@@ -120,16 +163,14 @@ async def list_leads(
             owner_id=owner_id,
             source_type=source_type,
         )
-        total_pages = max(1, math.ceil(total_count / limit)) if total_count > 0 else 1
-        data = LeadsPage(
-            items=[_lead_item(row) for row in rows],
+        data = present_leads_page(
+            leads=rows,
             page=page,
             limit=limit,
             total_count=total_count,
-            total_pages=total_pages,
         )
         return Response.success_response(message="Leads retrieved", data=data)
-    except LeadsAccessServiceError as e:
+    except LeadServiceError as e:
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
@@ -148,8 +189,8 @@ async def list_leads(
 async def create_lead(
     body: CreateLeadRequest,
     response: FastAPIResponse,
-    service: LeadsAccessService = Depends(get_leads_access_service),
-    _crm_write_guard: None = Depends(require_crm_write_scope("leads:create")),
+    service: LeadWriteService = Depends(get_lead_write_service),
+    _crm_write_guard: None = Depends(require_leads_create_scope),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[LeadListItem]:
     """Create a lead in the internal CRM."""
@@ -158,10 +199,10 @@ async def create_lead(
         lead = await service.create_lead(payload)
         return Response.created_response(
             message="Lead created",
-            data=_lead_item(lead),
+            data=present_lead_list_item(lead),
             response=response,
         )
-    except LeadsAccessServiceError as e:
+    except LeadServiceError as e:
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
@@ -180,7 +221,7 @@ async def create_lead(
 async def get_lead_detail(
     lead_id: UUID,
     response: FastAPIResponse,
-    service: LeadsAccessService = Depends(get_leads_access_service),
+    service: LeadParticipantService = Depends(get_lead_participant_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[LeadDetail]:
     """Get a lead including participants."""
@@ -188,9 +229,9 @@ async def get_lead_detail(
         lead, participants = await service.get_lead(lead_id)
         return Response.success_response(
             message="Lead retrieved",
-            data=_lead_detail(lead, participants),
+            data=present_lead_detail(lead, participants),
         )
-    except LeadsAccessServiceError as e:
+    except LeadServiceError as e:
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
@@ -210,15 +251,15 @@ async def update_lead(
     lead_id: UUID,
     body: UpdateLeadRequest,
     response: FastAPIResponse,
-    service: LeadsAccessService = Depends(get_leads_access_service),
-    _crm_write_guard: None = Depends(require_crm_write_scope("leads:update")),
+    service: LeadConversionService = Depends(get_lead_conversion_service),
+    _crm_write_guard: None = Depends(require_leads_update_scope),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[LeadListItem]:
     """Update mutable lead fields."""
     try:
         lead = await service.update_lead(lead_id, body.model_dump(exclude_unset=True))
-        return Response.success_response(message="Lead updated", data=_lead_item(lead))
-    except LeadsAccessServiceError as e:
+        return Response.success_response(message="Lead updated", data=present_lead_list_item(lead))
+    except LeadServiceError as e:
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
@@ -238,8 +279,8 @@ async def add_lead_participant(
     lead_id: UUID,
     body: CreateLeadParticipantRequest,
     response: FastAPIResponse,
-    service: LeadsAccessService = Depends(get_leads_access_service),
-    _crm_write_guard: None = Depends(require_crm_write_scope("leads:update")),
+    service: LeadReadService = Depends(get_lead_read_service),
+    _crm_write_guard: None = Depends(require_leads_update_scope),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[LeadParticipantItem]:
     """Add a participant link to a lead."""
@@ -250,10 +291,10 @@ async def add_lead_participant(
         )
         return Response.created_response(
             message="Lead participant created",
-            data=_participant_item(participant),
+            data=present_lead_participant_item(participant),
             response=response,
         )
-    except LeadsAccessServiceError as e:
+    except LeadServiceError as e:
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
@@ -277,8 +318,8 @@ async def convert_lead(
     lead_id: UUID,
     body: ConvertLeadRequest,
     response: FastAPIResponse,
-    service: LeadsAccessService = Depends(get_leads_access_service),
-    _crm_write_guard: None = Depends(require_crm_write_scope("leads:convert")),
+    service: LeadReadService = Depends(get_lead_read_service),
+    _crm_write_guard: None = Depends(require_leads_convert_scope),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[LeadConversionResponse]:
     """Convert a lead into an internal CRM deal."""
@@ -286,10 +327,10 @@ async def convert_lead(
         result = await service.convert_lead(lead_id, body.model_dump(exclude_unset=True))
         return Response.created_response(
             message="Lead converted",
-            data=_conversion_response(result),
+            data=present_lead_conversion_response(result),
             response=response,
         )
-    except LeadsAccessServiceError as e:
+    except LeadServiceError as e:
         await service.org_session.rollback()
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response

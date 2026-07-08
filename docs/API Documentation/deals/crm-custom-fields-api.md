@@ -8,14 +8,14 @@
 
 ## Overview
 
-CRM deals have two kinds of fields:
+CRM records have two kinds of fields:
 
-- **Standard fields** — built into the schema (name, amount, close date, owner, …). These are present on every deal in every organisation.
-- **Custom columns** — defined per organisation to track domain-specific data (for example "Priority", "Implementation Effort %", "Renewal Risk Score"). Each organisation manages its own list.
+- **Standard fields** — built into the schema (for example deal name, amount, close date, lead email, lead company).
+- **Custom columns** — defined per organisation to track domain-specific data (for example "Priority", "Implementation Effort %", "Company Size"). Each organisation manages its own list per entity.
 
-This API powers the **Settings → Custom Columns** page where users create, rename, and remove their organisation's custom columns. The same definitions are also consumed by the deal detail view through `custom_column_definitions`; `GET /users/crm/deals/{deal_id}` returns the per-deal `custom_columns` values. The standard deal list/search responses are intentionally lightweight and do not include custom values.
+This API powers the **Settings → Custom Columns** page where users create, rename, and remove their organisation's custom columns. Deal definitions are consumed by deal detail views through `custom_column_definitions`; lead definitions are consumed by lead-form mapping and public/private mapped submission validation. The standard list/search responses are intentionally lightweight and do not include custom values.
 
-For create/edit/import/agent metadata, use `GET /users/crm/schema?entity=deal`.
+For deal create/edit/import/agent metadata, use `GET /users/crm/schema?entity=deal`.
 That endpoint combines standard deal fields, active internal custom columns, and
 provider-mirrored fields with writeability and validation flags. This settings
 API remains the CRUD surface for internally-owned custom columns only.
@@ -30,9 +30,9 @@ A custom column has two name fields you should understand before reading the res
 | Thing | Lives in | Keyed by |
 |-------|----------|----------|
 | Column **definition** (label, data type, options, validation rules, …) | `crm_custom_field_definitions` | `field_id` |
-| Column **value** on a specific deal (e.g. `"High"` for that deal's "Priority") | `crm_deals.properties` (JSONB blob) | `field.key` |
+| Column **value** on a specific deal or lead | `crm_deals.properties` or `crm_leads.properties` (JSONB blob) | `field.key` |
 
-There is **no separate values table**. A deal's custom column values ride along inside its `properties` JSONB blob. This is why the `key` is the load-bearing identifier and the `label` is purely display.
+There is **no separate values table**. A record's custom column values ride along inside its `properties` JSONB blob. This is why the `key` is the load-bearing identifier and the `label` is purely display.
 
 ### Internal-only scope
 
@@ -44,6 +44,7 @@ This API is for **internally-managed** custom columns. Externally-synced fields 
 |-----|-------------|---------------|
 | **CRM Schema** | Canonical field metadata for deal create/edit/import/agent consumers, including provider fields marked read-only | `crm-deals-api.md` |
 | **CRM Deals** | Deals carry custom column values inside `properties` JSONB; deal detail returns `custom_columns` and `custom_column_definitions` using definitions from this API | `crm-deals-api.md` |
+| **CRM Lead Intake** | Lead forms map property fields to `entity=lead` definitions and validate submitted custom values/options before storing them on `crm_leads.properties` | `crm-lead-ingestion-api.md` |
 | **CRM Deals Import** | CSV import routes are currently reserved/disabled; when rebuilt, import mapping should consume `GET /users/crm/schema?entity=deal` instead of reconstructing custom-field rules | `crm-deals-import-api.md` |
 | **CRM Pipelines** | Standard pipeline/stage fields, separate from custom columns | `crm-pipelines-api.md` |
 
@@ -166,14 +167,14 @@ These fields cannot be changed after creation. Any attempt to PATCH them is sile
 |-------|--------------|
 | `key` | Stored on every deal; changing it would orphan all existing values. |
 | `data_type` | Existing values were written under one type's parsing rules; switching the type would invalidate them. |
-| `entity_type` | The column belongs to one entity (currently always `deal`). Cross-entity moves are not supported. |
+| `entity_type` | The column belongs to one entity (`deal` or `lead`). Cross-entity moves are not supported. |
 | `is_predefined` | A server-managed flag for system columns that are seeded via DB scripts and protected from deletion. Cannot be set or cleared via the API. |
 
 If you need a different data type for an existing column, the workflow is: create a new column with the new type, manually copy values across (out of scope for this API), then delete the old column.
 
 ### In-use guard on delete
 
-Custom columns are **soft-deleted** (`is_deleted = true`, `is_active = false`). The delete is **blocked** when any non-deleted deal in the organisation has the column's `key` present in its `properties` JSONB blob. The block is enforced by this query:
+Custom columns are **soft-deleted** (`is_deleted = true`, `is_active = false`). For `entity = "deal"`, delete is **blocked** when any non-deleted deal in the organisation has the column's `key` present in its `properties` JSONB blob. The block is enforced by this query:
 
 ```sql
 SELECT COUNT(*) FROM crm_deals
@@ -182,7 +183,7 @@ SELECT COUNT(*) FROM crm_deals
    AND properties ? :field_key;   -- PG JSONB key-existence operator
 ```
 
-If the count is greater than zero, the API returns `409` with the affected deal count in the message:
+If the deal count is greater than zero, the API returns `409` with the affected deal count in the message:
 
 > `Cannot delete custom column 'priority': 7 deal(s) currently use this column. Remove the column data from those deals first.`
 
@@ -194,6 +195,11 @@ compatibility and conflict-policy decisions.
 **Why this matters**: this protects users from accidentally losing sales data.
 Clearing values is an explicit second action and is allowed only after the
 column has been archived.
+
+For `entity = "lead"`, delete soft-deletes the definition without scanning deal
+usage. Lead values are not removed by delete; archive the field and call
+`POST /users/crm/custom-fields/{field_id}/clear-values` if the product flow
+needs to remove the key from existing non-deleted leads.
 
 ### Predefined columns cannot be deleted
 
@@ -265,7 +271,10 @@ definition for display/history.
 
 | Value | Description |
 |-------|-------------|
-| `deal` | Currently the only supported entity. Custom columns on contacts, accounts, etc. are not yet supported. |
+| `deal` | Deal custom column. Values are stored on `crm_deals.properties`. |
+| `lead` | Lead custom column. Values are stored on `crm_leads.properties` and used by lead-form property mappings. |
+
+Contact, account, and other entity custom columns are not yet supported.
 
 ### Formula DSL operators
 
@@ -320,7 +329,7 @@ export type CRMCustomFieldDataType =
   | 'multiselect'
   | 'formula';
 
-export type CRMCustomFieldEntity = 'deal';
+export type CRMCustomFieldEntity = 'deal' | 'lead';
 
 export interface CRMSettingsLastChanged {
   changed_at: ISODate;
@@ -528,13 +537,19 @@ Returns custom column definitions for the authenticated user's organisation, sor
 
 | Parameter | Type | Default | Validation | Description |
 |-----------|------|---------|------------|-------------|
-| `entity` | enum | `deal` | One of: `deal` | Entity scope. Currently only `deal` is supported. |
+| `entity` | enum | `deal` | One of: `deal`, `lead` | Entity scope. |
 | `include_inactive` | boolean | `false` | — | If `true`, also returns columns with `is_active=false` (e.g. archived columns shown on the settings page). |
 
 #### Example Request
 
 ```http
 GET /users/crm/custom-fields?entity=deal&include_inactive=false
+```
+
+Lead custom fields use the same endpoint with `entity=lead`:
+
+```http
+GET /users/crm/custom-fields?entity=lead&include_inactive=false
 ```
 
 #### Success Response (200)
@@ -622,11 +637,11 @@ Creates a new custom column under the calling user's organisation. Validates tha
 
 | Field | Type | Required | Validation | Description |
 |-------|------|----------|------------|-------------|
-| `entity` | enum | No | One of: `deal` | Entity scope. Default `deal`. |
+| `entity` | enum | No | One of: `deal`, `lead` | Entity scope. Default `deal`. Use `lead` for columns used by lead-form property mappings. |
 | `key` | string | **Yes** | 2-63 chars after normalisation; matches `^[a-z][a-z0-9_]{1,62}$` | Machine slug. The backend strips a leading `custom_` prefix if present, lowercases, and replaces non-`[a-z0-9_]` with underscores. |
 | `label` | string | **Yes** | 1-255 chars, trimmed | Display name shown in the UI |
 | `data_type` | enum | No | See data type table | Default: `text` |
-| `required` | boolean | No | — | Default: `false`. Whether this column is required on deal create/update. |
+| `required` | boolean | No | — | Default: `false`. For deals, required on deal create/update. For leads, used by lead-form mapping/validation flows. |
 | `is_predefined` | boolean | No | — | **Ignored.** Server always sets to `false` regardless of input. |
 | `display_order` | integer | No | — | Sort hint for the settings UI |
 | `description` | string | No | Max 500 chars | Admin-facing explanation |
@@ -658,6 +673,21 @@ Creates a new custom column under the calling user's organisation. Validates tha
   "data_type": "select",
   "options": { "values": ["High", "Medium", "Low"] },
   "description": "Sales rep's assessment of deal urgency"
+}
+```
+
+#### Example Request — lead multiselect column
+
+```json
+{
+  "entity": "lead",
+  "key": "buying_roles",
+  "label": "Buying Roles",
+  "data_type": "multiselect",
+  "options": {
+    "values": ["economic_buyer", "technical_buyer"]
+  },
+  "description": "Roles selected from a lead capture form"
 }
 ```
 
@@ -743,7 +773,7 @@ The request must include every non-deleted internal custom column for the entity
 
 | Field | Type | Validation | Description |
 |-------|------|------------|-------------|
-| `entity` | string | Optional; currently only `"deal"` | Entity whose custom columns are being reordered |
+| `entity` | string | Optional; `"deal"` or `"lead"` | Entity whose custom columns are being reordered |
 | `field_ids` | UUID[] | Required, non-empty, no duplicates | Complete ordered list of non-deleted field ids for the entity |
 | `if_updated_at` | ISO datetime string | Required | Max `updated_at` value from the custom-field list the client loaded before editing |
 
@@ -1058,7 +1088,7 @@ DELETE /users/crm/custom-fields/c1d2e3f4-a5b6-7890-cdef-1234567890ab
 POST /users/crm/custom-fields/{field_id}/clear-values
 ```
 
-Removes an archived custom column key from every non-deleted deal in the current organisation. The column definition is not deleted by this endpoint; call `DELETE /custom-fields/{field_id}` after the clear succeeds.
+Removes an archived custom column key from every non-deleted record for that field's entity in the current organisation. Deal fields clear `crm_deals.properties`; lead fields clear `crm_leads.properties`. The column definition is not deleted by this endpoint; call `DELETE /custom-fields/{field_id}` after the clear succeeds.
 
 #### Preconditions
 
@@ -1086,7 +1116,7 @@ POST /users/crm/custom-fields/c1d2e3f4-a5b6-7890-cdef-1234567890ab/clear-values
 }
 ```
 
-`cleared_deal_count` is zero when no non-deleted deals currently contain the key.
+`cleared_deal_count` is zero when no non-deleted records for that entity currently contain the key. The response field name is historical; for `entity = "lead"` it is the number of leads cleared.
 
 ---
 
@@ -1170,6 +1200,7 @@ The five user journeys this API powers, with the specific endpoint sequences and
 2. Form collects:
    - key       (the user types a friendly name; frontend slugifies it for preview)
    - label     (defaults to the typed name; user can edit)
+   - entity    ("deal" or "lead"; lead columns are consumed by lead-form mappings)
    - data_type (select dropdown of the 11 types)
    - For select/multiselect: a values editor that produces options.values as strings or `{ value, label, id?, active? }` objects
    - For formula: a formula builder (POST validate-formula on each edit for live feedback)
@@ -1185,7 +1216,8 @@ The five user journeys this API powers, with the specific endpoint sequences and
 
 1. **Preview the normalised key** — show the user what the slug will look like as they type the friendly name (`"Customer Tier!"` → `customer_tier`). Reduces "where did my column go?" surprises.
 2. **`data_type` selector locks after creation** — immutable. Make it read-only on the edit form.
-3. **`is_predefined` is not user-settable** — don't even show it on the create form.
+3. **`entity` selector locks after creation** — immutable. Do not let users move a column between deal and lead.
+4. **`is_predefined` is not user-settable** — don't even show it on the create form.
 
 ### Flow B — Rename a custom column
 
@@ -1216,13 +1248,13 @@ The five user journeys this API powers, with the specific endpoint sequences and
 3. User confirms
    → DELETE /users/crm/custom-fields/{field_id}
    → 200 success: column disappears from the list
-   → 409 with "currently use this column": show the in-use error UX (below)
+   → 409 with "currently use this column": show the in-use error UX (deal fields)
    → 409 "Predefined custom columns cannot be deleted.": show "This column is system-managed and cannot be removed"
 ```
 
 #### Flow C.1 — In-use error UX
 
-When the API returns:
+Deal fields are delete-blocked when non-deleted deals still contain the key. When the API returns:
 
 ```json
 {
@@ -1260,8 +1292,8 @@ If a user wants to "remove" a column from active use but isn't ready to delete i
 ```
 
 Archived columns:
-- Are no longer suggested in the deal-create / deal-edit UI.
-- Are still rendered on existing deals that have a value (because the definition still exists, just inactive).
+- Are no longer suggested in the deal-create / deal-edit UI or lead-form field-mapping UI.
+- Are still rendered on existing deals/leads that have a value when the consuming UI has the archived definition available.
 - Can be restored via `POST /users/crm/custom-fields/{field_id}/restore` with the loaded `if_updated_at` value.
 
 This is the "soft" alternative to delete — no data is lost, and the column can come back.
@@ -1282,16 +1314,18 @@ This is the "soft" alternative to delete — no data is lost, and the column can
 **Key frontend rules:**
 
 1. **Do not show clear on active columns** — backend rejects this, and the product flow should force archive first.
-2. **Make the data-loss copy explicit** — clearing removes the key from matching deal `properties`.
-3. **Refresh custom-fields/schema/deal-detail metadata caches** after success.
+2. **Make the data-loss copy explicit** — clearing removes the key from matching `crm_deals.properties` for deal fields or `crm_leads.properties` for lead fields.
+3. **Refresh custom-fields/schema/deal-detail/lead-form metadata caches** after success.
 
 ### Flow F — Reorder custom columns
 
 ```
 1. User opens Settings → Custom Columns
 
-2. Frontend fetches:
+2. Frontend fetches the selected entity:
    → GET /users/crm/custom-fields?entity=deal&include_inactive=true
+   or
+   → GET /users/crm/custom-fields?entity=lead&include_inactive=true
 
 3. User drags columns into a new order
 
@@ -1310,7 +1344,7 @@ This is the "soft" alternative to delete — no data is lost, and the column can
 
 1. **Send a complete list** — do not send only moved rows. The endpoint normalizes the whole order to avoid duplicate `display_order` values.
 2. **Use the loaded version high-water mark** — compute `if_updated_at` as the max `updated_at` from the list used for drag/drop.
-3. **Refresh metadata after success** — table/detail/schema consumers read the saved `display_order` on their next fetch.
+3. **Refresh metadata after success** — table/detail/schema/lead-form consumers read the saved `display_order` on their next fetch.
 
 ---
 

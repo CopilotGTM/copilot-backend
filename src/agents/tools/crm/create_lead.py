@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING, Any
 
 from src.agents.tools.base import execute_with_capabilities
 from src.domain.models.organisation_tables.sync.crm.leads import CRMLeadSourceType, CRMLeadStatus
-from src.service.crm.access.leads_access_service import LeadsAccessService, LeadsAccessServiceError
+from src.service.crm.leads.contracts import LeadServiceError
+from src.service.crm.leads.write_service import LeadWriteService
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -141,7 +142,7 @@ async def create_lead_direct(
     payload = {key: value for key, value in payload.items() if value is not None}
 
     async with context.acquire_session() as org_session:
-        service = LeadsAccessService(
+        service = LeadWriteService(
             org_session,
             organisation_id,
             actor_user_id=context.user_id,
@@ -149,7 +150,7 @@ async def create_lead_direct(
         )
         try:
             lead = await service.create_lead(payload)
-        except LeadsAccessServiceError as exc:
+        except LeadServiceError as exc:
             await _rollback_if_available(org_session)
             return {"status": "error", "message": f"Could not create lead: {exc.message}"}
         except Exception:

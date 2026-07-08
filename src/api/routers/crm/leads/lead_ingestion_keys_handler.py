@@ -28,7 +28,7 @@ from src.api.utils.http_response import Response
 from src.domain.models.master_tables import PublicIngressResourceType
 from src.domain.models.organisation_tables.sync.crm.lead_forms import LeadForm
 from src.infra.utils.logger import get_logger
-from src.service.crm.access.lead_ingestion_key_service import (
+from src.service.crm.leads.ingestion_key_service import (
     LeadIngestionKeyService,
     LeadIngestionKeyServiceError,
 )

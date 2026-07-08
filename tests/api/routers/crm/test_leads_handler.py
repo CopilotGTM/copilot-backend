@@ -14,14 +14,24 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from src.api.dependencies.organisation_dependencies import UserIDs, get_current_user
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
-from src.api.routers.crm.leads.leads_handler import get_leads_access_service
+from src.api.routers.crm.leads.leads_handler import (
+    get_lead_conversion_service,
+    get_lead_participant_service,
+    get_lead_read_service,
+    get_lead_write_service,
+    require_leads_convert_scope,
+    require_leads_create_scope,
+    require_leads_update_scope,
+)
 from src.api.schemas.crm_lead_models import CreateLeadRequest, UpdateLeadRequest
 from src.domain.models.organisation_tables.sync.crm.leads import (
     CRMLeadParticipantType,
     CRMLeadSourceType,
     CRMLeadStatus,
 )
-from src.service.crm.access.leads_access_service import LeadsAccessService, LeadsAccessServiceError
+from src.service.crm.leads.contracts import LeadServiceError
+from src.service.crm.leads.conversion_service import LeadConversionService
+from src.service.crm.leads.write_service import LeadWriteService
 
 
 class FakeLead:
@@ -124,8 +134,8 @@ class FakeLeadParticipant:
         self.updated_at = datetime.now(UTC)
 
 
-class FakeLeadsAccessService:
-    """Fake service implementation for `LeadsAccessService`.
+class FakeLeadReadService:
+    """Fake service implementation for `LeadReadService`.
 
     Router tests inject this service to keep endpoint behavior deterministic and
     avoid organization-level DB dependencies.
@@ -190,9 +200,15 @@ def _iter_route_dependencies(dependencies):
 def _install_lead_route_overrides(app, *, user_override, service_override, rate_limit_override):
     original_overrides = app.dependency_overrides.copy()
     app.dependency_overrides[get_current_user] = user_override
-    app.dependency_overrides[get_leads_access_service] = service_override
+    app.dependency_overrides[get_lead_read_service] = service_override
+    app.dependency_overrides[get_lead_write_service] = service_override
+    app.dependency_overrides[get_lead_participant_service] = service_override
+    app.dependency_overrides[get_lead_conversion_service] = service_override
     app.dependency_overrides[rate_limit_user_read] = rate_limit_override
     app.dependency_overrides[rate_limit_user_write] = rate_limit_override
+    app.dependency_overrides[require_leads_create_scope] = rate_limit_override
+    app.dependency_overrides[require_leads_update_scope] = rate_limit_override
+    app.dependency_overrides[require_leads_convert_scope] = rate_limit_override
     for route in app.routes:
         dependant = getattr(route, "dependant", None)
         if dependant is None:
@@ -209,7 +225,7 @@ def _install_lead_route_overrides(app, *, user_override, service_override, rate_
 
 def test_create_and_get_lead(client: TestClient, test_user_ids):
     """Create a lead through the public router endpoint and read it back."""
-    service = FakeLeadsAccessService(test_user_ids["organisation_id"])
+    service = FakeLeadReadService(test_user_ids["organisation_id"])
 
     def _override_user():
         return UserIDs(
@@ -256,7 +272,7 @@ def test_create_and_get_lead(client: TestClient, test_user_ids):
 
 def test_add_lead_participant(client: TestClient, test_user_ids):
     """Add a participant to an existing lead and assert payload propagation."""
-    service = FakeLeadsAccessService(test_user_ids["organisation_id"])
+    service = FakeLeadReadService(test_user_ids["organisation_id"])
     lead = FakeLead(test_user_ids["organisation_id"])
     service.leads[lead.lead_id] = lead
 
@@ -303,7 +319,7 @@ def test_add_lead_participant(client: TestClient, test_user_ids):
 
 def test_convert_lead_to_deal(client: TestClient, test_user_ids):
     """Convert a lead to a deal and assert participant copy count and status."""
-    service = FakeLeadsAccessService(test_user_ids["organisation_id"])
+    service = FakeLeadReadService(test_user_ids["organisation_id"])
     lead = FakeLead(test_user_ids["organisation_id"])
     service.leads[lead.lead_id] = lead
     service.participants[lead.lead_id] = [FakeLeadParticipant(lead.lead_id, lead.organisation_id)]
@@ -366,7 +382,7 @@ def test_convert_lead_payload_carries_lead_owner_when_not_overridden(test_user_i
     lead = FakeLead(test_user_ids["organisation_id"])
     lead.owner_id = test_user_ids["user_id"]
 
-    payload = LeadsAccessService._build_deal_payload_from_lead(lead, {})
+    payload = LeadConversionService._build_deal_payload_from_lead(lead, {})
 
     assert payload["owner_user_id"] == test_user_ids["user_id"]
 
@@ -375,7 +391,7 @@ def test_convert_lead_payload_keeps_conversion_metadata_out_of_custom_fields(tes
     """Conversion metadata must not require a matching deal custom field definition."""
     lead = FakeLead(test_user_ids["organisation_id"])
 
-    payload = LeadsAccessService._build_deal_payload_from_lead(lead, {})
+    payload = LeadConversionService._build_deal_payload_from_lead(lead, {})
 
     assert "custom_properties" not in payload
 
@@ -383,14 +399,14 @@ def test_convert_lead_payload_keeps_conversion_metadata_out_of_custom_fields(tes
 @pytest.mark.asyncio
 async def test_lead_service_rejects_converted_status_outside_conversion(test_user_ids):
     """Service-level guard protects non-router callers from direct converted writes."""
-    service = LeadsAccessService(
+    service = LeadWriteService(
         org_session=object(),  # type: ignore[arg-type]
         organisation_id=test_user_ids["organisation_id"],
     )
 
     try:
         await service.create_lead({"status": CRMLeadStatus.CONVERTED})
-    except LeadsAccessServiceError as exc:
+    except LeadServiceError as exc:
         assert exc.status_code == 422
         assert exc.data == {"code": "converted_status_not_allowed", "field": "status"}
     else:
@@ -398,7 +414,7 @@ async def test_lead_service_rejects_converted_status_outside_conversion(test_use
 
     try:
         await service.update_lead(uuid4(), {"status": CRMLeadStatus.CONVERTED})
-    except LeadsAccessServiceError as exc:
+    except LeadServiceError as exc:
         assert exc.status_code == 422
         assert exc.data == {"code": "converted_status_not_allowed", "field": "status"}
     else:

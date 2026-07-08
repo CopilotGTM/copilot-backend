@@ -6,8 +6,9 @@ public-key creation ordering, update-state transitions, and submission validatio
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -25,6 +26,7 @@ from src.api.schemas.lead_form_models import (
 )
 from src.domain.models.master_tables.organisation_models import Organisation
 from src.domain.models.master_tables.public_ingress_key_models import PublicIngressKey
+from src.domain.models.organisation_tables.sync.crm.custom_fields import CRMCustomFieldDataType
 from src.domain.models.organisation_tables.sync.crm.lead_forms import (
     LeadForm,
     LeadFormField,
@@ -34,7 +36,7 @@ from src.domain.models.organisation_tables.sync.crm.lead_forms import (
     LeadFormSubmission,
 )
 from src.domain.models.organisation_tables.sync.crm.leads import CRMLead
-from src.service.crm.access.lead_forms_service import (
+from src.service.crm.leads.form_management_service import (
     LeadFormsService,
     LeadFormsServiceError,
     PublicLeadFormSubmissionService,
@@ -76,6 +78,17 @@ class RecordingAsyncSession:
     async def close(self) -> None:
         """Record session disposal to mimic normal service cleanup."""
         self.log.append(f"{self.name}.close")
+
+
+class _RowsResult:
+    def __init__(self, rows: list[object]) -> None:
+        self._rows = rows
+
+    def scalars(self) -> _RowsResult:
+        return self
+
+    def all(self) -> list[object]:
+        return self._rows
 
 
 def test_public_ingress_key_resolves_organisation_fk_in_public_schema() -> None:
@@ -130,6 +143,885 @@ def test_public_submit_request_limits_field_count() -> None:
         )
 
 
+def test_public_submit_request_accepts_optional_idempotency_key() -> None:
+    """Browser callers can provide an optional replay token for retry safety."""
+    request = PublicLeadFormSubmitRequest(
+        fields={"email": "buyer@example.com"},
+        idempotency_key="public-form-123",
+    )
+
+    assert request.idempotency_key == "public-form-123"
+
+
+def test_mapped_submission_payload_rejects_excess_total_bytes() -> None:
+    """Reject many small values when the whole mapped-form payload is too large."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        service._validate_payload_shape(
+            {f"field_{index}": "x" * 2_000 for index in range(MAX_PUBLIC_SUBMISSION_FIELDS)}
+        )
+
+    assert exc_info.value.status_code == 413
+    assert exc_info.value.data["code"] == "payload_too_large"
+
+
+def test_mapped_submission_payload_rejects_deep_nested_json() -> None:
+    """Reject deeply nested mapped-form values before recursive validation can grow unbounded."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+    value = {"level": "leaf"}
+    for _ in range(9):
+        value = {"level": value}
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        service._validate_payload_shape({"metadata": value})
+
+    assert exc_info.value.status_code == 413
+    assert exc_info.value.data["code"] == "payload_too_deep"
+    assert exc_info.value.data["field"].startswith("metadata.")
+
+
+def test_mapped_submission_payload_rejects_large_nested_lists() -> None:
+    """Reject a huge list under one submitted field even when top-level field count is low."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        service._validate_payload_shape({"interests": ["demo"] * 201})
+
+    assert exc_info.value.status_code == 413
+    assert exc_info.value.data["code"] == "payload_too_large"
+    assert exc_info.value.data["field"] == "interests"
+
+
+def test_mapped_submission_payload_rejects_too_many_nested_nodes() -> None:
+    """Reject nested JSON with too many nodes even when each scalar is small."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        service._validate_payload_shape(
+            {"metadata": {f"key_{index}": "x" for index in range(2001)}}
+        )
+
+    assert exc_info.value.status_code == 413
+    assert exc_info.value.data["code"] == "payload_too_complex"
+
+
+def test_form_create_rejects_incompatible_lead_field_type() -> None:
+    """A configured lead column mapping should use a compatible submitted data type."""
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        LeadFormsService._validate_field_requests(
+            [
+                LeadFormFieldRequest(
+                    external_key="budget",
+                    label="Budget",
+                    target_type=LeadFormFieldTargetType.LEAD_FIELD,
+                    target_key="budget_amount",
+                    data_type=LeadFormFieldDataType.TEXT,
+                )
+            ]
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "Unsupported data type" in exc_info.value.message
+
+
+def test_form_create_rejects_required_ignore_field() -> None:
+    """Admins should not be able to require a field that is discarded on submit."""
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        LeadFormsService._validate_field_requests(
+            [
+                LeadFormFieldRequest(
+                    external_key="internal_note",
+                    label="Internal note",
+                    target_type=LeadFormFieldTargetType.IGNORE,
+                    data_type=LeadFormFieldDataType.TEXT,
+                    required=True,
+                )
+            ]
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "Ignored fields cannot be required" in exc_info.value.message
+
+
+def test_form_create_rejects_duplicate_property_target_mapping() -> None:
+    """Two external fields should not silently overwrite the same custom property."""
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        LeadFormsService._validate_field_requests(
+            [
+                LeadFormFieldRequest(
+                    external_key="plan",
+                    label="Plan",
+                    target_type=LeadFormFieldTargetType.PROPERTY,
+                    target_key="lead_plan",
+                    data_type=LeadFormFieldDataType.TEXT,
+                ),
+                LeadFormFieldRequest(
+                    external_key="selected_plan",
+                    label="Selected plan",
+                    target_type=LeadFormFieldTargetType.PROPERTY,
+                    target_key=" lead_plan ",
+                    data_type=LeadFormFieldDataType.TEXT,
+                ),
+            ]
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "Duplicate form target mapping" in exc_info.value.message
+
+
+def test_form_create_rejects_duplicate_normalized_property_target_mapping() -> None:
+    """Property mappings that normalize to one custom field should not double-write it."""
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        LeadFormsService._validate_field_requests(
+            [
+                LeadFormFieldRequest(
+                    external_key="plan",
+                    label="Plan",
+                    target_type=LeadFormFieldTargetType.PROPERTY,
+                    target_key="Lead.Plan",
+                    data_type=LeadFormFieldDataType.TEXT,
+                ),
+                LeadFormFieldRequest(
+                    external_key="selected_plan",
+                    label="Selected plan",
+                    target_type=LeadFormFieldTargetType.PROPERTY,
+                    target_key="lead_plan",
+                    data_type=LeadFormFieldDataType.TEXT,
+                ),
+            ]
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "Duplicate form target mapping" in exc_info.value.message
+
+
+def test_form_create_allows_custom_prefixed_property_target_mapping() -> None:
+    """Lead-form backfill does not strip custom_ prefixes, so these are distinct keys."""
+    LeadFormsService._validate_field_requests(
+        [
+            LeadFormFieldRequest(
+                external_key="plan",
+                label="Plan",
+                target_type=LeadFormFieldTargetType.PROPERTY,
+                target_key="custom_plan",
+                data_type=LeadFormFieldDataType.TEXT,
+            ),
+            LeadFormFieldRequest(
+                external_key="selected_plan",
+                label="Selected plan",
+                target_type=LeadFormFieldTargetType.PROPERTY,
+                target_key="plan",
+                data_type=LeadFormFieldDataType.TEXT,
+            ),
+        ]
+    )
+
+
+def test_form_submission_rejects_invalid_email_values() -> None:
+    """Email-typed form fields should reject malformed submitted email strings."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+    field = LeadFormField(
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        external_key="email",
+        label="Email",
+        target_type=LeadFormFieldTargetType.LEAD_FIELD,
+        target_key="email",
+        data_type=LeadFormFieldDataType.EMAIL,
+        required=True,
+    )
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        service._map_payload([field], {"email": "not-an-email"})
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.data["field"] == "email"
+
+
+def test_form_submission_coerces_date_and_datetime_values() -> None:
+    """Date and datetime fields should store normalized ISO strings."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+    form_id = uuid4()
+    org_id = uuid4()
+    fields = [
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="email",
+            label="Email",
+            target_type=LeadFormFieldTargetType.LEAD_FIELD,
+            target_key="email",
+            data_type=LeadFormFieldDataType.EMAIL,
+            required=True,
+        ),
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="start_date",
+            label="Start date",
+            target_type=LeadFormFieldTargetType.PROPERTY,
+            target_key="start_date",
+            data_type=LeadFormFieldDataType.DATE,
+        ),
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="meeting_time",
+            label="Meeting time",
+            target_type=LeadFormFieldTargetType.PROPERTY,
+            target_key="meeting_time",
+            data_type=LeadFormFieldDataType.DATETIME,
+        ),
+    ]
+
+    _lead_payload, properties = service._map_payload(
+        fields,
+        {
+            "email": "buyer@example.com",
+            "start_date": "2026-07-07",
+            "meeting_time": "2026-07-07T12:30:00Z",
+        },
+    )
+
+    assert properties["start_date"] == "2026-07-07"
+    assert properties["meeting_time"] == "2026-07-07T12:30:00+00:00"
+
+
+def test_form_submission_normalizes_company_domain_lead_field() -> None:
+    """Mapped forms should store canonical company domains like direct private ingestion."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+    org_id = uuid4()
+    form_id = uuid4()
+    fields = [
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="email",
+            label="Email",
+            target_type=LeadFormFieldTargetType.LEAD_FIELD,
+            target_key="email",
+            data_type=LeadFormFieldDataType.EMAIL,
+            required=True,
+        ),
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="domain",
+            label="Domain",
+            target_type=LeadFormFieldTargetType.LEAD_FIELD,
+            target_key="company_domain",
+            data_type=LeadFormFieldDataType.TEXT,
+        ),
+    ]
+
+    lead_payload, _properties = service._map_payload(
+        fields,
+        {"email": "buyer@example.com", "domain": " https://Example.COM/pricing?utm=ad "},
+    )
+
+    assert lead_payload["company_domain"] == "example.com"
+
+
+def test_form_submission_rejects_oversized_phone_lead_field() -> None:
+    """Mapped phone fields should stay within the CRMLead.phone storage bound."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+    org_id = uuid4()
+    form_id = uuid4()
+    fields = [
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="phone",
+            label="Phone",
+            target_type=LeadFormFieldTargetType.LEAD_FIELD,
+            target_key="phone",
+            data_type=LeadFormFieldDataType.PHONE,
+            required=True,
+        ),
+    ]
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        service._map_payload(fields, {"phone": "+" + ("1" * 64)})
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.data["field"] == "phone"
+    assert "Phone value is too long" in exc_info.value.message
+
+
+def test_form_submission_rejects_oversized_text_lead_field() -> None:
+    """Mapped lead fields should respect CRMLead column sizes before DB writes."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+    org_id = uuid4()
+    form_id = uuid4()
+    fields = [
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="email",
+            label="Email",
+            target_type=LeadFormFieldTargetType.LEAD_FIELD,
+            target_key="email",
+            data_type=LeadFormFieldDataType.EMAIL,
+            required=True,
+        ),
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="first_name",
+            label="First name",
+            target_type=LeadFormFieldTargetType.LEAD_FIELD,
+            target_key="first_name",
+            data_type=LeadFormFieldDataType.TEXT,
+            required=True,
+        ),
+    ]
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        service._map_payload(fields, {"email": "buyer@example.com", "first_name": "x" * 256})
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.data["field"] == "first_name"
+    assert "Lead field value is too long" in exc_info.value.message
+
+
+def test_form_submission_rejects_negative_budget_amount_lead_field() -> None:
+    """Mapped budget amounts should respect the CRMLead non-negative invariant."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+    org_id = uuid4()
+    form_id = uuid4()
+    fields = [
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="email",
+            label="Email",
+            target_type=LeadFormFieldTargetType.LEAD_FIELD,
+            target_key="email",
+            data_type=LeadFormFieldDataType.EMAIL,
+            required=True,
+        ),
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="budget",
+            label="Budget",
+            target_type=LeadFormFieldTargetType.LEAD_FIELD,
+            target_key="budget_amount",
+            data_type=LeadFormFieldDataType.NUMBER,
+        ),
+    ]
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        service._map_payload(fields, {"email": "buyer@example.com", "budget": -1})
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.data["field"] == "budget"
+    assert "Budget amount must be non-negative" in exc_info.value.message
+
+
+def test_form_submission_rejects_short_budget_currency_lead_field() -> None:
+    """Mapped budget currencies should match the direct private lead API contract."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+    org_id = uuid4()
+    form_id = uuid4()
+    fields = [
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="email",
+            label="Email",
+            target_type=LeadFormFieldTargetType.LEAD_FIELD,
+            target_key="email",
+            data_type=LeadFormFieldDataType.EMAIL,
+            required=True,
+        ),
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="currency",
+            label="Currency",
+            target_type=LeadFormFieldTargetType.LEAD_FIELD,
+            target_key="budget_currency",
+            data_type=LeadFormFieldDataType.TEXT,
+        ),
+    ]
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        service._map_payload(fields, {"email": "buyer@example.com", "currency": "US"})
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.data["field"] == "currency"
+    assert "Budget currency must be a 3-character ISO code" in exc_info.value.message
+
+
+def test_form_submission_rejects_oversized_default_property_value() -> None:
+    """Configured defaults should not bypass mapped-submission payload budgets."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+    org_id = uuid4()
+    form_id = uuid4()
+    fields = [
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="email",
+            label="Email",
+            target_type=LeadFormFieldTargetType.LEAD_FIELD,
+            target_key="email",
+            data_type=LeadFormFieldDataType.EMAIL,
+            required=True,
+        ),
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="notes",
+            label="Notes",
+            target_type=LeadFormFieldTargetType.PROPERTY,
+            target_key="notes",
+            data_type=LeadFormFieldDataType.TEXT,
+            default_value="x" * (MAX_PUBLIC_SCALAR_STRING_LENGTH + 1),
+        ),
+    ]
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        service._map_payload(fields, {"email": "buyer@example.com"})
+
+    assert exc_info.value.status_code == 413
+    assert exc_info.value.data["field"] == "notes"
+
+
+def test_form_submission_rejects_too_many_default_property_nodes() -> None:
+    """Many individually-valid defaults should still count toward total payload complexity."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+    org_id = uuid4()
+    form_id = uuid4()
+    fields = [
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="email",
+            label="Email",
+            target_type=LeadFormFieldTargetType.LEAD_FIELD,
+            target_key="email",
+            data_type=LeadFormFieldDataType.EMAIL,
+            required=True,
+        )
+    ]
+    fields.extend(
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key=f"default_{index}",
+            label=f"Default {index}",
+            target_type=LeadFormFieldTargetType.PROPERTY,
+            target_key=f"default_{index}",
+            data_type=LeadFormFieldDataType.JSON,
+            default_value=list(range(200)),
+        )
+        for index in range(11)
+    )
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        service._map_payload(fields, {"email": "buyer@example.com"})
+
+    assert exc_info.value.status_code == 413
+    assert exc_info.value.data["code"] == "payload_too_complex"
+
+
+def test_form_submission_rejects_too_many_default_property_bytes() -> None:
+    """Many individually-valid defaults should still count toward total payload bytes."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+    org_id = uuid4()
+    form_id = uuid4()
+    fields = [
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="email",
+            label="Email",
+            target_type=LeadFormFieldTargetType.LEAD_FIELD,
+            target_key="email",
+            data_type=LeadFormFieldDataType.EMAIL,
+            required=True,
+        )
+    ]
+    fields.extend(
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key=f"default_{index}",
+            label=f"Default {index}",
+            target_type=LeadFormFieldTargetType.PROPERTY,
+            target_key=f"default_{index}",
+            data_type=LeadFormFieldDataType.TEXT,
+            default_value="x" * MAX_PUBLIC_SCALAR_STRING_LENGTH,
+        )
+        for index in range(27)
+    )
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        service._map_payload(fields, {"email": "buyer@example.com"})
+
+    assert exc_info.value.status_code == 413
+    assert exc_info.value.data["code"] == "payload_too_large"
+
+
+def test_form_submission_rejects_invalid_lead_custom_select_option() -> None:
+    """Submitted property values should honor active lead custom-field options."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+    form_id = uuid4()
+    org_id = uuid4()
+    fields = [
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="email",
+            label="Email",
+            target_type=LeadFormFieldTargetType.LEAD_FIELD,
+            target_key="email",
+            data_type=LeadFormFieldDataType.EMAIL,
+            required=True,
+        ),
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="plan",
+            label="Plan",
+            target_type=LeadFormFieldTargetType.PROPERTY,
+            target_key="plan",
+            data_type=LeadFormFieldDataType.TEXT,
+        ),
+    ]
+    custom_fields = {
+        "plan": SimpleNamespace(
+            key="plan",
+            data_type=CRMCustomFieldDataType.SELECT,
+            is_active=True,
+            is_deleted=False,
+            options={"values": [{"value": "starter", "active": True}]},
+        )
+    }
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        service._map_payload(
+            fields,
+            {"email": "buyer@example.com", "plan": "enterprise"},
+            lead_custom_fields=custom_fields,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.data["field"] == "plan"
+    assert "Invalid option" in exc_info.value.message
+
+
+def test_form_submission_accepts_lead_custom_multiselect_values() -> None:
+    """JSON form fields can store multiple values into lead multiselect custom fields."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+    form_id = uuid4()
+    org_id = uuid4()
+    fields = [
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="email",
+            label="Email",
+            target_type=LeadFormFieldTargetType.LEAD_FIELD,
+            target_key="email",
+            data_type=LeadFormFieldDataType.EMAIL,
+            required=True,
+        ),
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="roles",
+            label="Buying Roles",
+            target_type=LeadFormFieldTargetType.PROPERTY,
+            target_key="buying_roles",
+            data_type=LeadFormFieldDataType.JSON,
+        ),
+    ]
+    custom_fields = {
+        "buying_roles": SimpleNamespace(
+            key="buying_roles",
+            data_type=CRMCustomFieldDataType.MULTISELECT,
+            is_active=True,
+            is_deleted=False,
+            options={"values": ["economic_buyer", "technical_buyer"]},
+        )
+    }
+
+    lead_payload, properties = service._map_payload(
+        fields,
+        {
+            "email": "buyer@example.com",
+            "roles": [" economic_buyer ", "technical_buyer"],
+        },
+        lead_custom_fields=custom_fields,
+    )
+
+    assert lead_payload["email"] == "buyer@example.com"
+    assert properties == {"buying_roles": ["economic_buyer", "technical_buyer"]}
+
+
+def test_form_submission_validates_backfilled_normalized_property_mapping() -> None:
+    """Legacy target keys should use normalized backfill definitions for validation."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+    form_id = uuid4()
+    org_id = uuid4()
+    fields = [
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="email",
+            label="Email",
+            target_type=LeadFormFieldTargetType.LEAD_FIELD,
+            target_key="email",
+            data_type=LeadFormFieldDataType.EMAIL,
+            required=True,
+        ),
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="plan",
+            label="Plan",
+            target_type=LeadFormFieldTargetType.PROPERTY,
+            target_key="Lead.Plan",
+            data_type=LeadFormFieldDataType.TEXT,
+        ),
+    ]
+    custom_fields = {
+        "lead_plan": SimpleNamespace(
+            key="lead_plan",
+            data_type=CRMCustomFieldDataType.SELECT,
+            is_active=True,
+            is_deleted=False,
+            options={"values": [{"value": "starter", "active": True}]},
+        )
+    }
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        service._map_payload(
+            fields,
+            {"email": "buyer@example.com", "plan": "enterprise"},
+            lead_custom_fields=custom_fields,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.data["field"] == "plan"
+    assert "Invalid option" in exc_info.value.message
+
+
+def test_form_submission_rejects_inactive_lead_custom_field() -> None:
+    """Existing mappings should not write to inactive lead custom-field definitions."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+    form_id = uuid4()
+    org_id = uuid4()
+    fields = [
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="email",
+            label="Email",
+            target_type=LeadFormFieldTargetType.LEAD_FIELD,
+            target_key="email",
+            data_type=LeadFormFieldDataType.EMAIL,
+            required=True,
+        ),
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="plan",
+            label="Plan",
+            target_type=LeadFormFieldTargetType.PROPERTY,
+            target_key="plan",
+            data_type=LeadFormFieldDataType.TEXT,
+        ),
+    ]
+    custom_fields = {
+        "plan": SimpleNamespace(
+            key="plan",
+            data_type=CRMCustomFieldDataType.SELECT,
+            is_active=False,
+            is_deleted=False,
+            options={"values": [{"value": "starter", "active": True}]},
+        )
+    }
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        service._map_payload(
+            fields,
+            {"email": "buyer@example.com", "plan": "starter"},
+            lead_custom_fields=custom_fields,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.data["field"] == "plan"
+    assert "not available" in exc_info.value.message
+
+
+def test_form_submission_preserves_legacy_property_mapping_without_definition() -> None:
+    """Legacy forms without a definition row should keep accepting raw property values."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+    form_id = uuid4()
+    org_id = uuid4()
+    fields = [
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="email",
+            label="Email",
+            target_type=LeadFormFieldTargetType.LEAD_FIELD,
+            target_key="email",
+            data_type=LeadFormFieldDataType.EMAIL,
+            required=True,
+        ),
+        LeadFormField(
+            organisation_id=org_id,
+            form_id=form_id,
+            external_key="legacy_plan",
+            label="Legacy plan",
+            target_type=LeadFormFieldTargetType.PROPERTY,
+            target_key="legacy_plan",
+            data_type=LeadFormFieldDataType.TEXT,
+        ),
+    ]
+
+    _lead_payload, properties = service._map_payload(
+        fields,
+        {"email": "buyer@example.com", "legacy_plan": "enterprise"},
+        lead_custom_fields={},
+    )
+
+    assert properties["legacy_plan"] == "enterprise"
+
+
+@pytest.mark.asyncio
+async def test_load_lead_custom_field_definitions_aliases_backfilled_normalized_keys() -> None:
+    """Backfilled normalized definitions should still attach to legacy form target keys."""
+    definition = SimpleNamespace(key="lead_plan")
+
+    class DefinitionSession:
+        async def execute(self, _stmt: object) -> _RowsResult:
+            return _RowsResult([definition])
+
+    org_id = uuid4()
+    field = LeadFormField(
+        organisation_id=org_id,
+        form_id=uuid4(),
+        external_key="plan",
+        label="Plan",
+        target_type=LeadFormFieldTargetType.PROPERTY,
+        target_key="Lead.Plan",
+        data_type=LeadFormFieldDataType.TEXT,
+    )
+    service = PublicLeadFormSubmissionService(
+        org_session=DefinitionSession(),  # type: ignore[arg-type]
+        organisation_id=org_id,
+        form_id=field.form_id,
+        public_form_key="lf_demo",
+    )
+
+    definitions = await service._load_lead_custom_field_definitions([field])
+
+    assert definitions["lead_plan"] is definition
+    assert definitions["Lead.Plan"] is definition
+
+
 @pytest.mark.asyncio
 async def test_create_form_flushes_org_rows_and_public_key_before_any_commit(
     monkeypatch: pytest.MonkeyPatch,
@@ -179,6 +1071,143 @@ async def test_create_form_flushes_org_rows_and_public_key_before_any_commit(
     assert log.index("master.commit") > log.index("master.flush")
     assert log.count("org.flush") == 2
     assert log.count("master.flush") == 1
+
+
+@pytest.mark.asyncio
+async def test_property_mapping_requires_known_active_lead_custom_field() -> None:
+    """New property mappings should point at lead custom-field definitions."""
+    service = LeadFormsService(
+        org_session=RecordingAsyncSession("org", []),  # type: ignore[arg-type]
+        master_session=RecordingAsyncSession("master", []),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    service.org_session.execute = AsyncMock(return_value=_RowsResult([]))  # type: ignore[attr-defined]
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        await service._validate_property_field_requests(
+            [
+                LeadFormFieldRequest(
+                    external_key="company_size",
+                    label="Company size",
+                    target_type=LeadFormFieldTargetType.PROPERTY,
+                    target_key="company_size",
+                    data_type=LeadFormFieldDataType.NUMBER,
+                )
+            ]
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "Unknown lead custom field" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_property_mapping_accepts_matching_active_lead_custom_field() -> None:
+    """Known active lead custom fields can be used as property mappings."""
+    service = LeadFormsService(
+        org_session=RecordingAsyncSession("org", []),  # type: ignore[arg-type]
+        master_session=RecordingAsyncSession("master", []),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    service.org_session.execute = AsyncMock(
+        return_value=_RowsResult(
+            [
+                SimpleNamespace(
+                    key="company_size",
+                    data_type="number",
+                    is_active=True,
+                    is_deleted=False,
+                )
+            ]
+        )
+    )  # type: ignore[attr-defined]
+
+    await service._validate_property_field_requests(
+        [
+            LeadFormFieldRequest(
+                external_key="company_size",
+                label="Company size",
+                target_type=LeadFormFieldTargetType.PROPERTY,
+                target_key="company_size",
+                data_type=LeadFormFieldDataType.NUMBER,
+            )
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_property_mapping_accepts_backfilled_normalized_lead_custom_field() -> None:
+    """Legacy mappings can resolve the normalized definition generated by backfill."""
+    service = LeadFormsService(
+        org_session=RecordingAsyncSession("org", []),  # type: ignore[arg-type]
+        master_session=RecordingAsyncSession("master", []),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    service.org_session.execute = AsyncMock(
+        return_value=_RowsResult(
+            [
+                SimpleNamespace(
+                    key="lead_plan",
+                    data_type="select",
+                    is_active=True,
+                    is_deleted=False,
+                )
+            ]
+        )
+    )  # type: ignore[attr-defined]
+
+    await service._validate_property_field_requests(
+        [
+            LeadFormFieldRequest(
+                external_key="plan",
+                label="Plan",
+                target_type=LeadFormFieldTargetType.PROPERTY,
+                target_key="Lead.Plan",
+                data_type=LeadFormFieldDataType.TEXT,
+            )
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_property_mapping_rejects_incompatible_lead_custom_field_type() -> None:
+    """Form field data type must match the target lead custom-field type."""
+    service = LeadFormsService(
+        org_session=RecordingAsyncSession("org", []),  # type: ignore[arg-type]
+        master_session=RecordingAsyncSession("master", []),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    service.org_session.execute = AsyncMock(
+        return_value=_RowsResult(
+            [
+                SimpleNamespace(
+                    key="company_size",
+                    data_type="text",
+                    is_active=True,
+                    is_deleted=False,
+                )
+            ]
+        )
+    )  # type: ignore[attr-defined]
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        await service._validate_property_field_requests(
+            [
+                LeadFormFieldRequest(
+                    external_key="company_size",
+                    label="Company size",
+                    target_type=LeadFormFieldTargetType.PROPERTY,
+                    target_key="company_size",
+                    data_type=LeadFormFieldDataType.NUMBER,
+                )
+            ]
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "does not match" in exc_info.value.message
 
 
 @pytest.mark.asyncio
@@ -406,6 +1435,76 @@ async def test_public_form_definition_returns_fields_without_target_mapping(
 
 
 @pytest.mark.asyncio
+async def test_public_form_definition_exposes_active_custom_field_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Public definitions expose browser-safe active options for custom select fields."""
+    form = SimpleNamespace(
+        form_id=uuid4(),
+        name="Website demo",
+        description="Book a demo",
+        current_version=1,
+        settings={},
+    )
+    field = SimpleNamespace(
+        external_key="plan",
+        label="Plan",
+        data_type=LeadFormFieldDataType.TEXT,
+        required=False,
+        display_order=0,
+        default_value=None,
+        validation={},
+        target_type=LeadFormFieldTargetType.PROPERTY,
+        target_key="plan",
+    )
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=form.form_id,
+        public_form_key="lf_demo",
+    )
+    custom_fields = {
+        "plan": SimpleNamespace(
+            key="plan",
+            data_type=CRMCustomFieldDataType.SELECT,
+            is_active=True,
+            is_deleted=False,
+            options={
+                "values": [
+                    {"value": "starter", "label": "Starter", "active": True},
+                    {"value": "enterprise", "label": "Enterprise", "active": False},
+                ]
+            },
+        )
+    }
+
+    async def _load_form(self: PublicLeadFormSubmissionService):
+        return form
+
+    async def _load_fields(self: PublicLeadFormSubmissionService, form_id):
+        return [field]
+
+    async def _load_custom_fields(self: PublicLeadFormSubmissionService, fields):
+        return custom_fields
+
+    monkeypatch.setattr(PublicLeadFormSubmissionService, "_load_active_form", _load_form)
+    monkeypatch.setattr(PublicLeadFormSubmissionService, "_load_active_fields", _load_fields)
+    monkeypatch.setattr(
+        PublicLeadFormSubmissionService,
+        "_load_lead_custom_field_definitions",
+        _load_custom_fields,
+    )
+
+    definition = await service.load_definition(origin=None)
+
+    assert definition.fields[0].options == {
+        "values": [{"value": "starter", "label": "Starter", "active": True}]
+    }
+    assert not hasattr(definition.fields[0], "target_key")
+    assert not hasattr(definition.fields[0], "target_type")
+
+
+@pytest.mark.asyncio
 async def test_public_submission_rejects_oversized_string_values() -> None:
     """Reject oversized public form string values with the mapped payload-too-large error."""
     service = PublicLeadFormSubmissionService(
@@ -427,6 +1526,30 @@ async def test_public_submission_rejects_oversized_string_values() -> None:
     assert exc_info.value.status_code == 413
     assert exc_info.value.data["code"] == "payload_too_large"
     assert exc_info.value.data["field"] == "message"
+
+
+@pytest.mark.asyncio
+async def test_public_submission_rejects_oversized_context_values() -> None:
+    """Context is stored with the submission, so it gets the same payload budget."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        await service.submit(
+            fields_payload={"email": "buyer@example.com"},
+            context={"tracking": "x" * (MAX_PUBLIC_SCALAR_STRING_LENGTH + 1)},
+            origin=None,
+            user_agent=None,
+            submitter_ip=None,
+        )
+
+    assert exc_info.value.status_code == 413
+    assert exc_info.value.data["code"] == "payload_too_large"
+    assert exc_info.value.data["field"] == "tracking"
 
 
 def test_form_submission_rejects_unknown_field_keys() -> None:
@@ -457,6 +1580,203 @@ def test_form_submission_rejects_unknown_field_keys() -> None:
     assert exc_info.value.status_code == 422
     assert exc_info.value.data["code"] == "unknown_field"
     assert exc_info.value.data["field"] == "company"
+
+
+def test_public_spam_controls_drop_empty_honeypot_field() -> None:
+    """Configured honeypot fields should not trip normal unknown-field validation when empty."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+
+    filtered = service._apply_public_spam_controls(
+        {"spam_protection": {"honeypot_field": "website"}},
+        {"email": "buyer@example.com", "website": "  "},
+        {},
+    )
+
+    assert filtered == {"email": "buyer@example.com"}
+
+
+def test_public_spam_controls_reject_filled_honeypot_field() -> None:
+    """Bots that fill a hidden honeypot field should be rejected before lead creation."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        service._apply_public_spam_controls(
+            {"spam_protection": {"honeypot_field": "website"}},
+            {"email": "buyer@example.com", "website": "https://spam.example"},
+            {},
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.data["code"] == "spam_rejected"
+    assert exc_info.value.data["field"] == "website"
+
+
+def test_public_spam_controls_reject_too_fast_submission() -> None:
+    """A minimum fill-time hook catches obvious scripted public submissions."""
+    service = PublicLeadFormSubmissionService(
+        org_session=object(),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="lf_demo",
+    )
+    rendered_at = datetime.now(UTC) - timedelta(seconds=1)
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        service._apply_public_spam_controls(
+            {"spam_protection": {"min_fill_seconds": 3}},
+            {"email": "buyer@example.com"},
+            {"rendered_at": rendered_at.isoformat()},
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.data["code"] == "spam_rejected"
+    assert exc_info.value.data["field"] == "rendered_at"
+
+
+@pytest.mark.asyncio
+async def test_public_form_submission_replays_by_persisted_idempotency_columns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Public retries with the same idempotency key return the existing submission/lead pair."""
+    log: list[str] = []
+    org_session = RecordingAsyncSession("org", log)
+    org_id = uuid4()
+    lead = CRMLead(organisation_id=org_id, email="buyer@example.com")
+    submission = LeadFormSubmission(
+        organisation_id=org_id,
+        form_id=uuid4(),
+        form_version=1,
+        lead_id=lead.lead_id,
+        idempotency_key="public-form-123",
+    )
+    service = PublicLeadFormSubmissionService(
+        org_session=org_session,  # type: ignore[arg-type]
+        organisation_id=org_id,
+        form_id=submission.form_id,
+        public_form_key="lf_demo",
+    )
+    calls: list[str] = []
+
+    async def _find_existing(
+        self: PublicLeadFormSubmissionService,
+        *,
+        idempotency_key: str,
+    ):
+        calls.append(idempotency_key)
+        return lead, submission
+
+    monkeypatch.setattr(
+        PublicLeadFormSubmissionService,
+        "_find_existing_public_submission",
+        _find_existing,
+    )
+
+    returned_lead, returned_submission = await service.submit(
+        fields_payload={"email": "buyer@example.com"},
+        context={},
+        origin=None,
+        user_agent=None,
+        submitter_ip=None,
+        idempotency_key=" public-form-123 ",
+    )
+
+    assert returned_lead is lead
+    assert returned_submission is submission
+    assert calls == ["public-form-123"]
+    assert org_session.added == []
+
+
+@pytest.mark.asyncio
+async def test_public_form_submission_unique_race_reloads_existing_submission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A public idempotency unique conflict should rollback and return the winner row."""
+    log: list[str] = []
+    existing_lead = CRMLead(organisation_id=uuid4(), email="buyer@example.com")
+    existing_submission = LeadFormSubmission(
+        organisation_id=existing_lead.organisation_id,
+        form_id=uuid4(),
+        form_version=1,
+        lead_id=existing_lead.lead_id,
+        idempotency_key="public-form-123",
+    )
+    form = LeadForm(
+        organisation_id=existing_lead.organisation_id,
+        form_id=existing_submission.form_id,
+        name="Website demo",
+        status=LeadFormStatus.ACTIVE,
+        current_version=1,
+        settings={},
+    )
+    field = LeadFormField(
+        organisation_id=existing_lead.organisation_id,
+        form_id=existing_submission.form_id,
+        external_key="email",
+        label="Email",
+        target_type=LeadFormFieldTargetType.LEAD_FIELD,
+        target_key="email",
+        data_type=LeadFormFieldDataType.EMAIL,
+        required=True,
+    )
+    org_session = RecordingAsyncSession(
+        "org",
+        log,
+        flush_error=IntegrityError("insert", {}, Exception("unique violation")),
+    )
+    service = PublicLeadFormSubmissionService(
+        org_session=org_session,  # type: ignore[arg-type]
+        organisation_id=existing_lead.organisation_id,
+        form_id=existing_submission.form_id,
+        public_form_key="lf_demo",
+    )
+    lookup_count = 0
+
+    async def _find_existing(
+        self: PublicLeadFormSubmissionService,
+        *,
+        idempotency_key: str,
+    ):
+        nonlocal lookup_count
+        lookup_count += 1
+        return None if lookup_count == 1 else (existing_lead, existing_submission)
+
+    async def _load_form(self: PublicLeadFormSubmissionService):
+        return form
+
+    async def _load_fields(self: PublicLeadFormSubmissionService, form_id):
+        return [field]
+
+    monkeypatch.setattr(
+        PublicLeadFormSubmissionService,
+        "_find_existing_public_submission",
+        _find_existing,
+    )
+    monkeypatch.setattr(PublicLeadFormSubmissionService, "_load_active_form", _load_form)
+    monkeypatch.setattr(PublicLeadFormSubmissionService, "_load_active_fields", _load_fields)
+
+    returned_lead, returned_submission = await service.submit(
+        fields_payload={"email": "buyer@example.com"},
+        context={},
+        origin=None,
+        user_agent=None,
+        submitter_ip=None,
+        idempotency_key="public-form-123",
+    )
+
+    assert returned_lead is existing_lead
+    assert returned_submission is existing_submission
+    assert "org.rollback" in log
+    assert lookup_count == 2
 
 
 @pytest.mark.asyncio
@@ -530,6 +1850,232 @@ async def test_private_form_submission_persists_idempotency_columns(
     assert submission.ingestion_key_id == "skid_form"
     assert submission.idempotency_key == "form-lead-123"
     assert submission.context["_copilotgtm"]["ingestion"]["idempotency_key"] == "form-lead-123"
+
+
+@pytest.mark.asyncio
+async def test_private_form_submission_rejects_oversized_user_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mapped submissions should bound User-Agent before String(1000) persistence."""
+    org_session = RecordingAsyncSession("org", [])
+    org_id = uuid4()
+    form = LeadForm(
+        organisation_id=org_id,
+        form_id=uuid4(),
+        name="Website demo",
+        status=LeadFormStatus.ACTIVE,
+        current_version=3,
+        settings={},
+    )
+    field = LeadFormField(
+        organisation_id=org_id,
+        form_id=form.form_id,
+        external_key="email",
+        label="Email",
+        target_type=LeadFormFieldTargetType.LEAD_FIELD,
+        target_key="email",
+        data_type=LeadFormFieldDataType.EMAIL,
+        required=True,
+    )
+    service = PublicLeadFormSubmissionService(
+        org_session=org_session,  # type: ignore[arg-type]
+        organisation_id=org_id,
+        form_id=form.form_id,
+        public_form_key="skid_form",
+    )
+
+    async def _load_form(self: PublicLeadFormSubmissionService):
+        return form
+
+    async def _load_fields(self: PublicLeadFormSubmissionService, form_id):
+        return [field]
+
+    async def _find_existing(
+        self: PublicLeadFormSubmissionService,
+        *,
+        key_id: str,
+        idempotency_key: str,
+    ):
+        return None
+
+    monkeypatch.setattr(PublicLeadFormSubmissionService, "_load_active_form", _load_form)
+    monkeypatch.setattr(PublicLeadFormSubmissionService, "_load_active_fields", _load_fields)
+    monkeypatch.setattr(
+        PublicLeadFormSubmissionService,
+        "_find_existing_private_submission",
+        _find_existing,
+    )
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        await service.submit_private(
+            fields_payload={"email": "buyer@example.com"},
+            context={},
+            key_id="skid_form",
+            idempotency_key="form-lead-123",
+            user_agent="x" * 1001,
+            submitter_ip="203.0.113.10",
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.data["code"] == "invalid_user_agent"
+    assert org_session.added == []
+
+
+@pytest.mark.asyncio
+async def test_private_form_submission_rejects_oversized_submitter_ip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mapped submissions should bound submitter IP before String(64) persistence."""
+    org_session = RecordingAsyncSession("org", [])
+    org_id = uuid4()
+    form = LeadForm(
+        organisation_id=org_id,
+        form_id=uuid4(),
+        name="Website demo",
+        status=LeadFormStatus.ACTIVE,
+        current_version=3,
+        settings={},
+    )
+    field = LeadFormField(
+        organisation_id=org_id,
+        form_id=form.form_id,
+        external_key="email",
+        label="Email",
+        target_type=LeadFormFieldTargetType.LEAD_FIELD,
+        target_key="email",
+        data_type=LeadFormFieldDataType.EMAIL,
+        required=True,
+    )
+    service = PublicLeadFormSubmissionService(
+        org_session=org_session,  # type: ignore[arg-type]
+        organisation_id=org_id,
+        form_id=form.form_id,
+        public_form_key="skid_form",
+    )
+
+    async def _load_form(self: PublicLeadFormSubmissionService):
+        return form
+
+    async def _load_fields(self: PublicLeadFormSubmissionService, form_id):
+        return [field]
+
+    async def _find_existing(
+        self: PublicLeadFormSubmissionService,
+        *,
+        key_id: str,
+        idempotency_key: str,
+    ):
+        return None
+
+    monkeypatch.setattr(PublicLeadFormSubmissionService, "_load_active_form", _load_form)
+    monkeypatch.setattr(PublicLeadFormSubmissionService, "_load_active_fields", _load_fields)
+    monkeypatch.setattr(
+        PublicLeadFormSubmissionService,
+        "_find_existing_private_submission",
+        _find_existing,
+    )
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        await service.submit_private(
+            fields_payload={"email": "buyer@example.com"},
+            context={},
+            key_id="skid_form",
+            idempotency_key="form-lead-123",
+            user_agent="pytest",
+            submitter_ip="x" * 65,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.data["code"] == "invalid_submitter_ip"
+    assert org_session.added == []
+
+
+@pytest.mark.asyncio
+async def test_private_form_submission_rejects_oversized_idempotency_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Header replay tokens should be bounded before they hit String(255) storage."""
+    service = PublicLeadFormSubmissionService(
+        org_session=RecordingAsyncSession("org", []),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="skid_form",
+    )
+    replay_lookup_called = False
+
+    async def _find_existing(
+        self: PublicLeadFormSubmissionService,
+        *,
+        key_id: str,
+        idempotency_key: str,
+    ):
+        nonlocal replay_lookup_called
+        replay_lookup_called = True
+        return None
+
+    monkeypatch.setattr(
+        PublicLeadFormSubmissionService,
+        "_find_existing_private_submission",
+        _find_existing,
+    )
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        await service.submit_private(
+            fields_payload={"email": "buyer@example.com"},
+            context={},
+            key_id="skid_form",
+            idempotency_key="x" * 256,
+            user_agent=None,
+            submitter_ip=None,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.data["code"] == "invalid_idempotency_key"
+    assert replay_lookup_called is False
+
+
+@pytest.mark.asyncio
+async def test_private_form_submission_rejects_oversized_key_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Form private key ids should be bounded before they hit String(128) storage."""
+    service = PublicLeadFormSubmissionService(
+        org_session=RecordingAsyncSession("org", []),  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        form_id=uuid4(),
+        public_form_key="skid_form",
+    )
+    replay_lookup_called = False
+
+    async def _find_existing(
+        self: PublicLeadFormSubmissionService,
+        *,
+        key_id: str,
+        idempotency_key: str,
+    ):
+        nonlocal replay_lookup_called
+        replay_lookup_called = True
+        return None
+
+    monkeypatch.setattr(
+        PublicLeadFormSubmissionService,
+        "_find_existing_private_submission",
+        _find_existing,
+    )
+
+    with pytest.raises(LeadFormsServiceError) as exc_info:
+        await service.submit_private(
+            fields_payload={"email": "buyer@example.com"},
+            context={},
+            key_id="x" * 129,
+            idempotency_key="form-lead-123",
+            user_agent=None,
+            submitter_ip=None,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.data["code"] == "invalid_key_id"
+    assert replay_lookup_called is False
 
 
 @pytest.mark.asyncio
