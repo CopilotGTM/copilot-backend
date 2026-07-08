@@ -46,6 +46,20 @@ class _FakeResult:
         return self._scalars
 
 
+class _FakeContactSearchRow:
+    def __init__(self, contact: CRMContact) -> None:
+        self._contact = contact
+        self.score = 1.0
+        self.match_field = "full_name"
+        self.match_value = contact.full_name
+        self.match_type = "fuzzy"
+
+    def __getitem__(self, index: int) -> CRMContact:
+        if index == 0:
+            return self._contact
+        raise IndexError(index)
+
+
 class _SequencedSession:
     def __init__(self, results: list[_FakeResult]):
         self._results = results
@@ -293,7 +307,7 @@ async def test_search_contacts_uses_participants_for_associated_deals() -> None:
     participant = _participant(org_id, integration_id, deal_id, uuid4(), contact_id)
     participant.deal = deal
     session = _SequencedSession(
-        [_FakeResult(scalars=[contact]), _FakeResult(scalars=[participant])]
+        [_FakeResult(scalars=[_FakeContactSearchRow(contact)]), _FakeResult(scalars=[participant])]
     )
     context = _context(org_id, None, session)
 

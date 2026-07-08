@@ -617,29 +617,35 @@ async def test_search_accounts_returns_slim_results() -> None:
     account_id = uuid4()
     with patch("src.agents.tools.crm.search_accounts.AccountReadService") as service_cls:
         service = MagicMock()
-        service.list_accounts = AsyncMock(
-            return_value=(
-                [
-                    {
-                        "company_id": account_id,
-                        "name": "Acme",
-                        "domain": "acme.com",
-                        "website": "https://acme.com",
-                        "industry": "Software",
-                        "contact_count": 3,
-                        "deal_count": 2,
-                    }
-                ],
-                1,
-            )
+        service.search_accounts_for_agent = AsyncMock(
+            return_value=[
+                {
+                    "company": SimpleNamespace(
+                        company_id=account_id,
+                        name="Acme",
+                        domain="acme.com",
+                        website="https://acme.com",
+                        industry="Software",
+                    ),
+                    "contact_count": 3,
+                    "deal_count": 2,
+                    "match": {
+                        "field": "name",
+                        "value": "Acme",
+                        "type": "exact",
+                        "score": 2.0,
+                    },
+                }
+            ]
         )
         service_cls.return_value = service
 
         result = await search_accounts(context=_context(), query="acme", limit=5)
 
-    service.list_accounts.assert_awaited_once_with(page=1, limit=5, q="acme")
+    service.search_accounts_for_agent.assert_awaited_once_with(q="acme", limit=5)
     assert result[0]["account_id"] == str(account_id)
     assert result[0]["contact_count"] == 3
+    assert result[0]["match"]["field"] == "name"
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
@@ -21,6 +22,44 @@ def mock_context() -> MagicMock:
     ctx.acquire_session = MagicMock(return_value=async_cm)
 
     return ctx
+
+
+@dataclass
+class _FakeSearchRow:
+    deal: MagicMock
+    match: dict[str, object] | None = None
+
+
+class _FakeSearchService:
+    rows: list[_FakeSearchRow] = []
+    error: Exception | None = None
+    calls: list[dict[str, object]] = []
+
+    def __init__(self, session: object, organisation_id: UUID):
+        self.session = session
+        self.organisation_id = organisation_id
+
+    async def search_deals_for_agent(
+        self,
+        *,
+        q: str,
+        limit: int,
+    ) -> list[_FakeSearchRow]:
+        self.calls.append({"query": q, "limit": limit})
+        if self.error:
+            raise self.error
+        return [{"deal": row.deal, "match": row.match} for row in self.rows]
+
+
+@pytest.fixture(autouse=True)
+def fake_agentic_search(monkeypatch: pytest.MonkeyPatch) -> None:
+    _FakeSearchService.rows = []
+    _FakeSearchService.error = None
+    _FakeSearchService.calls = []
+    monkeypatch.setattr(
+        "src.agents.tools.crm.search_deals.DealReadService",
+        _FakeSearchService,
+    )
 
 
 def _make_deal(
@@ -44,10 +83,13 @@ def _make_deal(
     deal.amount = amount
     deal.predicted_amount = predicted_amount
     deal.currency = currency
+    deal.deal_status = "open"
     deal.stage_id = UUID(stage_id) if stage_id else None
     deal.stage_name = stage_name
     deal.pipeline_id = UUID(pipeline_id) if pipeline_id else None
     deal.pipeline_name = pipeline_name
+    deal.primary_contact_name = "Jane Buyer"
+    deal.primary_contact_email = "jane@example.com"
     return deal
 
 
@@ -83,13 +125,17 @@ class TestSearchDeals:
     @pytest.mark.asyncio
     async def test_successful_search_returns_deals(self, mock_context: MagicMock) -> None:
         deal = _make_deal("22222222-2222-2222-2222-222222222222", "Acme Deal", "Acme Corp")
-
-        session = await mock_context.acquire_session().__aenter__()
-        session.execute = AsyncMock(
-            return_value=MagicMock(
-                scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[deal])))
+        _FakeSearchService.rows = [
+            _FakeSearchRow(
+                deal,
+                {
+                    "field": "primary_contact_name",
+                    "value": "Jane Buyer",
+                    "type": "fuzzy",
+                    "score": 1.2,
+                },
             )
-        )
+        ]
 
         result = await search_deals(context=mock_context, query="Acme")
 
@@ -101,20 +147,22 @@ class TestSearchDeals:
         assert result[0]["amount"] == 50000.0
         assert result[0]["predicted_amount"] == 25000.0
         assert result[0]["currency"] == "USD"
+        assert result[0]["deal_status"] == "open"
         assert result[0]["stage_id"] == "44444444-4444-4444-4444-444444444444"
         assert result[0]["stage_name"] == "Negotiation"
         assert result[0]["pipeline_id"] == "55555555-5555-5555-5555-555555555555"
         assert result[0]["pipeline_name"] == "Sales"
+        assert result[0]["primary_contact_name"] == "Jane Buyer"
+        assert result[0]["primary_contact_email"] == "jane@example.com"
+        assert result[0]["match"] == {
+            "field": "primary_contact_name",
+            "value": "Jane Buyer",
+            "type": "fuzzy",
+            "score": 1.2,
+        }
 
     @pytest.mark.asyncio
     async def test_no_matches_returns_empty_list(self, mock_context: MagicMock) -> None:
-        session = await mock_context.acquire_session().__aenter__()
-        session.execute = AsyncMock(
-            return_value=MagicMock(
-                scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
-            )
-        )
-
         result = await search_deals(context=mock_context, query="Nonexistent")
 
         assert result == []
@@ -122,36 +170,22 @@ class TestSearchDeals:
     @pytest.mark.asyncio
     async def test_limit_clamped_to_max_20(self, mock_context: MagicMock) -> None:
         """Limits above 20 should be clamped."""
-        session = await mock_context.acquire_session().__aenter__()
-        session.execute = AsyncMock(
-            return_value=MagicMock(
-                scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
-            )
-        )
-
-        # Should not error, limit is clamped internally
         result = await search_deals(context=mock_context, query="test", limit=999)
 
         assert result == []
+        assert _FakeSearchService.calls[0]["limit"] == 20
 
     @pytest.mark.asyncio
     async def test_limit_clamped_to_min_1(self, mock_context: MagicMock) -> None:
         """Limits below 1 should be clamped to 1."""
-        session = await mock_context.acquire_session().__aenter__()
-        session.execute = AsyncMock(
-            return_value=MagicMock(
-                scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
-            )
-        )
-
         result = await search_deals(context=mock_context, query="test", limit=0)
 
         assert result == []
+        assert _FakeSearchService.calls[0]["limit"] == 1
 
     @pytest.mark.asyncio
     async def test_db_error_returns_empty(self, mock_context: MagicMock) -> None:
-        session = await mock_context.acquire_session().__aenter__()
-        session.execute = AsyncMock(side_effect=RuntimeError("DB connection lost"))
+        _FakeSearchService.error = RuntimeError("DB connection lost")
 
         result = await search_deals(context=mock_context, query="Acme")
 
@@ -163,13 +197,7 @@ class TestSearchDeals:
             _make_deal("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "Acme Deal 1", "Acme Corp"),
             _make_deal("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "Acme Deal 2", "Acme Inc"),
         ]
-
-        session = await mock_context.acquire_session().__aenter__()
-        session.execute = AsyncMock(
-            return_value=MagicMock(
-                scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=deals)))
-            )
-        )
+        _FakeSearchService.rows = [_FakeSearchRow(deal) for deal in deals]
 
         result = await search_deals(context=mock_context, query="Acme")
 

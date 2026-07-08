@@ -24,12 +24,12 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import selectinload
 
 from src.agents.tools.base import execute_with_capabilities
-from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
     CRMParticipantType,
 )
 from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
+from src.service.crm.contacts.read_service import ContactReadService
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -71,41 +71,20 @@ async def search_contacts(
 
     effective_limit = max(1, min(limit, 50))
 
-    # Table columns for type-safe queries
-    contact_c = cast(Any, CRMContact).__table__.c
     participant_c = cast(Any, CRMDealParticipant).__table__.c
-
-    # Build contact query
-    stmt = select(CRMContact).where(
-        contact_c.organisation_id == organisation_id,
-        contact_c.is_deleted.is_(False),
-    )
-
-    # Apply search filter
-    if query:
-        search_term = f"%{query.lower()}%"
-        stmt = stmt.where(
-            or_(
-                func.lower(contact_c.full_name).like(search_term),
-                func.lower(contact_c.first_name).like(search_term),
-                func.lower(contact_c.last_name).like(search_term),
-                func.lower(contact_c.email).like(search_term),
-            )
-        )
-
-    # Apply company filter
-    if company_name:
-        company_term = f"%{company_name.lower()}%"
-        stmt = stmt.where(func.lower(contact_c.company_name).like(company_term))
-
-    # Order by last activity (most recent first)
-    stmt = stmt.order_by(contact_c.last_activity_at.desc().nullslast())
-    stmt = stmt.limit(effective_limit)
 
     async with context.acquire_session() as session:
         try:
-            result = await session.execute(stmt)
-            contacts = result.scalars().all()
+            rows = await ContactReadService(
+                session,
+                organisation_id,
+            ).search_contacts_for_agent(
+                q=query,
+                company_name=company_name,
+                limit=effective_limit,
+            )
+            contacts = [row["contact"] for row in rows]
+            match_by_contact_id = {row["contact"].contact_id: row.get("match") for row in rows}
         except Exception as e:
             logger.exception(f"search_contacts: database error: {e}")
             return []
@@ -191,6 +170,7 @@ async def search_contacts(
                     "last_activity_at": (
                         contact.last_activity_at.isoformat() if contact.last_activity_at else None
                     ),
+                    "match": match_by_contact_id.get(contact.contact_id),
                 }
             )
 

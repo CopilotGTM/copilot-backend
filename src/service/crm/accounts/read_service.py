@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
@@ -318,6 +318,129 @@ class AccountReadService:
             }
             for company in items
         ], next_cursor
+
+    async def search_accounts_for_agent(
+        self,
+        *,
+        q: str,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Return fuzzy-ranked accounts for agent tool lookup.
+
+        This keeps agent account search in the read service because it only
+        reads existing account identity fields. Descriptive fields like industry
+        and summaries stay out of matching to avoid noisy account resolution.
+        """
+
+        query = q.strip().lower() if q and q.strip() else None
+        if not query:
+            return []
+        normalized_domain = self._normalize_domain(query)
+        effective_limit = max(1, min(limit, 25))
+
+        company_table = cast(Any, CRMCompany).__table__
+        c = company_table.c
+        co = cast(Any, CRMContact).__table__.c
+        d = cast(Any, CRMDeal).__table__.c
+
+        contact_count_sub = (
+            select(func.count(func.distinct(co.contact_id)).label("cnt"))
+            .where(
+                co.organisation_id == self.organisation_id,
+                co.is_deleted.is_(False),
+                or_(
+                    co.company_id == c.company_id,
+                    co.email.ilike(func.concat("%@", c.domain)),
+                ),
+            )
+            .correlate(company_table)
+            .scalar_subquery()
+        )
+        deal_count_sub = (
+            select(func.count(d.deal_id))
+            .where(
+                d.organisation_id == self.organisation_id,
+                d.is_deleted.is_(False),
+                d.company_id == c.company_id,
+            )
+            .correlate(company_table)
+            .scalar_subquery()
+        )
+
+        name_score = func.similarity(func.coalesce(c.name, ""), query)
+        domain_score = func.similarity(func.coalesce(c.domain, ""), normalized_domain or query)
+        website_score = func.similarity(func.coalesce(c.website, ""), normalized_domain or query)
+        exact_name = func.lower(func.coalesce(c.name, "")) == query
+        exact_domain = func.lower(func.coalesce(c.domain, "")) == (normalized_domain or query)
+        exact_website = func.lower(func.coalesce(c.website, "")) == query
+        total_score = (
+            case(
+                (exact_domain, 2.0),
+                (exact_name, 1.8),
+                (exact_website, 1.2),
+                else_=0.0,
+            )
+            + func.greatest(name_score, domain_score) * 1.4
+            + website_score * 0.8
+        )
+        match_field = case(
+            (exact_domain, "domain"),
+            (exact_name, "name"),
+            (exact_website, "website"),
+            (domain_score >= func.greatest(name_score, website_score), "domain"),
+            (name_score >= website_score, "name"),
+            else_="website",
+        )
+        match_value = case(
+            (match_field == "domain", c.domain),
+            (match_field == "website", c.website),
+            else_=c.name,
+        )
+        match_type = case(
+            (or_(exact_domain, exact_name, exact_website), "exact"),
+            else_="fuzzy",
+        )
+
+        stmt = (
+            select(
+                CRMCompany,
+                contact_count_sub.label("contact_count"),
+                deal_count_sub.label("deal_count"),
+                total_score.label("score"),
+                match_field.label("match_field"),
+                match_value.label("match_value"),
+                match_type.label("match_type"),
+            )
+            .where(
+                c.organisation_id == self.organisation_id,
+                c.is_deleted.is_(False),
+                or_(
+                    c.name.ilike(f"%{query}%"),
+                    c.domain.ilike(f"%{normalized_domain or query}%"),
+                    c.website.ilike(f"%{query}%"),
+                    c.name.op("%")(query),
+                    c.domain.op("%")(normalized_domain or query),
+                    c.website.op("%")(query),
+                ),
+            )
+            .order_by(total_score.desc(), c.name.asc().nullslast(), c.company_id.asc())
+            .limit(effective_limit)
+        )
+        res = await self.org_session.execute(stmt)
+        return [
+            {
+                "company": row[0],
+                "contact_count": row.contact_count or 0,
+                "deal_count": row.deal_count or 0,
+                "match": {
+                    "field": row.match_field,
+                    "value": row.match_value,
+                    "type": row.match_type,
+                    "score": float(row.score or 0.0),
+                },
+            }
+            for row in res.all()
+        ]
 
     async def get_account_detail(self, company_id: UUID) -> dict:
         """Return account detail with contacts, deals, and summary counters."""
