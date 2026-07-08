@@ -269,6 +269,135 @@ class ContactReadService:
             include_company_name=False,
         )
 
+    async def search_contacts_for_agent(
+        self,
+        *,
+        q: str | None = None,
+        company_name: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Return fuzzy-ranked contacts for agent tool lookup.
+
+        This is intentionally a read-service method, not a separate search
+        subsystem: it only uses existing contact identity columns and the CRM
+        trigram indexes. The agent gets match metadata so it can tell whether a
+        person matched by name, email, alternate email, or company.
+        """
+
+        query = q.strip().lower() if q and q.strip() else None
+        company_query = (
+            company_name.strip().lower() if company_name and company_name.strip() else None
+        )
+        if not query and not company_query:
+            return []
+
+        effective_limit = max(1, min(limit, 50))
+        c = cast(Any, CRMContact).__table__.c
+        additional_emails_text = c.additional_emails.cast(String)
+
+        name_score = func.similarity(func.coalesce(c.full_name, ""), query or company_query)
+        email_score = func.similarity(func.coalesce(c.email, ""), query or company_query)
+        additional_email_score = func.similarity(
+            func.coalesce(additional_emails_text, ""),
+            query or company_query,
+        )
+        company_score = func.similarity(func.coalesce(c.company_name, ""), company_query or query)
+        identity_score = func.greatest(name_score, email_score, additional_email_score)
+
+        exact_email = func.lower(func.coalesce(c.email, "")) == (query or "")
+        exact_name = func.lower(func.coalesce(c.full_name, "")) == (query or "")
+        exact_additional_email = func.lower(func.coalesce(additional_emails_text, "")).like(
+            f'%"{query}"%' if query else "__never_match__"
+        )
+        exact_company = func.lower(func.coalesce(c.company_name, "")) == (company_query or query)
+        total_score = (
+            case(
+                (exact_email, 2.0),
+                (exact_additional_email, 1.8),
+                (exact_name, 1.6),
+                (exact_company, 0.8),
+                else_=0.0,
+            )
+            + identity_score * 1.4
+            + company_score * 0.8
+        )
+        match_field = case(
+            (exact_email, "email"),
+            (exact_additional_email, "additional_emails"),
+            (exact_name, "full_name"),
+            (exact_company, "company_name"),
+            (
+                email_score >= func.greatest(name_score, additional_email_score, company_score),
+                "email",
+            ),
+            (
+                additional_email_score >= func.greatest(name_score, company_score),
+                "additional_emails",
+            ),
+            (name_score >= company_score, "full_name"),
+            else_="company_name",
+        )
+        match_value = case(
+            (match_field == "email", c.email),
+            (match_field == "additional_emails", additional_emails_text),
+            (match_field == "company_name", c.company_name),
+            else_=c.full_name,
+        )
+        match_type = case(
+            (or_(exact_email, exact_additional_email, exact_name, exact_company), "exact"),
+            else_="fuzzy",
+        )
+
+        filters = [
+            c.organisation_id == self.organisation_id,
+            c.is_deleted.is_(False),
+        ]
+        if query:
+            filters.append(
+                or_(
+                    c.full_name.ilike(f"%{query}%"),
+                    c.email.ilike(f"%{query}%"),
+                    additional_emails_text.ilike(f"%{query}%"),
+                    c.company_name.ilike(f"%{query}%"),
+                    c.full_name.op("%")(query),
+                    c.email.op("%")(query),
+                    additional_emails_text.op("%")(query),
+                    c.company_name.op("%")(query),
+                )
+            )
+        if company_query:
+            filters.append(
+                or_(
+                    c.company_name.ilike(f"%{company_query}%"),
+                    c.company_name.op("%")(company_query),
+                )
+            )
+        stmt = (
+            select(
+                CRMContact,
+                total_score.label("score"),
+                match_field.label("match_field"),
+                match_value.label("match_value"),
+                match_type.label("match_type"),
+            )
+            .where(*filters)
+            .order_by(total_score.desc(), c.last_activity_at.desc().nullslast())
+            .limit(effective_limit)
+        )
+        res = await self.org_session.execute(stmt)
+        return [
+            {
+                "contact": row[0],
+                "match": {
+                    "field": row.match_field,
+                    "value": row.match_value,
+                    "type": row.match_type,
+                    "score": float(row.score or 0.0),
+                },
+            }
+            for row in res.all()
+        ]
+
     async def _search_contacts(
         self,
         *,

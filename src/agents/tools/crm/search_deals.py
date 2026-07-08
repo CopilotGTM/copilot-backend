@@ -26,12 +26,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, cast
-
-from sqlalchemy import func, or_, select
+from typing import TYPE_CHECKING, Any
 
 from src.agents.tools.base import execute_with_capabilities
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
+from src.service.crm.deals.read_service import DealReadService
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -56,7 +54,7 @@ async def search_deals(
 
     Args:
         context: AgentContext containing organisation metadata
-        query: Search term - matches deal name or company name (case-insensitive)
+        query: Search term - fuzzy matches deal name or company name
         limit: Maximum results (default: 10, max: 20)
 
     Returns:
@@ -73,35 +71,23 @@ async def search_deals(
         return []
 
     effective_limit = max(1, min(limit, 20))
-    search_term = f"%{query.strip()}%"
-
-    c = cast(Any, CRMDeal).__table__.c
-
-    # Search by name or company_name (case-insensitive)
-    stmt = (
-        select(CRMDeal)
-        .where(
-            c.organisation_id == organisation_id,
-            c.is_deleted.is_(False),
-            or_(
-                func.lower(c.name).like(func.lower(search_term)),
-                func.lower(c.company_name).like(func.lower(search_term)),
-            ),
-        )
-        .order_by(c.source_modified_at.desc().nulls_last())
-        .limit(effective_limit)
-    )
 
     async with context.acquire_session() as session:
         try:
-            result = await session.execute(stmt)
-            deals = result.scalars().all()
+            rows = await DealReadService(
+                session,
+                organisation_id,
+            ).search_deals_for_agent(
+                q=query,
+                limit=effective_limit,
+            )
         except Exception as e:
             logger.exception(f"search_deals: database error: {e}")
             return []
 
         output: list[dict[str, Any]] = []
-        for deal in deals:
+        for row in rows:
+            deal = row["deal"]
             output.append(
                 {
                     "deal_id": str(deal.deal_id),
@@ -111,12 +97,20 @@ async def search_deals(
                     if deal.predicted_amount is not None
                     else None,
                     "currency": deal.currency,
+                    "deal_status": (
+                        deal.deal_status.value
+                        if hasattr(deal.deal_status, "value")
+                        else deal.deal_status
+                    ),
                     "stage_id": str(deal.stage_id) if deal.stage_id else None,
                     "stage_name": deal.stage_name,
                     "pipeline_id": str(deal.pipeline_id) if deal.pipeline_id else None,
                     "pipeline_name": deal.pipeline_name,
                     "company_id": str(deal.company_id) if deal.company_id else None,
                     "company_name": deal.company_name,
+                    "primary_contact_name": deal.primary_contact_name,
+                    "primary_contact_email": deal.primary_contact_email,
+                    "match": row.get("match"),
                 }
             )
 

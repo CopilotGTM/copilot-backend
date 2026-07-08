@@ -38,27 +38,30 @@ async def search_accounts(
     async with context.acquire_session() as org_session:
         service = AccountReadService(org_session, organisation_id)
         try:
-            rows, _total = await service.list_accounts(
-                page=1,
-                limit=max(1, min(limit, 25)),
+            rows = await service.search_accounts_for_agent(
                 q=cleaned_query,
+                limit=max(1, min(limit, 25)),
             )
         except Exception:
             logger.exception("search_accounts: failed")
             return []
 
-    return [
-        {
-            "account_id": str(row.get("company_id")),
-            "name": row.get("name"),
-            "domain": row.get("domain"),
-            "website": row.get("website"),
-            "industry": row.get("industry"),
-            "contact_count": row.get("contact_count", 0),
-            "deal_count": row.get("deal_count", 0),
-        }
-        for row in rows
-    ]
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        company = row["company"]
+        output.append(
+            {
+                "account_id": str(company.company_id),
+                "name": company.name,
+                "domain": company.domain,
+                "website": company.website,
+                "industry": company.industry,
+                "contact_count": row.get("contact_count", 0),
+                "deal_count": row.get("deal_count", 0),
+                "match": row.get("match"),
+            }
+        )
+    return output
 
 
 def create_search_accounts(

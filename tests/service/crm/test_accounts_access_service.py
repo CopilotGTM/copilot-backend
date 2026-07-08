@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStatus
 from src.service.crm.access.accounts_access_service import AccountsAccessService
@@ -78,6 +79,40 @@ class _FakeScalarResult:
         return self._rows
 
 
+class _FakeAgentSearchResult:
+    def __init__(self, rows: list[object]):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
+class _FakeAgentSearchRow:
+    def __init__(
+        self,
+        company: CRMCompany,
+        *,
+        contact_count: int,
+        deal_count: int,
+        score: float,
+        match_field: str,
+        match_value: str,
+        match_type: str = "fuzzy",
+    ) -> None:
+        self._company = company
+        self.contact_count = contact_count
+        self.deal_count = deal_count
+        self.score = score
+        self.match_field = match_field
+        self.match_value = match_value
+        self.match_type = match_type
+
+    def __getitem__(self, index: int):
+        if index == 0:
+            return self._company
+        raise IndexError(index)
+
+
 class _FakeSession:
     def __init__(self, results: list[list[object]]):
         self._results = results
@@ -86,6 +121,12 @@ class _FakeSession:
     async def execute(self, statement: object):
         self.statements.append(statement)
         return _FakeScalarResult(self._results.pop(0))
+
+
+class _FakeAgentSearchSession(_FakeSession):
+    async def execute(self, statement: object):
+        self.statements.append(statement)
+        return _FakeAgentSearchResult(self._results.pop(0))
 
 
 def test_account_search_cursor_round_trips_name_and_id() -> None:
@@ -116,6 +157,56 @@ def test_account_owner_payload_uses_id_name_and_email() -> None:
         "name": "Jane Smith",
         "email": "jane@example.com",
     }
+
+
+@pytest.mark.asyncio
+async def test_search_accounts_for_agent_uses_identity_fields_and_match_metadata() -> None:
+    organisation_id = uuid4()
+    company = CRMCompany(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        company_id=uuid4(),
+        name="Acme Corp",
+        domain="acme.com",
+        website="https://www.acme.com",
+        industry="Software",
+    )
+    session = _FakeAgentSearchSession(
+        [
+            [
+                _FakeAgentSearchRow(
+                    company,
+                    contact_count=3,
+                    deal_count=2,
+                    score=1.8,
+                    match_field="domain",
+                    match_value="acme.com",
+                    match_type="exact",
+                )
+            ]
+        ]
+    )
+
+    rows = await AccountReadService(  # type: ignore[arg-type]
+        session,
+        organisation_id,
+    ).search_accounts_for_agent(q="acme", limit=5)
+
+    assert rows[0]["company"] == company
+    assert rows[0]["contact_count"] == 3
+    assert rows[0]["deal_count"] == 2
+    assert rows[0]["match"] == {
+        "field": "domain",
+        "value": "acme.com",
+        "type": "exact",
+        "score": 1.8,
+    }
+    statement_sql = str(session.statements[0]).lower()
+    assert "crm_companies.name" in statement_sql
+    assert "crm_companies.domain" in statement_sql
+    assert "crm_companies.website" in statement_sql
+    assert "industry ilike" not in statement_sql
+    assert "industry %" not in statement_sql
 
 
 @pytest.mark.asyncio
