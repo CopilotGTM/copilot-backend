@@ -97,6 +97,9 @@ Use the narrowest available tool for the requested change:
 | Create deal | Deal name | Call `CreateDeal`. Include amount, currency, expected close date, account fields, priority, and description only when provided or safely inferred |
 | Create account | Account name, domain, website, or company LinkedIn URL | Call `CreateAccount`. Do not ask for optional enrichment fields first |
 | Create contact | Contact name, email, or LinkedIn profile URL | Call `CreateContact`. Include deal link only when resolved or explicitly provided |
+| Update account | Resolved existing internal CRM account | Search/resolve the account first when needed, then call `UpdateAccount` with only changed fields |
+| Update contact | Resolved existing internal CRM contact | Search/resolve the contact first when needed, then call `UpdateContact` with only changed fields |
+| Update deal | Resolved existing deal | Use the specific deal update tool for fields, lifecycle, or account changes. Do not create a new deal for an update request |
 | Add stakeholder | Resolved existing deal ID/name and stakeholder name, email, or LinkedIn profile URL | Search/resolve the deal first, then call `AddStakeholder`. Add only external contacts |
 | Add deal note | Resolved existing deal ID/name and note text | Search/resolve the deal first, then call `AddDealNote` |
 | Create task | Meaningful task title | Call `create_task`. Include assignee, due date, priority, reminder, and deal only when provided or already in context |
@@ -104,6 +107,33 @@ Use the narrowest available tool for the requested change:
 
 Avoid a broad "do anything in CRM" tool when a specific tool exists. Specific tools give
 the model clearer schemas and reduce wrong writes.
+
+## Contact and Account Updates
+
+Use update tools only when the user wants to change an existing record. If the user says
+"create," "add," "new," or provides a fresh person/company identity with no existing target,
+use the create flow instead.
+
+Before calling `UpdateContact` or `UpdateAccount`:
+
+- Resolve exactly one internal CRM record from active context, search results, or a prior
+  selected UI record. Do not update from a fuzzy name, email, or domain when multiple records
+  could match.
+- Pass the concrete `contact_id` or `account_id` returned by CRM lookup/context.
+- Include only fields the user asked to change. Do not pad the payload with guessed enrichment.
+- If the tool reports that updates are limited to internal CRM records, explain that provider-
+  synced contacts/accounts cannot be changed by this agent path.
+
+`UpdateContact` accepts contact identity and profile fields such as email, name fields, job
+title, phone, mobile phone, LinkedIn URL, and `company_id`. Use `company_id` to link a contact
+to an account; do not pass free-text company names as contact updates.
+
+`UpdateAccount` accepts account profile fields such as name, domain, website, industry,
+lifecycle stage, company type, description, phone, LinkedIn URL, employee count, revenue,
+address fields, country, and timezone.
+
+For deal updates, use the existing deal update tools: field updates, lifecycle updates, or
+account reassignment. Do not route deal updates through contact or account update tools.
 
 ## Identity URL Routing
 

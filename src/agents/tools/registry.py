@@ -103,6 +103,8 @@ class ToolName(str, Enum):
     SEARCH_ACCOUNTS = "search_accounts"  # Search accounts by name/domain
     CREATE_CONTACT = "create_contact"  # Create an internal CRM contact directly from chat
     CREATE_ACCOUNT = "create_account"  # Create an internal CRM account directly from chat
+    UPDATE_CONTACT = "update_contact"  # Update a known internal CRM contact
+    UPDATE_ACCOUNT = "update_account"  # Update a known internal CRM account
 
     # -------------------------------------------------------------------------
     # COMMUNICATION TOOLS - For emails, messaging channels, and notes
@@ -178,6 +180,8 @@ VOICE_REALTIME_WRITE_EXCLUDED_TOOLS = {
     ToolName.UPDATE_DEAL_FIELDS,
     ToolName.UPDATE_DEAL_LIFECYCLE,
     ToolName.UPDATE_DEAL_ACCOUNT,
+    ToolName.UPDATE_CONTACT,
+    ToolName.UPDATE_ACCOUNT,
 }
 
 
@@ -194,6 +198,8 @@ CHANNEL_ONLY_TOOLS: dict[ToolName, set[str]] = {
     ToolName.CREATE_LEAD: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.CREATE_CONTACT: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.CREATE_ACCOUNT: {"teams", "slack", "whatsapp", "web", "voice"},
+    ToolName.UPDATE_CONTACT: {"teams", "slack", "whatsapp", "web"},
+    ToolName.UPDATE_ACCOUNT: {"teams", "slack", "whatsapp", "web"},
     ToolName.ADD_DEAL_NOTE: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.ADD_STAKEHOLDER: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.UPDATE_DEAL_STAGE: {"teams", "slack"},
@@ -243,6 +249,8 @@ GENERAL_AGENT_TOOLS: set[ToolName] = {
     ToolName.SEARCH_ACCOUNTS,
     ToolName.CREATE_CONTACT,
     ToolName.CREATE_ACCOUNT,
+    ToolName.UPDATE_CONTACT,
+    ToolName.UPDATE_ACCOUNT,
     # Communication tools
     ToolName.LIST_DEAL_EMAILS,
     ToolName.GET_EMAIL_DETAILS,
@@ -523,6 +531,8 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.SEARCH_ACCOUNTS: ToolCategory.CRM,
     ToolName.CREATE_CONTACT: ToolCategory.CRM,
     ToolName.CREATE_ACCOUNT: ToolCategory.CRM,
+    ToolName.UPDATE_CONTACT: ToolCategory.CRM,
+    ToolName.UPDATE_ACCOUNT: ToolCategory.CRM,
     ToolName.GET_BRIEFING: ToolCategory.INTELLIGENCE,
     ToolName.GET_FOLLOW_UPS: ToolCategory.INTELLIGENCE,
     ToolName.GET_ACTION_ITEMS: ToolCategory.INTELLIGENCE,
@@ -625,6 +635,8 @@ class ToolRegistry:
             create_search_accounts,
             create_search_contacts,
             create_search_deals,
+            create_update_account,
+            create_update_contact,
             create_update_deal_account,
             create_update_deal_fields,
             create_update_deal_lifecycle,
@@ -757,6 +769,12 @@ class ToolRegistry:
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.CREATE_ACCOUNT] = lambda: create_create_account(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.UPDATE_CONTACT] = lambda: create_update_contact(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.UPDATE_ACCOUNT] = lambda: create_update_account(
             self.context, self.capabilities_getter
         )
 
