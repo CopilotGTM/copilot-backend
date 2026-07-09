@@ -27,6 +27,7 @@ def test_general_agent_has_skills() -> None:
         agent = GeneralAgent(context=context)
         assert agent.general_agent.skills is not None
         assert isinstance(agent.general_agent.skills, Skills)
+        assert captured["tool_call_limit"] == 150
 
 
 def test_general_prompt_does_not_contain_hardcoded_meddic_playbook() -> None:

@@ -63,6 +63,8 @@ class ToolName(str, Enum):
     CREATE_DEAL = "create_deal"  # Create an internal CRM deal directly from chat
     LIST_LEADS = "list_leads"  # List leads with filters
     CREATE_LEAD = "create_lead"  # Create an internal CRM lead directly from chat
+    CREATE_DRAFT_LEAD_FORM = "create_draft_lead_form"
+    UPDATE_DRAFT_LEAD_FORM = "update_draft_lead_form"
     ADD_DEAL_NOTE = "add_deal_note"  # Create a note directly on an existing deal
     ADD_STAKEHOLDER = "add_stakeholder"  # Create a stakeholder directly on an existing deal
     UPDATE_DEAL_STAGE = "update_deal_stage"
@@ -182,6 +184,8 @@ VOICE_REALTIME_WRITE_EXCLUDED_TOOLS = {
     ToolName.UPDATE_DEAL_ACCOUNT,
     ToolName.UPDATE_CONTACT,
     ToolName.UPDATE_ACCOUNT,
+    ToolName.CREATE_DRAFT_LEAD_FORM,
+    ToolName.UPDATE_DRAFT_LEAD_FORM,
 }
 
 
@@ -196,6 +200,8 @@ CHANNEL_ONLY_TOOLS: dict[ToolName, set[str]] = {
     ToolName.FETCH_TEAMS_CHAT_MESSAGES: {"teams"},
     ToolName.CREATE_DEAL: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.CREATE_LEAD: {"teams", "slack", "whatsapp", "web", "voice"},
+    ToolName.CREATE_DRAFT_LEAD_FORM: {"teams", "slack", "whatsapp", "web"},
+    ToolName.UPDATE_DRAFT_LEAD_FORM: {"teams", "slack", "whatsapp", "web"},
     ToolName.CREATE_CONTACT: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.CREATE_ACCOUNT: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.UPDATE_CONTACT: {"teams", "slack", "whatsapp", "web"},
@@ -274,6 +280,8 @@ GENERAL_AGENT_TOOLS: set[ToolName] = {
     ToolName.CREATE_DEAL,
     ToolName.LIST_LEADS,
     ToolName.CREATE_LEAD,
+    ToolName.CREATE_DRAFT_LEAD_FORM,
+    ToolName.UPDATE_DRAFT_LEAD_FORM,
     ToolName.ADD_DEAL_NOTE,
     ToolName.ADD_STAKEHOLDER,
     ToolName.UPDATE_DEAL_STAGE,
@@ -562,6 +570,8 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.CREATE_TASK: ToolCategory.CRM,
     ToolName.LIST_LEADS: ToolCategory.CRM,
     ToolName.CREATE_LEAD: ToolCategory.CRM,
+    ToolName.CREATE_DRAFT_LEAD_FORM: ToolCategory.CRM,
+    ToolName.UPDATE_DRAFT_LEAD_FORM: ToolCategory.CRM,
     ToolName.LIST_DEAL_TASKS: ToolCategory.CRM,
     ToolName.CREATE_DEAL_TASK: ToolCategory.CRM,
     ToolName.COMPLETE_DEAL_TASK: ToolCategory.CRM,
@@ -618,6 +628,7 @@ class ToolRegistry:
             create_create_account,
             create_create_contact,
             create_create_deal,
+            create_create_draft_lead_form,
             create_create_lead,
             create_create_stakeholder_if_missing,
             create_dismiss_risk_blocker,
@@ -641,6 +652,7 @@ class ToolRegistry:
             create_update_deal_fields,
             create_update_deal_lifecycle,
             create_update_deal_stage,
+            create_update_draft_lead_form,
             create_update_risk_blocker,
         )
         from src.agents.tools.intelligence import (
@@ -717,6 +729,12 @@ class ToolRegistry:
         )
         self._tool_factories[ToolName.CREATE_LEAD] = lambda: create_create_lead(
             self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.CREATE_DRAFT_LEAD_FORM] = (
+            lambda: create_create_draft_lead_form(self.context, self.capabilities_getter)
+        )
+        self._tool_factories[ToolName.UPDATE_DRAFT_LEAD_FORM] = (
+            lambda: create_update_draft_lead_form(self.context, self.capabilities_getter)
         )
         self._tool_factories[ToolName.ADD_DEAL_NOTE] = lambda: create_add_deal_note(
             self.context, self.capabilities_getter

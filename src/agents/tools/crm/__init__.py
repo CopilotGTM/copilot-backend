@@ -10,6 +10,10 @@ from src.agents.tools.crm.create_contact import create_create_contact
 from src.agents.tools.crm.create_deal import create_create_deal
 from src.agents.tools.crm.create_lead import create_create_lead
 from src.agents.tools.crm.create_stakeholder_if_missing import create_create_stakeholder_if_missing
+from src.agents.tools.crm.draft_lead_form import (
+    create_create_draft_lead_form,
+    create_update_draft_lead_form,
+)
 from src.agents.tools.crm.get_deal_change_history import create_get_deal_change_history
 from src.agents.tools.crm.get_deal_details import create_get_deal_details
 from src.agents.tools.crm.get_deal_memory import create_get_deal_memory
@@ -42,6 +46,8 @@ __all__ = [
     "create_create_stakeholder_if_missing",
     "create_create_deal",
     "create_create_lead",
+    "create_create_draft_lead_form",
+    "create_update_draft_lead_form",
     "create_update_deal_stage",
     "create_search_deals",
     "create_list_deals",
