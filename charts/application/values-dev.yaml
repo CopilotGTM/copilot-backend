@@ -55,6 +55,8 @@ api:
     SALESFORCE_EXTERNAL_CLIENT_APP_INSTALL_URL: "https://login.salesforce.com/packaging/installPackage.apexp?p0=04tdM000000U44bQAC"
     WHATSAPP_BOT_PHONE_NUMBER: "+15556300848"
     DATABASE_PORT: "5432"
+    DATABASE_POOL_SIZE: "1"
+    DATABASE_MAX_OVERFLOW: "2"
   autoscaling:
     minReplicas: 1
     maxReplicas: 2
