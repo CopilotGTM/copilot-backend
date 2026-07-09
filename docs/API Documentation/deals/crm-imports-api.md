@@ -1,6 +1,6 @@
 # CRM CSV Imports API
 
-Authenticated CRM users can upload one CSV and import accounts, contacts, deals, or rows that link those records together. The legacy deal-specific import route remains disabled; deal imports use this generic CRM CSV import API.
+Authenticated CRM users can upload one CSV and import accounts, contacts, deals, or rows that link those records together. Deal imports use this generic CRM CSV import API.
 
 Base path: `/users/crm/imports/csv`
 
@@ -175,7 +175,7 @@ Common source aliases include `Company`, `Account Name`, `Website`, `Domain`, ac
 ## Unsupported In V1
 
 - Leads, tasks, notes, custom fields, deal owner assignment, pipeline/stage selection by CSV, rollback UI, multi-file matching, formulas, update-existing semantics, and large streaming imports.
-- The legacy `/users/crm/deals/import/...` route remains disabled and returns the existing compatibility response. Do not use it for CSV import.
+- The removed deal-scoped import endpoints are no longer registered. Do not use deal-scoped routes for CSV import.
 
 ## Example Frontend Sequence
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4
@@ -124,7 +123,7 @@ class InternalCRMSetupService:
         """Return the existing default pipeline + its stages, or None if not configured.
 
         Read-only: does NOT create missing records (create_missing=False).
-        Used by deal import to load the default pipeline context.
+        Used by CRM setup callers to load the default pipeline context.
         """
         integration = await self._get_internal_integration()
         if not integration:
@@ -265,99 +264,6 @@ class InternalCRMSetupService:
         await self.session.flush()
 
         return pipeline, stages
-
-    async def create_import_pipeline(
-        self,
-        integration_id: UUID,
-        pipeline_name: str,
-        stages: list[dict],
-    ) -> tuple[CRMPipeline, list[CRMDealStage]]:
-        """Create a non-default pipeline with caller-supplied stages.
-
-        Idempotent: if a pipeline with the same name + integration already
-        exists, returns it with its existing stages instead of creating a
-        duplicate.
-        """
-        stmt = select(CRMPipeline).where(
-            col(CRMPipeline.organisation_id) == self.organisation_id,
-            col(CRMPipeline.integration_id) == integration_id,
-            col(CRMPipeline.name) == pipeline_name,
-            col(CRMPipeline.is_deleted).is_(False),
-        )
-        result = await self.session.execute(stmt)
-        existing_pipeline = result.scalars().first()
-        if existing_pipeline:
-            existing_stages = await self._load_pipeline_stages(existing_pipeline.pipeline_id)
-            return existing_pipeline, existing_stages
-
-        now = utcnow()
-        pipeline_id = uuid4()
-        pipeline = CRMPipeline(
-            pipeline_id=pipeline_id,
-            organisation_id=self.organisation_id,
-            integration_id=integration_id,
-            name=pipeline_name,
-            label=pipeline_name,
-            object_type="deals",
-            is_default=False,
-            # Imported pipelines start locked until their stage list proves the
-            # shape can support open, won, and lost deal lifecycle actions.
-            is_active=False,
-            display_order=1,
-            synced_at=now,
-            last_seen_at=now,
-            properties={"source": "csv_import", "usable_for_internal_deals": False},
-        )
-        self.session.add(pipeline)
-        await self.session.flush()
-        await self.session.refresh(pipeline)
-
-        created_stages: list[CRMDealStage] = []
-        for stage_def in stages:
-            state_str = stage_def.get("stage_state", "open")
-            stage_state = CRMStageState(state_str)
-            is_closed = stage_state in (CRMStageState.WON, CRMStageState.LOST)
-            probability = stage_def.get("probability")
-            if probability is None:
-                if stage_state == CRMStageState.WON:
-                    probability = 100.0
-                elif stage_state == CRMStageState.LOST:
-                    probability = 0.0
-
-            stage_id = uuid4()
-            stage_name = stage_def["name"]
-            stage_key = re.sub(r"[^a-z0-9]+", "_", stage_name.lower()).strip("_")
-            stage = CRMDealStage(
-                stage_id=stage_id,
-                organisation_id=self.organisation_id,
-                integration_id=integration_id,
-                name=stage_name,
-                label=stage_name,
-                stage_key=stage_key,
-                stage_state=stage_state,
-                probability=probability,
-                forecast_category=None,
-                is_closed=is_closed,
-                display_order=stage_def.get("display_order", 0),
-                pipeline_id=pipeline_id,
-                synced_at=now,
-                last_seen_at=now,
-            )
-            self.session.add(stage)
-            created_stages.append(stage)
-
-        if created_stages:
-            # Activate imported pipelines only when the imported stage shape is complete.
-            mark_pipeline_usability(pipeline, created_stages)
-            await self.session.flush()
-
-        logger.info(
-            "Created import pipeline '%s' with %d stages for org=%s",
-            pipeline_name,
-            len(created_stages),
-            self.organisation_id,
-        )
-        return pipeline, created_stages
 
     async def get_all_pipelines(self, integration_id: UUID) -> list[CRMPipeline]:
         """Return all active pipelines for the given integration."""

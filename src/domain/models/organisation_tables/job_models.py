@@ -199,8 +199,6 @@ class DealJobType(StrEnum):
     # Content generation jobs
     PROPOSAL_DRAFT = "proposal_draft"  # Draft proposal content
     EMAIL_DRAFT = "email_draft"  # Draft follow-up email
-    DEAL_IMPORT = "deal_import"  # Bulk import deals from CSV
-
     # Transcript upload
     TRANSCRIPT_UPLOAD = "transcript_upload"  # Manual transcript file upload + extraction
 

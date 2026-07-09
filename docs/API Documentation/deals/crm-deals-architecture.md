@@ -95,20 +95,12 @@ Stakeholder auto‑discovery runs only if:
 ## 6) Mass Upload Architecture (CSV)
 
 ### Current State
-- The previous CSV import implementation has been removed.
-- The import route names remain reserved, but every import endpoint now returns `409 Conflict`.
-
-### Endpoints
-- `GET /users/crm/deals/import/template`
-- `POST /users/crm/deals/import/upload-url`
-- `POST /users/crm/deals/import/process`
-- `GET /users/crm/deals/import/jobs/{job_id}/events`
+- CRM CSV import is handled by the generic CRM CSV upload API.
+- See `docs/API Documentation/deals/crm-imports-api.md`.
 
 ### Import Behavior
-- All endpoints above return the same disabled-state response while the flow is rebuilt:
-  `409 Conflict` with message `Deal CSV import is coming soon. The previous import flow has been removed.`
 - Create deals + participants + company link
-- Stream progress + final result via SSE
+- Upload, mapping review, row outcomes, and error CSV use `/users/crm/imports/csv`.
 
 ---
 

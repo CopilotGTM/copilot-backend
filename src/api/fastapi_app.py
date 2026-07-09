@@ -50,7 +50,6 @@ from src.api.routers.crm import (
     crm_users_router,
     custom_fields_router,
     deal_assets_router,
-    deal_import_router,
     deal_memory_router,
     deal_notes_router,
     deal_participants_router,
@@ -320,7 +319,6 @@ def create_fastapi_app():
     fastapp.include_router(leads_router, prefix="/users/crm", tags=["crm-leads"])
     fastapp.include_router(deal_participants_router, prefix="/users/crm", tags=["participants"])
     fastapp.include_router(imports_router, prefix="/users/crm", tags=["crm-imports"])
-    fastapp.include_router(deal_import_router, prefix="/users/crm/deals", tags=["deals"])
     fastapp.include_router(stakeholders_router, prefix="/users/crm/deals", tags=["stakeholders"])
     fastapp.include_router(meetings_router, prefix="/users/crm/deals", tags=["meetings"])
     fastapp.include_router(tasks_router, prefix="/users/crm", tags=["tasks"])

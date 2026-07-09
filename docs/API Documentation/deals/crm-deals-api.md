@@ -158,13 +158,6 @@ export interface DealSummaryJobsStatus {
   stakeholder_processing: DealJobResponse[];
 }
 
-export interface DealImportJobStatus {
-  job_id: UUID;
-  job_type: "deal_import";
-  status: string;
-  stream_url: string;
-}
-
 export interface DealListItem {
   deal_id: UUID;
   name: string | null;
@@ -201,7 +194,6 @@ export interface DealListItem {
 
 export interface DealsPage {
   items: DealListItem[];
-  active_import_job: DealImportJobStatus | null;
   page: number;
   limit: number;
   total_count: number;
@@ -873,7 +865,6 @@ AI context from `GET /users/crm/deals/{deal_id}`.
   "status": "SUCCESS",
   "message": "Deals retrieved successfully",
   "data": {
-    "active_import_job": null,
     "items": [
       {
         "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
@@ -935,7 +926,6 @@ AI context from `GET /users/crm/deals/{deal_id}`.
 | `deal_team` | array | Internal deal team members attached as participants. |
 | `currency_symbol` | string \| null | Symbol derived from `currency` (for example `$`, `₹`). Frontend should use this for icon/amount decoration. |
 | `updated_at` / `synced_at` | datetime | Row freshness and provider sync timestamps. |
-| `active_import_job` | object \| null | Reserved for the future import rebuild. Always `null` while CSV import is disabled. |
 
 ---
 
@@ -2274,8 +2264,8 @@ GET /users/crm/pipelines?include_stages=true
     or `open`.
 11. **Deal list columns**: Use `user_preferences.crm.deals.list.columns` from login/session bootstrap for the table order. Do not hardcode the default deal list order in the frontend.
 12. **Deal detail rendering**: Use `data.detail_field_definitions` from `GET /users/crm/deals/{deal_id}` for predefined Get Details order and inline editability. Do not hardcode the deal field order in the frontend.
-13. **Schema-driven custom controls**: Use `GET /users/crm/schema?entity=deal` for create/edit/import/agent custom field metadata. Deal detail still returns `custom_column_definitions` as a compatibility projection for existing detail controls.
-14. **CSV import is disabled**: `data.active_import_job` is always `null`. Do not attempt import SSE reconnect flows.
+13. **Schema-driven custom controls**: Use `GET /users/crm/schema?entity=deal` for create/edit/agent custom field metadata. Deal detail still returns `custom_column_definitions` as a compatibility projection for existing detail controls.
+14. **CSV import**: Use the generic CRM CSV upload API at `/users/crm/imports/csv`; deal-scoped import reconnect/SSE fields are not part of the deal list response.
 
 ---
 
@@ -2287,54 +2277,12 @@ GET /users/crm/pipelines?include_stages=true
 
 ---
 
-## Deal Import (CSV)
+## Deal CSV Upload Import
 
-The previous CSV import flow has been removed. The endpoint names remain, but they
-all return `409 Conflict` with this message:
+Deal CSV import is handled by the generic CRM CSV upload API, not by deal-scoped routes.
 
-```
-Deal CSV import is coming soon. The previous import flow has been removed.
-```
-
-### Download Template
-
-```
-GET /users/crm/deals/import/template?file_type=csv
-```
-
-### Create Upload URL
-
-```
-POST /users/crm/deals/import/upload-url
-```
-
-Body:
-```
-{
-  "filename": "deals_import.csv"
-}
-```
-
-### Process Uploaded CSV
-
-```
-POST /users/crm/deals/import/process
-```
-
-Body:
-```
-{
-  "storage_path": "crm_imports/deals/<user>/<id>/deals_import.csv"
-}
-```
-
-### SSE Stream (Import Job)
-
-```
-GET /users/crm/deals/import/jobs/{job_id}/events
-```
-
-See `docs/API Documentation/deals/crm-deals-import-api.md` for the disabled-state contract.
+Use `docs/API Documentation/deals/crm-imports-api.md` and the base path `/users/crm/imports/csv`.
+The removed deal-scoped import endpoints are no longer registered.
 
 ---
 
@@ -2371,8 +2319,7 @@ See `docs/API Documentation/deals/crm-deals-import-api.md` for the disabled-stat
 
 ### 2026-04-18
 
-1. Disabled all deal CSV import endpoints with a uniform `409 Conflict` "coming soon" response.
-2. Removed active import reconnect links from `GET /users/crm/deals`; `active_import_job` is now always `null`.
+1. Removed the previous deal-scoped CSV import implementation from the active API surface while the generic CRM CSV upload API was rebuilt separately.
 
 ### 2026-02-26
 
@@ -2393,6 +2340,6 @@ See `docs/API Documentation/deals/crm-deals-import-api.md` for the disabled-stat
 9. Added `currency_symbol` to deal list/detail responses so frontend can render currency icons without hardcoded defaults.
 10. Documented `datetime` and `currency` as supported custom field types for interactive deal updates.
 11. Added explicit frontend guidance to render `date`/`datetime`/`currency` custom field controls from backend `data_type`.
-12. Added `active_import_job` to deal list response so frontend can reconnect deal-import SSE after refresh.
+12. Added temporary deal-import reconnect metadata to the deal list response; this field was later removed when import moved to the generic CRM CSV upload API.
 13. Added `custom_column_definitions` to deal detail response, including `data_type` and currency context (`currency_code`, `currency_symbol`) for custom field UI rendering.
 14. Restricted `PATCH /users/crm/deals/{deal_id}` to disallow editing `crm_url` (read-only detail metadata).

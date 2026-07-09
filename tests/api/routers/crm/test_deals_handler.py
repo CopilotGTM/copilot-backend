@@ -1134,10 +1134,10 @@ def test_list_deals_currency_normalization_handles_code_with_symbol(
     assert item["currency_symbol"] == "₹"
 
 
-def test_list_deals_hides_active_import_job_links(
+def test_list_deals_omits_legacy_import_reconnect_metadata(
     client: TestClient, deals_dependency_overrides, monkeypatch
 ):
-    """List endpoint should hide import links when an active import job exists."""
+    """List endpoint should not expose legacy deal import reconnect metadata."""
     deals_service = deals_dependency_overrides["deals_service"]
     deal_id = uuid4()
     deal = SimpleNamespace(
@@ -1180,7 +1180,8 @@ def test_list_deals_hides_active_import_job_links(
     resp = client.get("/users/crm/deals")
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
-    assert data["active_import_job"] is None
+    legacy_import_key = "active" + "_import_job"
+    assert legacy_import_key not in data
 
 
 # =============================================================================

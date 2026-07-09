@@ -44,7 +44,7 @@ Admins can create a pipeline before finishing its stages. If the pipeline does n
 
 Adding the missing stage states makes the pipeline active and usable. This keeps setup simple for admins while preventing API clients, agents, imports, or future mobile surfaces from creating deals in a broken sales process.
 
-CSV import and provider pipeline sync follow the same usability flag without rejecting source data: an imported or externally-synced pipeline with an incomplete shape is still stored, but it is marked inactive/unusable until the required stage states exist.
+Provider pipeline sync follows the same usability flag without rejecting source data: an externally-synced pipeline with an incomplete shape is still stored, but it is marked inactive/unusable until the required stage states exist. CSV import V1 does not create or select pipelines from uploaded rows.
 
 ### User journey
 
@@ -63,7 +63,7 @@ The three supported flows this API powers:
 | **CRM Deals** | Deals reference pipelines and stages via `pipeline_id` and `stage_id` FKs | `crm-deals-api.md` |
 | **CRM Settings** | Organisation-level defaults and feature flags | `crm-settings-api.md` |
 | **Deprecated Deal Timeline** | Stage transitions recorded in `crm_deal_stage_history`; the legacy timeline API doc moved to `deprecated/docs/API Documentation/deals/deal-timeline-api.md` | `deprecated/docs/API Documentation/deals/deal-timeline-api.md` |
-| **CRM Deals Import** | Non-default import pipelines are created via the CSV import flow | `crm-deals-import-api.md` |
+| **CRM CSV Imports** | Generic CSV import can create deals through existing deal services; pipeline/stage selection by CSV is unsupported in V1 | `crm-imports-api.md` |
 
 ### Pipeline ↔ Stage ↔ Deal relationship
 
@@ -1522,7 +1522,6 @@ Writes are split across three service classes for separation of concerns:
 
 - Provisioning: called during org creation to create the internal CRM integration and seed the `"Default Pipeline"` with its 6 stages. Idempotent via `setup_internal_crm()`.
 - Lookup: `get_internal_integration()` returns the org's internal integration row.
-- Also used by CSV import (`create_import_pipeline`) to create non-default pipelines with caller-supplied stage definitions.
 
 **`PipelineAccessService`** (`src/service/crm/access/pipeline_access_service.py`)
 
@@ -1659,6 +1658,6 @@ This is safe because the pipeline-level in-use guard has already confirmed no de
 ## Related Documents
 
 - `crm-deals-api.md` — Deals CRUD (uses `pipeline_id` and `stage_id` from this API)
-- `crm-deals-import-api.md` — CSV import flow (creates non-default pipelines via `InternalCRMSetupService.create_import_pipeline`)
+- `crm-imports-api.md` — Generic CRM CSV import flow; pipeline/stage selection by CSV is unsupported in V1
 - `crm-settings-api.md` — Organisation-level CRM settings
 - `deprecated/docs/API Documentation/deals/deal-timeline-api.md` — Deprecated stage transition timeline API

@@ -601,7 +601,6 @@ async def list_deals(
         total_pages = (total_count + params.limit - 1) // params.limit if params.limit else 0
         page_response = DealsPage(
             items=items,
-            active_import_job=None,
             page=params.page,
             limit=params.limit,
             total_count=total_count,
