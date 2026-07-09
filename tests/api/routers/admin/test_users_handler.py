@@ -38,6 +38,29 @@ def test_create_user_success(admin_user_client):
     assert body["data"]["email"] == "newuser@example.com"
 
 
+def test_create_user_allows_public_email_provider(admin_user_client):
+    """Temporary signup policy allows Gmail and other public email providers."""
+    client = admin_user_client["client"]
+    org_id = uuid4()
+
+    resp = client.post(
+        "/admin/users/create_user",
+        json={
+            "email": "newuser@gmail.com",
+            "first_name": "New",
+            "last_name": "User",
+            "organisation_id": str(org_id),
+            "user_role": "member",
+            "organisation_role": "member",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "SUCCESS"
+    assert body["data"]["email"] == "newuser@gmail.com"
+
+
 def test_create_user_duplicate_email(admin_user_client):
     """Test creating user with duplicate email returns error."""
     client = admin_user_client["client"]

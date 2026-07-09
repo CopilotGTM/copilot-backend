@@ -10,6 +10,10 @@ from src.agents.tools.crm.create_contact import create_create_contact
 from src.agents.tools.crm.create_deal import create_create_deal
 from src.agents.tools.crm.create_lead import create_create_lead
 from src.agents.tools.crm.create_stakeholder_if_missing import create_create_stakeholder_if_missing
+from src.agents.tools.crm.draft_lead_form import (
+    create_create_draft_lead_form,
+    create_update_draft_lead_form,
+)
 from src.agents.tools.crm.get_deal_change_history import create_get_deal_change_history
 from src.agents.tools.crm.get_deal_details import create_get_deal_details
 from src.agents.tools.crm.get_deal_memory import create_get_deal_memory
@@ -28,6 +32,8 @@ from src.agents.tools.crm.manage_risks_blockers import (
 from src.agents.tools.crm.search_accounts import create_search_accounts
 from src.agents.tools.crm.search_contacts import create_search_contacts
 from src.agents.tools.crm.search_deals import create_search_deals
+from src.agents.tools.crm.update_account import create_update_account
+from src.agents.tools.crm.update_contact import create_update_contact
 from src.agents.tools.crm.update_deal_account import create_update_deal_account
 from src.agents.tools.crm.update_deal_fields import create_update_deal_fields
 from src.agents.tools.crm.update_deal_lifecycle import create_update_deal_lifecycle
@@ -40,6 +46,8 @@ __all__ = [
     "create_create_stakeholder_if_missing",
     "create_create_deal",
     "create_create_lead",
+    "create_create_draft_lead_form",
+    "create_update_draft_lead_form",
     "create_update_deal_stage",
     "create_search_deals",
     "create_list_deals",
@@ -59,6 +67,8 @@ __all__ = [
     "create_create_account",
     "create_search_contacts",
     "create_search_accounts",
+    "create_update_contact",
+    "create_update_account",
     # Risk/blocker tools
     "create_get_existing_risks_blockers",
     "create_update_risk_blocker",
