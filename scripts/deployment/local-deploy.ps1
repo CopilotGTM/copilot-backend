@@ -103,6 +103,11 @@ $LIGHT_IMAGE_REPOSITORY = "copilot-backend-light-worker"
 $INTEGRATIONS_IMAGE_REPOSITORY = "copilot-backend-integrations-worker"
 $IMAGE_TAG = "local-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 
+# Default ASR provider settings. The API key still comes from env/Kubernetes/Key Vault.
+if (-not $env:ASR_PROVIDER) { $env:ASR_PROVIDER = "assemblyai" }
+if (-not $env:ASSEMBLYAI_BASE_URL) { $env:ASSEMBLYAI_BASE_URL = "https://api.assemblyai.com" }
+if (-not $env:ASSEMBLYAI_SPEECH_MODEL) { $env:ASSEMBLYAI_SPEECH_MODEL = "universal-3-5-pro" }
+
 # =============================================================================
 # Functions
 # =============================================================================
@@ -297,6 +302,7 @@ function Get-AzureKeyVaultSecrets {
     # List of required secrets
     $requiredSecrets = @(
         "AZURE_OPENAI_API_KEY",
+        "ASSEMBLYAI_API_KEY",
         "AZURE_EMBEDDER_OPENAI_API_KEY",
         "DATABASE_PASSWORD",
         "REDIS_PASSWORD",
@@ -453,6 +459,7 @@ function Get-AzureKeyVaultSecrets {
 
     # Only fetch secrets that are not already set
     Set-EnvSecretIfMissing "AZURE_OPENAI_API_KEY" $masterFirstVaults @("azure-openai-api-key")
+    Set-EnvSecretIfMissing "ASSEMBLYAI_API_KEY" $masterFirstVaults @("assemblyai-api-key")
     Set-EnvSecretIfMissing "AZURE_EMBEDDER_OPENAI_API_KEY" $masterFirstVaults @("azure-embedder-openai-api-key")
     Set-EnvSecretIfMissing "DATABASE_PASSWORD" $databaseFirstVaults @("db-admin-password", "database-password")
     Set-EnvSecretIfMissing "REDIS_PASSWORD" $masterFirstVaults @("redis-password")
@@ -591,6 +598,10 @@ function Deploy-WithHelm {
             "--set", "api.secrets.REDIS_SSL_CERT_REQS=CERT_REQUIRED",
             "--set", "api.secrets.AZURE_OPENAI_API_KEY=$($env:AZURE_OPENAI_API_KEY)",
             "--set", "api.secrets.AZURE_OPENAI_ENDPOINT=$($env:AZURE_OPENAI_ENDPOINT)",
+            "--set", "api.secrets.ASR_PROVIDER=$($env:ASR_PROVIDER)",
+            "--set", "api.secrets.ASSEMBLYAI_API_KEY=$($env:ASSEMBLYAI_API_KEY)",
+            "--set", "api.secrets.ASSEMBLYAI_BASE_URL=$($env:ASSEMBLYAI_BASE_URL)",
+            "--set", "api.secrets.ASSEMBLYAI_SPEECH_MODEL=$($env:ASSEMBLYAI_SPEECH_MODEL)",
             "--set", "api.secrets.CLOUD_PROVIDER=$($env:CLOUD_PROVIDER)",
             "--set", "api.secrets.APPLICATION_STORAGE_NAME=$($env:APPLICATION_STORAGE_NAME)",
             "--set", "api.secrets.ORGANISATION_STORAGE_NAME=$($env:ORGANISATION_STORAGE_NAME)",
