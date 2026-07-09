@@ -12,7 +12,7 @@ class TestGoogleGmailPubSubConfig:
 
     def _make_config(self) -> GoogleGmailPubSubConfig:
         config = GoogleGmailPubSubConfig()
-        config.SECRET_NAME_PUSH_TOKEN = "google-gmail-pubsub-push-token"
+        config.SECRET_NAME_PUSH_TOKEN = "google-gmail-pubsub-push-token"  # pragma: allowlist secret
         config._push_token = None
         config._token_from_env = False
         config._credentials_ttl_hours = 6.0

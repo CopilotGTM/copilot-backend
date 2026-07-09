@@ -160,7 +160,7 @@ api:
     GOOGLE_WEBHOOK_BASE_URL: ""
     GOOGLE_GMAIL_PUBSUB_TOPIC: ""
     GOOGLE_GMAIL_PUBSUB_SUBSCRIPTION: ""
-    GOOGLE_GMAIL_PUBSUB_PUSH_TOKEN_SECRET_NAME: "google-gmail-pubsub-push-token"
+    GOOGLE_GMAIL_PUBSUB_PUSH_TOKEN_SECRET_NAME: "google-gmail-pubsub-push-token"  # pragma: allowlist secret
     GOOGLE_GMAIL_PUBSUB_PUSH_TOKEN: ""
 
 # Knowledge Workers Configuration

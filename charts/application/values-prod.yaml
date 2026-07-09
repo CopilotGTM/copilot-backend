@@ -56,7 +56,7 @@ api:
     GOOGLE_WEBHOOK_BASE_URL: "https://api.copilotgtm.com"
     GOOGLE_GMAIL_PUBSUB_TOPIC: "projects/copilotgtm/topics/gmail-push"
     GOOGLE_GMAIL_PUBSUB_SUBSCRIPTION: "projects/copilotgtm/subscriptions/gmail-push-sub"
-    GOOGLE_GMAIL_PUBSUB_PUSH_TOKEN_SECRET_NAME: "google-gmail-pubsub-push-token"
+    GOOGLE_GMAIL_PUBSUB_PUSH_TOKEN_SECRET_NAME: "google-gmail-pubsub-push-token"  # pragma: allowlist secret
     MICROSOFT_REDIRECT_URI: "https://api.copilotgtm.com/users/integrations/copilot-oauth/callback"
     MICROSOFT_GRAPH_WEBHOOK_BASE_URL: "https://api.copilotgtm.com"
     SLACK_REDIRECT_URI: "https://api.copilotgtm.com/users/integrations/copilot-oauth/callback"
