@@ -28,6 +28,8 @@ from src.agents.tools.crm.manage_risks_blockers import (
 from src.agents.tools.crm.search_accounts import create_search_accounts
 from src.agents.tools.crm.search_contacts import create_search_contacts
 from src.agents.tools.crm.search_deals import create_search_deals
+from src.agents.tools.crm.update_account import create_update_account
+from src.agents.tools.crm.update_contact import create_update_contact
 from src.agents.tools.crm.update_deal_account import create_update_deal_account
 from src.agents.tools.crm.update_deal_fields import create_update_deal_fields
 from src.agents.tools.crm.update_deal_lifecycle import create_update_deal_lifecycle
@@ -59,6 +61,8 @@ __all__ = [
     "create_create_account",
     "create_search_contacts",
     "create_search_accounts",
+    "create_update_contact",
+    "create_update_account",
     # Risk/blocker tools
     "create_get_existing_risks_blockers",
     "create_update_risk_blocker",

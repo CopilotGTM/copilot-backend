@@ -474,6 +474,20 @@ def test_crm_change_workflow_skill_routes_pasted_identity_urls() -> None:
     assert "Do not ask for email first" in instructions
 
 
+def test_crm_change_workflow_skill_routes_contact_and_account_updates() -> None:
+    """CRM mutation routing must cover internal contact/account update tools."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "crm-change-workflow")
+    instructions = skill.instructions
+
+    assert "Contact and Account Updates" in instructions
+    assert "UpdateContact" in instructions
+    assert "UpdateAccount" in instructions
+    assert "internal CRM records" in instructions
+    assert "existing deal update tools" in instructions
+
+
 def test_crm_deal_analysis_workflow_skill_loads() -> None:
     """The crm-deal-analysis-workflow skill must load without validation errors."""
     loader = LocalSkills(str(SKILLS_DIR))

@@ -23,6 +23,7 @@ class _BlockSrcApiImports(MetaPathFinder):
         path: object | None,
         target: object | None = None,
     ) -> ModuleSpec | None:
+        """Fail imports from `src.api` to model the light-worker image layout."""
         if fullname == "src.api" or fullname.startswith("src.api."):
             raise ModuleNotFoundError("No module named 'src.api'")
         return None
@@ -54,15 +55,19 @@ def _without_src_api():
         "src.agents.tools.crm.create_lead",
         "src.agents.tools.crm.create_account",
         "src.agents.tools.crm.create_contact",
+        "src.agents.tools.crm.update_account",
+        "src.agents.tools.crm.update_contact",
         "src.agents.tools.crm.add_deal_note",
     ],
 )
 def test_chat_write_tools_import_without_api_package(module_name: str):
+    """Lock chat write tools to worker-safe imports that do not depend on `src.api`."""
     with _without_src_api():
         importlib.import_module(module_name)
 
 
 def test_general_agent_tools_load_without_api_package():
+    """Ensure GeneralAgent tool resolution stays compatible with the light-worker image."""
     from src.agents.context import AgentContext
     from src.agents.tools.registry import get_tools_for_agent
 
