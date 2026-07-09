@@ -9,7 +9,6 @@ from .contacts_handler import contacts_router
 from .crm_meetings_handler import crm_meetings_router
 from .custom_fields_handler import custom_fields_router
 from .deal_assets_handler import deal_assets_router
-from .deal_import_handler import deal_import_router
 from .deal_memory_handler import deal_memory_router
 from .deal_notes_handler import deal_notes_router
 from .deal_participants_handler import deal_participants_router
@@ -38,7 +37,6 @@ __all__ = [
     "deal_memory_router",
     "deal_notes_router",
     "deal_participants_router",
-    "deal_import_router",
     "custom_fields_router",
     "deals_router",
     "imports_router",

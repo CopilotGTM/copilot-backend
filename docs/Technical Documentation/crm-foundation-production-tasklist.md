@@ -217,7 +217,7 @@ Implemented backend slice 2026-07-05:
 - Agent create-deal now accepts `custom_columns` and passes them through the existing `DealWriteService` custom-field validation path.
 - Agent create-deal checks `DealSchemaService` before direct creation and returns `needs_input` with `required_custom_fields` when required writable custom fields are missing.
 - Voice realtime `create_deal` schema exposes `custom_columns`, so collected required custom field answers can be sent back through the same agent tool path.
-- CSV import is currently disabled/reserved in the backend API, so no import-mapping implementation is needed in this phase; the rebuild should consume `GET /users/crm/schema?entity=deal`.
+- CSV import now uses the generic `/users/crm/imports/csv` backend API; import-mapping work should consume `GET /users/crm/schema?entity=deal`.
 - Remaining work: frontend table column picker and frontend create/edit consumers still need to consume `GET /users/crm/schema?entity=deal`.
 
 ## Phase 3: Reorder and bulk operations
@@ -509,7 +509,7 @@ Frontend work should now consume the backend contracts added in Phases 1-5 inste
 - `GET /users/crm/pipelines?include_stages=true` returns pipeline/stage `deal_count`, `last_changed`, `is_active`, and stage lifecycle state.
 - Deal creation pickers should use `GET /users/crm/pipelines?include_stages=true&active_only=true`.
 - Pipeline/stage update and stage reorder writes are guarded by `if_updated_at`.
-- CSV import remains disabled; frontend should not show import reconnect/SSE flows while `active_import_job` is always `null`.
+- CSV import uses the generic `/users/crm/imports/csv` upload flow; frontend should not use deal-list reconnect/SSE fields.
 
 ### Task 19: Upgrade custom columns settings table
 
@@ -577,7 +577,7 @@ Scope:
 - Validate required internal custom fields before submit using `internal_write_validation.required`.
 - Validate select/multiselect options from `options.values`, including inactive/removed options for display while preventing new writes to inactive options.
 - Keep deal list/search lightweight; do not expect custom values there. Detail/create/edit surfaces own custom field rendering.
-- Hide CSV import entry points or show disabled-state copy until the import API is rebuilt.
+- Route CSV import entry points through the generic `/users/crm/imports/csv` upload flow.
 
 Done when:
 

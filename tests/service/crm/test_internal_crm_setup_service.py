@@ -56,28 +56,6 @@ class _SetupSession:
 
 
 @pytest.mark.asyncio
-async def test_create_import_pipeline_marks_incomplete_shape_unusable_without_rejecting() -> None:
-    service = InternalCRMSetupService(
-        session=_SetupSession(),  # type: ignore[arg-type]
-        organisation_id=uuid4(),
-        user_id=uuid4(),
-    )
-
-    pipeline, stages = await service.create_import_pipeline(
-        uuid4(),
-        "Imported Draft",
-        [
-            {"name": "Qualification", "stage_state": "open"},
-            {"name": "Closed Lost", "stage_state": "lost"},
-        ],
-    )
-
-    assert len(stages) == 2
-    assert pipeline.is_active is False
-    assert pipeline.properties["usable_for_internal_deals"] is False
-
-
-@pytest.mark.asyncio
 async def test_setup_default_pipeline_normalizes_existing_usability_metadata() -> None:
     pipeline = type(
         "Pipeline",

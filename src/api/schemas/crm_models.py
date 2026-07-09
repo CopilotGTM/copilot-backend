@@ -144,25 +144,10 @@ class DealListItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class DealImportJobStatus(BaseModel):
-    """Reserved import job metadata for a future rebuilt import flow."""
-
-    job_id: UUID = Field(..., description="Deal import job ID")
-    job_type: str = Field(..., description="Job type (always `deal_import` for this payload)")
-    status: str = Field(..., description="Current job status")
-    stream_url: str = Field(..., description="SSE URL to reconnect to the active import job")
-
-
 class DealsPage(BaseModel):
     """Paginated list of deals."""
 
     items: list[DealListItem]
-    active_import_job: DealImportJobStatus | None = Field(
-        None,
-        description=(
-            "Reserved for the future deal import rebuild. Always null while CSV import is disabled."
-        ),
-    )
     page: int = Field(..., description="Current page number (1-indexed)")
     limit: int = Field(..., description="Maximum number of items per page")
     total_count: int = Field(..., description="Total number of deals matching filters")

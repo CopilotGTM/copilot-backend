@@ -1,6 +1,6 @@
 # CRM CSV Import Flow
 
-This document shows the implemented CRM CSV import path for accounts, contacts, deals, and combined rows. Deal import uses the generic CRM import route; the legacy `/users/crm/deals/import/...` endpoints remain disabled.
+This document shows the implemented CRM CSV import path for accounts, contacts, deals, and combined rows. Deal import uses the generic CRM import route; the old deal-scoped import endpoints have been removed.
 
 ## Runtime Flow
 
