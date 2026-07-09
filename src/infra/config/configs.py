@@ -459,11 +459,33 @@ class EmbedderConfig:
 
 
 class TranscriptionConfig:
-    """Configuration for Azure OpenAI audio transcription (gpt-4o-transcribe).
+    """Configuration for audio transcription providers.
 
-    Falls back to the main OpenAI credentials if dedicated transcription
-    env vars are not set, so no extra config is needed for most deployments.
+    AssemblyAI is the default ASR provider for new audio work. Azure OpenAI
+    remains configurable as a fallback provider during the migration window.
     """
+
+    ASR_PROVIDER: str = os.getenv("ASR_PROVIDER", "assemblyai").strip().lower()
+
+    # AssemblyAI pre-recorded transcription. The API key can come from env/K8s secret
+    # or the master Key Vault secret below when async code calls get_assemblyai_api_key().
+    SECRET_NAME_ASSEMBLYAI_API_KEY: str = "assemblyai-api-key"
+    ASSEMBLYAI_API_KEY: str | None = os.getenv("ASSEMBLYAI_API_KEY")
+    ASSEMBLYAI_BASE_URL: str = os.getenv("ASSEMBLYAI_BASE_URL", "https://api.assemblyai.com")
+    ASSEMBLYAI_SPEECH_MODEL: str = os.getenv("ASSEMBLYAI_SPEECH_MODEL", "universal-3-5-pro")
+    ASSEMBLYAI_LANGUAGE_DETECTION: bool = (
+        os.getenv("ASSEMBLYAI_LANGUAGE_DETECTION", "true").lower() == "true"
+    )
+    ASSEMBLYAI_POLL_INTERVAL_SECONDS: float = float(
+        os.getenv("ASSEMBLYAI_POLL_INTERVAL_SECONDS", "2")
+    )
+    ASSEMBLYAI_MAX_POLL_ATTEMPTS: int = int(os.getenv("ASSEMBLYAI_MAX_POLL_ATTEMPTS", "45"))
+    _assemblyai_api_key_from_env: bool = bool(os.getenv("ASSEMBLYAI_API_KEY"))
+    _assemblyai_credentials_ttl_hours: float = float(
+        os.getenv("ASSEMBLYAI_CREDENTIALS_TTL_HOURS", "6")
+    )
+    _assemblyai_credentials_loaded_at: float | None = None
+    _assemblyai_refresh_lock: asyncio.Lock | None = None
 
     AZURE_TRANSCRIPTION_API_KEY: str | None = os.getenv(
         "AZURE_TRANSCRIPTION_API_KEY", os.getenv("AZURE_OPENAI_API_KEY")
@@ -477,6 +499,54 @@ class TranscriptionConfig:
     AZURE_TRANSCRIPTION_API_VERSION: str = os.getenv(
         "AZURE_TRANSCRIPTION_API_VERSION", "2025-03-01-preview"
     )
+
+    async def get_assemblyai_api_key(self) -> str | None:
+        """Return the AssemblyAI API key from env/K8s secret or Key Vault."""
+        if self._assemblyai_api_key_from_env:
+            return self.ASSEMBLYAI_API_KEY
+
+        if not self._assemblyai_key_expired():
+            return self.ASSEMBLYAI_API_KEY
+
+        if self._assemblyai_refresh_lock is None:
+            self._assemblyai_refresh_lock = asyncio.Lock()
+
+        async with self._assemblyai_refresh_lock:
+            if not self._assemblyai_key_expired():
+                return self.ASSEMBLYAI_API_KEY
+            await self._load_assemblyai_key_from_vault()
+
+        return self.ASSEMBLYAI_API_KEY
+
+    def _assemblyai_key_expired(self) -> bool:
+        if not self.ASSEMBLYAI_API_KEY:
+            return True
+        if self._assemblyai_credentials_loaded_at is None:
+            return True
+
+        import time
+
+        elapsed_hours = (time.time() - self._assemblyai_credentials_loaded_at) / 3600
+        return elapsed_hours >= self._assemblyai_credentials_ttl_hours
+
+    async def _load_assemblyai_key_from_vault(self) -> None:
+        import time
+
+        from src.infra.secrets.manager import master_secrets_manager
+
+        logger.info("Loading AssemblyAI API key from Key Vault (TTL refresh)")
+        self.ASSEMBLYAI_API_KEY = (
+            await master_secrets_manager.get(self.SECRET_NAME_ASSEMBLYAI_API_KEY) or ""
+        ).strip()
+        self._assemblyai_credentials_loaded_at = time.time()
+
+        if self.ASSEMBLYAI_API_KEY:
+            logger.info(
+                "AssemblyAI API key cached (TTL=%.1fh)",
+                self._assemblyai_credentials_ttl_hours,
+            )
+        else:
+            logger.error("AssemblyAI API key missing from Key Vault")
 
 
 class CloudStorageConfig:

@@ -3,10 +3,58 @@ from __future__ import annotations
 import httpx
 import pytest
 from src.infra.media.audio_transcription import (
+    _build_assemblyai_url,
     _build_transcription_url,
     _extract_transcript,
     transcribe_audio,
 )
+
+
+def _patch_assemblyai_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "src.infra.media.audio_transcription.transcription_config.ASR_PROVIDER",
+        "assemblyai",
+    )
+    monkeypatch.setattr(
+        "src.infra.media.audio_transcription.transcription_config.ASSEMBLYAI_API_KEY",
+        "assembly-key",
+    )
+    monkeypatch.setattr(
+        "src.infra.media.audio_transcription.transcription_config._assemblyai_api_key_from_env",
+        True,
+    )
+    monkeypatch.setattr(
+        "src.infra.media.audio_transcription.transcription_config.ASSEMBLYAI_BASE_URL",
+        "https://api.assemblyai.com",
+    )
+    monkeypatch.setattr(
+        "src.infra.media.audio_transcription.transcription_config.ASSEMBLYAI_SPEECH_MODEL",
+        "universal-3-5-pro",
+    )
+    monkeypatch.setattr(
+        "src.infra.media.audio_transcription.transcription_config.ASSEMBLYAI_LANGUAGE_DETECTION",
+        True,
+    )
+    monkeypatch.setattr(
+        "src.infra.media.audio_transcription.transcription_config.ASSEMBLYAI_POLL_INTERVAL_SECONDS",
+        0.01,
+    )
+    monkeypatch.setattr(
+        "src.infra.media.audio_transcription.transcription_config.ASSEMBLYAI_MAX_POLL_ATTEMPTS",
+        2,
+    )
+
+
+# ---------------------------------------------------------------------------
+# _build_assemblyai_url
+# ---------------------------------------------------------------------------
+
+
+def test_build_assemblyai_url_strips_trailing_slash() -> None:
+    assert _build_assemblyai_url("https://api.assemblyai.com/", "/v2/upload") == (
+        "https://api.assemblyai.com/v2/upload"
+    )
+
 
 # ---------------------------------------------------------------------------
 # _build_transcription_url
@@ -97,6 +145,10 @@ async def test_transcribe_audio_returns_empty_when_missing_api_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
+        "src.infra.media.audio_transcription.transcription_config.ASR_PROVIDER",
+        "azure_openai",
+    )
+    monkeypatch.setattr(
         "src.infra.media.audio_transcription.transcription_config.AZURE_TRANSCRIPTION_API_KEY",
         "",
     )
@@ -117,6 +169,10 @@ async def test_transcribe_audio_returns_empty_when_missing_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
+        "src.infra.media.audio_transcription.transcription_config.ASR_PROVIDER",
+        "azure_openai",
+    )
+    monkeypatch.setattr(
         "src.infra.media.audio_transcription.transcription_config.AZURE_TRANSCRIPTION_API_KEY",
         "key",
     )
@@ -136,6 +192,10 @@ async def test_transcribe_audio_returns_empty_when_missing_endpoint(
 async def test_transcribe_audio_returns_empty_when_missing_deployment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        "src.infra.media.audio_transcription.transcription_config.ASR_PROVIDER",
+        "azure_openai",
+    )
     monkeypatch.setattr(
         "src.infra.media.audio_transcription.transcription_config.AZURE_TRANSCRIPTION_API_KEY",
         "key",
@@ -158,6 +218,10 @@ async def test_transcribe_audio_returns_empty_when_missing_deployment(
 
 
 def _patch_transcription_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "src.infra.media.audio_transcription.transcription_config.ASR_PROVIDER",
+        "azure_openai",
+    )
     monkeypatch.setattr(
         "src.infra.media.audio_transcription.transcription_config.AZURE_TRANSCRIPTION_API_KEY",
         "test-key",
@@ -272,6 +336,159 @@ async def test_transcribe_audio_omits_language_when_none(
     await transcribe_audio(b"audio-bytes")
 
     assert "language" not in captured["data"]
+
+
+# ---------------------------------------------------------------------------
+# transcribe_audio — AssemblyAI provider
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_uses_assemblyai_upload_submit_and_poll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_assemblyai_config(monkeypatch)
+
+    captured: list[dict[str, object]] = []
+
+    class _FakeResponse:
+        def __init__(self, payload: dict[str, object]):
+            self._payload = payload
+            self.headers = {"content-type": "application/json"}
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+    class _FakeAsyncClient:
+        def __init__(self, *, timeout: float):
+            captured.append({"method": "client", "timeout": timeout})
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, *, headers, content=None, json=None):
+            captured.append(
+                {
+                    "method": "post",
+                    "url": url,
+                    "headers": headers,
+                    "content": content,
+                    "json": json,
+                }
+            )
+            if url.endswith("/v2/upload"):
+                return _FakeResponse({"upload_url": "https://cdn.assemblyai.com/upload/audio"})
+            return _FakeResponse({"id": "transcript-123", "status": "queued"})
+
+        async def get(self, url, *, headers):
+            captured.append({"method": "get", "url": url, "headers": headers})
+            return _FakeResponse({"status": "completed", "text": "create the task"})
+
+    monkeypatch.setattr("src.infra.media.audio_transcription.httpx.AsyncClient", _FakeAsyncClient)
+
+    transcript = await transcribe_audio(
+        b"audio-bytes",
+        filename="voice-note.m4a",
+        language="en",
+    )
+
+    assert transcript == "create the task"
+    assert captured[0] == {"method": "client", "timeout": 60.0}
+    assert captured[1] == {
+        "method": "post",
+        "url": "https://api.assemblyai.com/v2/upload",
+        "headers": {
+            "authorization": "assembly-key",
+            "content-type": "application/octet-stream",
+        },
+        "content": b"audio-bytes",
+        "json": None,
+    }
+    assert captured[2] == {
+        "method": "post",
+        "url": "https://api.assemblyai.com/v2/transcript",
+        "headers": {"authorization": "assembly-key"},
+        "content": None,
+        "json": {
+            "audio_url": "https://cdn.assemblyai.com/upload/audio",
+            "language_detection": True,
+            "speech_models": ["universal-3-5-pro"],
+            "language_code": "en",
+        },
+    }
+    assert captured[3] == {
+        "method": "get",
+        "url": "https://api.assemblyai.com/v2/transcript/transcript-123",
+        "headers": {"authorization": "assembly-key"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_returns_empty_when_assemblyai_key_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_assemblyai_config(monkeypatch)
+    monkeypatch.setattr(
+        "src.infra.media.audio_transcription.transcription_config.ASSEMBLYAI_API_KEY",
+        "",
+    )
+
+    assert await transcribe_audio(b"audio") == ""
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_returns_empty_when_assemblyai_reports_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_assemblyai_config(monkeypatch)
+
+    class _FakeResponse:
+        headers = {"content-type": "application/json"}
+
+        @staticmethod
+        def json() -> dict[str, str]:
+            return {"status": "error", "error": "bad audio"}
+
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+    class _FakeAsyncClient:
+        def __init__(self, *, timeout: float):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, *, headers, content=None, json=None):
+            if url.endswith("/v2/upload"):
+                return _FakeResponse()
+            return type(
+                "_SubmitResponse",
+                (),
+                {
+                    "headers": {"content-type": "application/json"},
+                    "json": staticmethod(lambda: {"id": "transcript-123"}),
+                    "raise_for_status": staticmethod(lambda: None),
+                },
+            )()
+
+        async def get(self, url, *, headers):
+            return _FakeResponse()
+
+    monkeypatch.setattr("src.infra.media.audio_transcription.httpx.AsyncClient", _FakeAsyncClient)
+
+    assert await transcribe_audio(b"audio-bytes", filename="test.webm") == ""
 
 
 # ---------------------------------------------------------------------------

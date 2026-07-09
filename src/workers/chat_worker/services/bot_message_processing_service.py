@@ -1601,7 +1601,7 @@ class BotMessageProcessingService:
 
         Images → Agno Image objects (native vision).
         Documents → text extracted via pypdf/docx (same as web chat).
-        Audio → transcribed via gpt-4o-transcribe, returned as text.
+        Audio → transcribed through the configured ASR provider, returned as text.
         """
         import aiohttp
         from agno.media import Image as AgnoImage
