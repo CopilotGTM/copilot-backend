@@ -148,6 +148,14 @@ uv run python -m scripts.maintenance.grant_tenant_runtime_schema_access --all-or
 uv run python -m scripts.maintenance.grant_tenant_runtime_schema_access --all-orgs --execute
 ```
 
+`values-dev.yaml` and `values-prod.yaml` enable the shared tenant runtime path
+with `USE_SHARED_TENANT_DATABASE=true`,
+`TENANT_DATABASE_USER=app_tenant_runtime`, and
+`TENANT_DATABASE_PASSWORD_SECRET_NAME=shared-tenant-db-password`. Do not deploy
+those values until the grant backfill has been executed and verified for all
+existing organisation schemas in that environment; otherwise approved tenants
+without grants will fail after the rollout.
+
 When `TENANT_DATABASE_PASSWORD` is supplied directly, provisioning creates or
 verifies the PostgreSQL role with that password and does not require a Key Vault
 client. In Key Vault mode, the script creates or verifies the secret in the
