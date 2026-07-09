@@ -59,7 +59,7 @@ api:
     DATABASE_MAX_OVERFLOW: "2"
     USE_SHARED_TENANT_DATABASE: "true"
     TENANT_DATABASE_USER: "app_tenant_runtime"
-    TENANT_DATABASE_PASSWORD_SECRET_NAME: "shared-tenant-db-password"
+    TENANT_DATABASE_PASSWORD_SECRET_NAME: "shared-tenant-db-password"  # pragma: allowlist secret
   autoscaling:
     minReplicas: 1
     maxReplicas: 2
