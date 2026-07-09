@@ -109,6 +109,7 @@ class GeneralAgent(BaseAgent):
             markdown=True,
             **get_agno_datetime_settings(context.metadata),
             tools=self._tools,
+            tool_call_limit=150,
             skills=skills,
             telemetry=False,
         )

@@ -255,3 +255,36 @@ async def test_create_user_creates_internal_crm_user_when_email_has_no_crm_match
     assert created_crm_user.organisation_id == organisation_id
     assert created_crm_user.integration_id == integration_id
     assert created_crm_user.email == "nitesh@obbserv.com"
+
+
+@pytest.mark.asyncio
+async def test_create_user_allows_public_email_provider_when_no_crm_match(monkeypatch):
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    org_session = _patch_org_session(monkeypatch, [])
+    _patch_internal_setup(monkeypatch, integration_id)
+    master_session = _FakeMasterSession(organisation_id)
+    monkeypatch.setattr(service_module.user_auth, "generate_temporary_password", lambda: "Temp123!")
+    monkeypatch.setattr(
+        service_module.user_auth,
+        "create_supabase_user",
+        lambda **_kwargs: "supabase-user-id",
+    )
+
+    service = AdminUserService(master_session)
+    await service.create_user(
+        admin_id=uuid4(),
+        user_data=CreateUserRequest(
+            first_name="Gmail",
+            last_name="User",
+            email="Gmail.User@gmail.com",
+            organisation_id=organisation_id,
+            user_role=UserAppRole.MEMBER,
+            organisation_role="member",
+        ),
+    )
+
+    created_user = next(item for item in master_session.added if isinstance(item, User))
+    created_crm_user = next(item for item in org_session.added if isinstance(item, CRMUser))
+    assert created_user.email == "gmail.user@gmail.com"
+    assert created_crm_user.email == "gmail.user@gmail.com"
