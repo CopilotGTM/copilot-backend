@@ -41,6 +41,66 @@ class _FakeOrgSession:
         return None
 
 
+class _QueuedOrgSession(_FakeOrgSession):
+    def __init__(self, results: list[list[object]]):
+        super().__init__([])
+        self._results = results
+
+    async def execute(self, _stmt):
+        rows = self._results.pop(0) if self._results else []
+        return _FakeResult(rows)
+
+
+def _contact(
+    contact_id,
+    *,
+    full_name: str | None = "Jane Buyer",
+    email: str | None = "jane@example.com",
+    additional_emails: list[str] | None = None,
+    phone: str | None = None,
+    mobile_phone: str | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        contact_id=contact_id,
+        full_name=full_name,
+        first_name=None,
+        last_name=None,
+        email=email,
+        additional_emails=additional_emails or [],
+        phone=phone,
+        mobile_phone=mobile_phone,
+    )
+
+
+def _deal(deal_id, integration_id) -> SimpleNamespace:
+    return SimpleNamespace(
+        deal_id=deal_id,
+        company_name="Acme",
+        integration_id=integration_id,
+        primary_contact_id=uuid4(),
+        primary_contact_name="Old Contact",
+        primary_contact_email="old@example.com",
+        source_modified_at=None,
+        synced_at=None,
+        last_seen_at=None,
+    )
+
+
+def _participant(contact_id, *, primary: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(
+        participant_id=uuid4(),
+        related_local_id=contact_id,
+        related_name=None,
+        related_email=None,
+        relationship_role="decision_maker",
+        is_primary_contact=primary,
+        is_deleted=False,
+        source_modified_at=None,
+        synced_at=None,
+        last_seen_at=None,
+    )
+
+
 @pytest.mark.asyncio
 async def test_upsert_company_overwrites_existing_industry_and_country_when_provided() -> None:
     existing_company = SimpleNamespace(
@@ -603,3 +663,156 @@ async def test_update_primary_contact_can_clear_snapshot_and_participant_links()
     assert primary_participant.synced_at is not None
     assert primary_participant.last_seen_at is not None
     assert primary_participant in session.added
+
+
+@pytest.mark.asyncio
+async def test_update_primary_contact_sets_approved_stakeholder_by_contact_id() -> None:
+    contact_id = uuid4()
+    deal_id = uuid4()
+    integration_id = uuid4()
+    selected_contact = _contact(contact_id, email="Jane@Example.com")
+    selected_participant = _participant(contact_id)
+    old_primary = _participant(uuid4(), primary=True)
+    old_primary.relationship_role = "primary_contact"
+    session = _QueuedOrgSession([[selected_contact], [selected_participant], [old_primary]])
+    service = DealWriteService(
+        org_session=session,
+        master_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    existing_deal = _deal(deal_id, integration_id)
+    service._load_internal_deal = AsyncMock(return_value=existing_deal)
+    service._record_mutation_event = AsyncMock()
+
+    result = await service.update_primary_contact(
+        deal_id,
+        primary_contact_id=contact_id,
+    )
+
+    assert result is existing_deal
+    assert existing_deal.primary_contact_id == contact_id
+    assert existing_deal.primary_contact_name == "Jane Buyer"
+    assert existing_deal.primary_contact_email == "jane@example.com"
+    assert selected_participant.is_primary_contact is True
+    assert selected_participant.relationship_role == "primary_contact"
+    assert selected_participant.related_email == "jane@example.com"
+    assert old_primary.is_deleted is False
+    assert old_primary.is_primary_contact is False
+    assert old_primary.relationship_role is None
+    assert selected_participant in session.added
+    assert old_primary in session.added
+    assert existing_deal in session.added
+
+
+@pytest.mark.asyncio
+async def test_update_primary_contact_uses_additional_email_for_contact_id() -> None:
+    contact_id = uuid4()
+    deal_id = uuid4()
+    integration_id = uuid4()
+    selected_contact = _contact(
+        contact_id,
+        email=None,
+        additional_emails=["  Alternate@Example.com  "],
+    )
+    selected_participant = _participant(contact_id)
+    session = _QueuedOrgSession([[selected_contact], [selected_participant], []])
+    service = DealWriteService(
+        org_session=session,
+        master_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    existing_deal = _deal(deal_id, integration_id)
+    service._load_internal_deal = AsyncMock(return_value=existing_deal)
+    service._record_mutation_event = AsyncMock()
+
+    await service.update_primary_contact(deal_id, primary_contact_id=contact_id)
+
+    assert existing_deal.primary_contact_email == "alternate@example.com"
+    assert selected_participant.related_email == "alternate@example.com"
+
+
+@pytest.mark.asyncio
+async def test_update_primary_contact_allows_phone_only_contact_id() -> None:
+    contact_id = uuid4()
+    deal_id = uuid4()
+    integration_id = uuid4()
+    selected_contact = _contact(contact_id, email=None, phone="  +15551234567  ")
+    selected_participant = _participant(contact_id)
+    session = _QueuedOrgSession([[selected_contact], [selected_participant], []])
+    service = DealWriteService(
+        org_session=session,
+        master_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    existing_deal = _deal(deal_id, integration_id)
+    service._load_internal_deal = AsyncMock(return_value=existing_deal)
+    service._record_mutation_event = AsyncMock()
+
+    await service.update_primary_contact(deal_id, primary_contact_id=contact_id)
+
+    assert existing_deal.primary_contact_email is None
+    assert existing_deal.primary_contact_phone_number == "+15551234567"
+    assert selected_participant.is_primary_contact is True
+
+
+@pytest.mark.asyncio
+async def test_update_primary_contact_rejects_contact_id_without_email_or_phone() -> None:
+    contact_id = uuid4()
+    deal_id = uuid4()
+    integration_id = uuid4()
+    selected_contact = _contact(contact_id, email=None, full_name="Jane Buyer")
+    session = _QueuedOrgSession([[selected_contact]])
+    service = DealWriteService(
+        org_session=session,
+        master_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    service._load_internal_deal = AsyncMock(return_value=_deal(deal_id, integration_id))
+
+    with pytest.raises(DealWriteServiceError) as exc_info:
+        await service.update_primary_contact(deal_id, primary_contact_id=contact_id)
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.message == "Primary contact must have an email or phone number"
+
+
+@pytest.mark.asyncio
+async def test_update_primary_contact_rejects_archived_or_missing_contact_id() -> None:
+    service = DealWriteService(
+        org_session=_QueuedOrgSession([[]]),
+        master_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    service._load_internal_deal = AsyncMock(return_value=_deal(uuid4(), uuid4()))
+
+    with pytest.raises(DealWriteServiceError) as exc_info:
+        await service.update_primary_contact(uuid4(), primary_contact_id=uuid4())
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.message == "Contact not found"
+
+
+@pytest.mark.asyncio
+async def test_update_primary_contact_rejects_contact_id_not_active_approved_stakeholder() -> None:
+    contact_id = uuid4()
+    service = DealWriteService(
+        org_session=_QueuedOrgSession([[_contact(contact_id)], []]),
+        master_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    service._load_internal_deal = AsyncMock(return_value=_deal(uuid4(), uuid4()))
+
+    with pytest.raises(DealWriteServiceError) as exc_info:
+        await service.update_primary_contact(uuid4(), primary_contact_id=contact_id)
+
+    assert exc_info.value.status_code == 400
+    assert (
+        exc_info.value.message
+        == "Primary contact must be an active approved Buying Committee stakeholder on this deal"
+    )

@@ -176,6 +176,7 @@ class FakeContact:
         job_title: str | None = None,
         company_name: str | None = None,
         phone: str | None = None,
+        mobile_phone: str | None = None,
         linkedin_url: str | None = None,
         contact_research: str | None = None,
         last_researched_at: datetime | None = None,
@@ -188,6 +189,7 @@ class FakeContact:
         self.job_title = job_title
         self.company_name = company_name
         self.phone = phone
+        self.mobile_phone = mobile_phone
         self.linkedin_url = linkedin_url
         self.contact_research = contact_research
         self.last_researched_at = last_researched_at
@@ -1028,6 +1030,7 @@ class FakeDealsAccessService:
         self._deals: dict[UUID, FakeDeal] = {}
         self._team_members: dict[UUID, list[dict]] = {}  # deal_id -> team members
         self._companies: dict[UUID, FakeCompany] = {}
+        self._contacts: dict[UUID, FakeContact] = {}
 
     async def close(self):
         """Release fake deals service resources after test scope ends."""
@@ -1047,9 +1050,17 @@ class FakeDealsAccessService:
         """Retained for older tests that seed company context separately."""
         self._companies[company.company_id] = company
 
+    def add_contact(self, contact: FakeContact):
+        """Retained for tests that seed primary-contact detail hydration."""
+        self._contacts[contact.contact_id] = contact
+
     async def get_company_by_id(self, company_id: UUID) -> FakeCompany | None:
         """Get company by local ID."""
         return self._companies.get(company_id)
+
+    async def get_contact_by_id(self, contact_id: UUID) -> FakeContact | None:
+        """Get contact by local ID."""
+        return self._contacts.get(contact_id)
 
     async def list_deals(
         self,

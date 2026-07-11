@@ -10,7 +10,7 @@ from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field
-from src.api.schemas.crm_models import DealOwnerDetail
+from src.api.schemas.crm_models import DealOwnerDetail, DealPrimaryContactDetail
 from src.contracts.crm.deal_write import (
     DealAccountUpdateRequest,
     DealCloseRequest,
@@ -68,6 +68,7 @@ class DealWriteResponse(BaseModel):
     primary_contact_id: UUID | None = None
     primary_contact_name: str | None = None
     primary_contact_email: str | None = None
+    primary_contact_details: list[DealPrimaryContactDetail] = Field(default_factory=list)
     source_created_at: datetime | None = None
     close_date: datetime | None = None
     expected_close_date: datetime | None = None

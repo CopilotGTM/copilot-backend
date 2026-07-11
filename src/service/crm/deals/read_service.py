@@ -15,6 +15,7 @@ from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
     CRMDealParticipant,
@@ -715,6 +716,21 @@ class DealReadService:
             return res.scalar_one_or_none()
         except Exception as e:
             logger.error("Failed to get company by id %s: %s", company_id, e, exc_info=True)
+            return None
+
+    async def get_contact_by_id(self, contact_id: UUID) -> CRMContact | None:
+        """Retrieve an active contact by its internal ID."""
+        try:
+            c_model = cast(Any, CRMContact)
+            stmt = select(CRMContact).where(
+                c_model.contact_id == contact_id,
+                c_model.organisation_id == self.organisation_id,
+                c_model.is_deleted.is_(False),
+            )
+            res = await self.org_session.execute(stmt)
+            return res.scalar_one_or_none()
+        except Exception as e:
+            logger.error("Failed to get contact by id %s: %s", contact_id, e, exc_info=True)
             return None
 
     async def get_deals_stats(self) -> dict:

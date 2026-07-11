@@ -85,6 +85,7 @@ class DealPrimaryContactDetail(BaseModel):
     contact_id: UUID | None = Field(None, description="Internal contact ID for linking")
     name: str | None = Field(None, description="Display name of the primary contact")
     email: str | None = Field(None, description="Email address of the primary contact")
+    phone_number: str | None = Field(None, description="Primary or mobile phone number")
 
     model_config = {"from_attributes": True}
 
@@ -248,6 +249,10 @@ class DealDetail(BaseModel):
     primary_contact_id: UUID | None = None
     primary_contact_name: str | None = None
     primary_contact_email: str | None = None
+    primary_contact_details: list[DealPrimaryContactDetail] = Field(
+        default_factory=list,
+        description="Primary contact details as a list (typically 0..1 items).",
+    )
 
     # Additional details
     deal_type: str | None = None
