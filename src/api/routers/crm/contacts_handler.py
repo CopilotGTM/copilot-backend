@@ -29,6 +29,8 @@ from src.api.schemas.crm_activity_feed_models import (
 from src.api.schemas.crm_contact_models import (
     AddContactToDealRequest,
     ContactDealInvolvement,
+    ContactDeleteImpact,
+    ContactDeleteResult,
     ContactDetail,
     ContactListItem,
     ContactMutationItem,
@@ -71,6 +73,33 @@ logger = get_logger("contacts_handler")
 _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your request"
 
 contacts_router = APIRouter()
+
+
+def _map_contact_mutation_item(
+    contact,
+    *,
+    source: str,
+    deal_count: int = 0,
+) -> ContactMutationItem:
+    contact_created_at = contact.created_at
+    return ContactMutationItem(
+        contact_id=contact.contact_id,
+        first_name=contact.first_name,
+        last_name=contact.last_name,
+        full_name=contact.full_name,
+        email=contact.email,
+        job_title=contact.job_title,
+        phone=contact.phone,
+        company_name=contact.company_name,
+        company_id=contact.company_id,
+        company_domain=None,
+        lifecycle_stage=contact.lifecycle_stage,
+        owner_name=getattr(contact, "owner_name", None),
+        deal_count=deal_count,
+        source=source,
+        created_at=contact_created_at,
+        updated_at=getattr(contact, "updated_at", None) or contact_created_at,
+    )
 
 
 async def get_contact_read_service(
@@ -331,26 +360,7 @@ async def create_contact(
             ),
         )
         contact = result.contact
-        contact_created_at = contact.created_at
-        contact_updated_at = getattr(contact, "updated_at", None) or contact_created_at
-        data = ContactMutationItem(
-            contact_id=contact.contact_id,
-            first_name=contact.first_name,
-            last_name=contact.last_name,
-            full_name=contact.full_name,
-            email=contact.email,
-            job_title=contact.job_title,
-            phone=contact.phone,
-            company_name=contact.company_name,
-            company_id=contact.company_id,
-            company_domain=None,
-            lifecycle_stage=contact.lifecycle_stage,
-            owner_name=getattr(contact, "owner_name", None),
-            deal_count=0,
-            source="manual",
-            created_at=contact_created_at,
-            updated_at=contact_updated_at,
-        )
+        data = _map_contact_mutation_item(contact, source="manual")
         # The write service stages all changes on the request session; the router commits only
         # after the mutation succeeds so validation failures can cleanly roll back.
         await service.org_session.commit()
@@ -596,24 +606,7 @@ async def update_contact(
             service.org_session, service.organisation_id
         ).resolve_source_for_contact(contact.integration_id)
 
-        data = ContactMutationItem(
-            contact_id=contact.contact_id,
-            first_name=contact.first_name,
-            last_name=contact.last_name,
-            full_name=contact.full_name,
-            email=contact.email,
-            job_title=contact.job_title,
-            phone=contact.phone,
-            company_name=contact.company_name,
-            company_id=contact.company_id,
-            company_domain=None,
-            lifecycle_stage=contact.lifecycle_stage,
-            owner_name=getattr(contact, "owner_name", None),
-            deal_count=0,
-            source=source,
-            created_at=contact.created_at,
-            updated_at=contact.updated_at,
-        )
+        data = _map_contact_mutation_item(contact, source=source)
         return Response.success_response(message="Contact updated", data=data)
     except ContactWriteServiceError as e:
         await service.org_session.rollback()
@@ -623,6 +616,56 @@ async def update_contact(
     except Exception:
         await service.org_session.rollback()
         logger.error("Error updating contact", extra={"contact_id": str(contact_id)}, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+@contacts_router.delete(
+    "/contacts/{contact_id}",
+    response_model=GenericResponse[ContactDeleteResult],
+    summary="Archive a contact",
+)
+async def delete_contact(
+    contact_id: UUID,
+    response: FastAPIResponse,
+    service: ContactWriteService = Depends(get_contact_write_service),
+    user_ids: UserIDs = Depends(get_current_user),
+    _crm_write_guard: None = Depends(require_crm_write_scope("contacts:delete")),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[ContactDeleteResult]:
+    """Archive an internal CRM contact and detach it from linked business records."""
+    try:
+        result = await service.delete_contact(
+            contact_id,
+            context=ContactWriteContext(
+                source="api",
+                actor_user_id=user_ids.user_id,
+                created_via="contacts_app",
+            ),
+        )
+        await service.org_session.commit()
+        data = ContactDeleteResult(
+            contact=_map_contact_mutation_item(result.contact, source="manual"),
+            impact=ContactDeleteImpact(**result.impact.__dict__),
+        )
+        return Response.success_response(
+            message="Contact archived and detached from linked records.",
+            data=data,
+        )
+    except ContactWriteServiceError as e:
+        await service.org_session.rollback()
+        return Response.error_response(
+            message=e.message,
+            status_code=e.status_code,
+            data=e.data,
+            response=response,
+        )
+    except Exception:
+        await service.org_session.rollback()
+        logger.error(
+            "Error archiving contact", extra={"contact_id": str(contact_id)}, exc_info=True
+        )
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )

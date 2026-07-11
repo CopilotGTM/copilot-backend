@@ -421,6 +421,7 @@ class StakeholderSyncService:
         _ = manual_overrides
         stmt = select(CRMContact).where(
             col(CRMContact.organisation_id) == self.organisation_id,
+            col(CRMContact.is_deleted).is_(False),
             col(CRMContact.email) == email,
         )
         result = await session.execute(stmt)

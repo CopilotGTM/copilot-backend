@@ -50,8 +50,10 @@ class _WriteSession:
         self.added: list[object] = []
         self.committed = False
         self.refreshed: list[object] = []
+        self.statements: list[object] = []
 
-    async def execute(self, _stmt):
+    async def execute(self, stmt):
+        self.statements.append(stmt)
         if not self._results:
             return _FakeResult()
         return self._results.pop(0)
@@ -539,10 +541,14 @@ async def test_create_stakeholder_linkedin_only_resolves_contact_before_particip
         """Return the resolved contact so the response uses contact-owned profile fields."""
         return contact
 
+    async def fake_is_internal_email(_email: str) -> bool:
+        return False
+
     service._find_contact_by_linkedin_url = fake_find_contact_by_linkedin_url  # type: ignore[method-assign]
     service._resolve_contact_identity = fake_resolve_contact_identity  # type: ignore[method-assign]
     service._ensure_deal_participant = fake_ensure_participant  # type: ignore[method-assign]
     service._get_participant_contact = fake_get_participant_contact  # type: ignore[method-assign]
+    service._is_internal_email = fake_is_internal_email  # type: ignore[method-assign]
 
     result = await service.create_stakeholder(
         deal_id,
@@ -1136,6 +1142,29 @@ async def test_add_contacts_as_stakeholders_dedupes_whitespace_padded_email() ->
     assert result.skipped[0].reason == "Stakeholder with this email already exists"
     assert session.added == []
     assert not session.committed
+
+
+@pytest.mark.asyncio
+async def test_add_contacts_as_stakeholders_skips_archived_contact_id() -> None:
+    org_id = uuid4()
+    deal_id = uuid4()
+    archived_contact_id = uuid4()
+    session = _WriteSession(
+        [
+            _FakeResult(scalars=[]),
+            _FakeResult(scalars=[]),
+        ]
+    )
+    service = StakeholderWriteService(session, org_id, user_id=uuid4())  # type: ignore[arg-type]
+
+    result = await service.add_contacts_as_stakeholders(deal_id, [archived_contact_id])
+
+    assert result.total_added == 0
+    assert result.total_skipped == 1
+    assert result.skipped[0].contact_id == archived_contact_id
+    assert result.skipped[0].reason == "Contact not found"
+    assert session.added == []
+    assert "crm_contacts.is_deleted" in str(session.statements[0])
 
 
 @pytest.mark.asyncio

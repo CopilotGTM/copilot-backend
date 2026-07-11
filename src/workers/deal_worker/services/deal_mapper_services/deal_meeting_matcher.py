@@ -146,6 +146,7 @@ class DealMeetingMatcher:
         stmt = select(CRMContact).where(
             col(CRMContact.organisation_id) == self.organisation_id,
             col(CRMContact.contact_id) == contact_id,
+            col(CRMContact.is_deleted).is_(False),
         )
         result = await session.execute(stmt)
         contact = result.scalars().first()

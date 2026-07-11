@@ -10,6 +10,7 @@ from fastapi import Response as FastAPIResponse
 from pydantic import ValidationError
 from src.api.routers.crm.contacts_handler import (
     create_contact,
+    delete_contact,
     get_contact_detail,
     list_contacts,
     search_contact_create_candidates,
@@ -22,7 +23,13 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealStatus,
     CRMParticipantType,
 )
-from src.service.crm.contacts.contracts import ContactCreateCommand, ContactWriteResult
+from src.service.crm.contacts.contracts import (
+    ContactArchiveImpact,
+    ContactArchiveResult,
+    ContactCreateCommand,
+    ContactWriteResult,
+    ContactWriteServiceError,
+)
 
 
 class _FakeContactReadService:
@@ -67,6 +74,13 @@ class _FakeContactWriteService:
     async def create_contact(self, command: ContactCreateCommand, **kwargs):
         self.calls.append({"command": command, **kwargs})
         return ContactWriteResult(contact=self.contact, created=True, matched_by="created")
+
+    async def delete_contact(self, contact_id, **kwargs):
+        self.calls.append({"contact_id": contact_id, **kwargs})
+        return ContactArchiveResult(
+            contact=self.contact,
+            impact=ContactArchiveImpact(cleared_deal_primary_contacts=1),
+        )
 
 
 class _AsyncCall:
@@ -1055,3 +1069,79 @@ async def test_get_contact_detail_allows_safe_missing_identity_fields_to_be_set(
     assert fields_by_key["linkedin_url"]["locked_reason"] is None
     assert fields_by_key["company.id"]["editable"] is False
     assert fields_by_key["company.id"]["locked_reason"] == "Add an email before linking an account."
+
+
+@pytest.mark.asyncio
+async def test_delete_contact_handler_returns_archive_impact() -> None:
+    org_id = uuid4()
+    user_id = uuid4()
+    now = datetime(2026, 7, 12, 10, 0, tzinfo=UTC)
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="wrong@example.com",
+        full_name="Wrong Contact",
+        created_at=now,
+        updated_at=now,
+    )
+    service = _FakeContactWriteService(contact)
+
+    result = await delete_contact(
+        contact_id=contact.contact_id,
+        response=FastAPIResponse(),
+        service=service,  # type: ignore[arg-type]
+        user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    assert result.message == "Contact archived and detached from linked records."
+    assert result.data.action == "archived_and_detached"  # type: ignore[union-attr]
+    assert result.data.contact.contact_id == contact.contact_id  # type: ignore[union-attr]
+    assert result.data.impact.cleared_deal_primary_contacts == 1  # type: ignore[union-attr]
+    assert service.org_session.commit.count == 1
+    assert service.calls[0]["contact_id"] == contact.contact_id
+
+
+@pytest.mark.asyncio
+async def test_delete_contact_handler_returns_guided_provider_conflict() -> None:
+    org_id = uuid4()
+    user_id = uuid4()
+
+    class ConflictService(_FakeContactWriteService):
+        async def delete_contact(self, contact_id, **kwargs):
+            raise ContactWriteServiceError(
+                "This contact belongs to an external CRM and cannot be archived here.",
+                status_code=409,
+                data={
+                    "code": "external_crm_contact_read_only",
+                    "blocked_reason": "Archive it in the source CRM.",
+                    "suggested_actions": ["Open the source CRM record."],
+                },
+            )
+
+    response = FastAPIResponse()
+    service = ConflictService(
+        CRMContact(
+            organisation_id=org_id,
+            integration_id=uuid4(),
+            contact_id=uuid4(),
+            created_at=datetime(2026, 7, 12, 10, 0, tzinfo=UTC),
+            updated_at=datetime(2026, 7, 12, 10, 0, tzinfo=UTC),
+        )
+    )
+
+    result = await delete_contact(
+        contact_id=service.contact.contact_id,
+        response=response,
+        service=service,  # type: ignore[arg-type]
+        user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    assert response.status_code == 409
+    assert result.status == "ERROR"
+    assert result.data["code"] == "external_crm_contact_read_only"  # type: ignore[index]
+    assert service.org_session.rollback.count == 1

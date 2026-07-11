@@ -890,6 +890,7 @@ class StakeholderWriteService:
         stmt = select(CRMContact).where(
             col(CRMContact.organisation_id) == self.organisation_id,
             col(CRMContact.contact_id).in_(contact_ids),
+            col(CRMContact.is_deleted).is_(False),
         )
         result = await self.session.execute(stmt)
         contacts_map = {c.contact_id: c for c in result.scalars().all()}
