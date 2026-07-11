@@ -10,7 +10,6 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
-from src.domain.models.organisation_tables.sync.conversation_intelligence import CICallSpeaker
 from src.domain.models.organisation_tables.sync.crm.activities import (
     CRMActivity,
     CRMActivityLink,
@@ -553,7 +552,6 @@ class ContactWriteService:
         lead_contact_count = await self._clear_lead_contact(contact, now)
         lead_participant_count = await self._archive_lead_participants(contact, now)
         integration_participant_count = await self._detach_integration_participants(contact)
-        speaker_count = await self._detach_conversation_speakers(contact, now)
         removed_links, cleared_activities, archived_activities = await self._detach_activities(
             contact, now
         )
@@ -565,7 +563,6 @@ class ContactWriteService:
             cleared_lead_contacts=lead_contact_count,
             archived_lead_participants=lead_participant_count,
             detached_integration_participants=integration_participant_count,
-            detached_conversation_speakers=speaker_count,
             removed_contact_activity_links=removed_links,
             cleared_activity_contact_refs=cleared_activities,
             archived_contact_only_activities=archived_activities,
@@ -666,22 +663,6 @@ class ContactWriteService:
             participant.last_resolved_at = None
             self.org_session.add(participant)
         return len(participants)
-
-    async def _detach_conversation_speakers(self, contact: CRMContact, now: datetime) -> int:
-        result = await self.org_session.execute(
-            select(CICallSpeaker).where(
-                col(CICallSpeaker.organisation_id) == self.organisation_id,
-                col(CICallSpeaker.crm_contact_id) == contact.contact_id,
-            )
-        )
-        speakers = result.scalars().all()
-        for speaker in speakers:
-            speaker.crm_contact_id = None
-            speaker.synced_at = now
-            speaker.source_modified_at = now
-            speaker.last_seen_at = now
-            self.org_session.add(speaker)
-        return len(speakers)
 
     async def _detach_activities(self, contact: CRMContact, now: datetime) -> tuple[int, int, int]:
         removed_links = await self._remove_contact_activity_links(contact)

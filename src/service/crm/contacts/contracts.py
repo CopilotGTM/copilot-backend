@@ -61,7 +61,6 @@ class ContactArchiveImpact:
     cleared_lead_contacts: int = 0
     archived_lead_participants: int = 0
     detached_integration_participants: int = 0
-    detached_conversation_speakers: int = 0
     removed_contact_activity_links: int = 0
     cleared_activity_contact_refs: int = 0
     archived_contact_only_activities: int = 0
