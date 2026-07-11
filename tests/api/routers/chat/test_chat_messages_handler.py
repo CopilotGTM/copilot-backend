@@ -1,6 +1,9 @@
+"""API contracts for recoverable web-chat publication, history, and feedback."""
+
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from src.domain.models.organisation_tables.job_models import JobStatus
 
 from tests.api.routers.chat.conftest import FakeChatMessageService
 
@@ -11,6 +14,7 @@ from tests.api.routers.chat.conftest import FakeChatMessageService
 
 def test_send_message_success(client: TestClient, messages_dependency_overrides, mocker):
     """Test sending a message successfully."""
+    mocker.patch("src.api.dependencies.rate_limit._enforce_rate_limit")
     # Mock the celery task to prevent actual task dispatch
     mocker.patch(
         "src.api.routers.chat.messages_handler.send_chat_task_async",
@@ -31,6 +35,11 @@ def test_send_message_success(client: TestClient, messages_dependency_overrides,
     assert "job_id" in data
     assert "user_message_id" in data
     assert "assistant_message_id" in data
+    job = messages_dependency_overrides.jobs[data["job_id"]]
+    assert job.status == JobStatus.PENDING
+    assert job.job_metadata["enqueue_status"] == "enqueued"
+    assert job.job_metadata["enqueue_attempts"] == 1
+    assert job.job_metadata["celery_task_id"] == "mock-task-id"
 
 
 def test_send_message_with_message_type(client: TestClient, messages_dependency_overrides, mocker):
@@ -162,7 +171,8 @@ def test_send_message_with_attachments(client: TestClient, messages_dependency_o
 def test_send_message_celery_task_failure(
     client: TestClient, messages_dependency_overrides, mocker
 ):
-    """Test that celery task failure returns error."""
+    """A broker failure leaves accepted durable work for scheduled recovery."""
+    mocker.patch("src.api.dependencies.rate_limit._enforce_rate_limit")
     mocker.patch(
         "src.api.routers.chat.messages_handler.send_chat_task_async",
         side_effect=Exception("Celery connection failed"),
@@ -174,9 +184,14 @@ def test_send_message_celery_task_failure(
         "content": "Hello",
     }
     resp = client.post("/users/chats/send_message", json=payload)
-    assert resp.status_code == 500, resp.text
+    assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["status"] == "ERROR"
+    assert body["status"] == "SUCCESS"
+    job = messages_dependency_overrides.jobs[body["data"]["job_id"]]
+    assert job.status == JobStatus.PENDING
+    assert job.job_metadata["enqueue_status"] == "failed"
+    assert job.job_metadata["enqueue_attempts"] == 1
+    assert "Celery connection failed" in job.job_metadata["last_enqueue_error"]
 
 
 # =============================================================================

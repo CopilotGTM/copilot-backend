@@ -1,3 +1,10 @@
+"""Org- and user-scoped persistence operations for the web-chat API.
+
+Routes use this service to create recoverable chat jobs, resolve only attachments
+owned by the caller, paginate history, and record feedback without crossing the
+tenant or user boundary.
+"""
+
 from __future__ import annotations
 
 import contextlib
@@ -54,7 +61,7 @@ def _to_confidence(val) -> str | None:
 
 
 def _col(expr: Any) -> ColumnElement[Any]:
-    """Helper for mypy to treat SQLModel fields as ColumnElements."""
+    """Expose SQLModel descriptors as SQLAlchemy expressions for typed queries."""
     return cast(ColumnElement[Any], expr)
 
 
@@ -63,6 +70,8 @@ def _col_bool(expr: Any) -> ColumnElement[bool]:
 
 
 class ChatMessageService:
+    """Persist and query web-chat data within one organization and user scope."""
+
     def __init__(self, db: AsyncSession, organisation_id: UUID, user_id: UUID):
         self.db = db
         self.organisation_id = organisation_id
@@ -139,17 +148,23 @@ class ChatMessageService:
         # Link attachments in parallel for improved performance
         if attachments:
             with ThreadPoolExecutor() as executor:
-                # Create a partial function that includes message_id
+                # Bind the flushed message ID once so every link created by the
+                # executor belongs to the same parent message.
                 create_link_with_message_id = partial(self.create_link, message.message_id)
                 executor.map(create_link_with_message_id, enumerate(attachments))
 
-        # Create a pending job for processing this message (assistant reply generation)
+        # Store every identifier needed to reconstruct agent work before the API
+        # attempts broker publication; the recovery sweep reads this metadata.
         assistant_message_id = str(uuid4())
         job_metadata: dict[str, Any] = {
             "session_id": str(session_id),
             "user_message_id": str(message.message_id),
             "assistant_message_id": assistant_message_id,
             "current_datetime": message.created_at.astimezone(UTC).isoformat(),
+            "enqueue_status": "pending",
+            "enqueue_attempts": 0,
+            "celery_task_id": None,
+            "last_enqueue_error": None,
         }
         if user_timezone:
             # Preserve the user's local timezone so relative dates in the agent match
@@ -383,7 +398,8 @@ class ChatMessageService:
                 "Message not found or you don't have permission to update this message"
             )
 
-        # Update feedback score (set to None if 0 to clear feedback)
+        # Zero is the API's clear-feedback command, while the database represents
+        # an unrated message as NULL.
         message.feedback_score = feedback_score if feedback_score != 0 else None
 
         # Commit is handled by the caller for transaction control

@@ -1,7 +1,16 @@
+"""Runtime metric contracts for bounded labels, counts, durations, and memory."""
+
 from src.infra.observability.metrics import (
     record_celery_task_memory,
     record_celery_task_run,
     record_http_server_request,
+    record_whatsapp_durable_job,
+    record_whatsapp_enqueue,
+    record_whatsapp_inbound,
+    record_whatsapp_job_age,
+    record_whatsapp_processing,
+    record_whatsapp_recovery_sweep,
+    record_whatsapp_send,
 )
 
 
@@ -146,3 +155,49 @@ def test_record_celery_task_memory_tracks_rss_and_delta_with_stable_labels(monke
     }
     assert rss_histogram.calls == [(512.25, expected_attributes)]
     assert delta_histogram.calls == [(64.5, expected_attributes)]
+
+
+def test_whatsapp_delivery_metrics_use_only_bounded_attributes(monkeypatch) -> None:
+    metric_names = [
+        "_WHATSAPP_INBOUND_COUNT",
+        "_WHATSAPP_DURABLE_JOB_COUNT",
+        "_WHATSAPP_ENQUEUE_COUNT",
+        "_WHATSAPP_RECOVERY_SWEEP_COUNT",
+        "_WHATSAPP_JOB_AGE",
+        "_WHATSAPP_PROCESSING_COUNT",
+        "_WHATSAPP_SEND_COUNT",
+        "_WHATSAPP_SEND_ATTEMPTS",
+    ]
+    metrics = {name: _FakeMetric() for name in metric_names}
+    for name, metric in metrics.items():
+        monkeypatch.setattr(f"src.infra.observability.metrics.{name}", metric, raising=False)
+
+    record_whatsapp_inbound("new")
+    record_whatsapp_durable_job("reused")
+    record_whatsapp_enqueue("requeued")
+    record_whatsapp_recovery_sweep("completed")
+    record_whatsapp_job_age("pending", 125.5)
+    record_whatsapp_processing("agent_failed")
+    record_whatsapp_send("retryable", attempts=2)
+
+    assert metrics["_WHATSAPP_INBOUND_COUNT"].calls == [(1, {"outcome": "new"})]
+    assert metrics["_WHATSAPP_DURABLE_JOB_COUNT"].calls == [(1, {"outcome": "reused"})]
+    assert metrics["_WHATSAPP_ENQUEUE_COUNT"].calls == [(1, {"outcome": "requeued"})]
+    assert metrics["_WHATSAPP_RECOVERY_SWEEP_COUNT"].calls == [(1, {"outcome": "completed"})]
+    assert metrics["_WHATSAPP_JOB_AGE"].calls == [(125.5, {"status": "pending"})]
+    assert metrics["_WHATSAPP_PROCESSING_COUNT"].calls == [(1, {"outcome": "agent_failed"})]
+    assert metrics["_WHATSAPP_SEND_COUNT"].calls == [(1, {"outcome": "retryable"})]
+    assert metrics["_WHATSAPP_SEND_ATTEMPTS"].calls == [(2, {"outcome": "failed"})]
+
+
+def test_whatsapp_metric_rejects_identifier_as_bounded_unknown(monkeypatch) -> None:
+    inbound = _FakeMetric()
+    monkeypatch.setattr(
+        "src.infra.observability.metrics._WHATSAPP_INBOUND_COUNT",
+        inbound,
+        raising=False,
+    )
+
+    record_whatsapp_inbound("wamid.15551234567.job-id")
+
+    assert inbound.calls == [(1, {"outcome": "unknown"})]

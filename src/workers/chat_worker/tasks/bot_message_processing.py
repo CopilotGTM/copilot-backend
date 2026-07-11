@@ -1,7 +1,7 @@
 """Bot message processing task for chat worker.
 
-Processes messages from bot platforms (Teams, Slack) through the GeneralAgent
-and sends the reply back to the originating platform.
+Processes bot messages through the GeneralAgent and resumes durable WhatsApp
+delivery without rerunning the agent.
 
 This task delegates all business logic to BotMessageProcessingService.
 """
@@ -79,3 +79,22 @@ def process_bot_message(
     except Exception as e:
         logger.exception("Bot message task failed org=%s error=%s", organisation_id, e)
         raise
+
+
+@app.task(
+    name="chat.resume_whatsapp_delivery",
+    acks_late=True,
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=30,
+    retry_jitter=True,
+    max_retries=3,
+)
+def resume_whatsapp_delivery(
+    self,
+    organisation_id: str,
+    job_id: str,
+) -> bool:
+    """Retry only Meta delivery from response chunks already stored on the job."""
+    service = BotMessageProcessingService(UUID(organisation_id))
+    return service.resume_whatsapp_delivery(UUID(job_id))

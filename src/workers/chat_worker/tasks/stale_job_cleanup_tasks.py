@@ -4,10 +4,12 @@ Two-tier task pattern:
 - Tier 1: cleanup_stale_chat_jobs_all_orgs_task - Coordinator, dispatches to all orgs
 - Tier 2: cleanup_stale_chat_jobs_org_task - Per-org cleanup with retry support
 
-Runs every 30 minutes via Celery Beat. Cleans up:
-- Stale ChatMessageJobs (PENDING >60min, IN_PROGRESS >30min)
-- Stuck TRIGGERED reminders (>15min) — resets to ACTIVE or FAILED
-- Stale UserReminderRuns (IN_PROGRESS >15min)
+Runs every 15 seconds via Celery Beat. Recovers durable chat jobs and cleans up:
+- Web and WhatsApp pending jobs (>15sec), plus response-ready WhatsApp jobs (>2min)
+- WhatsApp agent executions with unknown outcomes (>12min)
+- Other stale ChatMessageJobs (PENDING >60min, IN_PROGRESS >30min)
+- Stuck TRIGGERED reminders (>30min), reset to ACTIVE or FAILED
+- Stale UserReminderRuns (IN_PROGRESS >30min)
 """
 
 from __future__ import annotations
@@ -46,7 +48,7 @@ logger = get_logger("chat_stale_job_cleanup_tasks")
 def cleanup_stale_chat_jobs_all_orgs_task() -> dict[str, Any]:
     """Tier 1: Coordinator task that dispatches cleanup to all approved organizations.
 
-    Scheduled to run every 30 minutes via Celery Beat.
+    Scheduled every 15 seconds so transient publish failures recover promptly.
     """
     logger.info("Starting chat stale job cleanup coordinator for all organizations")
 

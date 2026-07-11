@@ -1,3 +1,5 @@
+"""Task-registration contracts that keep chat-worker imports explicit and lazy."""
+
 from __future__ import annotations
 
 import importlib
@@ -23,6 +25,7 @@ EXPECTED_TASK_NAMES = {
     "chat.ping",
     "chat.poll_due_reminders",
     "chat.process_bot_message",
+    "chat.resume_whatsapp_delivery",
     "chat.process_message",
     "chat.recovery_sweep_reminders",
     "chat.test_task",

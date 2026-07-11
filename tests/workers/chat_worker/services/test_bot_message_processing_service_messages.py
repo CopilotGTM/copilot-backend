@@ -1,3 +1,6 @@
+"""Bot-worker contracts for prompts, attachments, status, and channel delivery."""
+
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -257,14 +260,22 @@ async def test_prepare_whatsapp_audio_input_transcribes_and_persists(
     job_id = uuid4()
     persisted: dict[str, str] = {}
 
-    async def fake_transcribe_whatsapp_audio_files(_files, *, phone_number_id):
-        assert phone_number_id == "phone-123"
+    async def fake_transcribe_whatsapp_audio_attachments(attachments):
+        assert attachments == [
+            {
+                "attachment_id": "attachment-123",
+                "filename": "voice.ogg",
+                "mimetype": "audio/ogg",
+                "source_provider": "whatsapp",
+            }
+        ]
         return "create a follow-up task"
 
     monkeypatch.setattr(
         service,
-        "_transcribe_whatsapp_audio_files",
-        fake_transcribe_whatsapp_audio_files,
+        "_transcribe_whatsapp_audio_attachments",
+        fake_transcribe_whatsapp_audio_attachments,
+        raising=False,
     )
     monkeypatch.setattr(
         service,
@@ -280,7 +291,14 @@ async def test_prepare_whatsapp_audio_input_transcribes_and_persists(
         reply_context={"phone_number_id": "phone-123"},
         bot_context={
             "conversation_type": "personal",
-            "whatsapp_audio_files": [{"media_id": "media-123"}],
+            "current_attachments": [
+                {
+                    "attachment_id": "attachment-123",
+                    "filename": "voice.ogg",
+                    "mimetype": "audio/ogg",
+                    "source_provider": "whatsapp",
+                }
+            ],
         },
         job_id=job_id,
     )
@@ -289,7 +307,7 @@ async def test_prepare_whatsapp_audio_input_transcribes_and_persists(
         "please use this voice note\n\n[WhatsApp audio transcript]\ncreate a follow-up task"
     )
     assert bot_context["input_modality"] == "audio"
-    assert bot_context["audio_origin"] == "whatsapp_audio"
+    assert bot_context["audio_origin"] == "whatsapp_attachment"
     assert persisted == {"job_id": str(job_id), "text": message_text}
 
 
@@ -321,6 +339,74 @@ async def test_prepare_whatsapp_audio_input_keeps_typed_text_when_transcript_fai
 
     assert message_text == "typed fallback"
     assert "input_modality" not in bot_context
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_audio_transcription_reads_durable_blob(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    organisation_id = uuid4()
+    attachment_id = uuid4()
+    attachment = SimpleNamespace(
+        attachment_id=attachment_id,
+        organisation_id=organisation_id,
+        filename="voice.ogg",
+        storage_path="attachments/voice.ogg",
+    )
+
+    class _Result:
+        def scalars(self):
+            return SimpleNamespace(all=lambda: [attachment])
+
+    class _Session:
+        async def execute(self, _statement):
+            return _Result()
+
+    async def sessions(_org_id):
+        yield _Session()
+
+    class _Storage:
+        paths: list[str] = []
+
+        def __init__(self, _org_id):
+            pass
+
+        async def get_blob_content(self, storage_path: str):
+            self.paths.append(storage_path)
+            return b"durable audio"
+
+        async def close(self):
+            return None
+
+    transcribe_calls: list[tuple[bytes, str]] = []
+
+    async def transcribe(content: bytes, filename: str):
+        transcribe_calls.append((content, filename))
+        return "durable transcript"
+
+    monkeypatch.setattr("src.infra.database.sessions.acquire_org_async_session", sessions)
+    monkeypatch.setattr(
+        "src.infra.storage.azure_org_blob_storage.AzureOrganisationBlobStorage",
+        _Storage,
+    )
+    monkeypatch.setattr("src.infra.media.audio_transcription.transcribe_audio", transcribe)
+
+    transcript = await BotMessageProcessingService(
+        organisation_id
+    )._transcribe_whatsapp_audio_attachments(
+        [
+            {
+                "attachment_id": str(attachment_id),
+                "filename": "voice.ogg",
+                "mimetype": "audio/ogg",
+                "source_provider": "whatsapp",
+            }
+        ]
+    )
+
+    assert transcript == "durable transcript"
+    assert _Storage.paths == ["attachments/voice.ogg"]
+    assert transcribe_calls == [(b"durable audio", "voice.ogg")]
 
 
 def test_build_status_context_supports_whatsapp() -> None:

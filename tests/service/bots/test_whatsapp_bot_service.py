@@ -1,6 +1,9 @@
+"""WhatsApp intake, durable job, recovery, media, and provider-send contracts."""
+
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from src.infra.config.configs import slack_config, teams_config, whatsapp_config
@@ -19,6 +22,15 @@ def _message() -> WhatsAppInboundMessage:
         text="hello from whatsapp",
         profile_name="Nikhil",
     )
+
+
+def _patch_durable_job(monkeypatch, service: WhatsAppBotService):
+    job = SimpleNamespace(job_id=uuid4())
+    create_mock = AsyncMock(return_value=job)
+    enqueue_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(service, "_create_or_get_durable_job", create_mock)
+    monkeypatch.setattr(service, "_enqueue_durable_job", enqueue_mock)
+    return job, create_mock, enqueue_mock
 
 
 @pytest.mark.asyncio
@@ -87,36 +99,23 @@ async def test_linked_user_enqueues_chat_processing(monkeypatch: pytest.MonkeyPa
         email="test@example.com",
         timezone="Asia/Kolkata",
     )
-    captured: dict[str, object] = {}
-
     monkeypatch.setattr(service, "_get_linked_user", AsyncMock(return_value=(user, {})))
-    monkeypatch.setattr(service, "_create_bot_job", AsyncMock(return_value=uuid4()))
     monkeypatch.setattr(service, "send_typing_indicator", AsyncMock(return_value=False))
-
-    async def fake_send_chat_task_async(name, args, kwargs, queue):
-        captured["name"] = name
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-        captured["queue"] = queue
-        return "task-1"
-
-    monkeypatch.setattr(
-        "src.workers.chat_worker.client.send_chat_task_async",
-        fake_send_chat_task_async,
-    )
+    job, create_mock, enqueue_mock = _patch_durable_job(monkeypatch, service)
 
     await service._route_message(_message())
 
-    assert captured["name"] == "chat.process_bot_message"
-    assert captured["args"][3] == "whatsapp"
-    assert captured["args"][4] == {
+    envelope = create_mock.await_args.kwargs["dispatch_envelope"]
+    assert envelope["provider"] == "whatsapp"
+    assert envelope["reply_context"] == {
         "phone_number_id": "phone-123",
         "recipient_wa_id": "15551234567",
         "incoming_message_id": "wamid.1",
     }
-    assert captured["kwargs"]["bot_context"]["conversation_type"] == "personal"
-    assert captured["kwargs"]["bot_context"]["external_user_id"] == "15551234567"
-    assert captured["kwargs"]["bot_context"]["user_timezone"] == "Asia/Kolkata"
+    assert envelope["bot_context"]["conversation_type"] == "personal"
+    assert envelope["bot_context"]["external_user_id"] == "15551234567"
+    assert envelope["bot_context"]["user_timezone"] == "Asia/Kolkata"
+    enqueue_mock.assert_awaited_once_with(user.organisation_id, job.job_id)
 
 
 @pytest.mark.asyncio
@@ -166,7 +165,35 @@ async def test_get_linked_user_records_whatsapp_customer_service_window(
 
 
 @pytest.mark.asyncio
-async def test_linked_user_sends_typing_indicator_before_enqueue(
+async def test_get_linked_user_raises_durability_error_on_lookup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.service.bots import whatsapp_bot_service
+
+    service = WhatsAppBotService()
+
+    class _Session:
+        pass
+
+    async def _sessions():
+        yield _Session()
+
+    monkeypatch.setattr(
+        "src.service.bots.whatsapp_bot_service.acquire_master_async_session",
+        _sessions,
+    )
+    monkeypatch.setattr(
+        service._identity_service,
+        "get_user_for_external_identity",
+        AsyncMock(side_effect=RuntimeError("master database unavailable")),
+    )
+
+    with pytest.raises(whatsapp_bot_service.WhatsAppInboundDurabilityError):
+        await service._get_linked_user("15551234567", "phone-123")
+
+
+@pytest.mark.asyncio
+async def test_linked_user_sends_typing_indicator_after_durable_enqueue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = WhatsAppBotService()
@@ -175,33 +202,28 @@ async def test_linked_user_sends_typing_indicator_before_enqueue(
         user_id=uuid4(),
         email="test@example.com",
     )
-    captured: dict[str, object] = {}
-    typing_mock = AsyncMock(return_value=True)
+    calls: list[str] = []
+
+    async def send_typing_indicator(**_kwargs):
+        calls.append("typing")
+        return True
+
+    async def create_durable_job(**_kwargs):
+        calls.append("persist")
+        return SimpleNamespace(job_id=uuid4())
+
+    async def enqueue_durable_job(*_args):
+        calls.append("enqueue")
+        return True
 
     monkeypatch.setattr(service, "_get_linked_user", AsyncMock(return_value=(user, {})))
-    monkeypatch.setattr(service, "_create_bot_job", AsyncMock(return_value=uuid4()))
-    monkeypatch.setattr(service, "send_typing_indicator", typing_mock)
-
-    async def fake_send_chat_task_async(name, args, kwargs, queue):
-        captured["reply_context"] = args[4]
-        return "task-1"
-
-    monkeypatch.setattr(
-        "src.workers.chat_worker.client.send_chat_task_async",
-        fake_send_chat_task_async,
-    )
+    monkeypatch.setattr(service, "send_typing_indicator", send_typing_indicator)
+    monkeypatch.setattr(service, "_create_or_get_durable_job", create_durable_job)
+    monkeypatch.setattr(service, "_enqueue_durable_job", enqueue_durable_job)
 
     await service._route_message(_message())
 
-    typing_mock.assert_awaited_once_with(
-        phone_number_id="phone-123",
-        message_id="wamid.1",
-    )
-    assert captured["reply_context"] == {
-        "phone_number_id": "phone-123",
-        "recipient_wa_id": "15551234567",
-        "incoming_message_id": "wamid.1",
-    }
+    assert calls == ["persist", "enqueue", "typing"]
 
 
 @pytest.mark.asyncio
@@ -214,28 +236,17 @@ async def test_linked_user_enqueues_when_typing_indicator_fails(
         user_id=uuid4(),
         email="test@example.com",
     )
-    captured: dict[str, object] = {}
-
     monkeypatch.setattr(service, "_get_linked_user", AsyncMock(return_value=(user, {})))
-    monkeypatch.setattr(service, "_create_bot_job", AsyncMock(return_value=uuid4()))
     monkeypatch.setattr(
         service,
         "send_typing_indicator",
         AsyncMock(side_effect=RuntimeError("send failed")),
     )
-
-    async def fake_send_chat_task_async(name, args, kwargs, queue):
-        captured["reply_context"] = args[4]
-        return "task-1"
-
-    monkeypatch.setattr(
-        "src.workers.chat_worker.client.send_chat_task_async",
-        fake_send_chat_task_async,
-    )
+    _, create_mock, _ = _patch_durable_job(monkeypatch, service)
 
     await service._route_message(_message())
 
-    assert captured["reply_context"] == {
+    assert create_mock.await_args.kwargs["dispatch_envelope"]["reply_context"] == {
         "phone_number_id": "phone-123",
         "recipient_wa_id": "15551234567",
         "incoming_message_id": "wamid.1",
@@ -243,7 +254,7 @@ async def test_linked_user_enqueues_when_typing_indicator_fails(
 
 
 @pytest.mark.asyncio
-async def test_linked_user_gets_temporary_failure_message_when_enqueue_fails(
+async def test_linked_user_leaves_durable_job_for_recovery_when_enqueue_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = WhatsAppBotService()
@@ -255,28 +266,14 @@ async def test_linked_user_gets_temporary_failure_message_when_enqueue_fails(
     send_mock = AsyncMock(return_value=True)
 
     monkeypatch.setattr(service, "_get_linked_user", AsyncMock(return_value=(user, {})))
-    monkeypatch.setattr(service, "_create_bot_job", AsyncMock(return_value=uuid4()))
     monkeypatch.setattr(service, "send_typing_indicator", AsyncMock(return_value=False))
     monkeypatch.setattr(service, "send_text_message", send_mock)
-
-    async def fake_send_chat_task_async(*_args, **_kwargs):
-        raise RuntimeError("redis unavailable")
-
-    monkeypatch.setattr(
-        "src.workers.chat_worker.client.send_chat_task_async",
-        fake_send_chat_task_async,
-    )
+    _, _, enqueue_mock = _patch_durable_job(monkeypatch, service)
+    enqueue_mock.return_value = False
 
     await service._route_message(_message())
 
-    send_mock.assert_awaited_once_with(
-        phone_number_id="phone-123",
-        recipient_wa_id="15551234567",
-        text=(
-            "I'm sorry, I'm having trouble processing your request right now. "
-            "Please try again in a moment."
-        ),
-    )
+    send_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -304,34 +301,25 @@ async def test_linked_user_audio_message_enqueues_chat_processing(
             }
         ],
     )
-    captured: dict[str, object] = {}
+    attachment_refs = [
+        {
+            "attachment_id": str(uuid4()),
+            "filename": "whatsapp-audio.ogg",
+            "mimetype": "audio/ogg",
+            "source_provider": "whatsapp",
+        }
+    ]
 
     monkeypatch.setattr(service, "_get_linked_user", AsyncMock(return_value=(user, {})))
-    monkeypatch.setattr(service, "_create_bot_job", AsyncMock(return_value=uuid4()))
     monkeypatch.setattr(service, "send_typing_indicator", AsyncMock(return_value=False))
-
-    async def fake_send_chat_task_async(name, args, kwargs, queue):
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-        return "task-1"
-
-    monkeypatch.setattr(
-        "src.workers.chat_worker.client.send_chat_task_async",
-        fake_send_chat_task_async,
-    )
+    monkeypatch.setattr(service, "_ingest_media_files", AsyncMock(return_value=attachment_refs))
+    _, create_mock, _ = _patch_durable_job(monkeypatch, service)
 
     await service._route_message(message)
 
-    assert captured["args"][2] == ""
-    bot_context = captured["kwargs"]["bot_context"]
-    assert bot_context["whatsapp_audio_files"] == [
-        {
-            "media_id": "media-123",
-            "mimetype": "audio/ogg",
-            "filename": "whatsapp-audio.ogg",
-            "message_id": "wamid.audio",
-        }
-    ]
+    bot_context = create_mock.await_args.kwargs["dispatch_envelope"]["bot_context"]
+    assert bot_context["current_attachments"] == attachment_refs
+    assert "whatsapp_audio_files" not in bot_context
 
 
 def test_extract_inbound_audio_message() -> None:
@@ -373,13 +361,15 @@ def test_extract_inbound_audio_message() -> None:
     assert len(messages) == 1
     assert messages[0].text == ""
     assert messages[0].profile_name == "Nikhil"
-    assert messages[0].audio_files == [
-        {
-            "media_id": "media-123",
-            "mimetype": "audio/ogg; codecs=opus",
-            "filename": "whatsapp-audio.ogg",
-            "message_id": "wamid.audio",
-        }
+    assert messages[0].audio_files is None
+    assert messages[0].media_files == [
+        WhatsAppInboundMedia(
+            media_id="media-123",
+            media_type="audio",
+            mimetype="audio/ogg; codecs=opus",
+            filename="whatsapp-audio.ogg",
+            message_id="wamid.audio",
+        )
     ]
 
 
@@ -628,35 +618,27 @@ async def test_linked_user_document_message_enqueues_with_attachment_refs(
             "source_provider": "whatsapp",
         }
     ]
-    captured: dict[str, object] = {}
-
     monkeypatch.setattr(service, "_get_linked_user", AsyncMock(return_value=(user, {})))
-    monkeypatch.setattr(service, "_create_bot_job", AsyncMock(return_value=uuid4()))
     monkeypatch.setattr(service, "send_typing_indicator", AsyncMock(return_value=False))
     monkeypatch.setattr(
         service,
         "_ingest_media_files",
         AsyncMock(return_value=attachment_refs),
     )
-
-    async def fake_send_chat_task_async(name, args, kwargs, queue):
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-        return "task-1"
-
-    monkeypatch.setattr(
-        "src.workers.chat_worker.client.send_chat_task_async",
-        fake_send_chat_task_async,
-    )
+    _, create_mock, _ = _patch_durable_job(monkeypatch, service)
 
     await service._route_message(message)
 
-    assert captured["args"][2] == "Please summarize"
-    assert captured["kwargs"]["bot_context"]["current_attachments"] == attachment_refs
-    service._create_bot_job.assert_awaited_once_with(
+    create_kwargs = create_mock.await_args.kwargs
+    assert create_kwargs["dispatch_envelope"]["message_text"] == "Please summarize"
+    assert create_kwargs["dispatch_envelope"]["bot_context"]["current_attachments"] == (
+        attachment_refs
+    )
+    create_mock.assert_awaited_once_with(
         user=user,
-        message_text="Please summarize",
+        message=message,
         attachment_refs=attachment_refs,
+        dispatch_envelope=create_kwargs["dispatch_envelope"],
     )
 
 
@@ -734,49 +716,606 @@ async def test_video_message_is_unsupported() -> None:
     assert messages[0].unsupported_reason == "video"
 
 
-class _FakeAsyncSession:
-    def __init__(self):
-        self.added = []
-
-    def add(self, obj):
-        self.added.append(obj)
-
-    async def commit(self):
-        pass
-
-    async def flush(self):
-        pass
-
-    async def execute(self, _stmt):
-        return SimpleNamespace(scalars=lambda: SimpleNamespace(first=lambda: None))
+def test_whatsapp_idempotency_key_includes_business_number_sender_and_wamid() -> None:
+    assert WhatsAppBotService._idempotency_key(_message()) == (
+        "whatsapp:phone-123:15551234567:wamid.1"
+    )
 
 
 @pytest.mark.asyncio
-async def test_create_bot_job_creates_whatsapp_personal_chat(
+async def test_job_persistence_failure_never_dispatches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from src.service.bots import whatsapp_bot_service
+
+    service = WhatsAppBotService()
+    user = SimpleNamespace(
+        organisation_id=uuid4(),
+        user_id=uuid4(),
+        email="test@example.com",
+        timezone=None,
+    )
+    dispatch_mock = AsyncMock()
+
+    monkeypatch.setattr(service, "_get_linked_user", AsyncMock(return_value=(user, {})))
+    monkeypatch.setattr(service, "send_typing_indicator", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        service,
+        "_create_or_get_durable_job",
+        AsyncMock(side_effect=RuntimeError("database unavailable")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "src.workers.chat_worker.client.send_chat_task_async",
+        dispatch_mock,
+    )
+
+    with pytest.raises(whatsapp_bot_service.WhatsAppInboundDurabilityError):
+        await service._route_message(_message())
+
+    dispatch_mock.assert_not_awaited()
+
+
+class _ScalarResult:
+    def __init__(self, value):
+        self.value = value
+
+    def scalars(self):
+        return SimpleNamespace(first=lambda: self.value)
+
+
+class _DurableJobSession:
+    def __init__(self, results, *, commit_error=None):
+        self.results = list(results)
+        self.commit_error = commit_error
+        self.added = []
+        self.executed = []
+        self.commit_count = 0
+        self.rollback_count = 0
+
+    async def execute(self, statement):
+        """Record each query so tests can assert the durable lookup contract."""
+        self.executed.append(statement)
+        return _ScalarResult(self.results.pop(0))
+
+    def add(self, value):
+        self.added.append(value)
+
+    async def flush(self):
+        return None
+
+    async def commit(self):
+        self.commit_count += 1
+        if self.commit_error:
+            raise self.commit_error
+
+    async def rollback(self):
+        self.rollback_count += 1
+
+
+@pytest.mark.asyncio
+async def test_durable_job_commits_message_links_and_job_together(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Persist provider retry identity in the column and compatibility metadata."""
+    from src.domain.models.organisation_tables.chat_message_models import (
+        ChatMessage,
+        ChatMessageAttachmentLink,
+    )
+    from src.domain.models.organisation_tables.job_models import ChatMessageJob
+
     service = WhatsAppBotService()
     user = SimpleNamespace(
         organisation_id=uuid4(),
         user_id=uuid4(),
         email="test@example.com",
     )
-    captured_jobs = []
+    attachment_id = uuid4()
+    session = _DurableJobSession([None, None])
 
-    class TrackingSession(_FakeAsyncSession):
-        def add(self, obj):
-            super().add(obj)
-            if hasattr(obj, "job_type"):
-                captured_jobs.append(obj)
+    async def sessions(_org_id):
+        yield session
 
-    async def gen(_org_id):
-        yield TrackingSession()
+    monkeypatch.setattr("src.infra.database.sessions.acquire_org_async_session", sessions)
 
-    monkeypatch.setattr("src.infra.database.sessions.acquire_org_async_session", gen)
+    job = await service._create_or_get_durable_job(
+        user=user,
+        message=_message(),
+        attachment_refs=[
+            {
+                "attachment_id": str(attachment_id),
+                "filename": "proposal.pdf",
+                "mimetype": "application/pdf",
+                "source_provider": "whatsapp",
+            }
+        ],
+        dispatch_envelope={"organisation_id": str(user.organisation_id)},
+    )
 
-    job_id = await service._create_bot_job(user=user, message_text="hello")
+    assert isinstance(job, ChatMessageJob)
+    assert session.commit_count == 1
+    assert sum(isinstance(item, ChatMessage) for item in session.added) == 1
+    assert sum(isinstance(item, ChatMessageAttachmentLink) for item in session.added) == 1
+    assert sum(isinstance(item, ChatMessageJob) for item in session.added) == 1
+    assert job.idempotency_key == "whatsapp:phone-123:15551234567:wamid.1"
+    assert job.job_metadata["idempotency_key"] == ("whatsapp:phone-123:15551234567:wamid.1")
+    assert job.job_metadata["dispatch_envelope"] == {"organisation_id": str(user.organisation_id)}
 
-    assert isinstance(job_id, UUID)
-    assert len(captured_jobs) == 1
-    assert captured_jobs[0].job_type == "whatsapp_chat_response"
-    assert captured_jobs[0].chat_type == "WHATSAPP_CHAT"
+
+@pytest.mark.asyncio
+async def test_durable_job_returns_existing_job_for_duplicate_wamid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Query the normalized key column when converging a duplicate webhook."""
+    from src.domain.models.organisation_tables.job_models import ChatMessageJob
+
+    service = WhatsAppBotService()
+    user = SimpleNamespace(organisation_id=uuid4(), user_id=uuid4())
+    winner = ChatMessageJob(
+        job_type="whatsapp_chat_response",
+        chat_type="WHATSAPP_CHAT",
+        job_metadata={"idempotency_key": WhatsAppBotService._idempotency_key(_message())},
+    )
+    session = _DurableJobSession([winner])
+
+    async def sessions(_org_id):
+        yield session
+
+    monkeypatch.setattr("src.infra.database.sessions.acquire_org_async_session", sessions)
+
+    result = await service._create_or_get_durable_job(
+        user=user,
+        message=_message(),
+        attachment_refs=[],
+        dispatch_envelope={},
+    )
+
+    assert result is winner
+    assert session.commit_count == 0
+    assert session.added == []
+    from sqlalchemy.dialects import postgresql
+
+    lookup_sql = str(
+        session.executed[0].compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+    assert "chat_message_jobs.idempotency_key" in lookup_sql
+    assert "job_metadata" not in lookup_sql.split("WHERE", maxsplit=1)[1]
+
+
+@pytest.mark.asyncio
+async def test_durable_job_unique_race_reloads_winner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sqlalchemy.exc import IntegrityError
+    from src.domain.models.organisation_tables.job_models import ChatMessageJob
+
+    service = WhatsAppBotService()
+    user = SimpleNamespace(organisation_id=uuid4(), user_id=uuid4())
+    winner = ChatMessageJob(
+        job_type="whatsapp_chat_response",
+        chat_type="WHATSAPP_CHAT",
+        job_metadata={"idempotency_key": WhatsAppBotService._idempotency_key(_message())},
+    )
+    losing_session = _DurableJobSession(
+        [None, None],
+        commit_error=IntegrityError("insert", {}, RuntimeError("duplicate")),
+    )
+    winning_session = _DurableJobSession([winner])
+    sessions_to_yield = iter([losing_session, winning_session])
+
+    async def sessions(_org_id):
+        yield next(sessions_to_yield)
+
+    monkeypatch.setattr("src.infra.database.sessions.acquire_org_async_session", sessions)
+
+    result = await service._create_or_get_durable_job(
+        user=user,
+        message=_message(),
+        attachment_refs=[],
+        dispatch_envelope={},
+    )
+
+    assert result is winner
+    assert losing_session.rollback_count == 1
+
+
+@pytest.mark.asyncio
+async def test_enqueue_whatsapp_job_serializes_the_stored_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.service.bots import whatsapp_bot_service
+
+    job_id = uuid4()
+    envelope = {
+        "organisation_id": str(uuid4()),
+        "user_id": str(uuid4()),
+        "message_text": "Where is the proposal?",
+        "provider": "whatsapp",
+        "reply_context": {
+            "phone_number_id": "phone-123",
+            "recipient_wa_id": "15551234567",
+            "incoming_message_id": "wamid.1",
+        },
+        "bot_context": {"conversation_type": "personal"},
+        "user_email": "test@example.com",
+    }
+    captured: dict[str, object] = {}
+
+    async def send_task(name, args, kwargs, queue, routing_key):
+        captured.update(
+            name=name,
+            args=args,
+            kwargs=kwargs,
+            queue=queue,
+            routing_key=routing_key,
+        )
+        return "task-123"
+
+    monkeypatch.setattr("src.workers.chat_worker.client.send_chat_task_async", send_task)
+
+    task_id = await whatsapp_bot_service.enqueue_whatsapp_job(
+        job_id=job_id,
+        envelope=envelope,
+    )
+
+    assert task_id == "task-123"
+    assert captured == {
+        "name": "chat.process_bot_message",
+        "args": [
+            envelope["organisation_id"],
+            envelope["user_id"],
+            envelope["message_text"],
+            "whatsapp",
+            envelope["reply_context"],
+        ],
+        "kwargs": {
+            "user_email": "test@example.com",
+            "bot_context": envelope["bot_context"],
+            "job_id": str(job_id),
+        },
+        "queue": "chat_messages",
+        "routing_key": "chat_messages",
+    }
+
+
+@pytest.mark.asyncio
+async def test_enqueue_whatsapp_job_times_out_broker_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.service.bots import whatsapp_bot_service
+
+    async def slow_send(*_args, **_kwargs):
+        await asyncio.sleep(0.05)
+        return "late-task"
+
+    monkeypatch.setattr(
+        whatsapp_bot_service,
+        "_WHATSAPP_QUEUE_PUBLISH_TIMEOUT_SECONDS",
+        0.001,
+    )
+    monkeypatch.setattr("src.workers.chat_worker.client.send_chat_task_async", slow_send)
+
+    with pytest.raises(TimeoutError):
+        await whatsapp_bot_service.enqueue_whatsapp_job(
+            job_id=uuid4(),
+            envelope={
+                "organisation_id": str(uuid4()),
+                "user_id": str(uuid4()),
+                "message_text": "hello",
+                "reply_context": {},
+                "bot_context": {},
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_claim_pending_whatsapp_job_persists_enqueue_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.domain.models.organisation_tables.job_models import JobStatus
+
+    service = WhatsAppBotService()
+    organisation_id = uuid4()
+    job_id = uuid4()
+    envelope = {"organisation_id": str(organisation_id)}
+    job = SimpleNamespace(
+        status=JobStatus.PENDING,
+        job_metadata={
+            "enqueue_status": "pending",
+            "enqueue_attempts": 0,
+            "dispatch_envelope": envelope,
+        },
+        error_message=None,
+    )
+    session = _DurableJobSession([job])
+
+    async def sessions(_org_id):
+        yield session
+
+    monkeypatch.setattr("src.infra.database.sessions.acquire_org_async_session", sessions)
+
+    claim = await service._claim_job_for_enqueue(organisation_id, job_id)
+
+    assert claim == (envelope, 1)
+    assert job.job_metadata["enqueue_status"] == "enqueuing"
+    assert job.job_metadata["enqueue_attempts"] == 1
+    assert session.commit_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("job_status", ["in_progress", "completed", "failed"])
+async def test_claim_does_not_republish_active_or_terminal_job(
+    monkeypatch: pytest.MonkeyPatch,
+    job_status: str,
+) -> None:
+    service = WhatsAppBotService()
+    job = SimpleNamespace(
+        status=job_status,
+        job_metadata={
+            "enqueue_status": "failed",
+            "enqueue_attempts": 1,
+            "dispatch_envelope": {"organisation_id": str(uuid4())},
+        },
+    )
+    session = _DurableJobSession([job])
+
+    async def sessions(_org_id):
+        yield session
+
+    monkeypatch.setattr("src.infra.database.sessions.acquire_org_async_session", sessions)
+
+    assert await service._claim_job_for_enqueue(uuid4(), uuid4()) is None
+    assert session.commit_count == 0
+
+
+@pytest.mark.asyncio
+async def test_claim_does_not_republish_already_enqueued_pending_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = WhatsAppBotService()
+    job = SimpleNamespace(
+        status="pending",
+        job_metadata={
+            "enqueue_status": "enqueued",
+            "enqueue_attempts": 1,
+            "dispatch_envelope": {"organisation_id": str(uuid4())},
+        },
+    )
+    session = _DurableJobSession([job])
+
+    async def sessions(_org_id):
+        yield session
+
+    monkeypatch.setattr("src.infra.database.sessions.acquire_org_async_session", sessions)
+
+    assert await service._claim_job_for_enqueue(uuid4(), uuid4()) is None
+    assert session.commit_count == 0
+
+
+@pytest.mark.asyncio
+async def test_enqueue_success_records_task_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.service.bots import whatsapp_bot_service
+
+    service = WhatsAppBotService()
+    organisation_id = uuid4()
+    job_id = uuid4()
+    envelope = {"organisation_id": str(organisation_id)}
+    record_mock = AsyncMock()
+    monkeypatch.setattr(
+        service,
+        "_claim_job_for_enqueue",
+        AsyncMock(return_value=(envelope, 2)),
+    )
+    monkeypatch.setattr(service, "_record_enqueue_result", record_mock)
+    monkeypatch.setattr(
+        whatsapp_bot_service,
+        "enqueue_whatsapp_job",
+        AsyncMock(return_value="task-123"),
+    )
+
+    assert await service._enqueue_durable_job(organisation_id, job_id) is True
+    record_mock.assert_awaited_once_with(
+        organisation_id,
+        job_id,
+        attempt=2,
+        task_id="task-123",
+        error=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_enqueue_failure_records_recoverable_pending_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.service.bots import whatsapp_bot_service
+
+    service = WhatsAppBotService()
+    organisation_id = uuid4()
+    job_id = uuid4()
+    envelope = {"organisation_id": str(organisation_id)}
+    record_mock = AsyncMock()
+    monkeypatch.setattr(
+        service,
+        "_claim_job_for_enqueue",
+        AsyncMock(return_value=(envelope, 3)),
+    )
+    monkeypatch.setattr(service, "_record_enqueue_result", record_mock)
+    monkeypatch.setattr(
+        whatsapp_bot_service,
+        "enqueue_whatsapp_job",
+        AsyncMock(side_effect=RuntimeError("redis unavailable")),
+    )
+
+    assert await service._enqueue_durable_job(organisation_id, job_id) is False
+    record_mock.assert_awaited_once_with(
+        organisation_id,
+        job_id,
+        attempt=3,
+        task_id=None,
+        error="redis unavailable",
+    )
+
+
+class _SendResponse:
+    def __init__(self, status: int, *, payload=None, body: str = ""):
+        self.status = status
+        self.payload = payload or {}
+        self.body = body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    async def json(self):
+        return self.payload
+
+    async def text(self):
+        return self.body
+
+
+class _SendSession:
+    response = _SendResponse(200)
+    error: Exception | None = None
+    timeout = None
+
+    def __init__(self, *, timeout=None):
+        type(self).timeout = timeout
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    def post(self, *_args, **_kwargs):
+        if self.error:
+            raise self.error
+        return self.response
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_send_uses_bounded_http_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        whatsapp_config,
+        "get_access_token",
+        AsyncMock(return_value="wa-token"),
+    )
+    _SendSession.error = None
+    _SendSession.response = _SendResponse(
+        200,
+        payload={"messages": [{"id": "wamid.outbound"}]},
+    )
+    _SendSession.timeout = None
+    monkeypatch.setattr(
+        "src.service.bots.whatsapp_bot_service.aiohttp.ClientSession",
+        _SendSession,
+    )
+
+    result = await WhatsAppBotService().send_text_message_result(
+        "phone-123",
+        "15551234567",
+        "hello",
+    )
+
+    assert result.accepted is True
+    assert _SendSession.timeout is not None
+    assert _SendSession.timeout.total < 120
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "expected_kind"),
+    [(429, "retryable"), (500, "retryable"), (401, "terminal"), (400, "terminal")],
+)
+async def test_whatsapp_send_classifies_provider_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+    expected_kind: str,
+) -> None:
+    monkeypatch.setattr(
+        whatsapp_config,
+        "get_access_token",
+        AsyncMock(return_value="wa-token"),
+    )
+    _SendSession.error = None
+    _SendSession.response = _SendResponse(
+        status_code,
+        body='{"error":{"message":"provider rejected request"}}',
+    )
+    monkeypatch.setattr(
+        "src.service.bots.whatsapp_bot_service.aiohttp.ClientSession",
+        _SendSession,
+    )
+
+    result = await WhatsAppBotService().send_text_message_result(
+        phone_number_id="phone-123",
+        recipient_wa_id="15551234567",
+        text="hello",
+    )
+
+    assert result.accepted is False
+    assert result.failure_kind == expected_kind
+    assert result.status_code == status_code
+    assert "provider rejected request" in result.error_message
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_send_accepts_2xx_with_provider_message_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        whatsapp_config,
+        "get_access_token",
+        AsyncMock(return_value="wa-token"),
+    )
+    _SendSession.error = None
+    _SendSession.response = _SendResponse(
+        200,
+        payload={"messages": [{"id": "wamid.outbound"}]},
+    )
+    monkeypatch.setattr(
+        "src.service.bots.whatsapp_bot_service.aiohttp.ClientSession",
+        _SendSession,
+    )
+
+    result = await WhatsAppBotService().send_text_message_result(
+        phone_number_id="phone-123",
+        recipient_wa_id="15551234567",
+        text="hello",
+    )
+
+    assert result.accepted is True
+    assert result.provider_message_id == "wamid.outbound"
+    assert result.failure_kind is None
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_send_classifies_network_failure_as_ambiguous(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        whatsapp_config,
+        "get_access_token",
+        AsyncMock(return_value="wa-token"),
+    )
+    _SendSession.error = RuntimeError("connection reset")
+    monkeypatch.setattr(
+        "src.service.bots.whatsapp_bot_service.aiohttp.ClientSession",
+        _SendSession,
+    )
+
+    result = await WhatsAppBotService().send_text_message_result(
+        phone_number_id="phone-123",
+        recipient_wa_id="15551234567",
+        text="hello",
+    )
+
+    assert result.accepted is False
+    assert result.failure_kind == "ambiguous"
+    assert "connection reset" in result.error_message

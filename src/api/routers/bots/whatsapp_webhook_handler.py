@@ -6,39 +6,27 @@ Endpoints:
 
 Notes:
 - The endpoint does not use app authentication; it relies on app-secret
-  signature verification (`X-Hub-Signature-256`) and a short dedupe key.
-- Webhooks are handed off to background processing and return 200 quickly
-  so Meta does not retry on transient worker scheduling delays.
+  signature verification (`X-Hub-Signature-256`).
+- Linked inbound messages return success only after their database job is durable.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from src.infra.config.configs import whatsapp_config
-from src.infra.messaging.redis_client import get_redis_client
+from src.infra.observability.metrics import record_whatsapp_inbound
 from src.infra.utils.logger import get_logger
 from src.service.bots.auth_validators.whatsapp_auth import WhatsAppAuthValidator
-from src.service.bots.whatsapp_bot_service import WhatsAppBotService
+from src.service.bots.whatsapp_bot_service import (
+    WhatsAppBotService,
+    WhatsAppInboundDurabilityError,
+)
 
 logger = get_logger(__name__)
 
 router = APIRouter(tags=["whatsapp-bot"])
-
-
-def _extract_message_ids(payload: dict[str, Any]) -> list[str]:
-    """Collect WhatsApp message ids from a webhook payload."""
-    message_ids: list[str] = []
-    for entry in payload.get("entry", []):
-        for change in entry.get("changes", []):
-            value = change.get("value", {})
-            for message in value.get("messages", []):
-                message_id = message.get("id")
-                if message_id:
-                    message_ids.append(str(message_id))
-    return message_ids
 
 
 @router.get("/webhook")
@@ -84,31 +72,18 @@ async def handle_whatsapp_webhook(request: Request) -> Response:
     # Parse raw JSON body before any async queueing so we fail fast on bad payloads.
     try:
         payload = json.loads(body.decode("utf-8"))
-    except json.JSONDecodeError as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        record_whatsapp_inbound("invalid")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid request body",
         ) from exc
-
-    message_ids = _extract_message_ids(payload)
-    if message_ids:
-        # Best-effort idempotency gate: ignore a retry if we've already seen these ids.
-        try:
-            redis = get_redis_client()
-            new_message_seen = False
-            for message_id in message_ids:
-                was_new = redis.set(
-                    f"webhook:whatsapp:{message_id}",
-                    "1",
-                    nx=True,
-                    ex=whatsapp_config.WEBHOOK_DEDUPE_TTL_SECONDS,
-                )
-                new_message_seen = new_message_seen or bool(was_new)
-            if not new_message_seen:
-                logger.info("Duplicate WhatsApp webhook ignored message_ids=%s", message_ids)
-                return Response(status_code=status.HTTP_200_OK)
-        except Exception:
-            logger.debug("WhatsApp webhook dedupe check failed", exc_info=True)
+    if not isinstance(payload, dict):
+        record_whatsapp_inbound("invalid")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid request body",
+        )
 
     service = WhatsAppBotService()
 
@@ -117,6 +92,8 @@ async def handle_whatsapp_webhook(request: Request) -> Response:
     # job but before publishing the Celery task, leaving a permanently pending job.
     try:
         await service.process_webhook(payload)
-    except Exception:
-        logger.error("Error processing WhatsApp webhook", exc_info=True)
+    except WhatsAppInboundDurabilityError:
+        # Meta must retry while the linked message has no reconstructable DB job.
+        logger.error("WhatsApp webhook did not reach the durable boundary", exc_info=True)
+        return Response(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
     return Response(status_code=status.HTTP_200_OK)

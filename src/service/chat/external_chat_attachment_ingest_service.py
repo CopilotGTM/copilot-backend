@@ -1,3 +1,5 @@
+"""Persist external chat files before asynchronous agent or attachment work."""
+
 from __future__ import annotations
 
 import base64
@@ -6,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 import aiohttp
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.organisation_tables.chat_message_models import (
     Attachment,
@@ -23,6 +26,10 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 WHATSAPP_GRAPH_API_BASE = "https://graph.facebook.com"
+
+
+class ExternalChatAttachmentIngestError(RuntimeError):
+    """A provider attachment could not cross the durable storage boundary."""
 
 
 class ExternalChatAttachmentIngestService:
@@ -46,6 +53,7 @@ class ExternalChatAttachmentIngestService:
         *,
         bot_token: str,
     ) -> list[AttachmentContextItem]:
+        """Download Slack files into organization-owned attachment storage."""
         timeout = aiohttp.ClientTimeout(
             total=chat_file_upload_config.BOT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS
         )
@@ -107,6 +115,7 @@ class ExternalChatAttachmentIngestService:
         *,
         token_getter: Callable[[str], Awaitable[str | None]],
     ) -> list[AttachmentContextItem]:
+        """Resolve Teams file sources and persist each accepted attachment."""
         timeout = aiohttp.ClientTimeout(
             total=chat_file_upload_config.BOT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS
         )
@@ -193,6 +202,7 @@ class ExternalChatAttachmentIngestService:
         *,
         access_token: str,
     ) -> list[AttachmentContextItem]:
+        """Strictly persist every WhatsApp media descriptor or raise."""
         from src.infra.config.configs import whatsapp_config
 
         timeout = aiohttp.ClientTimeout(
@@ -203,6 +213,11 @@ class ExternalChatAttachmentIngestService:
 
         async with aiohttp.ClientSession(timeout=timeout) as http_session:
             for media in media_files:
+                existing = await self._find_whatsapp_attachment(media.media_id)
+                if existing:
+                    items.append(self._attachment_context(existing))
+                    continue
+
                 try:
                     metadata_url = (
                         f"{WHATSAPP_GRAPH_API_BASE}/{whatsapp_config.GRAPH_API_VERSION}/"
@@ -214,39 +229,35 @@ class ExternalChatAttachmentIngestService:
 
                     size = int(metadata.get("file_size") or 0)
                     if size and size > chat_file_upload_config.BOT_ATTACHMENT_MAX_INGEST_BYTES:
-                        logger.warning(
-                            "Skipping WhatsApp media %s: size=%s exceeds ingest limit",
-                            media.media_id,
-                            size,
+                        raise ExternalChatAttachmentIngestError(
+                            f"WhatsApp media exceeds ingest limit: {media.media_id}"
                         )
-                        continue
 
                     download_url = str(metadata.get("url") or "")
                     if not download_url:
-                        logger.warning(
-                            "Skipping WhatsApp media %s: missing download URL", media.media_id
+                        raise ExternalChatAttachmentIngestError(
+                            f"WhatsApp media has no download URL: {media.media_id}"
                         )
-                        continue
 
                     async with http_session.get(download_url, headers=auth_headers) as response:
                         response.raise_for_status()
-                        content = await response.read()
+                        content = await self._read_whatsapp_media_with_limit(
+                            response,
+                            media_id=media.media_id,
+                            max_bytes=chat_file_upload_config.BOT_ATTACHMENT_MAX_INGEST_BYTES,
+                        )
                         response_content_type = (response.content_type or "").lower().strip()
-                except Exception:
-                    logger.warning(
-                        "Failed to download WhatsApp media %s",
-                        media.media_id,
-                        exc_info=True,
-                    )
-                    continue
+                except ExternalChatAttachmentIngestError:
+                    raise
+                except Exception as exc:
+                    raise ExternalChatAttachmentIngestError(
+                        f"Failed to download WhatsApp media: {media.media_id}"
+                    ) from exc
 
                 if len(content) > chat_file_upload_config.BOT_ATTACHMENT_MAX_INGEST_BYTES:
-                    logger.warning(
-                        "Skipping WhatsApp media %s: size=%s exceeds ingest limit",
-                        media.media_id,
-                        len(content),
+                    raise ExternalChatAttachmentIngestError(
+                        f"WhatsApp media exceeds ingest limit: {media.media_id}"
                     )
-                    continue
 
                 mimetype = (
                     (
@@ -262,12 +273,9 @@ class ExternalChatAttachmentIngestService:
                 mimetype = mimetype.split(";", maxsplit=1)[0].strip().lower()
 
                 if mimetype not in chat_file_upload_config.ALLOWED_MIMETYPES:
-                    logger.warning(
-                        "Skipping WhatsApp media %s: unsupported mimetype=%s",
-                        media.media_id,
-                        mimetype,
+                    raise ExternalChatAttachmentIngestError(
+                        f"Unsupported WhatsApp media type: {mimetype or 'unknown'}"
                     )
-                    continue
 
                 item = await self.ingest_attachment_bytes(
                     filename=media.filename or "whatsapp-attachment",
@@ -290,6 +298,23 @@ class ExternalChatAttachmentIngestService:
 
         return items
 
+    @staticmethod
+    async def _read_whatsapp_media_with_limit(
+        response,
+        *,
+        media_id: str,
+        max_bytes: int,
+    ) -> bytes:
+        """Stream provider bytes without allowing an omitted size to bypass the cap."""
+        content = bytearray()
+        async for chunk in response.content.iter_chunked(64 * 1024):
+            if len(content) + len(chunk) > max_bytes:
+                raise ExternalChatAttachmentIngestError(
+                    f"WhatsApp media exceeds ingest limit: {media_id}"
+                )
+            content.extend(chunk)
+        return bytes(content)
+
     async def ingest_attachment_bytes(
         self,
         *,
@@ -300,6 +325,7 @@ class ExternalChatAttachmentIngestService:
         source_external_id: str | None = None,
         attachment_metadata: dict[str, Any] | None = None,
     ) -> AttachmentContextItem:
+        """Upload bytes, commit their row, and converge provider-ID races."""
         attachment_id = uuid4()
         blob_path = self.storage.plan_blob_path(
             user_id=self.user_id,
@@ -308,6 +334,11 @@ class ExternalChatAttachmentIngestService:
         )
         metadata = dict(attachment_metadata or {})
         metadata["ingested_via"] = "external_chat_attachment_ingest"
+
+        if source_provider == AttachmentSourceProvider.WHATSAPP and source_external_id:
+            existing = await self._find_whatsapp_attachment(source_external_id)
+            if existing:
+                return self._attachment_context(existing)
 
         await self.storage.upload_bytes(
             blob_path, content, content_type=mimetype or "application/octet-stream"
@@ -328,8 +359,22 @@ class ExternalChatAttachmentIngestService:
             attachment_metadata=metadata,
         )
         self.org_session.add(attachment)
-        await self.org_session.flush()
-        await self.org_session.commit()
+        try:
+            await self.org_session.flush()
+            await self.org_session.commit()
+        except IntegrityError:
+            await self.org_session.rollback()
+            await self._delete_orphan_blob(blob_path)
+            if source_provider == AttachmentSourceProvider.WHATSAPP and source_external_id:
+                winner = await self._find_whatsapp_attachment(source_external_id)
+                if winner:
+                    return self._attachment_context(winner)
+            raise
+        except Exception:
+            await self.org_session.rollback()
+            await self._delete_orphan_blob(blob_path)
+            raise
+
         await self.org_session.refresh(attachment)
 
         try:
@@ -348,6 +393,21 @@ class ExternalChatAttachmentIngestService:
                 exc_info=True,
             )
 
+        return self._attachment_context(attachment)
+
+    async def _find_whatsapp_attachment(self, source_external_id: str) -> Attachment | None:
+        """Return the row protected by the WhatsApp provider-media unique index."""
+        from sqlmodel import col, select
+
+        statement = select(Attachment).where(
+            col(Attachment.source_provider) == AttachmentSourceProvider.WHATSAPP,
+            col(Attachment.source_external_id) == source_external_id,
+        )
+        result = await self.org_session.execute(statement)
+        return result.scalars().first()
+
+    @staticmethod
+    def _attachment_context(attachment: Attachment) -> AttachmentContextItem:
         return AttachmentContextItem(
             attachment_id=str(attachment.attachment_id),
             filename=attachment.filename,
@@ -356,6 +416,12 @@ class ExternalChatAttachmentIngestService:
                 attachment.source_provider, "value", attachment.source_provider
             ),
         )
+
+    async def _delete_orphan_blob(self, blob_path: str) -> None:
+        try:
+            await self.storage.delete_blob(blob_path)
+        except Exception:
+            logger.warning("Failed to remove orphan attachment blob %s", blob_path, exc_info=True)
 
     @staticmethod
     def _resolve_teams_download(
@@ -413,4 +479,5 @@ class ExternalChatAttachmentIngestService:
         return ext_map.get(file_type.lower(), "application/octet-stream")
 
     async def close(self) -> None:
+        """Release the organization blob client owned by this service."""
         await self.storage.close()

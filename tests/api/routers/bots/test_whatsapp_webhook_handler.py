@@ -1,3 +1,5 @@
+"""Regression contracts for signed and durably accepted WhatsApp webhooks."""
+
 import hashlib
 import hmac
 import json
@@ -33,6 +35,25 @@ def _payload(message_id: str = "wamid.1") -> dict:
                                     "text": {"body": "hello"},
                                 }
                             ],
+                        },
+                    }
+                ]
+            }
+        ],
+    }
+
+
+def _status_payload() -> dict:
+    return {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "metadata": {"phone_number_id": "phone-123"},
+                            "statuses": [{"id": "wamid.outbound", "status": "delivered"}],
                         },
                     }
                 ]
@@ -115,16 +136,11 @@ def test_post_webhook_processes_before_returning_success(client: TestClient, mon
         AsyncMock(return_value="app-secret"),
     )
 
-    class FakeRedis:
-        def set(self, *args, **kwargs):
-            return True
-
     processed = []
 
     async def fake_process(self, payload):
         processed.append(payload)
 
-    monkeypatch.setattr(whatsapp_webhook_handler, "get_redis_client", lambda: FakeRedis())
     monkeypatch.setattr(
         whatsapp_webhook_handler.WhatsAppBotService,
         "process_webhook",
@@ -143,28 +159,33 @@ def test_post_webhook_processes_before_returning_success(client: TestClient, mon
     assert processed == [_payload()]
 
 
-def test_post_webhook_uses_configured_dedupe_ttl(client: TestClient, monkeypatch) -> None:
+def test_post_webhook_does_not_drop_duplicate_before_durable_processing(
+    client: TestClient,
+    monkeypatch,
+) -> None:
     from src.api.routers.bots import whatsapp_webhook_handler
 
     monkeypatch.setattr(whatsapp_config, "WHATSAPP_ENABLED", True)
-    monkeypatch.setattr(whatsapp_config, "WEBHOOK_DEDUPE_TTL_SECONDS", 42)
     monkeypatch.setattr(
         whatsapp_config,
         "get_app_secret",
         AsyncMock(return_value="app-secret"),
     )
 
-    captured: dict[str, object] = {}
-
-    class FakeRedis:
-        def set(self, *args, **kwargs):
-            captured["args"] = args
-            captured["kwargs"] = kwargs
-            return True
-
+    redis_calls = 0
     process_mock = AsyncMock(return_value=None)
 
-    monkeypatch.setattr(whatsapp_webhook_handler, "get_redis_client", lambda: FakeRedis())
+    def fake_get_redis_client():
+        nonlocal redis_calls
+        redis_calls += 1
+        return object()
+
+    monkeypatch.setattr(
+        whatsapp_webhook_handler,
+        "get_redis_client",
+        fake_get_redis_client,
+        raising=False,
+    )
     monkeypatch.setattr(
         whatsapp_webhook_handler.WhatsAppBotService,
         "process_webhook",
@@ -180,11 +201,14 @@ def test_post_webhook_uses_configured_dedupe_ttl(client: TestClient, monkeypatch
     )
 
     assert response.status_code == 200
-    assert captured["kwargs"]["ex"] == 42
-    assert process_mock.await_count == 1
+    assert redis_calls == 0
+    process_mock.assert_awaited_once_with(_payload())
 
 
-def test_post_webhook_ignores_duplicate_message_ids(client: TestClient, monkeypatch) -> None:
+def test_post_webhook_returns_503_when_durable_intake_fails(
+    client: TestClient,
+    monkeypatch,
+) -> None:
     from src.api.routers.bots import whatsapp_webhook_handler
 
     monkeypatch.setattr(whatsapp_config, "WHATSAPP_ENABLED", True)
@@ -194,16 +218,13 @@ def test_post_webhook_ignores_duplicate_message_ids(client: TestClient, monkeypa
         AsyncMock(return_value="app-secret"),
     )
 
-    class FakeRedis:
-        def set(self, *args, **kwargs):
-            return False
+    async def fail_before_durable_boundary(self, payload):
+        raise whatsapp_webhook_handler.WhatsAppInboundDurabilityError("chat job was not committed")
 
-    process_mock = AsyncMock(return_value=None)
-    monkeypatch.setattr(whatsapp_webhook_handler, "get_redis_client", lambda: FakeRedis())
     monkeypatch.setattr(
         whatsapp_webhook_handler.WhatsAppBotService,
         "process_webhook",
-        process_mock,
+        fail_before_durable_boundary,
         raising=True,
     )
 
@@ -214,5 +235,61 @@ def test_post_webhook_ignores_duplicate_message_ids(client: TestClient, monkeypa
         headers={"X-Hub-Signature-256": _sign(body, "app-secret")},
     )
 
+    assert response.status_code == 503
+
+
+def test_post_webhook_returns_200_for_status_only_callback(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(whatsapp_config, "WHATSAPP_ENABLED", True)
+    monkeypatch.setattr(
+        whatsapp_config,
+        "get_app_secret",
+        AsyncMock(return_value="app-secret"),
+    )
+
+    body = json.dumps(_status_payload()).encode("utf-8")
+    response = client.post(
+        "/users/bots/whatsapp/webhook",
+        content=body,
+        headers={"X-Hub-Signature-256": _sign(body, "app-secret")},
+    )
+
     assert response.status_code == 200
-    assert process_mock.await_count == 0
+
+
+def test_post_webhook_rejects_non_object_json(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(whatsapp_config, "WHATSAPP_ENABLED", True)
+    monkeypatch.setattr(
+        whatsapp_config,
+        "get_app_secret",
+        AsyncMock(return_value="app-secret"),
+    )
+    body = b"[]"
+
+    response = client.post(
+        "/users/bots/whatsapp/webhook",
+        content=body,
+        headers={"X-Hub-Signature-256": _sign(body, "app-secret")},
+    )
+
+    assert response.status_code == 400
+
+
+def test_post_webhook_rejects_invalid_utf8_json(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(whatsapp_config, "WHATSAPP_ENABLED", True)
+    monkeypatch.setattr(
+        whatsapp_config,
+        "get_app_secret",
+        AsyncMock(return_value="app-secret"),
+    )
+    body = b"\xff"
+
+    response = client.post(
+        "/users/bots/whatsapp/webhook",
+        content=body,
+        headers={"X-Hub-Signature-256": _sign(body, "app-secret")},
+    )
+
+    assert response.status_code == 400
