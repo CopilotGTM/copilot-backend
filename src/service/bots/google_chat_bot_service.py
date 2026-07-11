@@ -23,6 +23,7 @@ from uuid import UUID
 
 import aiohttp
 from google.auth.transport import requests as google_requests
+from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from src.domain.models.master_tables import User
 from src.domain.models.master_tables.external_identity_models import ExternalIdentityProvider
@@ -321,6 +322,17 @@ class GoogleChatBotService:
                 )
                 db.add(msg)
                 await db.flush()
+                await db.execute(
+                    update(ChatSession)
+                    .where(
+                        col(ChatSession.session_id) == session_id,
+                        col(ChatSession.user_id) == user.user_id,
+                        col(ChatSession.organisation_id) == org_id,
+                        col(ChatSession.chat_type) == ChatType.GOOGLE_CHAT,
+                        col(ChatSession.is_deleted).is_(False),
+                    )
+                    .values(updated_at=msg.created_at)
+                )
                 await db.commit()
                 message_id = msg.message_id
                 break

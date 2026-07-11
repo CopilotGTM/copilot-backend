@@ -164,6 +164,40 @@ async def test_slack_create_bot_job_channel():
 
 
 @pytest.mark.asyncio
+async def test_slack_create_bot_job_personal_touches_session():
+    """Slack personal chat activity updates the visible chat session timestamp."""
+    from src.service.bots.slack_bot_service import SlackBotService
+
+    bot = object.__new__(SlackBotService)
+    user = _make_user()
+    captured_jobs = []
+    executed_statements = []
+
+    class TrackingSession(_FakeAsyncSession):
+        async def execute(self, stmt):
+            executed_statements.append(stmt)
+            return await super().execute(stmt)
+
+        def add(self, obj):
+            super().add(obj)
+            if hasattr(obj, "job_type"):
+                captured_jobs.append(obj)
+
+    async def gen(org_id):
+        yield TrackingSession()
+
+    with patch(_PATCH_ASYNC_SESSION, side_effect=gen):
+        job_id = await bot._create_bot_job(
+            user=user, message_text="hi", conversation_type="personal"
+        )
+
+    assert isinstance(job_id, UUID)
+    assert len(captured_jobs) == 1
+    assert captured_jobs[0].message_id is not None
+    assert any("UPDATE chat_sessions" in str(statement) for statement in executed_statements)
+
+
+@pytest.mark.asyncio
 async def test_send_whatsapp_payload_uses_whatsapp_bot_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

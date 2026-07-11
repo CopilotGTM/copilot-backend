@@ -630,7 +630,10 @@ GET /users/chats/list_chats?limit=20&cursor=<opaque>&chat_type=<CHAT_TYPE>
 
 ### Description
 
-Returns your chat sessions ordered by recency. Use `cursor` from the previous response to fetch the next page.
+Returns your chat sessions ordered by `updated_at` recency. A chat is bumped when
+new user activity is persisted for visible chat surfaces such as web chat, voice,
+WhatsApp, Slack, and Google Chat. Use `cursor` from the previous response to fetch
+the next page.
 
 Query params:
 

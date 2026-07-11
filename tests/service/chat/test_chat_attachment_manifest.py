@@ -4,6 +4,7 @@ from src.service.chat.chat_attachment_manifest import (
     AttachmentContextItem,
     append_attachment_manifest,
     build_attachment_manifest,
+    extract_attachment_ids_from_manifest,
     serialize_attachment_context,
 )
 
@@ -189,3 +190,11 @@ def test_serialize_attachment_context_from_dict() -> None:
 
 def test_serialize_attachment_context_empty() -> None:
     assert serialize_attachment_context([]) == []
+
+
+def test_extract_attachment_ids_from_manifest() -> None:
+    # Follow-up grounding parses the same compact manifest that the agent sees
+    # in history, so ID extraction must stay aligned with that wire format.
+    manifest = "[Attached files]\n- id: first-id\n  name: one.png\n- id: second-id\n  name: two.pdf"
+
+    assert extract_attachment_ids_from_manifest(manifest) == ["first-id", "second-id"]

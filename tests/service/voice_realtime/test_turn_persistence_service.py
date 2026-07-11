@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -42,6 +43,7 @@ def _make_chat_session(*, title: str = "Voice Session") -> MagicMock:
     session.title = title
     session.properties = {"model": "gpt-realtime"}
     session.is_deleted = False
+    session.updated_at = datetime(2024, 1, 1)
     return session
 
 
@@ -178,6 +180,7 @@ async def test_persist_turns_persists_mixed_user_and_assistant_turns(service, mo
     assert added_messages[1].parent_message_id == added_messages[0].message_id
     assert added_messages[1].model_name == "gpt-realtime"
     assert chat_session.title == "What changed in this deal?"
+    assert chat_session.updated_at == added_messages[0].created_at
 
 
 @pytest.mark.asyncio
@@ -206,6 +209,34 @@ async def test_persist_turns_auto_titles_voice_session_from_first_user_turn(
     )
 
     assert chat_session.title == long_text[:60].strip() + "..."
+
+
+@pytest.mark.asyncio
+async def test_persist_turns_does_not_touch_session_for_assistant_only_turns(
+    service, mock_db
+) -> None:
+    chat_session = _make_chat_session(title="Existing Voice Chat")
+    original_updated_at = chat_session.updated_at
+    mock_db.execute = AsyncMock(
+        side_effect=[
+            _mock_session_result(chat_session),
+            _mock_existing_ids_result([]),
+        ]
+    )
+
+    await service.persist_turns(
+        chat_session_id=chat_session.session_id,
+        turns=[
+            VoiceTurnInput(
+                realtime_item_id="assistant-item",
+                speaker="assistant",
+                text="Here is the answer.",
+                turn_index=0,
+            )
+        ],
+    )
+
+    assert chat_session.updated_at == original_updated_at
 
 
 @pytest.mark.asyncio

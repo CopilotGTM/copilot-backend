@@ -4,10 +4,12 @@ from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 from src.agents.context import AgentContext
+from src.agents.utils import latest_user_text
 from src.agents.workflows.general.agent import GeneralAgent
 from src.domain.models.organisation_tables.chat_message_models import ChatMessage
 from src.domain.models.organisation_tables.chat_session_models import ChatType
 from src.infra.messaging.chat_stream_models import Frame
+from src.infra.utils.agent_datetime import extract_temporal_hints
 
 
 async def run_agent_for_chat(
@@ -37,6 +39,16 @@ async def run_agent_for_chat(
         Frame objects representing agent output
     """
     _ = chat_type
+    user_text = latest_user_text(messages)
+    temporal_hints = extract_temporal_hints(user_text)
+    if user_text or temporal_hints:
+        metadata: dict[str, Any] = {"latest_user_text": user_text}
+        if temporal_hints.get("direction"):
+            metadata["temporal_direction"] = temporal_hints["direction"]
+        if temporal_hints.get("limit"):
+            metadata["temporal_limit"] = temporal_hints["limit"]
+        context = context.with_metadata(**metadata)
+
     agent = GeneralAgent(context=context)
     async for frame in agent.run_stream(messages, images=images, attachment_text=attachment_text):
         yield frame

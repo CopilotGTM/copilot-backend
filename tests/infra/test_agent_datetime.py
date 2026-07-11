@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from src.infra.utils.agent_datetime import parse_agent_datetime
+from src.infra.utils.agent_datetime import extract_temporal_hints, parse_agent_datetime
 
 
 def test_parse_agent_datetime_uses_same_local_weekday_when_time_is_future() -> None:
@@ -64,3 +64,25 @@ def test_parse_agent_datetime_can_require_valid_timezone_for_natural_language() 
     )
 
     assert parsed is None
+
+
+def test_extract_temporal_hints_captures_broad_past_direction_and_count() -> None:
+    # The helper is intentionally not meeting-specific; tools decide how to
+    # apply a past/default count to their own query shape.
+    assert extract_temporal_hints("show my last 5 calls") == {"direction": "past", "limit": 5}
+
+
+def test_extract_temporal_hints_prefers_future_when_terms_conflict() -> None:
+    assert extract_temporal_hints("next recent meetings") == {"direction": "future"}
+
+
+def test_extract_temporal_hints_does_not_treat_dates_as_limits_without_direction() -> None:
+    assert extract_temporal_hints("meetings on 2026-04-11") == {}
+
+
+def test_extract_temporal_hints_ignores_date_numbers_when_direction_exists() -> None:
+    assert extract_temporal_hints("last calls from 2026-04-11") == {"direction": "past"}
+    assert extract_temporal_hints("last 5 calls from 2026-04-11") == {
+        "direction": "past",
+        "limit": 5,
+    }

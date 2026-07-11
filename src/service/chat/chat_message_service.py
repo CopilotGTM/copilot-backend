@@ -144,6 +144,7 @@ class ChatMessageService:
 
         self.db.add(message)
         await self.db.flush()  # ensure message_id populated for link table
+        session.updated_at = message.created_at
 
         # Link attachments in parallel for improved performance
         if attachments:

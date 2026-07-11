@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from src.agents.utils import _MAX_ATTACHMENT_TEXT_CHARS, prepare_messages
+from src.agents.utils import (
+    _MAX_ATTACHMENT_TEXT_CHARS,
+    pending_attachment_ids_for_followup,
+    prepare_messages,
+)
 
 # ---------------------------------------------------------------------------
 # prepare_messages — basic message extraction
@@ -168,3 +172,78 @@ def test_prepare_messages_empty_list() -> None:
 def test_prepare_messages_empty_list_with_attachment_text() -> None:
     result = prepare_messages([], attachment_text="some text")
     assert result == []
+
+
+def test_pending_attachment_ids_for_followup_uses_prior_upload_setup_turn() -> None:
+    # An upload-only/setup turn establishes context for the next user instruction
+    # without forcing users to re-upload the same file.
+    messages = [
+        {
+            "role": "user",
+            "content": "reuploaded",
+            "attachment_manifest": "[Attached files]\n- id: image-id\n  name: chart.png",
+        },
+        {"role": "assistant", "content": "What would you like me to do?"},
+        {"role": "user", "content": "summarize it", "attachment_manifest": None},
+    ]
+
+    assert pending_attachment_ids_for_followup(messages) == ["image-id"]
+
+
+def test_pending_attachment_ids_for_followup_skips_prior_substantive_attachment_turn() -> None:
+    # If the attachment turn already had a real instruction, later unrelated
+    # chat should not keep auto-reading that file forever.
+    messages = [
+        {
+            "role": "user",
+            "content": "summarize this sales deck",
+            "attachment_manifest": "[Attached files]\n- id: deck-id\n  name: deck.pdf",
+        },
+        {"role": "assistant", "content": "Here is the summary."},
+        {"role": "user", "content": "show my meetings", "attachment_manifest": None},
+    ]
+
+    assert pending_attachment_ids_for_followup(messages) == []
+
+
+def test_pending_attachment_ids_for_followup_uses_attachment_clarification_turn() -> None:
+    messages = [
+        {
+            "role": "user",
+            "content": "can you read this?",
+            "attachment_manifest": "[Attached files]\n- id: image-id\n  name: screenshot.png",
+        },
+        {
+            "role": "assistant",
+            "content": "Yes, I can inspect the screenshot and summarize or extract details.",
+        },
+        {"role": "user", "content": "yes", "attachment_manifest": None},
+    ]
+
+    assert pending_attachment_ids_for_followup(messages) == ["image-id"]
+
+
+def test_pending_attachment_ids_for_followup_skips_unrelated_short_followup() -> None:
+    messages = [
+        {
+            "role": "user",
+            "content": "summarize this sales deck",
+            "attachment_manifest": "[Attached files]\n- id: deck-id\n  name: deck.pdf",
+        },
+        {"role": "assistant", "content": "Done."},
+        {"role": "user", "content": "yes", "attachment_manifest": None},
+    ]
+
+    assert pending_attachment_ids_for_followup(messages) == []
+
+
+def test_pending_attachment_ids_for_followup_skips_current_turn_attachments() -> None:
+    messages = [
+        {
+            "role": "user",
+            "content": "summarize this",
+            "attachment_manifest": "[Attached files]\n- id: current-id\n  name: file.pdf",
+        }
+    ]
+
+    assert pending_attachment_ids_for_followup(messages) == []

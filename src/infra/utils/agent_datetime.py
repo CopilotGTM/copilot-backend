@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime, timedelta
 from importlib import import_module
-from typing import Any
+from typing import Any, Literal, TypedDict
 from zoneinfo import ZoneInfo
 
 from src.infra.utils.timezone import (
@@ -20,10 +20,84 @@ _WEEKDAY_WITH_TIME_PATTERN = re.compile(
 )
 _TIME_PATTERN = re.compile(r"\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b", re.I)
 _ISO_DATE_ONLY_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_PAST_TERMS = re.compile(r"\b(last|previous|past|earlier|recent|recently|history)\b", re.I)
+_FUTURE_TERMS = re.compile(r"\b(next|upcoming|scheduled|later|tomorrow|future)\b", re.I)
+_PRESENT_TERMS = re.compile(r"\b(today|now|current|currently)\b", re.I)
+_DIGIT_COUNT = re.compile(r"\b(\d{1,3})\b")
+_DATE_LIKE_COUNT_NOISE = re.compile(
+    r"\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}/\d{1,2}/\d{2,4}\b|\b(?:19|20)\d{2}\b"
+)
+_WORD_COUNTS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
+}
+
+
+class TemporalHints(TypedDict, total=False):
+    """Broad temporal intent extracted from a user turn for tool defaults."""
+
+    direction: Literal["past", "future", "present"]
+    limit: int
 
 
 def _has_explicit_time(value: str) -> bool:
     return bool(_TIME_PATTERN.search(value))
+
+
+def extract_temporal_hints(text: str | None) -> TemporalHints:
+    """Extract broad temporal defaults without binding them to a specific tool.
+
+    Tools still own exact query semantics. This helper only captures the user's
+    coarse direction and count so an omitted/default tool argument does not
+    reverse the plain-language intent of the latest turn.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return {}
+
+    hints: TemporalHints = {}
+    has_future = bool(_FUTURE_TERMS.search(raw))
+    has_past = bool(_PAST_TERMS.search(raw))
+    has_present = bool(_PRESENT_TERMS.search(raw))
+
+    if has_present and not (has_future or has_past):
+        hints["direction"] = "present"
+    elif has_future:
+        hints["direction"] = "future"
+    elif has_past:
+        hints["direction"] = "past"
+
+    if "direction" in hints:
+        count_source = _DATE_LIKE_COUNT_NOISE.sub(" ", raw)
+        digit_match = _DIGIT_COUNT.search(count_source)
+        if digit_match:
+            hints["limit"] = max(1, min(int(digit_match.group(1)), 100))
+        else:
+            lowered = raw.lower()
+            for word, count in _WORD_COUNTS.items():
+                if re.search(rf"\b{word}\b", lowered):
+                    hints["limit"] = count
+                    break
+
+    return hints
 
 
 def _parse_iso_datetime(value: str, timezone_name: str) -> datetime | None:
@@ -126,4 +200,4 @@ def parse_agent_datetime(
     return parsed_utc
 
 
-__all__ = ["parse_agent_datetime"]
+__all__ = ["TemporalHints", "extract_temporal_hints", "parse_agent_datetime"]
