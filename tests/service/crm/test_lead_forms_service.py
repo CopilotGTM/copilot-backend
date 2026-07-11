@@ -1272,7 +1272,7 @@ async def test_update_form_status_publishes_draft_and_activates_public_key(
 async def test_update_form_reuses_form_and_fields_and_syncs_public_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Updating a form reuses canonical fields while activating public metadata updates."""
+    """Updating a form returns post-commit fields so response serialization stays async-safe."""
     log: list[str] = []
     org_session = RecordingAsyncSession("org", log)
     master_session = RecordingAsyncSession("master", log)
@@ -1316,6 +1316,21 @@ async def test_update_form_reuses_form_and_fields_and_syncs_public_key(
         validation={},
         is_deleted=False,
     )
+    reloaded_field = SimpleNamespace(
+        field_id=existing_field.field_id,
+        form_id=form.form_id,
+        form_version=2,
+        external_key="phone",
+        label="Mobile phone",
+        target_type=LeadFormFieldTargetType.LEAD_FIELD,
+        target_key="phone",
+        data_type=LeadFormFieldDataType.PHONE,
+        required=True,
+        display_order=0,
+        default_value=None,
+        validation={},
+        is_deleted=False,
+    )
     ingress_key = SimpleNamespace(
         resource_id=form.form_id,
         status="paused",
@@ -1326,8 +1341,14 @@ async def test_update_form_reuses_form_and_fields_and_syncs_public_key(
     async def _get_form(self: LeadFormsService, form_id):
         return form
 
+    load_fields_calls = 0
+
     async def _load_fields(self: LeadFormsService, form_id):
-        return [existing_field, removed_field]
+        nonlocal load_fields_calls
+        load_fields_calls += 1
+        if load_fields_calls == 1:
+            return [existing_field, removed_field]
+        return [reloaded_field]
 
     async def _load_keys(self: LeadFormsService, form_ids):
         return {form.form_id: ingress_key}
@@ -1369,8 +1390,9 @@ async def test_update_form_reuses_form_and_fields_and_syncs_public_key(
     )
 
     assert updated_form is form
-    assert updated_fields == [existing_field]
+    assert updated_fields == [reloaded_field]
     assert updated_key is ingress_key
+    assert load_fields_calls == 2
     assert form.name == "Website phone form"
     assert form.status == LeadFormStatus.ACTIVE
     assert form.current_version == 2

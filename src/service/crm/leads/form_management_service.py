@@ -312,7 +312,6 @@ class LeadFormsService:
 
             existing_by_key = {field.external_key: field for field in existing_fields}
             requested_keys: set[str] = set()
-            updated_fields: list[LeadFormField] = []
             for index, field_request in enumerate(request.fields):
                 field = existing_by_key.get(field_request.external_key.strip())
                 if field is None:
@@ -324,7 +323,6 @@ class LeadFormsService:
                     )
                 self._apply_field_request(field, field_request, index, next_version)
                 requested_keys.add(field.external_key)
-                updated_fields.append(field)
                 self.org_session.add(field)
 
             for field in existing_fields:
@@ -353,11 +351,12 @@ class LeadFormsService:
             await self.org_session.refresh(form)
             if ingress_key:
                 await self.master_session.refresh(ingress_key)
+            fields = await self._load_fields(form.form_id)
         except Exception:
             await self.org_session.rollback()
             await self.master_session.rollback()
             raise
-        return form, updated_fields, ingress_key
+        return form, fields, ingress_key
 
     async def create_form(
         self, request: CreateLeadFormRequest
