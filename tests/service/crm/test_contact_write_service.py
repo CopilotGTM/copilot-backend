@@ -58,9 +58,10 @@ def test_contact_create_command_supports_import_location_fields() -> None:
 
 
 class _FakeResult:
-    def __init__(self, *, scalar=None, scalars=None):
+    def __init__(self, *, scalar=None, scalars=None, rowcount=None):
         self._scalar = scalar
         self._scalars = scalars or []
+        self.rowcount = rowcount
 
     def scalar(self):
         return self._scalar
@@ -1058,8 +1059,8 @@ async def test_delete_contact_archives_and_detaches_linked_records(monkeypatch) 
             _FakeResult(scalars=[lead_participant]),
             _FakeResult(scalars=[integration_participant]),
             _FakeResult(scalars=[activity_link]),
-            _FakeResult(scalars=[real_activity]),
-            _FakeResult(scalars=[contact_only_activity]),
+            _FakeResult(rowcount=1),
+            _FakeResult(scalars=[contact_only_activity.activity_id]),
             _FakeResult(scalars=[job]),
             _FakeResult(scalar=2),
         ]
@@ -1096,8 +1097,6 @@ async def test_delete_contact_archives_and_detaches_linked_records(monkeypatch) 
     assert lead_participant.is_deleted is True
     assert integration_participant.crm_contact_id is None
     assert integration_participant.resolution_status == "unresolved"
-    assert real_activity.contact_id is None
-    assert real_activity.related_local_id is None
     assert job.status == JobStatus.CANCELLED
     assert result.impact.cleared_deal_primary_contacts == 1
     assert result.impact.archived_deal_participants == 1
@@ -1111,3 +1110,6 @@ async def test_delete_contact_archives_and_detaches_linked_records(monkeypatch) 
     assert result.impact.import_rows_retained == 2
     service._projection.soft_delete_activity_projection.assert_awaited_once_with(contact_id)  # type: ignore[attr-defined]
     session.delete.assert_awaited_once_with(activity_link)
+    clear_activity_stmt = session.execute.await_args_list[7].args[0]
+    assert "UPDATE crm_activities" in str(clear_activity_stmt.compile())
+    assert "crm_activities.body" not in str(clear_activity_stmt.compile())

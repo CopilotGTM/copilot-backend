@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
@@ -673,7 +673,7 @@ class ContactWriteService:
     async def _archive_contact_only_activities(self, contact: CRMContact) -> int:
         source_record_prefix = f"{contact.contact_id}:CONTACT_ENRICHMENT_"
         result = await self.org_session.execute(
-            select(CRMActivity).where(
+            select(col(CRMActivity.activity_id)).where(
                 col(CRMActivity.organisation_id) == self.organisation_id,
                 or_(col(CRMActivity.is_deleted).is_(False), col(CRMActivity.is_deleted).is_(None)),
                 and_(
@@ -685,35 +685,37 @@ class ContactWriteService:
                 ),
             )
         )
-        activities = result.scalars().all()
-        for activity in activities:
-            await self._projection.soft_delete_activity_projection(activity.activity_id)
-        return len(activities)
+        activity_ids = result.scalars().all()
+        for activity_id in activity_ids:
+            await self._projection.soft_delete_activity_projection(activity_id)
+        return len(activity_ids)
 
     async def _clear_activity_contact_refs(self, contact: CRMContact, now: datetime) -> int:
+        contact_ref_matches = col(CRMActivity.contact_id) == contact.contact_id
+        related_contact_matches = (
+            (col(CRMActivity.related_object_type) == CRMActivityObjectType.CONTACT.value)
+            & (col(CRMActivity.related_local_id) == contact.contact_id)
+        )
         result = await self.org_session.execute(
-            select(CRMActivity).where(
+            update(CRMActivity)
+            .where(
                 col(CRMActivity.organisation_id) == self.organisation_id,
                 or_(col(CRMActivity.is_deleted).is_(False), col(CRMActivity.is_deleted).is_(None)),
-                or_(
-                    col(CRMActivity.contact_id) == contact.contact_id,
-                    (col(CRMActivity.related_object_type) == CRMActivityObjectType.CONTACT.value)
-                    & (col(CRMActivity.related_local_id) == contact.contact_id),
+                or_(contact_ref_matches, related_contact_matches),
+            )
+            .values(
+                contact_id=case(
+                    (contact_ref_matches, None),
+                    else_=col(CRMActivity.contact_id),
                 ),
+                related_local_id=case(
+                    (related_contact_matches, None),
+                    else_=col(CRMActivity.related_local_id),
+                ),
+                updated_at=now,
             )
         )
-        activities = result.scalars().all()
-        for activity in activities:
-            if activity.contact_id == contact.contact_id:
-                activity.contact_id = None
-            if (
-                activity.related_object_type == CRMActivityObjectType.CONTACT.value
-                and activity.related_local_id == contact.contact_id
-            ):
-                activity.related_local_id = None
-            activity.updated_at = now
-            self.org_session.add(activity)
-        return len(activities)
+        return int(getattr(result, "rowcount", 0) or 0)
 
     async def _remove_contact_activity_links(self, contact: CRMContact) -> int:
         result = await self.org_session.execute(
