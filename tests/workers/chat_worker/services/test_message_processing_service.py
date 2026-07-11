@@ -186,6 +186,42 @@ class TestLoadJobData:
         service._load_job_data(job_id)
         assert job.status == JobStatus.IN_PROGRESS
 
+    @patch("src.workers.chat_worker.services.message_processing_service.acquire_master_session")
+    @patch("src.workers.chat_worker.services.message_processing_service.acquire_org_session")
+    def test_skips_job_that_is_no_longer_pending(
+        self, mock_acquire_org, mock_acquire_master, service
+    ):
+        """A redelivered task cannot reopen a completed web-chat job."""
+        job_id = uuid4()
+        session_id = uuid4()
+        user_msg_id = uuid4()
+        job = _make_job(
+            job_id=job_id,
+            status=JobStatus.COMPLETED,
+            session_id=session_id,
+            user_message_id=user_msg_id,
+        )
+        chat_session = _make_chat_session(session_id=session_id)
+        user_message = _make_chat_message(message_id=user_msg_id, session_id=session_id)
+
+        mock_session = MagicMock()
+        mock_session.get.side_effect = (
+            lambda cls, obj_id: {
+                ChatMessageJob: {job_id: job},
+                ChatSession: {session_id: chat_session},
+                ChatMessage: {user_msg_id: user_message},
+            }.get(cls, {}).get(obj_id)
+        )
+        mock_session.query.return_value.filter.return_value.order_by.return_value.limit.return_value.all.return_value = []
+        mock_acquire_org.return_value = iter([mock_session])
+        mock_acquire_master.return_value = iter([MagicMock()])
+
+        result = service._load_job_data(job_id)
+
+        assert result is None
+        assert job.status == JobStatus.COMPLETED
+        mock_session.refresh.assert_called_once_with(job, with_for_update=True)
+
     @patch("src.workers.chat_worker.services.message_processing_service.acquire_org_session")
     def test_returns_none_when_job_not_found_without_celery(self, mock_acquire_org, service):
         """No celery_task → return None when job missing."""
@@ -485,6 +521,41 @@ class TestProcessFrameData:
         # No changes to summary
         assert result_summary["answer_parts"] == []
         assert result_summary["confidence"] is None
+
+
+class TestExecuteAgentWorkflow:
+    """Validate agent output before it reaches durable persistence."""
+
+    @patch("src.workers.chat_worker.services.message_processing_service.run_async")
+    def test_empty_answer_uses_fallback_without_discarding_metrics(self, mock_run_async, service):
+        """A completed model run must not persist an empty assistant response."""
+        token_usage = {
+            "input_tokens": 12476,
+            "output_tokens": 89,
+            "total_tokens": 12565,
+        }
+        result_summary = {
+            "answer": None,
+            "token_usage": token_usage,
+            "model_name": "gpt-5.4",
+            "cost": 0.032525,
+            "duration_seconds": 2.516,
+        }
+
+        def consume_coroutine(coroutine):
+            """Close the unused coroutine and return the simulated stream summary."""
+            coroutine.close()
+            return result_summary
+
+        mock_run_async.side_effect = consume_coroutine
+        result = service._execute_agent_workflow(_make_conversation_data())
+
+        assert result.answer
+        assert "error" in result.answer.lower() or "apologize" in result.answer.lower()
+        assert result.token_usage == token_usage
+        assert result.model_name == "gpt-5.4"
+        assert result.cost == 0.032525
+        assert result.duration_seconds == 2.516
 
 
 # =============================================================================

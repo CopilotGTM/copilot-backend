@@ -17,9 +17,10 @@ Notes:
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any
 from uuid import UUID
 
 import aiohttp
@@ -28,6 +29,11 @@ from src.domain.models.master_tables import User
 from src.domain.models.master_tables.external_identity_models import ExternalIdentityProvider
 from src.infra.config.configs import whatsapp_config
 from src.infra.database.sessions import acquire_master_async_session
+from src.infra.observability.metrics import (
+    record_whatsapp_durable_job,
+    record_whatsapp_enqueue,
+    record_whatsapp_inbound,
+)
 from src.infra.utils.logger import get_logger
 from src.service.bots.auth_state_service import BotAuthStateService, get_bot_auth_state_service
 from src.service.bots.identity_service import ExternalIdentityService
@@ -35,6 +41,53 @@ from src.service.bots.identity_service import ExternalIdentityService
 logger = get_logger(__name__)
 
 WHATSAPP_GRAPH_API_BASE = "https://graph.facebook.com"
+WHATSAPP_MAX_ENQUEUE_ATTEMPTS = 5
+_WHATSAPP_QUEUE_PUBLISH_TIMEOUT_SECONDS = 4
+_WHATSAPP_SEND_TIMEOUT_SECONDS = 30
+_WHATSAPP_TYPING_TIMEOUT_SECONDS = 3
+_PERSISTED_ERROR_LIMIT = 1000
+
+
+class WhatsAppInboundDurabilityError(RuntimeError):
+    """The webhook could not durably retain a linked inbound message."""
+
+
+@dataclass(frozen=True, slots=True)
+class WhatsAppSendResult:
+    """Classified Meta response used by durable outbound recovery."""
+
+    accepted: bool
+    provider_message_id: str | None = None
+    failure_kind: str | None = None
+    status_code: int | None = None
+    error_message: str | None = None
+    response_payload: dict[str, Any] | None = None
+
+
+async def enqueue_whatsapp_job(*, job_id: UUID, envelope: dict[str, Any]) -> str:
+    """Publish the immutable dispatch envelope used by intake and recovery."""
+    from src.workers.chat_worker.client import send_chat_task_async
+
+    return await asyncio.wait_for(
+        send_chat_task_async(
+            "chat.process_bot_message",
+            args=[
+                envelope["organisation_id"],
+                envelope["user_id"],
+                envelope["message_text"],
+                "whatsapp",
+                envelope["reply_context"],
+            ],
+            kwargs={
+                "user_email": envelope.get("user_email"),
+                "bot_context": envelope["bot_context"],
+                "job_id": str(job_id),
+            },
+            queue="chat_messages",
+            routing_key="chat_messages",
+        ),
+        timeout=_WHATSAPP_QUEUE_PUBLISH_TIMEOUT_SECONDS,
+    )
 
 
 @dataclass
@@ -94,6 +147,7 @@ class WhatsAppBotService:
         same service pipeline.
         """
         if payload.get("object") != "whatsapp_business_account":
+            record_whatsapp_inbound("invalid")
             logger.debug("Ignoring non-WhatsApp payload object=%s", payload.get("object"))
             return
 
@@ -140,20 +194,21 @@ class WhatsAppBotService:
                         if not text:
                             continue
                     elif message_type in {"audio", "voice"}:
-                        # Audio messages are routed as transcription-ready metadata.
-                        # Inbound voice/audio ids are later converted into queue context.
+                        # Voice notes use the same blob-backed attachment boundary as files;
+                        # a delayed worker must not depend on Meta's temporary media URL.
                         audio_info = message.get(message_type) or message.get("audio") or {}
                         media_id = str(audio_info.get("id") or "")
                         if not media_id:
                             continue
                         mimetype = str(audio_info.get("mime_type") or "")
-                        audio_files = [
-                            {
-                                "media_id": media_id,
-                                "mimetype": mimetype,
-                                "filename": self._whatsapp_audio_filename(mimetype),
-                                "message_id": message_id,
-                            }
+                        media_files = [
+                            WhatsAppInboundMedia(
+                                media_id=media_id,
+                                media_type="audio",
+                                mimetype=mimetype,
+                                filename=self._whatsapp_audio_filename(mimetype),
+                                message_id=message_id,
+                            )
                         ]
                     elif message_type in {"image", "document"}:
                         # Documents/images are normalized into Attachment objects and ingested
@@ -298,6 +353,7 @@ class WhatsAppBotService:
             inbound_message_id=message.message_id,
         )
         if not user:
+            record_whatsapp_inbound("unlinked")
             login_message = self._get_login_message_with_state(message)
             # Unlinked numbers cannot be trusted for chat history, so we force a
             # re-auth flow before any worker enqueue.
@@ -307,8 +363,6 @@ class WhatsAppBotService:
                 text=login_message,
             )
             return
-
-        from src.workers.chat_worker.client import send_chat_task_async
 
         if message.unsupported_reason and not (
             message.text.strip() or message.media_files or message.audio_files
@@ -322,79 +376,46 @@ class WhatsAppBotService:
             )
             return
 
+        media_files = list(message.media_files or [])
+        for audio in message.audio_files or []:
+            media_id = str(audio.get("media_id") or "")
+            if media_id:
+                media_files.append(
+                    WhatsAppInboundMedia(
+                        media_id=media_id,
+                        media_type="audio",
+                        mimetype=str(audio.get("mimetype") or ""),
+                        filename=str(audio.get("filename") or "whatsapp-audio.ogg"),
+                        message_id=str(audio.get("message_id") or message.message_id),
+                    )
+                )
+
+        attachment_refs = await self._ingest_media_files(user, media_files) if media_files else []
+        dispatch_envelope = self._build_dispatch_envelope(user, message, attachment_refs)
         try:
-            # Non-blocking typing signal improves UX; failure does not block enqueue.
+            job = await self._create_or_get_durable_job(
+                user=user,
+                message=message,
+                attachment_refs=attachment_refs,
+                dispatch_envelope=dispatch_envelope,
+            )
+        except WhatsAppInboundDurabilityError:
+            raise
+        except Exception as exc:
+            raise WhatsAppInboundDurabilityError("Failed to persist WhatsApp inbound job") from exc
+
+        # Queue publication happens only after commit. Failure is recorded on the
+        # pending job, which lets the scheduled recovery sweep reconstruct it.
+        await self._enqueue_durable_job(user.organisation_id, job.job_id)
+
+        try:
+            # This UX-only provider call must happen after durable commit and publish.
             await self.send_typing_indicator(
                 phone_number_id=message.phone_number_id,
                 message_id=message.message_id,
             )
         except Exception:
             logger.warning("Failed to send WhatsApp typing indicator", exc_info=True)
-
-        attachment_refs: list[dict[str, Any]] = []
-        if message.media_files:
-            # Ingest media first so the worker gets stable attachment refs.
-            attachment_refs = await self._ingest_media_files(user, message.media_files)
-
-        job_id: str | None = None
-        try:
-            job_id = str(
-                await self._create_bot_job(
-                    user=user,
-                    message_text=message.text,
-                    attachment_refs=attachment_refs,
-                )
-            )
-        except Exception:
-            logger.exception("Failed to create WhatsApp bot chat job, dispatching without job_id")
-
-        bot_context: dict[str, Any] = {
-            "conversation_type": "personal",
-            "external_user_id": message.recipient_wa_id,
-            "external_tenant_id": message.phone_number_id,
-            "current_datetime": datetime.now(UTC).isoformat(),
-            "whatsapp_message_id": message.message_id,
-        }
-        if getattr(user, "timezone", None):
-            bot_context["user_timezone"] = str(user.timezone)
-        if message.audio_files:
-            bot_context["whatsapp_audio_files"] = message.audio_files
-        if attachment_refs:
-            bot_context["current_attachments"] = attachment_refs
-
-        try:
-            # Enqueue keeps the webhook fast; the chat worker owns heavy processing.
-            await send_chat_task_async(
-                "chat.process_bot_message",
-                args=[
-                    str(user.organisation_id),
-                    str(user.user_id),
-                    message.text,
-                    "whatsapp",
-                    self._build_reply_context(
-                        phone_number_id=message.phone_number_id,
-                        recipient_wa_id=message.recipient_wa_id,
-                        incoming_message_id=message.message_id,
-                    ),
-                ],
-                kwargs={
-                    "user_email": user.email,
-                    "bot_context": bot_context,
-                    "job_id": job_id,
-                },
-                queue="chat_messages",
-            )
-        except Exception as e:
-            logger.error("Failed to enqueue WhatsApp bot message task: %s", e, exc_info=True)
-            # Keep the request user-safe if queueing fails after all prior steps.
-            await self.send_text_message(
-                phone_number_id=message.phone_number_id,
-                recipient_wa_id=message.recipient_wa_id,
-                text=(
-                    "I'm sorry, I'm having trouble processing your request right now. "
-                    "Please try again in a moment."
-                ),
-            )
 
     @staticmethod
     def _build_reply_context(
@@ -411,6 +432,37 @@ class WhatsAppBotService:
             reply_context["incoming_message_id"] = incoming_message_id
         return reply_context
 
+    def _build_dispatch_envelope(
+        self,
+        user: User,
+        message: WhatsAppInboundMessage,
+        attachment_refs: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        bot_context: dict[str, Any] = {
+            "conversation_type": "personal",
+            "external_user_id": message.recipient_wa_id,
+            "external_tenant_id": message.phone_number_id,
+            "current_datetime": datetime.now(UTC).isoformat(),
+            "whatsapp_message_id": message.message_id,
+            "current_attachments": attachment_refs,
+        }
+        if getattr(user, "timezone", None):
+            bot_context["user_timezone"] = str(user.timezone)
+
+        return {
+            "organisation_id": str(user.organisation_id),
+            "user_id": str(user.user_id),
+            "message_text": message.text,
+            "provider": "whatsapp",
+            "reply_context": self._build_reply_context(
+                phone_number_id=message.phone_number_id,
+                recipient_wa_id=message.recipient_wa_id,
+                incoming_message_id=message.message_id,
+            ),
+            "bot_context": bot_context,
+            "user_email": user.email,
+        }
+
     async def _ingest_media_files(
         self, user: User, media_files: list[WhatsAppInboundMedia]
     ) -> list[dict[str, Any]]:
@@ -424,26 +476,33 @@ class WhatsAppBotService:
 
         access_token = await whatsapp_config.get_access_token()
         if not access_token:
-            logger.warning("Skipping WhatsApp media ingestion: access token unavailable")
-            return []
+            raise WhatsAppInboundDurabilityError("WhatsApp media access token unavailable")
 
-        async for db in acquire_org_async_session(user.organisation_id):
-            # Keep DB connection ownership inside this boundary; all attachment
-            # rows are written only under the caller's organization.
-            ingest_service = ExternalChatAttachmentIngestService(
-                org_session=db,
-                organisation_id=user.organisation_id,
-                user_id=user.user_id,
-            )
-            try:
-                ingested_attachments = await ingest_service.ingest_whatsapp_media_files(
-                    media_files,
-                    access_token=access_token,
+        try:
+            async for db in acquire_org_async_session(user.organisation_id):
+                ingest_service = ExternalChatAttachmentIngestService(
+                    org_session=db,
+                    organisation_id=user.organisation_id,
+                    user_id=user.user_id,
                 )
-                return serialize_attachment_context(ingested_attachments)
-            finally:
-                await ingest_service.close()
-        return []
+                try:
+                    ingested_attachments = await ingest_service.ingest_whatsapp_media_files(
+                        media_files,
+                        access_token=access_token,
+                    )
+                    if len(ingested_attachments) != len(media_files):
+                        raise WhatsAppInboundDurabilityError(
+                            "WhatsApp media ingestion returned an incomplete result"
+                        )
+                    return serialize_attachment_context(ingested_attachments)
+                finally:
+                    await ingest_service.close()
+        except WhatsAppInboundDurabilityError:
+            raise
+        except Exception as exc:
+            raise WhatsAppInboundDurabilityError("WhatsApp media ingestion failed") from exc
+
+        raise WhatsAppInboundDurabilityError("No organization session for WhatsApp media")
 
     @staticmethod
     def _unsupported_message_text(unsupported_reason: str) -> str:
@@ -487,9 +546,9 @@ class WhatsAppBotService:
                     return user, mapping.conversation_context
                 return None, None
             return None, None
-        except Exception:
+        except Exception as exc:
             logger.error("Failed to look up WhatsApp identity", exc_info=True)
-            return None, None
+            raise WhatsAppInboundDurabilityError("WhatsApp identity lookup failed") from exc
 
     def _get_login_message_with_state(self, message: WhatsAppInboundMessage) -> str:
         if not whatsapp_config.WHATSAPP_AUTH_LOGIN_URL:
@@ -523,13 +582,19 @@ class WhatsAppBotService:
             "This link expires in 5 minutes."
         )
 
-    async def _create_bot_job(
+    @staticmethod
+    def _idempotency_key(message: WhatsAppInboundMessage) -> str:
+        return f"whatsapp:{message.phone_number_id}:{message.recipient_wa_id}:{message.message_id}"
+
+    async def _create_or_get_durable_job(
         self,
+        *,
         user: User,
-        message_text: str,
-        attachment_refs: list[dict[str, Any]] | None = None,
-    ) -> UUID:
-        # Bot jobs and attachment links are always persisted in the user's org.
+        message: WhatsAppInboundMessage,
+        attachment_refs: list[dict[str, Any]],
+        dispatch_envelope: dict[str, Any],
+    ):
+        """Commit the inbound message, links, and reconstructable job together."""
         from sqlmodel import col, select
         from src.domain.models.organisation_tables.chat_message_models import (
             ChatMessage,
@@ -541,133 +606,279 @@ class WhatsAppBotService:
         from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
         from src.infra.database.sessions import acquire_org_async_session
 
-        org_id = user.organisation_id
-        session_id: UUID | None = None
-        message_id: UUID | None = None
-        attachment_refs = attachment_refs or []
+        key = self._idempotency_key(message)
+        job_query = select(ChatMessageJob).where(
+            col(ChatMessageJob.chat_type) == ChatType.WHATSAPP_CHAT.value,
+            col(ChatMessageJob.idempotency_key) == key,
+        )
 
-        async for db in acquire_org_async_session(org_id):
-            stmt = select(ChatSession).where(
-                col(ChatSession.user_id) == user.user_id,
-                col(ChatSession.organisation_id) == org_id,
-                col(ChatSession.chat_type) == ChatType.WHATSAPP_CHAT,
-                col(ChatSession.is_deleted).is_(False),
-            )
-            result = await db.execute(stmt)
-            existing = result.scalars().first()
-            if existing:
-                session_id = existing.session_id
-            else:
-                new_session = ChatSession.model_validate(
-                    {
-                        "user_id": user.user_id,
-                        "organisation_id": org_id,
-                        "chat_type": ChatType.WHATSAPP_CHAT,
-                        "title": "WhatsApp Chat",
-                    }
+        async for db in acquire_org_async_session(user.organisation_id):
+            try:
+                existing = (await db.execute(job_query)).scalars().first()
+                if existing:
+                    record_whatsapp_inbound("duplicate")
+                    record_whatsapp_durable_job("reused")
+                    return existing
+
+                session_query = select(ChatSession).where(
+                    col(ChatSession.user_id) == user.user_id,
+                    col(ChatSession.organisation_id) == user.organisation_id,
+                    col(ChatSession.chat_type) == ChatType.WHATSAPP_CHAT,
+                    col(ChatSession.is_deleted).is_(False),
                 )
-                db.add(new_session)
-                try:
-                    await db.commit()
-                    session_id = new_session.session_id
-                except IntegrityError:
-                    await db.rollback()
-                    result = await db.execute(stmt)
-                    existing = result.scalars().first()
-                    session_id = existing.session_id if existing else None
-            break
+                chat_session = (await db.execute(session_query)).scalars().first()
+                if not chat_session:
+                    chat_session = ChatSession(
+                        user_id=user.user_id,
+                        organisation_id=user.organisation_id,
+                        chat_type=ChatType.WHATSAPP_CHAT,
+                        title="WhatsApp Chat",
+                    )
+                    db.add(chat_session)
 
-        if session_id:
-            async for db in acquire_org_async_session(org_id):
-                msg = ChatMessage(
-                    session_id=session_id,
+                inbound_message = ChatMessage(
+                    session_id=chat_session.session_id,
                     role=ChatMessageRole.USER,
                     message_type=ChatMessageType.GENERAL_MESSAGE,
-                    content={"text": message_text},
+                    content={"text": message.text},
                 )
-                db.add(msg)
+                db.add(inbound_message)
                 await db.flush()
 
                 for index, attachment_ref in enumerate(attachment_refs):
-                    raw_attachment_id = attachment_ref.get("attachment_id")
-                    if not raw_attachment_id:
-                        continue
                     try:
-                        attachment_id = UUID(str(raw_attachment_id))
-                    except Exception:
-                        logger.warning(
-                            "Skipping invalid WhatsApp attachment ref %s",
-                            raw_attachment_id,
-                        )
-                        continue
+                        attachment_id = UUID(str(attachment_ref["attachment_id"]))
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise WhatsAppInboundDurabilityError(
+                            "Invalid durable WhatsApp attachment reference"
+                        ) from exc
                     db.add(
                         ChatMessageAttachmentLink(
-                            message_id=msg.message_id,
+                            message_id=inbound_message.message_id,
                             attachment_id=attachment_id,
                             attachment_order=index,
                         )
                     )
 
+                job = ChatMessageJob(
+                    message_id=inbound_message.message_id,
+                    job_type="whatsapp_chat_response",
+                    chat_type=ChatType.WHATSAPP_CHAT.value,
+                    status=JobStatus.PENDING,
+                    user_id=user.user_id,
+                    idempotency_key=key,
+                    job_metadata={
+                        "source": "bot",
+                        "provider": "whatsapp",
+                        "conversation_type": "personal",
+                        "session_id": str(chat_session.session_id),
+                        "whatsapp_message_id": message.message_id,
+                        # Keep the metadata copy while deployed workers and operator
+                        # queries transition to the normalized column.
+                        "idempotency_key": key,
+                        "phone_number_id": message.phone_number_id,
+                        "recipient_wa_id": message.recipient_wa_id,
+                        "dispatch_envelope": dispatch_envelope,
+                        "enqueue_status": "pending",
+                        "enqueue_attempts": 0,
+                        "celery_task_id": None,
+                        "last_enqueue_error": None,
+                        "processing_stage": "pending",
+                        "processing_attempts": 0,
+                        "send_status": "not_started",
+                        "send_attempts": 0,
+                        "next_send_attempt_at": None,
+                        "outbound_chunks": [],
+                    },
+                )
+                db.add(job)
                 await db.commit()
-                message_id = msg.message_id
-                break
+                record_whatsapp_inbound("new")
+                record_whatsapp_durable_job("created")
+                logger.info(
+                    "Created durable WhatsApp job=%s message=%s",
+                    job.job_id,
+                    inbound_message.message_id,
+                )
+                return job
+            except IntegrityError as exc:
+                await db.rollback()
+                winner = await self._load_durable_job_by_key(user.organisation_id, key)
+                if winner:
+                    record_whatsapp_inbound("duplicate")
+                    record_whatsapp_durable_job("reused")
+                    return winner
+                record_whatsapp_durable_job("failed")
+                raise WhatsAppInboundDurabilityError(
+                    "WhatsApp idempotency conflict had no winning job"
+                ) from exc
+            except WhatsAppInboundDurabilityError:
+                await db.rollback()
+                record_whatsapp_durable_job("failed")
+                raise
+            except Exception as exc:
+                await db.rollback()
+                record_whatsapp_durable_job("failed")
+                raise WhatsAppInboundDurabilityError(
+                    "Failed to commit durable WhatsApp job"
+                ) from exc
 
-        async for db in acquire_org_async_session(org_id):
-            job = ChatMessageJob(
-                message_id=message_id,
-                job_type="whatsapp_chat_response",
-                chat_type="WHATSAPP_CHAT",
-                status=JobStatus.PENDING,
-                user_id=user.user_id,
-                job_metadata={
-                    "source": "bot",
-                    "provider": "whatsapp",
-                    "conversation_type": "personal",
-                    **({"session_id": str(session_id)} if session_id else {}),
-                },
+        raise WhatsAppInboundDurabilityError("No organization session for WhatsApp job")
+
+    async def _load_durable_job_by_key(self, organisation_id: UUID, key: str):
+        from sqlmodel import col, select
+        from src.domain.models.organisation_tables.chat_session_models import ChatType
+        from src.domain.models.organisation_tables.job_models import ChatMessageJob
+        from src.infra.database.sessions import acquire_org_async_session
+
+        async for db in acquire_org_async_session(organisation_id):
+            statement = select(ChatMessageJob).where(
+                col(ChatMessageJob.chat_type) == ChatType.WHATSAPP_CHAT.value,
+                col(ChatMessageJob.idempotency_key) == key,
             )
+            return (await db.execute(statement)).scalars().first()
+        return None
+
+    async def _enqueue_durable_job(self, organisation_id: UUID, job_id: UUID) -> bool:
+        try:
+            claim = await self._claim_job_for_enqueue(organisation_id, job_id)
+            if not claim:
+                return False
+            envelope, attempt = claim
+            try:
+                task_id = await enqueue_whatsapp_job(job_id=job_id, envelope=envelope)
+            except Exception as exc:
+                await self._record_enqueue_result(
+                    organisation_id,
+                    job_id,
+                    attempt=attempt,
+                    task_id=None,
+                    error=str(exc)[:_PERSISTED_ERROR_LIMIT],
+                )
+                logger.error("Failed to enqueue durable WhatsApp job=%s", job_id, exc_info=True)
+                record_whatsapp_enqueue("failed")
+                return False
+
+            await self._record_enqueue_result(
+                organisation_id,
+                job_id,
+                attempt=attempt,
+                task_id=task_id,
+                error=None,
+            )
+            record_whatsapp_enqueue("enqueued")
+            return True
+        except Exception:
+            # The job already exists. A later database sweep owns recovery if this
+            # metadata or broker operation cannot complete in the webhook request.
+            logger.error("Failed to publish durable WhatsApp job=%s", job_id, exc_info=True)
+            record_whatsapp_enqueue("failed")
+            return False
+
+    async def _claim_job_for_enqueue(
+        self, organisation_id: UUID, job_id: UUID
+    ) -> tuple[dict[str, Any], int] | None:
+        from sqlmodel import select
+        from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
+        from src.infra.database.sessions import acquire_org_async_session
+
+        async for db in acquire_org_async_session(organisation_id):
+            statement = (
+                select(ChatMessageJob).where(ChatMessageJob.job_id == job_id).with_for_update()
+            )
+            job = (await db.execute(statement)).scalars().first()
+            if not job or getattr(job.status, "value", job.status) != JobStatus.PENDING.value:
+                return None
+
+            metadata = dict(job.job_metadata or {})
+            if metadata.get("enqueue_status") not in {"pending", "failed"}:
+                return None
+            attempt = int(metadata.get("enqueue_attempts") or 0) + 1
+            if attempt > WHATSAPP_MAX_ENQUEUE_ATTEMPTS:
+                job.status = JobStatus.FAILED
+                job.error_message = "WhatsApp enqueue retry budget exhausted"
+                metadata["enqueue_status"] = "exhausted"
+                job.job_metadata = metadata
+                db.add(job)
+                await db.commit()
+                record_whatsapp_enqueue("exhausted")
+                return None
+
+            envelope = metadata.get("dispatch_envelope")
+            if not isinstance(envelope, dict):
+                job.status = JobStatus.FAILED
+                job.error_message = "WhatsApp dispatch envelope is missing"
+                metadata["enqueue_status"] = "invalid"
+                job.job_metadata = metadata
+                db.add(job)
+                await db.commit()
+                return None
+
+            metadata.update(
+                {
+                    "enqueue_status": "enqueuing",
+                    "enqueue_attempts": attempt,
+                    "last_enqueue_error": None,
+                }
+            )
+            job.job_metadata = metadata
             db.add(job)
             await db.commit()
-            logger.info(
-                "Created WhatsApp bot job=%s message=%s session=%s attachments=%d",
-                job.job_id,
-                message_id,
-                session_id,
-                len(attachment_refs),
-            )
-            return job.job_id
+            return dict(envelope), attempt
+        return None
 
-        raise RuntimeError("Failed to create WhatsApp bot job")
+    async def _record_enqueue_result(
+        self,
+        organisation_id: UUID,
+        job_id: UUID,
+        *,
+        attempt: int,
+        task_id: str | None,
+        error: str | None,
+    ) -> None:
+        from src.domain.models.organisation_tables.job_models import ChatMessageJob
+        from src.infra.database.sessions import acquire_org_async_session
+
+        async for db in acquire_org_async_session(organisation_id):
+            job = await db.get(ChatMessageJob, job_id)
+            if not job:
+                return
+            metadata = dict(job.job_metadata or {})
+            if int(metadata.get("enqueue_attempts") or 0) != attempt:
+                return
+            metadata.update(
+                {
+                    "enqueue_status": "enqueued" if task_id else "failed",
+                    "celery_task_id": task_id,
+                    "last_enqueue_error": error,
+                }
+            )
+            job.job_metadata = metadata
+            db.add(job)
+            await db.commit()
+            return
 
     async def send_text_message_with_id(
         self, phone_number_id: str, recipient_wa_id: str, text: str
     ) -> str | None:
         """Send a text message and return WhatsApp message id when available."""
-        response_payload = await self._send_text_message_payload(
+        result = await self.send_text_message_result(
             phone_number_id=phone_number_id,
             recipient_wa_id=recipient_wa_id,
             text=text,
         )
-        if not response_payload:
-            return None
-
-        messages = response_payload.get("messages") or []
-        if not messages:
-            return None
-        return str(messages[0].get("id") or "") or None
+        return result.provider_message_id if result.accepted else None
 
     async def send_text_message(
         self, phone_number_id: str, recipient_wa_id: str, text: str
     ) -> bool:
         """Send a text message and return whether WhatsApp acknowledged success."""
-        return (
-            await self._send_text_message_payload(
-                phone_number_id=phone_number_id,
-                recipient_wa_id=recipient_wa_id,
-                text=text,
-            )
-            is not None
+        result = await self.send_text_message_result(
+            phone_number_id=phone_number_id,
+            recipient_wa_id=recipient_wa_id,
+            text=text,
         )
+        return result.accepted
 
     async def send_typing_indicator(self, phone_number_id: str, message_id: str) -> bool:
         """Best-effort typing/read indicator for inbound WhatsApp messages.
@@ -692,7 +903,9 @@ class WhatsAppBotService:
 
         try:
             async with (
-                aiohttp.ClientSession() as session,
+                aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=_WHATSAPP_TYPING_TIMEOUT_SECONDS)
+                ) as session,
                 session.post(
                     url,
                     json=payload,
@@ -718,10 +931,26 @@ class WhatsAppBotService:
     async def _send_text_message_payload(
         self, phone_number_id: str, recipient_wa_id: str, text: str
     ) -> dict[str, Any] | None:
+        """Compatibility wrapper for callers that still need Meta's payload."""
+        result = await self.send_text_message_result(
+            phone_number_id=phone_number_id,
+            recipient_wa_id=recipient_wa_id,
+            text=text,
+        )
+        return result.response_payload if result.accepted else None
+
+    async def send_text_message_result(
+        self, phone_number_id: str, recipient_wa_id: str, text: str
+    ) -> WhatsAppSendResult:
+        """Send text and preserve enough provider evidence for retry decisions."""
         access_token = await whatsapp_config.get_access_token()
         if not access_token:
             logger.error("WhatsApp access token not available")
-            return None
+            return WhatsAppSendResult(
+                accepted=False,
+                failure_kind="terminal",
+                error_message="WhatsApp access token unavailable",
+            )
 
         url = (
             f"{WHATSAPP_GRAPH_API_BASE}/{whatsapp_config.GRAPH_API_VERSION}/"
@@ -736,7 +965,9 @@ class WhatsAppBotService:
 
         try:
             async with (
-                aiohttp.ClientSession() as session,
+                aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=_WHATSAPP_SEND_TIMEOUT_SECONDS)
+                ) as session,
                 session.post(
                     url,
                     json=payload,
@@ -747,14 +978,44 @@ class WhatsAppBotService:
                 ) as response,
             ):
                 if response.status < 300:
-                    return cast("dict[str, Any]", await response.json())
+                    response_payload = await response.json()
+                    messages = response_payload.get("messages") or []
+                    provider_message_id = str(messages[0].get("id") or "") if messages else ""
+                    if provider_message_id:
+                        return WhatsAppSendResult(
+                            accepted=True,
+                            provider_message_id=provider_message_id,
+                            status_code=response.status,
+                            response_payload=response_payload,
+                        )
+                    return WhatsAppSendResult(
+                        accepted=False,
+                        failure_kind="ambiguous",
+                        status_code=response.status,
+                        error_message="Meta returned success without a message ID",
+                        response_payload=response_payload,
+                    )
 
+                response_body = (await response.text())[:_PERSISTED_ERROR_LIMIT]
                 logger.warning(
                     "WhatsApp send failed status=%s body=%s",
                     response.status,
-                    await response.text(),
+                    response_body,
                 )
-                return None
-        except Exception:
+                return WhatsAppSendResult(
+                    accepted=False,
+                    failure_kind=(
+                        "retryable"
+                        if response.status == 429 or response.status >= 500
+                        else "terminal"
+                    ),
+                    status_code=response.status,
+                    error_message=response_body or f"Meta returned HTTP {response.status}",
+                )
+        except Exception as exc:
             logger.warning("Failed to send WhatsApp message", exc_info=True)
-            return None
+            return WhatsAppSendResult(
+                accepted=False,
+                failure_kind="ambiguous",
+                error_message=str(exc)[:_PERSISTED_ERROR_LIMIT],
+            )

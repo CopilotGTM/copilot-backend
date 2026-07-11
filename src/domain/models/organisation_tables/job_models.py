@@ -11,7 +11,7 @@ from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, Index, Integer, Numeric, String, text
+from sqlalchemy import Column, Index, Integer, Numeric, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship
 
@@ -44,6 +44,22 @@ class ChatMessageJob(TimestampMixin, table=True):
     """
 
     __tablename__ = "chat_message_jobs"
+    __table_args__ = (
+        Index(
+            "uq_chat_message_jobs_channel_idempotency",
+            "chat_type",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        Index(
+            "ix_chat_message_jobs_recovery",
+            "chat_type",
+            "status",
+            "updated_at",
+            postgresql_where=text("status IN ('pending', 'in_progress', 'failed')"),
+        ),
+    )
 
     job_id: UUID = Field(
         default_factory=uuid4,
@@ -71,6 +87,11 @@ class ChatMessageJob(TimestampMixin, table=True):
         default=JobStatus.PENDING,
         sa_column=Column(String(50), server_default=text("'pending'"), nullable=False),
         description="The current status of the job.",
+    )
+    idempotency_key: str | None = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+        description="Stable provider retry identity, unique within a chat channel.",
     )
     job_metadata: dict[str, Any] = Field(
         sa_column=Column(JSONB, server_default=text("'{}'::jsonb")),

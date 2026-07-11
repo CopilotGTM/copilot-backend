@@ -119,6 +119,7 @@ class RedisPublisher:
         self._maxlen = maxlen
 
     def publish(self, frame: dict) -> None:
+        """Append a frame best-effort; job persistence remains the durable result."""
         if xadd_json_frame(self._stream_key, frame, maxlen=self._maxlen, approximate=True) is None:
             logger.warning("Failed to XADD frame for job %s", frame.get("job_id"))
 
@@ -212,7 +213,14 @@ class MessageProcessingService:
                 logger.warning("Job %s not found", job_id)
                 return None
 
-            # Mark job as in progress
+            # Recovery may republish a task after broker acceptance. Lock and
+            # re-read the row so only one delivery can claim a pending job.
+            session.refresh(job, with_for_update=True)
+            if job.status != JobStatus.PENDING:
+                logger.info("Skipping already claimed chat job=%s status=%s", job_id, job.status)
+                session.rollback()
+                return None
+
             job.status = JobStatus.IN_PROGRESS
             session.add(job)
             session.commit()
@@ -380,8 +388,15 @@ class MessageProcessingService:
                 logger.error("Agent stream returned None for job %s", data.job_id)
                 return self._create_error_result()
 
+            answer = result_summary.get("answer")
+            if not isinstance(answer, str) or not answer.strip():
+                # COMPLETED is the frontend's terminal success signal; persisting empty
+                # text would acknowledge the job without giving the user a response.
+                logger.error("Agent stream completed without an answer for job %s", data.job_id)
+                answer = self._create_error_result().answer
+
             return AgentResult(
-                answer=result_summary.get("answer"),
+                answer=answer,
                 confidence=result_summary.get("confidence"),
                 suggestions=result_summary.get("suggestions"),
                 sources=result_summary.get("sources"),
@@ -638,7 +653,8 @@ class MessageProcessingService:
         Session is automatically released when the block exits.
         """
         for session in acquire_org_session(self.organisation_id):
-            # Create assistant message
+            # Persist the assistant row and terminal job state in the same
+            # session so clients never observe completion without its answer.
             assistant_message = ChatMessage(
                 message_id=data.assistant_message_id,
                 session_id=data.user_message_session_id,

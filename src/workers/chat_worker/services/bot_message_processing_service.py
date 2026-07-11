@@ -1,11 +1,14 @@
 """Bot message processing service for chat worker.
 
-Processes messages from bot platforms (Teams, Slack) through the GeneralAgent
-and sends the accumulated response back to the originating platform.
+Processes messages from Teams, Slack, WhatsApp, and Google Chat through the
+GeneralAgent and sends the accumulated response to the originating platform.
 
-Personal chat messages are persisted in the database (chat_sessions/chat_messages
-with chat_type=TEAMS_CHAT) and history is loaded from DB for context.
+Personal chat messages are persisted in chat_sessions/chat_messages under their
+channel chat type and history is loaded from the database for context.
 Group chat messages are NOT persisted; the agent calls fetch_teams_chat_messages.
+
+WhatsApp responses cross a second durable boundary before Meta delivery so a
+send-only task can recover accepted webhook work without rerunning the agent.
 
 Follows the fresh session pattern: no DB sessions are held during LLM calls.
 """
@@ -13,10 +16,15 @@ Follows the fresh session pattern: no DB sessions are held during LLM calls.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
 
 from src.infra.database.sessions import acquire_master_async_session
+from src.infra.observability.metrics import (
+    record_whatsapp_processing,
+    record_whatsapp_send,
+)
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.base.worker_utils import get_organisation_name
@@ -54,6 +62,13 @@ _GOOGLE_CHAT_SYSTEM_PROMPT = (
 )
 
 _WHATSAPP_TEXT_CHUNK_LIMIT = 3900
+_WHATSAPP_SEND_LEASE_MINUTES = 2
+_WHATSAPP_MAX_SEND_ATTEMPTS = 3
+_PERSISTED_ERROR_LIMIT = 1000
+
+
+class WhatsAppDeliveryRetryableError(RuntimeError):
+    """A durable WhatsApp response remains eligible for send-only retry."""
 
 
 @dataclass
@@ -119,7 +134,7 @@ class BotMessageProcessingService:
                 provider,
                 job_id,
             )
-            return True
+            return self._job_is_completed(job_id) if provider == "whatsapp" else True
 
         try:
             from src.adapters import AgentResponse, get_adapter
@@ -166,21 +181,41 @@ class BotMessageProcessingService:
 
             adapter = get_adapter(provider)
             payload_override: ChannelPayload | None = None
+            assistant_text: str | None = None
             if result.error_message:
                 payload = adapter.render_error(_STATIC_ERROR_MESSAGE)
             else:
                 response = AgentResponse.from_frames(result.frames)
                 payload = adapter.render(response)
                 payload_override = self._channel_payload_override_from_frames(result.frames)
+                assistant_text = response.text
 
-                # Persist assistant response for personal chat
-                if session_id and job_id:
-                    assistant_text = response.text
-                    if assistant_text:
-                        user_msg_id = self._get_user_message_from_job(job_id)
-                        self._persist_assistant_message(
-                            session_id, assistant_text, user_msg_id or UUID(int=0)
-                        )
+            if provider == "whatsapp" and job_id:
+                outbound_text = payload.content.get("text") or payload.text_fallback or ""
+                self._persist_whatsapp_response(
+                    job_id,
+                    text=outbound_text,
+                    assistant_text=assistant_text,
+                    frames=result.frames,
+                    agent_success=not result.error_message,
+                    error_message=result.error_message,
+                )
+                try:
+                    delivered = self.resume_whatsapp_delivery(job_id)
+                except WhatsAppDeliveryRetryableError:
+                    delivered = False
+
+                if delivered:
+                    thinking_replaced = True
+                record_whatsapp_processing("agent_failed" if result.error_message else "completed")
+                return bool(delivered and not result.error_message)
+
+            # Persist assistant response for non-WhatsApp personal chats.
+            if assistant_text and session_id and job_id:
+                user_msg_id = self._get_user_message_from_job(job_id)
+                self._persist_assistant_message(
+                    session_id, assistant_text, user_msg_id or UUID(int=0)
+                )
 
             success = run_async(
                 self._send_payload_with_optional_override(
@@ -191,9 +226,12 @@ class BotMessageProcessingService:
                 )
             )
 
-            # Finalize job with token usage data
             if job_id:
-                self._finalize_job(job_id, result.frames, success=not result.error_message)
+                self._finalize_job(
+                    job_id,
+                    result.frames,
+                    success=bool(not result.error_message and success),
+                )
 
             if success:
                 thinking_replaced = True
@@ -220,19 +258,42 @@ class BotMessageProcessingService:
                 user_id,
                 e,
             )
-            try:
-                adapter = get_adapter(provider)
-                payload = adapter.render_error(_STATIC_ERROR_MESSAGE)
-                if run_async(self._send_payload(provider, reply_context, payload)):
-                    thinking_replaced = True
-            except Exception:
-                logger.warning("Failed to send error reply to bot platform")
+            if provider == "whatsapp" and job_id:
+                record_whatsapp_processing("worker_failed")
+                try:
+                    adapter = get_adapter(provider)
+                    payload = adapter.render_error(_STATIC_ERROR_MESSAGE)
+                    outbound_text = payload.content.get("text") or payload.text_fallback or ""
+                    self._persist_whatsapp_response(
+                        job_id,
+                        text=outbound_text,
+                        assistant_text=None,
+                        frames=[],
+                        agent_success=False,
+                        error_message=str(e),
+                        only_if_agent_running=True,
+                    )
+                    try:
+                        thinking_replaced = self.resume_whatsapp_delivery(job_id)
+                    except WhatsAppDeliveryRetryableError:
+                        thinking_replaced = False
+                except Exception:
+                    logger.warning("Failed to persist WhatsApp error delivery", exc_info=True)
+            else:
+                try:
+                    adapter = get_adapter(provider)
+                    payload = adapter.render_error(_STATIC_ERROR_MESSAGE)
+                    if run_async(self._send_payload(provider, reply_context, payload)):
+                        thinking_replaced = True
+                except Exception:
+                    logger.warning("Failed to send error reply to bot platform")
 
             return False
 
         finally:
-            # Last resort: ensure thinking indicator never lingers
-            if not thinking_replaced:
+            # Durable WhatsApp jobs already own a persisted response and retry state;
+            # a direct cleanup send here would bypass their provider-message ledger.
+            if not thinking_replaced and not (provider == "whatsapp" and job_id):
                 try:
                     run_async(self._cleanup_thinking_indicator(provider, reply_context))
                 except Exception:
@@ -400,8 +461,6 @@ class BotMessageProcessingService:
 
     def _mark_job_in_progress(self, job_id: UUID) -> bool:
         """Atomically claim a pending bot job for processing."""
-        from datetime import UTC, datetime
-
         from sqlalchemy import update
 
         from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
@@ -420,17 +479,40 @@ class BotMessageProcessingService:
                 )
             )
             result = session.execute(claim_stmt)
-            session.commit()
             if getattr(result, "rowcount", 0) == 1:
+                job = session.get(ChatMessageJob, job_id)
+                if job:
+                    metadata = dict(job.job_metadata) if isinstance(job.job_metadata, dict) else {}
+                    metadata.update(
+                        {
+                            "processing_stage": "agent_running",
+                            "processing_attempts": int(metadata.get("processing_attempts") or 0)
+                            + 1,
+                        }
+                    )
+                    job.job_metadata = metadata
+                    session.add(job)
+                session.commit()
                 return True
 
+            session.commit()
             job = session.get(ChatMessageJob, job_id)
             if not job:
-                return True
+                return False
 
             status = getattr(job.status, "value", job.status)
             logger.info("Skipping bot job %s with non-pending status=%s", job_id, status)
             return False
+
+    def _job_is_completed(self, job_id: UUID) -> bool:
+        from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
+        from src.infra.database.sessions import org_session_scope
+
+        with org_session_scope(self.organisation_id) as session:
+            job = session.get(ChatMessageJob, job_id)
+            return bool(
+                job and getattr(job.status, "value", job.status) == JobStatus.COMPLETED.value
+            )
 
     def _get_session_from_job(self, job_id: UUID) -> UUID | None:
         """Extract session_id from job metadata."""
@@ -490,6 +572,361 @@ class BotMessageProcessingService:
                 job.cost,
                 job.latency_ms,
             )
+
+    def _persist_whatsapp_response(
+        self,
+        job_id: UUID,
+        *,
+        text: str,
+        assistant_text: str | None,
+        frames: list,
+        agent_success: bool,
+        error_message: str | None,
+        only_if_agent_running: bool = False,
+    ) -> None:
+        """Commit response chunks before any call to Meta can accept them."""
+        from decimal import Decimal
+
+        from src.agents.common.token_tracking import extract_token_usage_from_frames
+        from src.domain.models.organisation_tables.chat_message_models import (
+            ChatMessage,
+            ChatMessageRole,
+            ChatMessageType,
+        )
+        from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
+        from src.infra.database.sessions import org_session_scope
+
+        token_usage, model_name, cost, duration = extract_token_usage_from_frames(frames)
+        chunks = [
+            {
+                "index": index,
+                "text": chunk,
+                "provider_message_id": None,
+                "accepted_at": None,
+            }
+            for index, chunk in enumerate(self._split_whatsapp_text(text))
+        ]
+
+        with org_session_scope(self.organisation_id) as session:
+            job = session.get(ChatMessageJob, job_id)
+            if not job:
+                raise RuntimeError(f"WhatsApp job {job_id} not found")
+
+            metadata = dict(job.job_metadata or {})
+            if only_if_agent_running and metadata.get("processing_stage") not in {
+                "pending",
+                "agent_running",
+            }:
+                return
+
+            session_id = metadata.get("session_id")
+            if agent_success and assistant_text and session_id:
+                session.add(
+                    ChatMessage(
+                        session_id=UUID(str(session_id)),
+                        role=ChatMessageRole.ASSISTANT,
+                        message_type=ChatMessageType.GENERAL_MESSAGE,
+                        content={"text": assistant_text},
+                        parent_message_id=job.message_id,
+                    )
+                )
+
+            metadata.update(
+                {
+                    "processing_stage": "response_ready",
+                    "agent_success": agent_success,
+                    "send_status": "pending",
+                    "next_send_attempt_at": None,
+                    "outbound_chunks": chunks,
+                }
+            )
+            if error_message:
+                metadata["failure_stage"] = "agent_running"
+                metadata["agent_error"] = error_message[:_PERSISTED_ERROR_LIMIT]
+
+            job.job_metadata = metadata
+            job.status = JobStatus.IN_PROGRESS if agent_success else JobStatus.FAILED
+            job.error_message = (
+                None if agent_success else (error_message or "WhatsApp agent failed")[:1000]
+            )
+            if token_usage:
+                job.token_usage = token_usage
+            if model_name:
+                job.model_name = model_name
+            if cost is not None:
+                job.cost = Decimal(str(cost))
+            if duration is not None:
+                job.latency_ms = int(duration * 1000)
+
+            session.add(job)
+            session.commit()
+
+    def resume_whatsapp_delivery(self, job_id: UUID) -> bool:
+        """Send only durable chunks that do not yet have a Meta message ID."""
+        from src.service.bots.whatsapp_bot_service import (
+            WhatsAppBotService,
+            WhatsAppSendResult,
+        )
+
+        lease = self._lease_whatsapp_delivery(job_id)
+        if not lease:
+            return False
+
+        reply_context = lease["reply_context"]
+        phone_number_id = str(reply_context.get("phone_number_id") or "")
+        recipient_wa_id = str(reply_context.get("recipient_wa_id") or "")
+        if not phone_number_id or not recipient_wa_id:
+            self._record_whatsapp_send_failure(
+                job_id,
+                WhatsAppSendResult(
+                    accepted=False,
+                    failure_kind="terminal",
+                    status_code=None,
+                    error_message="WhatsApp reply context is missing",
+                ),
+            )
+            return False
+
+        whatsapp_bot = WhatsAppBotService()
+        for chunk in lease["chunks"]:
+            if chunk.get("provider_message_id"):
+                continue
+
+            result = run_async(
+                whatsapp_bot.send_text_message_result(
+                    phone_number_id=phone_number_id,
+                    recipient_wa_id=recipient_wa_id,
+                    text=str(chunk.get("text") or ""),
+                )
+            )
+            if result.accepted:
+                self._record_whatsapp_chunk_accepted(
+                    job_id,
+                    int(chunk["index"]),
+                    result,
+                )
+                continue
+
+            self._record_whatsapp_send_failure(job_id, result)
+            record_whatsapp_send(
+                result.failure_kind or "terminal",
+                attempts=int(lease["attempt"]),
+            )
+            if result.failure_kind in {"retryable", "ambiguous"}:
+                raise WhatsAppDeliveryRetryableError(
+                    result.error_message or "WhatsApp delivery should be retried"
+                )
+            return False
+
+        completed = bool(self._complete_whatsapp_delivery(job_id))
+        if completed:
+            record_whatsapp_send("sent", attempts=int(lease["attempt"]))
+        return completed
+
+    def _lease_whatsapp_delivery(self, job_id: UUID) -> dict | None:
+        """Acquire a short database lease without holding it during provider I/O."""
+        from sqlmodel import select
+
+        from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
+        from src.infra.database.sessions import org_session_scope
+
+        now = datetime.now(UTC)
+        with org_session_scope(self.organisation_id) as session:
+            statement = (
+                select(ChatMessageJob).where(ChatMessageJob.job_id == job_id).with_for_update()
+            )
+            job = session.execute(statement).scalars().first()
+            if not job or job.chat_type != "WHATSAPP_CHAT":
+                return None
+
+            status_value = getattr(job.status, "value", job.status)
+            if status_value not in {JobStatus.IN_PROGRESS.value, JobStatus.FAILED.value}:
+                return None
+
+            metadata = dict(job.job_metadata or {})
+            if metadata.get("processing_stage") not in {"response_ready", "sending"}:
+                return None
+            if metadata.get("send_status") == "sent":
+                return None
+
+            next_attempt_at = self._parse_iso_datetime(metadata.get("next_send_attempt_at"))
+            if next_attempt_at and next_attempt_at > now:
+                return None
+
+            lease_at = self._parse_iso_datetime(metadata.get("send_lease_at"))
+            if (
+                metadata.get("send_status") == "sending"
+                and lease_at
+                and lease_at > now - timedelta(minutes=_WHATSAPP_SEND_LEASE_MINUTES)
+            ):
+                return None
+
+            attempts = int(metadata.get("send_attempts") or 0)
+            if attempts >= _WHATSAPP_MAX_SEND_ATTEMPTS:
+                metadata.update(
+                    {
+                        "send_status": "exhausted",
+                        "processing_stage": "failed",
+                        "failure_stage": "sending",
+                    }
+                )
+                job.job_metadata = metadata
+                job.status = JobStatus.FAILED
+                job.error_message = "WhatsApp send retry budget exhausted"
+                session.add(job)
+                session.commit()
+                return None
+
+            envelope = metadata.get("dispatch_envelope")
+            chunks = metadata.get("outbound_chunks")
+            if not isinstance(envelope, dict) or not isinstance(chunks, list) or not chunks:
+                metadata.update(
+                    {
+                        "send_status": "invalid",
+                        "processing_stage": "failed",
+                        "failure_stage": "sending",
+                    }
+                )
+                job.job_metadata = metadata
+                job.status = JobStatus.FAILED
+                job.error_message = "WhatsApp durable response is incomplete"
+                session.add(job)
+                session.commit()
+                return None
+
+            attempt = attempts + 1
+            metadata.update(
+                {
+                    "send_status": "sending",
+                    "send_attempts": attempt,
+                    "send_lease_at": now.isoformat(),
+                    "processing_stage": "sending",
+                }
+            )
+            job.job_metadata = metadata
+            session.add(job)
+            session.commit()
+            return {
+                "reply_context": dict(envelope.get("reply_context") or {}),
+                "chunks": [dict(chunk) for chunk in chunks],
+                "attempt": attempt,
+                "agent_success": bool(metadata.get("agent_success")),
+            }
+
+    def _record_whatsapp_chunk_accepted(self, job_id: UUID, index: int, result) -> None:
+        from src.domain.models.organisation_tables.job_models import ChatMessageJob
+        from src.infra.database.sessions import org_session_scope
+
+        with org_session_scope(self.organisation_id) as session:
+            job = session.get(ChatMessageJob, job_id)
+            if not job:
+                raise RuntimeError(f"WhatsApp job {job_id} not found")
+            metadata = dict(job.job_metadata or {})
+            chunks = [dict(chunk) for chunk in metadata.get("outbound_chunks") or []]
+            matching = next(
+                (chunk for chunk in chunks if int(chunk.get("index", -1)) == index), None
+            )
+            if not matching:
+                raise RuntimeError(f"WhatsApp job {job_id} has no outbound chunk {index}")
+            if matching.get("provider_message_id"):
+                return
+            matching.update(
+                {
+                    "provider_message_id": result.provider_message_id,
+                    "accepted_at": datetime.now(UTC).isoformat(),
+                    "status_code": result.status_code,
+                }
+            )
+            metadata["outbound_chunks"] = chunks
+            metadata["send_lease_at"] = datetime.now(UTC).isoformat()
+            job.job_metadata = metadata
+            session.add(job)
+            session.commit()
+
+    def _record_whatsapp_send_failure(self, job_id: UUID, result) -> None:
+        from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
+        from src.infra.database.sessions import org_session_scope
+
+        now = datetime.now(UTC)
+        with org_session_scope(self.organisation_id) as session:
+            job = session.get(ChatMessageJob, job_id)
+            if not job:
+                return
+            metadata = dict(job.job_metadata or {})
+            failure_kind = result.failure_kind or "terminal"
+            metadata.update(
+                {
+                    "send_status": failure_kind,
+                    "last_send_error": (result.error_message or "WhatsApp send failed")[
+                        :_PERSISTED_ERROR_LIMIT
+                    ],
+                    "last_send_status_code": result.status_code,
+                    "send_lease_at": None,
+                }
+            )
+            if failure_kind in {"retryable", "ambiguous"}:
+                attempt = int(metadata.get("send_attempts") or 1)
+                delay_seconds = min(30 * (2 ** max(attempt - 1, 0)), 600)
+                metadata["next_send_attempt_at"] = (
+                    now + timedelta(seconds=delay_seconds)
+                ).isoformat()
+                metadata["processing_stage"] = "response_ready"
+            else:
+                metadata.update(
+                    {
+                        "next_send_attempt_at": None,
+                        "processing_stage": "failed",
+                        "failure_stage": "sending",
+                    }
+                )
+                job.status = JobStatus.FAILED
+                job.error_message = (result.error_message or "WhatsApp send failed")[
+                    :_PERSISTED_ERROR_LIMIT
+                ]
+
+            job.job_metadata = metadata
+            session.add(job)
+            session.commit()
+
+    def _complete_whatsapp_delivery(self, job_id: UUID) -> bool:
+        from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
+        from src.infra.database.sessions import org_session_scope
+
+        with org_session_scope(self.organisation_id) as session:
+            job = session.get(ChatMessageJob, job_id)
+            if not job:
+                return False
+            metadata = dict(job.job_metadata or {})
+            chunks = metadata.get("outbound_chunks") or []
+            if not chunks or any(not chunk.get("provider_message_id") for chunk in chunks):
+                return False
+
+            agent_success = bool(metadata.get("agent_success"))
+            metadata.update(
+                {
+                    "send_status": "sent",
+                    "send_lease_at": None,
+                    "next_send_attempt_at": None,
+                    "processing_stage": "completed" if agent_success else "failed",
+                }
+            )
+            job.job_metadata = metadata
+            job.status = JobStatus.COMPLETED if agent_success else JobStatus.FAILED
+            if agent_success:
+                job.error_message = None
+            session.add(job)
+            session.commit()
+            return True
+
+    @staticmethod
+    def _parse_iso_datetime(value: object) -> datetime | None:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
     @staticmethod
     def _merge_audio_transcript_text(text: str, transcript: str) -> str:
@@ -557,31 +994,100 @@ class BotMessageProcessingService:
         bot_context: dict,
         job_id: UUID | None,
     ) -> tuple[str, dict]:
+        audio_attachments = [
+            attachment
+            for attachment in list(bot_context.get("current_attachments") or [])
+            if str(attachment.get("mimetype") or "").lower().startswith("audio/")
+        ]
         whatsapp_audio_files = list(bot_context.get("whatsapp_audio_files") or [])
-        if not whatsapp_audio_files:
+        if not audio_attachments and not whatsapp_audio_files:
             return message_text, bot_context
 
-        phone_number_id = str(reply_context.get("phone_number_id") or "")
-        if not phone_number_id:
-            logger.warning("Skipping WhatsApp audio transcription: missing phone_number_id")
-            return message_text, bot_context
+        if audio_attachments:
+            transcript = await self._transcribe_whatsapp_audio_attachments(audio_attachments)
+            audio_origin = "whatsapp_attachment"
+        else:
+            # Compatibility for jobs committed before voice notes entered blob storage.
+            phone_number_id = str(reply_context.get("phone_number_id") or "")
+            if not phone_number_id:
+                logger.warning("Skipping WhatsApp audio transcription: missing phone_number_id")
+                return message_text, bot_context
+            transcript = await self._transcribe_whatsapp_audio_files(
+                whatsapp_audio_files,
+                phone_number_id=phone_number_id,
+            )
+            audio_origin = "whatsapp_audio"
 
-        transcript = await self._transcribe_whatsapp_audio_files(
-            whatsapp_audio_files,
-            phone_number_id=phone_number_id,
-        )
         if not transcript:
+            if audio_attachments and not message_text.strip():
+                raise RuntimeError("Durable WhatsApp audio transcription failed")
             return message_text, bot_context
 
         merged_text = self._merge_whatsapp_audio_transcript_text(message_text, transcript)
         bot_context = dict(bot_context)
         bot_context["input_modality"] = "audio"
-        bot_context["audio_origin"] = "whatsapp_audio"
+        bot_context["audio_origin"] = audio_origin
 
         if job_id and bot_context.get("conversation_type") == "personal":
             self._persist_user_message_text(job_id, merged_text)
 
         return merged_text, bot_context
+
+    async def _transcribe_whatsapp_audio_attachments(self, attachment_refs: list[dict]) -> str:
+        """Read WhatsApp voice notes from durable organization blob storage."""
+        from sqlmodel import col, select
+
+        from src.domain.models.organisation_tables.chat_message_models import Attachment
+        from src.infra.database.sessions import acquire_org_async_session
+        from src.infra.media.audio_transcription import transcribe_audio
+        from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
+
+        attachment_ids: list[UUID] = []
+        for attachment_ref in attachment_refs:
+            try:
+                attachment_ids.append(UUID(str(attachment_ref.get("attachment_id") or "")))
+            except ValueError:
+                continue
+        if not attachment_ids:
+            return ""
+
+        attachments: list[Attachment] = []
+        async for session in acquire_org_async_session(self.organisation_id):
+            statement = select(Attachment).where(
+                col(Attachment.attachment_id).in_(attachment_ids),
+                col(Attachment.organisation_id) == self.organisation_id,
+                col(Attachment.is_deleted).is_(False),
+            )
+            attachments = list((await session.execute(statement)).scalars().all())
+            break
+
+        attachments_by_id = {attachment.attachment_id: attachment for attachment in attachments}
+        storage = AzureOrganisationBlobStorage(self.organisation_id)
+        transcripts: list[tuple[str, str]] = []
+        try:
+            for attachment_id in attachment_ids:
+                attachment = attachments_by_id.get(attachment_id)
+                if not attachment or not attachment.storage_path:
+                    continue
+                try:
+                    content = await storage.get_blob_content(attachment.storage_path)
+                    transcript = (await transcribe_audio(content, attachment.filename)).strip()
+                    if transcript:
+                        transcripts.append((attachment.filename, transcript))
+                except Exception:
+                    logger.warning(
+                        "Failed to transcribe durable WhatsApp attachment %s",
+                        attachment_id,
+                        exc_info=True,
+                    )
+        finally:
+            await storage.close()
+
+        if len(transcripts) == 1:
+            return transcripts[0][1]
+        return "\n\n".join(
+            f"[WhatsApp audio: {filename}]\n{transcript}" for filename, transcript in transcripts
+        )
 
     async def _transcribe_whatsapp_audio_files(
         self,
@@ -862,7 +1368,8 @@ class BotMessageProcessingService:
             ):
                 result.frames.append(frame)
 
-                # Update thinking indicator with tool status
+                # Surface long-running tool progress, but throttle provider edits
+                # to avoid rate limits and a noisy stream of transient statuses.
                 if (
                     status_ctx
                     and getattr(frame, "type", "") == "tool.usage"
@@ -1072,7 +1579,8 @@ class BotMessageProcessingService:
                     )
                     if updated:
                         return
-                    # Update failed — post new message so user isn't left hanging
+                    # Slack may reject an edit after the placeholder ages out;
+                    # posting a new message preserves a visible terminal outcome.
                     await slack_bot._send_message(
                         team_id,
                         channel_id,
@@ -1302,7 +1810,8 @@ class BotMessageProcessingService:
             )
             if updated:
                 return True
-            # Update failed — try to blank the stale thinking message
+            # A failed Teams edit leaves a misleading typing placeholder. Blank
+            # it best-effort before sending the final answer as a new activity.
             logger.warning("Teams thinking message update failed, posting new message")
             await bot_service.update_activity(
                 service_url=service_url,
@@ -1377,7 +1886,8 @@ class BotMessageProcessingService:
         text = payload.content.get("text") or payload.text_fallback or ""
         attachments = payload.attachments
 
-        # Check if this payload uses markdown blocks (needs fallback capability)
+        # Slack markdown blocks are not supported in every workspace/client, so
+        # this path preserves the error code needed to retry with plain blocks.
         has_markdown_blocks = any(b.get("type") == "markdown" for b in blocks)
 
         # Send using raw methods (which return error codes) when we need fallback
@@ -1469,7 +1979,8 @@ class BotMessageProcessingService:
                 )
             if updated:
                 return True
-            # Update failed — try to blank the stale thinking message
+            # If Slack refuses the final edit, hide the stale placeholder before
+            # posting a separate response so users do not see two live answers.
             logger.warning("chat.update failed, falling back to new message")
             await bot_service._update_message(
                 team_id=team_id,

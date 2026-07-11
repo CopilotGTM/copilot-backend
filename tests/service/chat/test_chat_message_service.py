@@ -232,6 +232,10 @@ class TestCreateUserMessage:
         assert "session_id" in md
         assert "user_message_id" in md
         assert "assistant_message_id" in md
+        assert md["enqueue_status"] == "pending"
+        assert md["enqueue_attempts"] == 0
+        assert md["celery_task_id"] is None
+        assert md["last_enqueue_error"] is None
 
     @pytest.mark.asyncio
     async def test_returns_tuple_of_message_job_assistant_id(

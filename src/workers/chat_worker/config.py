@@ -1,3 +1,5 @@
+"""Celery queues, routes, limits, and recovery schedules for chat work."""
+
 from kombu import Exchange, Queue
 
 from src.workers.base.worker_config import BaseWorkerConfig
@@ -50,6 +52,10 @@ class ChatWorkerConfig(BaseWorkerConfig):
                 "queue": "chat_messages",
                 "routing_key": "chat_messages",
             },
+            "chat.resume_whatsapp_delivery": {
+                "queue": "chat_messages",
+                "routing_key": "chat_messages",
+            },
             "chat.voice_realtime_sideband": {
                 "queue": "voice_realtime",
                 "routing_key": "voice_realtime",
@@ -79,12 +85,18 @@ class ChatWorkerConfig(BaseWorkerConfig):
         }
 
         # Beat schedule — periodic tasks run by the scheduler
-        # copilotgtm: Recovery sweep stays manual; if Redis drift becomes common,
-        # replace it with targeted repair instead of scheduled all-org DB polling.
         self.beat_schedule = {
             "poll-due-reminders": {
                 "task": "chat.poll_due_reminders",
                 "schedule": 60.0,
+                "options": {
+                    "queue": "chat_processing",
+                    "routing_key": "chat_processing",
+                },
+            },
+            "cleanup-stale-chat-jobs": {
+                "task": "chat.cleanup_stale_jobs_all_orgs",
+                "schedule": 15.0,
                 "options": {
                     "queue": "chat_processing",
                     "routing_key": "chat_processing",
