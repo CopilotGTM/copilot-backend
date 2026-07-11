@@ -21,6 +21,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMParticipantType,
     CRMPipeline,
 )
+from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
 from src.infra.utils.logger import get_logger
 from src.service.crm.accounts.contracts import AccountWriteServiceError
 from src.service.crm.accounts.write_service import AccountWriteService
@@ -1303,17 +1304,24 @@ class DealWriteService:
         self,
         deal_id: UUID,
         *,
-        primary_contact_name: str | None,
-        primary_contact_email: str | None,
+        primary_contact_id: UUID | None = None,
+        primary_contact_name: str | None = None,
+        primary_contact_email: str | None = None,
         clear_primary_contact: bool = False,
         company_name: str | None = None,
         context: DealWriteContext | None = None,
     ) -> CRMDeal:
         """Update primary contact for an internal CRM deal."""
+        self._validate_uuid_field("primary_contact_id", primary_contact_id)
         self._validate_string_field("primary_contact_name", primary_contact_name)
         self._validate_email_field("primary_contact_email", primary_contact_email)
         self._validate_string_field("company_name", company_name)
-        if not clear_primary_contact and not primary_contact_name and not primary_contact_email:
+        if (
+            not clear_primary_contact
+            and primary_contact_id is None
+            and not primary_contact_name
+            and not primary_contact_email
+        ):
             raise DealWriteServiceError("No primary contact fields to update", status_code=400)
 
         deal = await self._load_internal_deal(deal_id)
@@ -1328,6 +1336,7 @@ class DealWriteService:
             deal.primary_contact_id = None
             deal.primary_contact_name = None
             deal.primary_contact_email = None
+            self._sync_deal_primary_contact_phone_for_response(deal=deal, phone_number=None)
             deal.source_modified_at = now
             deal.synced_at = now
             deal.last_seen_at = now
@@ -1339,6 +1348,35 @@ class DealWriteService:
                 operation="update_primary_contact",
                 changed_fields=self._collect_changed_fields(old_values=old_values, obj=deal),
                 summary="Cleared deal primary contact",
+                context=context,
+            )
+            return deal
+
+        if primary_contact_id is not None:
+            (
+                contact,
+                participant,
+                preferred_email,
+                preferred_phone,
+            ) = await self._load_primary_contact_candidate(
+                deal=deal,
+                contact_id=primary_contact_id,
+            )
+            await self._promote_existing_primary_contact_participant(
+                deal=deal,
+                contact=contact,
+                participant=participant,
+                preferred_email=preferred_email,
+                preferred_phone=preferred_phone,
+                now=now,
+            )
+            logger.info("Updated primary contact for internal CRM deal %s", deal.deal_id)
+            await self._record_mutation_event(
+                deal=deal,
+                event_type="crm.deal.primary_contact_changed",
+                operation="update_primary_contact",
+                changed_fields=self._collect_changed_fields(old_values=old_values, obj=deal),
+                summary="Updated deal primary contact",
                 context=context,
             )
             return deal
@@ -1391,6 +1429,113 @@ class DealWriteService:
             participant.synced_at = now
             participant.last_seen_at = now
             self.session.add(participant)
+
+    async def _load_primary_contact_candidate(
+        self,
+        *,
+        deal: CRMDeal,
+        contact_id: UUID,
+    ) -> tuple[CRMContact, CRMDealParticipant, str | None, str | None]:
+        contact = await self._load_active_contact_for_deal(
+            contact_id=contact_id,
+            integration_id=deal.integration_id,
+        )
+        preferred_email = self._preferred_contact_email(contact)
+        preferred_phone = self._preferred_contact_phone(contact)
+        if not preferred_email and not preferred_phone:
+            raise DealWriteServiceError(
+                "Primary contact must have an email or phone number",
+                status_code=400,
+            )
+
+        stmt = select(CRMDealParticipant).where(
+            col(CRMDealParticipant.organisation_id) == self.organisation_id,
+            col(CRMDealParticipant.integration_id) == deal.integration_id,
+            col(CRMDealParticipant.deal_id) == deal.deal_id,
+            col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+            col(CRMDealParticipant.related_local_id) == contact.contact_id,
+            col(CRMDealParticipant.approval_status) == ApprovalStatus.APPROVED.value,
+            col(CRMDealParticipant.is_deleted).is_(False),
+        )
+        result = await self.session.execute(stmt)
+        participant = result.scalars().first()
+        if participant is None:
+            raise DealWriteServiceError(
+                "Primary contact must be an active approved Buying Committee stakeholder on this deal",
+                status_code=400,
+            )
+        return contact, participant, preferred_email, preferred_phone
+
+    async def _load_active_contact_for_deal(
+        self,
+        *,
+        contact_id: UUID,
+        integration_id: UUID,
+    ) -> CRMContact:
+        stmt = select(CRMContact).where(
+            col(CRMContact.organisation_id) == self.organisation_id,
+            col(CRMContact.integration_id) == integration_id,
+            col(CRMContact.contact_id) == contact_id,
+            col(CRMContact.is_deleted).is_(False),
+        )
+        result = await self.session.execute(stmt)
+        contact = result.scalars().first()
+        if contact is None:
+            raise DealWriteServiceError("Contact not found", status_code=404)
+        return contact
+
+    async def _promote_existing_primary_contact_participant(
+        self,
+        *,
+        deal: CRMDeal,
+        contact: CRMContact,
+        participant: CRMDealParticipant,
+        preferred_email: str | None,
+        preferred_phone: str | None,
+        now: datetime,
+    ) -> None:
+        participant.is_primary_contact = True
+        participant.relationship_role = "primary_contact"
+        participant.related_name = (
+            self._build_contact_display_name(contact) or participant.related_name
+        )
+        participant.related_email = preferred_email or participant.related_email
+        participant.source_modified_at = now
+        participant.synced_at = now
+        participant.last_seen_at = now
+        self.session.add(participant)
+
+        stmt = select(CRMDealParticipant).where(
+            col(CRMDealParticipant.organisation_id) == self.organisation_id,
+            col(CRMDealParticipant.integration_id) == deal.integration_id,
+            col(CRMDealParticipant.deal_id) == deal.deal_id,
+            col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+            col(CRMDealParticipant.is_primary_contact).is_(True),
+            col(CRMDealParticipant.is_deleted).is_(False),
+        )
+        result = await self.session.execute(stmt)
+        for existing_participant in result.scalars().all():
+            if existing_participant.participant_id == participant.participant_id:
+                continue
+            existing_participant.is_primary_contact = False
+            if existing_participant.relationship_role == "primary_contact":
+                existing_participant.relationship_role = None
+            existing_participant.source_modified_at = now
+            existing_participant.synced_at = now
+            existing_participant.last_seen_at = now
+            self.session.add(existing_participant)
+
+        deal.primary_contact_id = contact.contact_id
+        deal.primary_contact_name = self._build_contact_display_name(contact)
+        deal.primary_contact_email = preferred_email
+        self._sync_deal_primary_contact_phone_for_response(
+            deal=deal,
+            phone_number=preferred_phone,
+        )
+        deal.source_modified_at = now
+        deal.synced_at = now
+        deal.last_seen_at = now
+        self.session.add(deal)
 
     async def _apply_account_and_team(
         self,
@@ -1898,6 +2043,33 @@ class DealWriteService:
         deal.synced_at = now
         deal.last_seen_at = now
         self.session.add(deal)
+
+    @staticmethod
+    def _preferred_contact_email(contact: CRMContact) -> str | None:
+        email = DealWriteService._normalize_email(getattr(contact, "email", None))
+        if email:
+            return email
+        for additional_email in getattr(contact, "additional_emails", None) or []:
+            email = DealWriteService._normalize_email(additional_email)
+            if email:
+                return email
+        return None
+
+    @staticmethod
+    def _preferred_contact_phone(contact: CRMContact) -> str | None:
+        return DealWriteService._clean_string(getattr(contact, "phone", None)) or (
+            DealWriteService._clean_string(getattr(contact, "mobile_phone", None))
+        )
+
+    @staticmethod
+    def _sync_deal_primary_contact_phone_for_response(
+        *,
+        deal: CRMDeal,
+        phone_number: str | None,
+    ) -> None:
+        # copilotgtm: Response-only attr until deal list/detail joins hydrate
+        # contact phones directly; CRMContact remains the durable owner.
+        object.__setattr__(deal, "primary_contact_phone_number", phone_number)
 
     @staticmethod
     def _clean_string(value: str | None) -> str | None:

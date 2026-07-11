@@ -374,8 +374,22 @@ class DealUpdateRequest(_StrictDealWriteModel):
 class DealPrimaryContactUpdateRequest(_StrictDealWriteModel):
     """Request payload to update primary contact details for an internal CRM deal."""
 
+    primary_contact_id: UUID | None = None
     primary_contact_name: str | None = None
     primary_contact_email: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_mixed_identity_modes(cls, data: Any) -> Any:
+        """Keep manual contact-ID edits separate from legacy snapshot writes."""
+        if isinstance(data, dict) and "primary_contact_id" in data:
+            legacy_fields = {"primary_contact_name", "primary_contact_email"} & set(data)
+            if legacy_fields:
+                raise ValueError(
+                    "primary_contact_id cannot be combined with primary_contact_name "
+                    "or primary_contact_email"
+                )
+        return data
 
     @field_validator("primary_contact_name", "primary_contact_email", mode="before")
     @classmethod
@@ -403,7 +417,9 @@ class DealPrimaryContactUpdateRequest(_StrictDealWriteModel):
 
     @property
     def is_clear_request(self) -> bool:
-        """Return True only for the explicit two-field primary-contact clear payload."""
+        """Return True only for explicit primary-contact clear payloads."""
+        if "primary_contact_id" in self.model_fields_set and self.primary_contact_id is None:
+            return True
         return (
             {"primary_contact_name", "primary_contact_email"} <= self.model_fields_set
             and self.primary_contact_name is None
@@ -414,6 +430,8 @@ class DealPrimaryContactUpdateRequest(_StrictDealWriteModel):
     def require_contact_field(self) -> DealPrimaryContactUpdateRequest:
         """Allow explicit clears but reject no-op primary-contact updates."""
         if self.is_clear_request:
+            return self
+        if self.primary_contact_id is not None:
             return self
         if not self.primary_contact_name and not self.primary_contact_email:
             raise ValueError("At least one primary contact field is required")

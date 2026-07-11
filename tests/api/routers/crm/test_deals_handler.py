@@ -20,6 +20,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
 from tests.api.routers.crm.conftest import (
     FakeCompany,
     FakeDealJob,
+    create_contact,
     create_deal,
 )
 
@@ -54,6 +55,7 @@ def test_deal_write_response_includes_updated_business_fields() -> None:
         primary_contact_id=uuid4(),
         primary_contact_name="Jane Buyer",
         primary_contact_email="jane@acme.com",
+        primary_contact_phone_number="+15551234567",
         source_created_at=datetime(2026, 1, 1, tzinfo=UTC),
         close_date=datetime(2026, 3, 1, tzinfo=UTC),
         expected_close_date=datetime(2026, 3, 15, tzinfo=UTC),
@@ -102,6 +104,14 @@ def test_deal_write_response_includes_updated_business_fields() -> None:
     assert response["primary_contact_id"] == deal.primary_contact_id
     assert response["primary_contact_name"] == "Jane Buyer"
     assert response["primary_contact_email"] == "jane@acme.com"
+    assert response["primary_contact_details"] == [
+        {
+            "contact_id": deal.primary_contact_id,
+            "name": "Jane Buyer",
+            "email": "jane@acme.com",
+            "phone_number": "+15551234567",
+        }
+    ]
     assert response["source_created_at"] == datetime(2026, 1, 1, tzinfo=UTC)
     assert response["closed_won_at"] == datetime(2026, 3, 2, tzinfo=UTC)
     assert response["closed_lost_at"] is None
@@ -638,6 +648,7 @@ def test_list_deals_includes_clickable_account_and_primary_contact_details(
             "contact_id": str(contact_id),
             "name": "Jane Buyer",
             "email": "jane@acme.com",
+            "phone_number": None,
         }
     ]
 
@@ -1480,9 +1491,57 @@ async def test_update_deal_primary_contact_passes_explicit_clear_intent() -> Non
     assert result.status == "SUCCESS"
     service.update_primary_contact.assert_awaited_once_with(
         deal_id=deal.deal_id,
+        primary_contact_id=None,
         primary_contact_name=None,
         primary_contact_email=None,
         clear_primary_contact=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_deal_primary_contact_passes_contact_id() -> None:
+    contact_id = uuid4()
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        name="Acme Deal",
+        pipeline_id=uuid4(),
+        stage_id=uuid4(),
+        deal_status="open",
+        owner_id=None,
+        company_id=None,
+        company_name=None,
+        company_domain=None,
+        primary_contact_id=contact_id,
+        primary_contact_name="Jane Buyer",
+        primary_contact_email=None,
+        primary_contact_phone_number="+15551234567",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    service = SimpleNamespace(
+        update_primary_contact=AsyncMock(return_value=deal),
+        session=SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock()),
+    )
+
+    result = await deals_handler_module.update_deal_primary_contact(
+        deal_id=deal.deal_id,
+        request=deals_handler_module.DealPrimaryContactUpdateRequest(
+            primary_contact_id=contact_id,
+        ),
+        response=FastAPIResponse(),
+        service=service,
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    assert result.status == "SUCCESS"
+    assert result.data.primary_contact_details[0].phone_number == "+15551234567"
+    service.update_primary_contact.assert_awaited_once_with(
+        deal_id=deal.deal_id,
+        primary_contact_id=contact_id,
+        primary_contact_name=None,
+        primary_contact_email=None,
+        clear_primary_contact=False,
     )
 
 
@@ -1525,6 +1584,42 @@ def test_get_deal_returns_expanded_detail_fields(client: TestClient, deals_depen
     assert data["associated_contact_count"] == 3
     assert data["associated_company_count"] == 1
     assert data["note_count"] == 5
+
+
+def test_get_deal_hydrates_primary_contact_details_phone(
+    client: TestClient, deals_dependency_overrides
+):
+    """Deal detail refetch should return the selected POC's reachable phone."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+    contact = create_contact(
+        org_id,
+        email=None,
+        full_name="Phone Buyer",
+        phone="  +15551234567  ",
+    )
+    deal = create_deal(
+        org_id,
+        name="Phone POC Deal",
+        primary_contact_id=contact.contact_id,
+        primary_contact_name="Phone Buyer",
+        primary_contact_email=None,
+    )
+    deals_service.add_contact(contact)
+    deals_service.add_deal(deal)
+
+    resp = client.get(f"/users/crm/deals/{deal.deal_id}")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["primary_contact_details"] == [
+        {
+            "contact_id": str(contact.contact_id),
+            "name": "Phone Buyer",
+            "email": None,
+            "phone_number": "+15551234567",
+        }
+    ]
 
 
 def test_get_deal_not_found(client: TestClient, deals_dependency_overrides):

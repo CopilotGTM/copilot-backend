@@ -102,6 +102,13 @@ _CURRENCY_CODE_BY_SYMBOL = {
 }
 
 
+def _clean_string(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
 def _normalize_currency_code(value: str | None) -> str | None:
     if value is None:
         return None
@@ -272,7 +279,31 @@ async def _get_integration_types_map(
     }
 
 
-def _map_deal_write_response(deal) -> DealWriteResponse:
+def _primary_contact_details_from_deal(deal) -> list[DealPrimaryContactDetail]:
+    if not any(
+        [
+            getattr(deal, "primary_contact_id", None),
+            getattr(deal, "primary_contact_name", None),
+            getattr(deal, "primary_contact_email", None),
+            getattr(deal, "primary_contact_phone_number", None),
+        ]
+    ):
+        return []
+    return [
+        DealPrimaryContactDetail(
+            contact_id=getattr(deal, "primary_contact_id", None),
+            name=getattr(deal, "primary_contact_name", None),
+            email=getattr(deal, "primary_contact_email", None),
+            phone_number=getattr(deal, "primary_contact_phone_number", None),
+        )
+    ]
+
+
+def _map_deal_write_response(
+    deal,
+    *,
+    primary_contact_details: list[DealPrimaryContactDetail] | None = None,
+) -> DealWriteResponse:
     owner_details = (
         [
             DealOwnerDetail(
@@ -320,6 +351,11 @@ def _map_deal_write_response(deal) -> DealWriteResponse:
         primary_contact_id=getattr(deal, "primary_contact_id", None),
         primary_contact_name=getattr(deal, "primary_contact_name", None),
         primary_contact_email=getattr(deal, "primary_contact_email", None),
+        primary_contact_details=(
+            primary_contact_details
+            if primary_contact_details is not None
+            else _primary_contact_details_from_deal(deal)
+        ),
         source_created_at=getattr(deal, "source_created_at", None),
         close_date=getattr(deal, "close_date", None),
         expected_close_date=getattr(deal, "expected_close_date", None),
@@ -568,6 +604,7 @@ async def list_deals(
                             contact_id=getattr(deal, "primary_contact_id", None),
                             name=getattr(deal, "primary_contact_name", None),
                             email=getattr(deal, "primary_contact_email", None),
+                            phone_number=getattr(deal, "primary_contact_phone_number", None),
                         )
                     ]
                     if any(
@@ -966,6 +1003,14 @@ async def get_deal(
                 company_linkedin_url = company.linkedin_url
                 company_country = company.country
 
+        if deal.primary_contact_id:
+            contact = await service.get_contact_by_id(deal.primary_contact_id)
+            if contact:
+                phone_number = _clean_string(getattr(contact, "phone", None)) or _clean_string(
+                    getattr(contact, "mobile_phone", None)
+                )
+                object.__setattr__(deal, "primary_contact_phone_number", phone_number)
+
         # Check for active deal-level jobs (for SSE reconnection)
         active_deal_jobs = None
         try:
@@ -1076,6 +1121,7 @@ async def get_deal(
             primary_contact_id=deal.primary_contact_id,
             primary_contact_name=deal.primary_contact_name,
             primary_contact_email=deal.primary_contact_email,
+            primary_contact_details=_primary_contact_details_from_deal(deal),
             deal_type=deal.deal_type,
             priority=deal.priority,
             lead_source=deal.lead_source,
@@ -1301,13 +1347,18 @@ async def update_deal_primary_contact(
     try:
         deal = await service.update_primary_contact(
             deal_id=deal_id,
+            primary_contact_id=request.primary_contact_id,
             primary_contact_name=request.primary_contact_name,
             primary_contact_email=request.primary_contact_email,
             clear_primary_contact=request.is_clear_request,
         )
+        primary_contact_details = _primary_contact_details_from_deal(deal)
         await service.session.commit()
         await service.session.refresh(deal)
-        payload = _map_deal_write_response(deal)
+        payload = _map_deal_write_response(
+            deal,
+            primary_contact_details=primary_contact_details,
+        )
         return Response.success_response(
             message="Deal primary contact updated successfully",
             data=payload,

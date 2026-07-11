@@ -1,8 +1,8 @@
 # CRM Deals API Documentation
 
-> Version: 1.4
+> Version: 1.5
 > Base URL: `/users/crm`
-> Last Updated: 2026-07-05
+> Last Updated: 2026-07-12
 
 ---
 
@@ -56,7 +56,9 @@ and are not part of canonical deal API responses.
 - `primary_contact_id`, `primary_contact_name`, and `primary_contact_email` are
   the deal's primary-contact snapshot. Deal list rows also expose the same
   contact as `primary_contact_details` so contact cells can link by
-  `primary_contact_details[0].contact_id`.
+  `primary_contact_details[0].contact_id`. Deal detail and primary-contact write
+  responses also include `primary_contact_details[0].phone_number` when the
+  linked contact has a phone or mobile phone.
 
 ### Frontend Migration Checklist
 
@@ -84,6 +86,10 @@ Use this checklist when updating the deal UI:
 - Route edits by `edit_policy`: `always` -> inline PATCH, `stage_action` ->
   stage endpoint, `owner_assignment` -> owner endpoint, `account_action` ->
   account endpoint, `primary_contact_action` -> primary-contact endpoint.
+- For manual POC selection, use active approved Buying Committee contact
+  stakeholders on the deal as the picker source. Do not let users choose an
+  archived contact, removed/rejected/pending stakeholder, or unrelated contact as
+  the deal POC.
 
 ---
 
@@ -109,6 +115,7 @@ export interface DealPrimaryContactDetail {
   contact_id: UUID | null;
   name: string | null;
   email: string | null;
+  phone_number: string | null;
 }
 
 export interface DealTeamMember {
@@ -373,6 +380,7 @@ export interface DealUpdateRequest {
 }
 
 export interface DealPrimaryContactUpdateRequest {
+  primary_contact_id?: UUID | null;
   primary_contact_name?: string | null;
   primary_contact_email?: string | null;
 }
@@ -428,6 +436,7 @@ export interface DealWriteResponse {
   primary_contact_id: UUID | null;
   primary_contact_name: string | null;
   primary_contact_email: string | null;
+  primary_contact_details: DealPrimaryContactDetail[];
   source_created_at: ISODate | null;
   close_date: ISODate | null;
   expected_close_date: ISODate | null;
@@ -483,6 +492,7 @@ export interface DealDetail {
   primary_contact_id: UUID | null;
   primary_contact_name: string | null;
   primary_contact_email: string | null;
+  primary_contact_details: DealPrimaryContactDetail[];
   deal_type: string | null;
   priority: string | null;
   lead_source: string | null;
@@ -708,6 +718,7 @@ POST /users/crm/deals
     "primary_contact_id": null,
     "primary_contact_name": null,
     "primary_contact_email": null,
+    "primary_contact_details": [],
     "created_at": "2026-01-22T10:00:00Z",
     "updated_at": "2026-01-22T10:00:00Z",
     "synced_at": "2026-01-22T10:00:00Z"
@@ -896,6 +907,14 @@ AI context from `GET /users/crm/deals/{deal_id}`.
         "primary_contact_id": "44ef8f41-c980-4b12-987e-3b7fd7ed8c3e",
         "primary_contact_name": "Jane Buyer",
         "primary_contact_email": "jane@acme.com",
+        "primary_contact_details": [
+          {
+            "contact_id": "44ef8f41-c980-4b12-987e-3b7fd7ed8c3e",
+            "name": "Jane Buyer",
+            "email": "jane@acme.com",
+            "phone_number": null
+          }
+        ],
         "last_activity_at": "2026-01-23T08:30:00Z",
         "deal_team": [],
         "is_internal": true,
@@ -922,6 +941,7 @@ AI context from `GET /users/crm/deals/{deal_id}`.
 | `stage_label` / `pipeline_label` | string \| null | Display labels for the current stage and pipeline. |
 | `company_id` / `company_name` / `company_domain` | UUID/string \| null | Linked account identifiers shown in the list row and searchable by company name. |
 | `primary_contact_id` / `primary_contact_name` / `primary_contact_email` | UUID/string \| null | Primary contact snapshot shown in the list row. |
+| `primary_contact_details` | array | Primary contact details as a list (typically 0..1). Use `contact_id` for linking. `phone_number` is included when hydrated; list rows may return `null` for phone if the row was not contact-hydrated. |
 | `last_activity_at` | datetime \| null | Most recent activity timestamp associated with the deal. |
 | `deal_team` | array | Internal deal team members attached as participants. |
 | `currency_symbol` | string \| null | Symbol derived from `currency` (for example `$`, `₹`). Frontend should use this for icon/amount decoration. |
@@ -991,6 +1011,14 @@ GET /users/crm/deals/{deal_id}
     "primary_contact_id": "44ef8f41-c980-4b12-987e-3b7fd7ed8c3e",
     "primary_contact_name": "Jane Buyer",
     "primary_contact_email": "jane@acme.com",
+    "primary_contact_details": [
+      {
+        "contact_id": "44ef8f41-c980-4b12-987e-3b7fd7ed8c3e",
+        "name": "Jane Buyer",
+        "email": "jane@acme.com",
+        "phone_number": "+15551234567"
+      }
+    ],
     "close_date": "2026-03-15T00:00:00Z",
     "expected_close_date": "2026-03-31T00:00:00Z",
     "closed_won_at": null,
@@ -1795,24 +1823,57 @@ PATCH /users/crm/deals/{deal_id}/primary-contact
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `primary_contact_name` | string \| null | No | Display name for primary contact. Send `null` with `primary_contact_email: null` to clear the primary contact. |
-| `primary_contact_email` | string \| null | No | Valid email for primary contact (recommended). Send `null` with `primary_contact_name: null` to clear the primary contact. |
+| `primary_contact_id` | UUID \| null | No | Preferred frontend field. Send a contact UUID to set the deal POC. Send `null` to clear the POC. |
+| `primary_contact_name` | string \| null | No | Legacy/import-compatible snapshot write. Do not use for manual frontend POC edits. |
+| `primary_contact_email` | string \| null | No | Legacy/import-compatible snapshot write. Do not use for manual frontend POC edits. |
 
-At least one of the two fields must be provided with a non-empty value, unless both
-fields are explicitly sent as `null` to clear the primary contact. Blank strings are
-rejected. A single null field without the other null field is also rejected.
-When the backend cannot resolve the supplied name/email to one unique internal contact,
-it stores the provided name/email as the deal snapshot and clears the previous primary
-contact participant link so `primary_contact_id` and participant state do not point at
-an older contact.
+Manual frontend POC edits should use `primary_contact_id` only.
+
+Rules for `primary_contact_id`:
+- The contact must be active and not archived.
+- The contact must already be an active approved Buying Committee contact stakeholder on this deal.
+- The contact must be reachable by at least one identity: primary email, additional email, phone, or mobile phone.
+- Setting a new POC by contact ID demotes the previous primary contact but does not remove the previous person from the Buying Committee.
+- `primary_contact_id` cannot be combined with `primary_contact_name` or `primary_contact_email` in the same request.
+
+Legacy name/email mode:
+- At least one of `primary_contact_name` or `primary_contact_email` must be provided with a non-empty value, unless both fields are explicitly sent as `null` to clear the primary contact.
+- Blank strings are rejected.
+- A single null legacy field without the other null field is rejected.
+- When the backend cannot resolve the supplied name/email to one unique internal contact, it stores the provided name/email as the deal snapshot and clears the previous primary contact participant link so `primary_contact_id` and participant state do not point at an older contact.
+
+Set primary contact by contact ID:
+```json
+{
+  "primary_contact_id": "44ef8f41-c980-4b12-987e-3b7fd7ed8c3e"
+}
+```
 
 Clear primary contact:
 ```json
 {
-  "primary_contact_name": null,
-  "primary_contact_email": null
+  "primary_contact_id": null
 }
 ```
+
+Legacy clear payloads with both `primary_contact_name: null` and
+`primary_contact_email: null` are still accepted for backward compatibility.
+
+Recommended POC picker source:
+- Use the deal's active approved Buying Committee contact stakeholders from
+  `GET /users/crm/deals/{deal_id}/stakeholders`.
+- Do not use all active People contacts for direct POC selection because the backend will reject unrelated contacts.
+- If the current deal has no eligible stakeholder, frontend should prompt the user to add a Buying Committee stakeholder first, then set that stakeholder as POC.
+
+Common validation responses:
+
+| Status | Message | When |
+|--------|---------|------|
+| `400` | `Primary contact must have an email or phone number` | Selected stakeholder has no primary/additional email, phone, or mobile phone. |
+| `400` | `Primary contact must be an active approved Buying Committee stakeholder on this deal` | Contact exists but is not an active approved stakeholder on this deal. |
+| `404` | `Contact not found` | Contact does not exist in this organisation/integration or is archived. |
+| `409` | Deal write conflict/read-only message | Deal is not an internal editable CRM deal. |
+| `422` | Pydantic validation error | Payload mixes ID mode with legacy fields, has unknown fields, malformed UUID/email, or blank strings. |
 
 ### Success Response (200)
 
@@ -1835,11 +1896,23 @@ the primary-contact and account context fields most relevant to this action.
     "primary_contact_id": "44ef8f41-c980-4b12-987e-3b7fd7ed8c3e",
     "primary_contact_name": "Jane Buyer",
     "primary_contact_email": "jane@acme.com",
+    "primary_contact_details": [
+      {
+        "contact_id": "44ef8f41-c980-4b12-987e-3b7fd7ed8c3e",
+        "name": "Jane Buyer",
+        "email": "jane@acme.com",
+        "phone_number": "+15551234567"
+      }
+    ],
     "created_at": "2026-01-22T10:00:00Z",
     "updated_at": "2026-02-10T10:30:00Z"
   }
 }
 ```
+
+After refetching `GET /users/crm/deals/{deal_id}`, detail responses also include
+`primary_contact_details` with `phone_number` when the linked contact has a phone
+or mobile phone.
 
 ---
 
@@ -2266,6 +2339,7 @@ GET /users/crm/pipelines?include_stages=true
 12. **Deal detail rendering**: Use `data.detail_field_definitions` from `GET /users/crm/deals/{deal_id}` for predefined Get Details order and inline editability. Do not hardcode the deal field order in the frontend.
 13. **Schema-driven custom controls**: Use `GET /users/crm/schema?entity=deal` for create/edit/agent custom field metadata. Deal detail still returns `custom_column_definitions` as a compatibility projection for existing detail controls.
 14. **CSV import**: Use the generic CRM CSV upload API at `/users/crm/imports/csv`; deal-scoped import reconnect/SSE fields are not part of the deal list response.
+15. **Manual POC edits**: Use `PATCH /users/crm/deals/{deal_id}/primary-contact` with `primary_contact_id`. The picker should show active approved Buying Committee contact stakeholders from `GET /users/crm/deals/{deal_id}/stakeholders`. To clear, send `{ "primary_contact_id": null }`. If no eligible stakeholder exists, guide the user to add a Buying Committee stakeholder first.
 
 ---
 

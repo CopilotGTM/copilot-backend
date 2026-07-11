@@ -153,6 +153,30 @@ def test_primary_contact_request_allows_explicit_clear() -> None:
     assert request.is_clear_request is True
 
 
+def test_primary_contact_request_accepts_contact_id_update() -> None:
+    contact_id = UUID(int=11)
+
+    request = DealPrimaryContactUpdateRequest(primary_contact_id=contact_id)
+
+    assert request.primary_contact_id == contact_id
+    assert request.is_clear_request is False
+
+
+def test_primary_contact_request_allows_contact_id_clear() -> None:
+    request = DealPrimaryContactUpdateRequest(primary_contact_id=None)
+
+    assert request.primary_contact_id is None
+    assert request.is_clear_request is True
+
+
+def test_primary_contact_request_rejects_mixed_contact_id_and_legacy_fields() -> None:
+    with pytest.raises(ValidationError):
+        DealPrimaryContactUpdateRequest(
+            primary_contact_id=UUID(int=12),
+            primary_contact_email="jane@example.com",
+        )
+
+
 @pytest.mark.parametrize(
     "payload",
     [
