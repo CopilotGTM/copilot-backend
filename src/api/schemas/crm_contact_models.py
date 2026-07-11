@@ -9,7 +9,7 @@ records or by enrichment workflows.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -277,6 +277,38 @@ class ContactMutationItem(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ContactDeleteImpact(BaseModel):
+    """Impact summary returned after archiving and detaching a contact."""
+
+    cleared_deal_primary_contacts: int = 0
+    archived_deal_participants: int = 0
+    cleared_lead_contacts: int = 0
+    archived_lead_participants: int = 0
+    detached_integration_participants: int = 0
+    detached_conversation_speakers: int = 0
+    removed_contact_activity_links: int = 0
+    cleared_activity_contact_refs: int = 0
+    archived_contact_only_activities: int = 0
+    cancelled_contact_research_jobs: int = 0
+    import_rows_retained: int = 0
+
+
+class ContactDeleteResult(BaseModel):
+    """Archived contact response with explicit detach impact counts."""
+
+    action: Literal["archived_and_detached"] = "archived_and_detached"
+    contact: ContactMutationItem
+    impact: ContactDeleteImpact
+
+
+class ContactDeleteBlockedData(BaseModel):
+    """Guidance payload for contacts that cannot be archived by this API."""
+
+    code: str
+    blocked_reason: str
+    suggested_actions: list[str] = Field(default_factory=list)
 
 
 class ContactDetail(BaseModel):

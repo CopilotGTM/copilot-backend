@@ -1,15 +1,34 @@
 from __future__ import annotations
 
 from dataclasses import fields
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
+from src.domain.models.organisation_tables.sync.conversation_intelligence import CICallSpeaker
+from src.domain.models.organisation_tables.sync.crm.activities import (
+    CRMActivity,
+    CRMActivityLink,
+    CRMActivityObjectType,
+)
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDealMutationEvent
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDeal,
+    CRMDealMutationEvent,
+    CRMDealParticipant,
+    CRMParticipantType,
+)
+from src.domain.models.organisation_tables.sync.crm.leads import (
+    CRMLead,
+    CRMLeadParticipant,
+    CRMLeadParticipantType,
+)
 from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
+from src.domain.models.organisation_tables.sync.participant_models import IntegrationParticipant
 from src.service.crm.accounts.contracts import AccountWriteResult
 from src.service.crm.contacts.contracts import (
     ContactCreateCommand,
@@ -45,6 +64,9 @@ class _FakeResult:
         self._scalars = scalars or []
 
     def scalar(self):
+        return self._scalar
+
+    def scalar_one(self):
         return self._scalar
 
     def scalars(self):
@@ -901,3 +923,202 @@ async def test_update_contact_actor_context_does_not_overwrite_owner() -> None:
     assert result.contact.owner_id == original_owner_id
     assert result.contact.owner_name == "Original Owner"
     assert result.contact.owner_email == "original@example.com"
+
+
+@pytest.mark.asyncio
+async def test_delete_contact_rejects_provider_synced_contact(monkeypatch) -> None:
+    org_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="wrong@example.com",
+        is_deleted=False,
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=_FakeResult(scalars=[contact]))
+
+    class FakeSetupService:
+        def __init__(self, *_args):
+            pass
+
+        async def get_internal_integration(self):
+            return SimpleNamespace(integration_id=uuid4())
+
+    monkeypatch.setattr(
+        "src.service.crm.contacts.write_service.InternalCRMSetupService",
+        FakeSetupService,
+    )
+
+    service = ContactWriteService(session, org_id)
+
+    with pytest.raises(ContactWriteServiceError) as exc:
+        await service.delete_contact(contact.contact_id)
+
+    assert exc.value.status_code == 409
+    assert exc.value.data["code"] == "external_crm_contact_read_only"
+    assert contact.is_deleted is False
+
+
+@pytest.mark.asyncio
+async def test_delete_contact_archives_and_detaches_linked_records(monkeypatch) -> None:
+    org_id = uuid4()
+    integration_id = uuid4()
+    contact_id = uuid4()
+    now = datetime(2026, 7, 12, 10, 0, tzinfo=UTC)
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        contact_id=contact_id,
+        email=" Wrong@Example.com ",
+        full_name="Wrong Contact",
+        is_deleted=False,
+    )
+    deal = CRMDeal(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        deal_id=uuid4(),
+        primary_contact_id=contact_id,
+        primary_contact_name="Wrong Contact",
+        primary_contact_email="wrong@example.com",
+        is_deleted=False,
+    )
+    deal_participant = CRMDealParticipant(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        deal_id=deal.deal_id,
+        participant_type=CRMParticipantType.CONTACT,
+        related_local_id=contact_id,
+        related_email="wrong@example.com",
+        is_deleted=False,
+    )
+    lead = CRMLead(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        lead_id=uuid4(),
+        contact_id=contact_id,
+        is_deleted=False,
+    )
+    lead_participant = CRMLeadParticipant(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        lead_id=lead.lead_id,
+        participant_type=CRMLeadParticipantType.CONTACT,
+        related_local_id=contact_id,
+        email="wrong@example.com",
+        is_deleted=False,
+    )
+    integration_participant = IntegrationParticipant(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        participant_id=uuid4(),
+        crm_contact_id=contact_id,
+        resolution_status="auto_matched",
+        resolution_method="email",
+        resolution_confidence=0.99,
+        last_resolved_at=now,
+    )
+    speaker = CICallSpeaker(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        speaker_id=uuid4(),
+        call_id=uuid4(),
+        crm_contact_id=contact_id,
+    )
+    contact_only_activity = CRMActivity(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        activity_id=contact_id,
+        source_type="CONTACT_CREATED",
+        source_record_id=str(contact_id),
+        is_deleted=False,
+    )
+    real_activity = CRMActivity(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        activity_id=uuid4(),
+        contact_id=contact_id,
+        related_object_type=CRMActivityObjectType.CONTACT.value,
+        related_local_id=contact_id,
+        is_deleted=False,
+    )
+    activity_link = CRMActivityLink(
+        organisation_id=org_id,
+        activity_id=real_activity.activity_id,
+        object_type=CRMActivityObjectType.CONTACT.value,
+        object_id=contact_id,
+        occurred_at=now,
+    )
+    job = DealJobs(
+        organisation_id=org_id,
+        user_id=uuid4(),
+        job_type=DealJobType.CONTACT_RESEARCH,
+        status=JobStatus.PENDING,
+        job_metadata={"contact_id": str(contact_id)},
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            _FakeResult(scalars=[contact]),
+            _FakeResult(scalars=[deal]),
+            _FakeResult(scalars=[deal_participant]),
+            _FakeResult(scalars=[lead]),
+            _FakeResult(scalars=[lead_participant]),
+            _FakeResult(scalars=[integration_participant]),
+            _FakeResult(scalars=[speaker]),
+            _FakeResult(scalars=[activity_link]),
+            _FakeResult(scalars=[real_activity]),
+            _FakeResult(scalars=[contact_only_activity]),
+            _FakeResult(scalars=[job]),
+            _FakeResult(scalar=2),
+        ]
+    )
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+    session.delete = AsyncMock()
+
+    class FakeSetupService:
+        def __init__(self, *_args):
+            pass
+
+        async def get_internal_integration(self):
+            return SimpleNamespace(integration_id=integration_id)
+
+    monkeypatch.setattr(
+        "src.service.crm.contacts.write_service.InternalCRMSetupService",
+        FakeSetupService,
+    )
+
+    service = ContactWriteService(session, org_id)
+    service._projection.soft_delete_activity_projection = AsyncMock()  # type: ignore[method-assign]
+    service._record_contact_delete_event = AsyncMock()  # type: ignore[method-assign]
+
+    result = await service.delete_contact(contact_id, context=ContactWriteContext(source="test"))
+
+    assert result.contact.is_deleted is True
+    assert result.contact.properties["deleted_via"] == "api"
+    assert deal.primary_contact_id is None
+    assert deal.primary_contact_name is None
+    assert deal.primary_contact_email is None
+    assert deal_participant.is_deleted is True
+    assert lead.contact_id is None
+    assert lead_participant.is_deleted is True
+    assert integration_participant.crm_contact_id is None
+    assert integration_participant.resolution_status == "unresolved"
+    assert speaker.crm_contact_id is None
+    assert real_activity.contact_id is None
+    assert real_activity.related_local_id is None
+    assert job.status == JobStatus.CANCELLED
+    assert result.impact.cleared_deal_primary_contacts == 1
+    assert result.impact.archived_deal_participants == 1
+    assert result.impact.cleared_lead_contacts == 1
+    assert result.impact.archived_lead_participants == 1
+    assert result.impact.detached_integration_participants == 1
+    assert result.impact.detached_conversation_speakers == 1
+    assert result.impact.archived_contact_only_activities == 1
+    assert result.impact.cleared_activity_contact_refs == 1
+    assert result.impact.removed_contact_activity_links == 1
+    assert result.impact.cancelled_contact_research_jobs == 1
+    assert result.impact.import_rows_retained == 2
+    service._projection.soft_delete_activity_projection.assert_awaited_once_with(contact_id)  # type: ignore[attr-defined]
+    session.delete.assert_awaited_once_with(activity_link)

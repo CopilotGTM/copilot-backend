@@ -187,5 +187,6 @@ async def test_search_contacts_for_agent_uses_identity_fields_and_match_metadata
     assert "crm_contacts.email" in statement_sql
     assert "crm_contacts.company_name" in statement_sql
     assert "additional_emails" in statement_sql
+    assert "crm_contacts.is_deleted" in statement_sql
     assert "job_title ilike" not in statement_sql
     assert "job_title %" not in statement_sql

@@ -2,7 +2,7 @@
 
 > Version: 1.0
 > Base URL: `/users/crm`
-> Last Updated: 2026-06-27
+> Last Updated: 2026-07-12
 
 ---
 
@@ -75,7 +75,7 @@ Per-user, fixed-window rate limits enforced via Redis. Limits are shared across 
 | Category | Per Minute | Per Hour | Applies To |
 |----------|-----------|----------|------------|
 | **Read** | 120 | 2,000 | `GET` endpoints |
-| **Write** | 120 | 2,000 | `POST`, `PATCH` endpoints |
+| **Write** | 120 | 2,000 | `POST`, `PATCH`, `DELETE` endpoints |
 
 Configurable via environment variables: `RATE_LIMIT_PER_MINUTE`, `RATE_LIMIT_PER_HOUR`, `RATE_LIMIT_READ_PER_MINUTE`, `RATE_LIMIT_READ_PER_HOUR`.
 
@@ -483,6 +483,26 @@ export interface UpdateContactRequest {
   linkedin_url?: string | null;
   company_name?: string | null;
   company_id?: UUID | null;           // Set to link account (validates exists), set to null to unlink
+}
+
+export interface ContactDeleteImpact {
+  cleared_deal_primary_contacts: number;
+  archived_deal_participants: number;
+  cleared_lead_contacts: number;
+  archived_lead_participants: number;
+  detached_integration_participants: number;
+  detached_conversation_speakers: number;
+  removed_contact_activity_links: number;
+  cleared_activity_contact_refs: number;
+  archived_contact_only_activities: number;
+  cancelled_contact_research_jobs: number;
+  import_rows_retained: number;
+}
+
+export interface ContactDeleteResult {
+  action: "archived_and_detached";
+  contact: ContactMutationItem;
+  impact: ContactDeleteImpact;
 }
 
 /**
@@ -1356,7 +1376,86 @@ Returns the updated legacy `ContactMutationItem`. `deal_count` is `0`, `company_
 
 ---
 
-### 6. Enrich Contact
+### 6. Archive Contact
+
+```http
+DELETE /users/crm/contacts/{contact_id}
+```
+
+Archives a wrong internal/manual contact. Product language should say **Archive contact**. Engineering behavior is soft delete plus detach: the backend sets `CRMContact.is_deleted = true`, stamps sync timestamps, stores `properties.deleted_via = "api"`, and detaches linked references so archived contacts stop appearing as active business entities.
+
+The endpoint does **not** delete business history. Deals, leads, emails, meetings, call records, import rows, and real activity rows remain in place; they just stop pointing to the archived contact.
+
+#### What Gets Detached
+
+| Area | Behavior |
+|------|----------|
+| Deals | Clears `primary_contact_id/name/email` when pointing to this contact; archives contact deal participants. |
+| Leads | Clears `contact_id`; archives active contact lead participants. |
+| Emails and meetings | Preserves source rows; clears `IntegrationParticipant.crm_contact_id`. |
+| Conversation intelligence | Preserves call/conversation rows; clears speaker `crm_contact_id`. |
+| Activities | Removes contact activity links, clears legacy contact refs on real activities, and archives contact-only projections such as contact-created/enrichment events. |
+| Jobs | Cancels active contact research jobs for this contact. |
+| Imports | Retains import row history and reports the retained count. |
+
+#### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Contact archived and detached from linked records.",
+  "data": {
+    "action": "archived_and_detached",
+    "contact": {
+      "contact_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "full_name": "Wrong Contact",
+      "email": "wrong@example.com",
+      "source": "manual",
+      "...": "other ContactMutationItem fields"
+    },
+    "impact": {
+      "cleared_deal_primary_contacts": 1,
+      "archived_deal_participants": 2,
+      "cleared_lead_contacts": 1,
+      "archived_lead_participants": 1,
+      "detached_integration_participants": 3,
+      "detached_conversation_speakers": 1,
+      "removed_contact_activity_links": 4,
+      "cleared_activity_contact_refs": 2,
+      "archived_contact_only_activities": 2,
+      "cancelled_contact_research_jobs": 1,
+      "import_rows_retained": 0
+    }
+  }
+}
+```
+
+#### Guided Conflict: External CRM Contact (409)
+
+Provider-synced contacts are read-only for archive because the external CRM owns the source record.
+
+```json
+{
+  "status": "ERROR",
+  "message": "This contact belongs to an external CRM and cannot be archived here.",
+  "data": {
+    "code": "external_crm_contact_read_only",
+    "blocked_reason": "This contact is synced from an external CRM. Archive or delete it in the source CRM, then sync again.",
+    "suggested_actions": [
+      "Open the contact in the connected CRM and archive or delete it there.",
+      "Run a CRM sync after the source record is updated."
+    ]
+  }
+}
+```
+
+#### Agent/Tool Visibility
+
+Archived contacts are excluded from active contact reads, contact search, update lookup, duplicate/contact lookup, and deal contact hydration. Activity feeds exclude `CRMActivity.is_deleted = true`; real email/meeting activity may still appear under the deal or activity context, but no longer as activity belonging to the archived contact.
+
+---
+
+### 7. Enrich Contact
 
 ```http
 POST /users/crm/contacts/{contact_id}/enrich

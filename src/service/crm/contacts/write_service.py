@@ -6,15 +6,36 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
+from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
+from src.domain.models.organisation_tables.sync.conversation_intelligence import CICallSpeaker
+from src.domain.models.organisation_tables.sync.crm.activities import (
+    CRMActivity,
+    CRMActivityLink,
+    CRMActivityObjectType,
+)
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDeal,
+    CRMDealParticipant,
+    CRMParticipantType,
+)
+from src.domain.models.organisation_tables.sync.crm.imports import CRMImportRow
+from src.domain.models.organisation_tables.sync.crm.leads import (
+    CRMLead,
+    CRMLeadParticipant,
+    CRMLeadParticipantType,
+)
 from src.domain.models.organisation_tables.sync.crm.users import CRMUser
+from src.domain.models.organisation_tables.sync.participant_models import IntegrationParticipant
 from src.service.crm.accounts.contracts import AccountWriteContext, AccountWriteServiceError
 from src.service.crm.accounts.write_service import AccountWriteService
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.contacts.contracts import (
+    ContactArchiveImpact,
+    ContactArchiveResult,
     ContactCreateCommand,
     ContactWriteContext,
     ContactWriteResult,
@@ -44,6 +65,12 @@ from src.service.crm.utils.identity import normalize_email
 from src.service.crm.utils.person import split_full_name
 
 ContactIdentityResolutionService = None
+
+_CONTACT_ONLY_ACTIVITY_SOURCE_TYPES = {
+    "CONTACT_CREATED",
+    "CONTACT_ENRICHMENT_TRIGGERED",
+    "CONTACT_ENRICHMENT_COMPLETED",
+}
 
 
 class ContactWriteService:
@@ -448,6 +475,318 @@ class ContactWriteService:
         )
         return ContactWriteResult(contact, False, "explicit_id")
 
+    async def delete_contact(
+        self,
+        contact_id: UUID,
+        *,
+        context: ContactWriteContext | None = None,
+    ) -> ContactArchiveResult:
+        """Archive one internal contact and detach every active CRM reference to it."""
+        contact = await self._load_active_contact(contact_id)
+        await self._ensure_contact_can_be_archived(contact)
+
+        now = datetime.now(UTC)
+        changed_fields = {
+            "is_deleted": ContactMutationPolicy.changed_field(
+                "is_deleted", contact.is_deleted, True
+            )
+        }
+        contact.is_deleted = True
+        contact.synced_at = now
+        contact.source_modified_at = now
+        contact.last_seen_at = now
+        contact.properties = {**(contact.properties or {}), "deleted_via": "api"}
+        impact = await self._detach_contact_references(contact, now)
+
+        self.org_session.add(contact)
+        await self.org_session.flush()
+        await self.org_session.refresh(contact)
+        await self._record_contact_delete_event(
+            contact,
+            changed_fields={k: v for k, v in changed_fields.items() if v},
+            impact=impact,
+            context=context,
+        )
+        return ContactArchiveResult(contact=contact, impact=impact)
+
+    async def _load_active_contact(self, contact_id: UUID) -> CRMContact:
+        stmt = select(CRMContact).where(
+            col(CRMContact.contact_id) == contact_id,
+            col(CRMContact.organisation_id) == self.organisation_id,
+            col(CRMContact.is_deleted).is_(False),
+        )
+        result = await self.org_session.execute(stmt)
+        contact = result.scalars().first()
+        if not contact:
+            raise ContactWriteServiceError("Contact not found", status_code=404)
+        return contact
+
+    async def _ensure_contact_can_be_archived(self, contact: CRMContact) -> None:
+        internal_integration = await InternalCRMSetupService(
+            self.org_session,
+            self.organisation_id,
+            AUTOMATED_PIPELINE_USER_ID,
+        ).get_internal_integration()
+        if internal_integration and contact.integration_id == internal_integration.integration_id:
+            return
+        raise ContactWriteServiceError(
+            "This contact belongs to an external CRM and cannot be archived here.",
+            status_code=409,
+            data={
+                "code": "external_crm_contact_read_only",
+                "blocked_reason": (
+                    "This contact is synced from an external CRM. Archive or delete it in "
+                    "the source CRM, then sync again."
+                ),
+                "suggested_actions": [
+                    "Open the contact in the connected CRM and archive or delete it there.",
+                    "Run a CRM sync after the source record is updated.",
+                ],
+            },
+        )
+
+    async def _detach_contact_references(
+        self, contact: CRMContact, now: datetime
+    ) -> ContactArchiveImpact:
+        deal_primary_count = await self._clear_deal_primary_contact(contact, now)
+        deal_participant_count = await self._archive_deal_participants(contact, now)
+        lead_contact_count = await self._clear_lead_contact(contact, now)
+        lead_participant_count = await self._archive_lead_participants(contact, now)
+        integration_participant_count = await self._detach_integration_participants(contact)
+        speaker_count = await self._detach_conversation_speakers(contact, now)
+        removed_links, cleared_activities, archived_activities = await self._detach_activities(
+            contact, now
+        )
+        cancelled_jobs = await self._cancel_contact_research_jobs(contact, now)
+        import_rows_retained = await self._count_import_rows_retained(contact)
+        return ContactArchiveImpact(
+            cleared_deal_primary_contacts=deal_primary_count,
+            archived_deal_participants=deal_participant_count,
+            cleared_lead_contacts=lead_contact_count,
+            archived_lead_participants=lead_participant_count,
+            detached_integration_participants=integration_participant_count,
+            detached_conversation_speakers=speaker_count,
+            removed_contact_activity_links=removed_links,
+            cleared_activity_contact_refs=cleared_activities,
+            archived_contact_only_activities=archived_activities,
+            cancelled_contact_research_jobs=cancelled_jobs,
+            import_rows_retained=import_rows_retained,
+        )
+
+    async def _clear_deal_primary_contact(self, contact: CRMContact, now: datetime) -> int:
+        result = await self.org_session.execute(
+            select(CRMDeal).where(
+                col(CRMDeal.organisation_id) == self.organisation_id,
+                col(CRMDeal.is_deleted).is_(False),
+                col(CRMDeal.primary_contact_id) == contact.contact_id,
+            )
+        )
+        deals = result.scalars().all()
+        for deal in deals:
+            deal.primary_contact_id = None
+            deal.primary_contact_name = None
+            deal.primary_contact_email = None
+            deal.synced_at = now
+            deal.source_modified_at = now
+            self.org_session.add(deal)
+        return len(deals)
+
+    async def _archive_deal_participants(self, contact: CRMContact, now: datetime) -> int:
+        stmt = select(CRMDealParticipant).where(
+            col(CRMDealParticipant.organisation_id) == self.organisation_id,
+            col(CRMDealParticipant.is_deleted).is_(False),
+            col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+            self._local_id_or_email_match(
+                CRMDealParticipant.related_local_id,
+                CRMDealParticipant.related_email,
+                contact,
+            ),
+        )
+        result = await self.org_session.execute(stmt)
+        participants = result.scalars().all()
+        for participant in participants:
+            participant.is_deleted = True
+            participant.synced_at = now
+            participant.source_modified_at = now
+            participant.last_seen_at = now
+            self.org_session.add(participant)
+        return len(participants)
+
+    async def _clear_lead_contact(self, contact: CRMContact, now: datetime) -> int:
+        result = await self.org_session.execute(
+            select(CRMLead).where(
+                col(CRMLead.organisation_id) == self.organisation_id,
+                col(CRMLead.is_deleted).is_(False),
+                col(CRMLead.contact_id) == contact.contact_id,
+            )
+        )
+        leads = result.scalars().all()
+        for lead in leads:
+            lead.contact_id = None
+            lead.synced_at = now
+            lead.source_modified_at = now
+            lead.last_seen_at = now
+            self.org_session.add(lead)
+        return len(leads)
+
+    async def _archive_lead_participants(self, contact: CRMContact, now: datetime) -> int:
+        stmt = select(CRMLeadParticipant).where(
+            col(CRMLeadParticipant.organisation_id) == self.organisation_id,
+            col(CRMLeadParticipant.is_deleted).is_(False),
+            col(CRMLeadParticipant.participant_type) == CRMLeadParticipantType.CONTACT.value,
+            self._local_id_or_email_match(
+                CRMLeadParticipant.related_local_id,
+                CRMLeadParticipant.email,
+                contact,
+            ),
+        )
+        result = await self.org_session.execute(stmt)
+        participants = result.scalars().all()
+        for participant in participants:
+            participant.is_deleted = True
+            participant.synced_at = now
+            participant.source_modified_at = now
+            participant.last_seen_at = now
+            self.org_session.add(participant)
+        return len(participants)
+
+    async def _detach_integration_participants(self, contact: CRMContact) -> int:
+        result = await self.org_session.execute(
+            select(IntegrationParticipant).where(
+                col(IntegrationParticipant.organisation_id) == self.organisation_id,
+                col(IntegrationParticipant.crm_contact_id) == contact.contact_id,
+            )
+        )
+        participants = result.scalars().all()
+        for participant in participants:
+            participant.crm_contact_id = None
+            participant.resolution_status = "unresolved"
+            participant.resolution_method = None
+            participant.resolution_confidence = None
+            participant.last_resolved_at = None
+            self.org_session.add(participant)
+        return len(participants)
+
+    async def _detach_conversation_speakers(self, contact: CRMContact, now: datetime) -> int:
+        result = await self.org_session.execute(
+            select(CICallSpeaker).where(
+                col(CICallSpeaker.organisation_id) == self.organisation_id,
+                col(CICallSpeaker.crm_contact_id) == contact.contact_id,
+            )
+        )
+        speakers = result.scalars().all()
+        for speaker in speakers:
+            speaker.crm_contact_id = None
+            speaker.synced_at = now
+            speaker.source_modified_at = now
+            speaker.last_seen_at = now
+            self.org_session.add(speaker)
+        return len(speakers)
+
+    async def _detach_activities(self, contact: CRMContact, now: datetime) -> tuple[int, int, int]:
+        removed_links = await self._remove_contact_activity_links(contact)
+        cleared_activity_refs = await self._clear_activity_contact_refs(contact, now)
+        archived_contact_only = await self._archive_contact_only_activities(contact)
+        return removed_links, cleared_activity_refs, archived_contact_only
+
+    async def _archive_contact_only_activities(self, contact: CRMContact) -> int:
+        source_record_prefix = f"{contact.contact_id}:CONTACT_ENRICHMENT_"
+        result = await self.org_session.execute(
+            select(CRMActivity).where(
+                col(CRMActivity.organisation_id) == self.organisation_id,
+                or_(col(CRMActivity.is_deleted).is_(False), col(CRMActivity.is_deleted).is_(None)),
+                and_(
+                    col(CRMActivity.source_type).in_(_CONTACT_ONLY_ACTIVITY_SOURCE_TYPES),
+                    or_(
+                        col(CRMActivity.source_record_id) == str(contact.contact_id),
+                        col(CRMActivity.source_record_id).startswith(source_record_prefix),
+                    ),
+                ),
+            )
+        )
+        activities = result.scalars().all()
+        for activity in activities:
+            await self._projection.soft_delete_activity_projection(activity.activity_id)
+        return len(activities)
+
+    async def _clear_activity_contact_refs(self, contact: CRMContact, now: datetime) -> int:
+        result = await self.org_session.execute(
+            select(CRMActivity).where(
+                col(CRMActivity.organisation_id) == self.organisation_id,
+                or_(col(CRMActivity.is_deleted).is_(False), col(CRMActivity.is_deleted).is_(None)),
+                or_(
+                    col(CRMActivity.contact_id) == contact.contact_id,
+                    (col(CRMActivity.related_object_type) == CRMActivityObjectType.CONTACT.value)
+                    & (col(CRMActivity.related_local_id) == contact.contact_id),
+                ),
+            )
+        )
+        activities = result.scalars().all()
+        for activity in activities:
+            if activity.contact_id == contact.contact_id:
+                activity.contact_id = None
+            if (
+                activity.related_object_type == CRMActivityObjectType.CONTACT.value
+                and activity.related_local_id == contact.contact_id
+            ):
+                activity.related_local_id = None
+            activity.updated_at = now
+            self.org_session.add(activity)
+        return len(activities)
+
+    async def _remove_contact_activity_links(self, contact: CRMContact) -> int:
+        result = await self.org_session.execute(
+            select(CRMActivityLink).where(
+                col(CRMActivityLink.organisation_id) == self.organisation_id,
+                col(CRMActivityLink.object_type) == CRMActivityObjectType.CONTACT.value,
+                col(CRMActivityLink.object_id) == contact.contact_id,
+            )
+        )
+        links = result.scalars().all()
+        for link in links:
+            await self.org_session.delete(link)
+        return len(links)
+
+    async def _cancel_contact_research_jobs(self, contact: CRMContact, now: datetime) -> int:
+        result = await self.org_session.execute(
+            select(DealJobs).where(
+                col(DealJobs.organisation_id) == self.organisation_id,
+                col(DealJobs.job_type) == DealJobType.CONTACT_RESEARCH.value,
+                col(DealJobs.status).in_([JobStatus.PENDING.value, JobStatus.IN_PROGRESS.value]),
+            )
+        )
+        jobs = [
+            job
+            for job in result.scalars().all()
+            if str((job.job_metadata or {}).get("contact_id")) == str(contact.contact_id)
+        ]
+        for job in jobs:
+            job.status = JobStatus.CANCELLED
+            job.error_message = "Contact archived before research completed"
+            job.job_metadata = {**(job.job_metadata or {}), "cancelled_via": "contact_archive"}
+            job.updated_at = now
+            self.org_session.add(job)
+        return len(jobs)
+
+    async def _count_import_rows_retained(self, contact: CRMContact) -> int:
+        result = await self.org_session.execute(
+            select(func.count(CRMImportRow.row_id)).where(
+                col(CRMImportRow.organisation_id) == self.organisation_id,
+                col(CRMImportRow.contact_id) == contact.contact_id,
+            )
+        )
+        return int(result.scalar_one() or 0)
+
+    @staticmethod
+    def _local_id_or_email_match(local_id_column: Any, email_column: Any, contact: CRMContact):
+        normalized_email = normalize_email(contact.email)
+        if normalized_email:
+            return or_(
+                local_id_column == contact.contact_id,
+                func.lower(func.trim(email_column)) == normalized_email,
+            )
+        return local_id_column == contact.contact_id
+
     async def _record_contact_create_event(
         self,
         contact: CRMContact,
@@ -466,6 +805,32 @@ class ContactWriteService:
             summary=f"Contact created: {contact.full_name or contact.email or contact.contact_id}",
             integration_id=contact.integration_id,
             idempotency_scope=f"contact:create:{contact.contact_id}",
+        )
+        await self._record_mutation_event(command)
+
+    async def _record_contact_delete_event(
+        self,
+        contact: CRMContact,
+        *,
+        changed_fields: dict[str, dict[str, Any]],
+        impact: ContactArchiveImpact,
+        context: ContactWriteContext | None,
+    ) -> None:
+        command = CRMMutationRecordCommand(
+            entity_type="contact",
+            entity_id=contact.contact_id,
+            event_type="crm.contact.deleted",
+            operation="archive_contact",
+            changed_fields=changed_fields,
+            semantic_event_types=["crm.contact.deleted"],
+            context=self._mutation_context(context),
+            summary=(
+                "Contact archived and detached: "
+                f"{contact.full_name or contact.email or contact.contact_id}; "
+                f"impact={impact}"
+            ),
+            integration_id=contact.integration_id,
+            idempotency_scope=f"contact:archive:{contact.contact_id}",
         )
         await self._record_mutation_event(command)
 

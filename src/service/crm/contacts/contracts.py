@@ -53,6 +53,31 @@ class ContactWriteResult:
 
 
 @dataclass(frozen=True)
+class ContactArchiveImpact:
+    """Counts of records detached while archiving a wrong internal contact."""
+
+    cleared_deal_primary_contacts: int = 0
+    archived_deal_participants: int = 0
+    cleared_lead_contacts: int = 0
+    archived_lead_participants: int = 0
+    detached_integration_participants: int = 0
+    detached_conversation_speakers: int = 0
+    removed_contact_activity_links: int = 0
+    cleared_activity_contact_refs: int = 0
+    archived_contact_only_activities: int = 0
+    cancelled_contact_research_jobs: int = 0
+    import_rows_retained: int = 0
+
+
+@dataclass(frozen=True)
+class ContactArchiveResult:
+    """Archived contact plus impact counts for the API response."""
+
+    contact: CRMContact
+    impact: ContactArchiveImpact
+
+
+@dataclass(frozen=True)
 class ContactDealLinkResult:
     """Result of linking an existing contact to a deal as a participant."""
 
