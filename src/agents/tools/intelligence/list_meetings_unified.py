@@ -150,7 +150,9 @@ async def list_meetings(
     explicit_start = start_datetime is not None
     explicit_end = end_datetime is not None
     use_past_window = effective_direction == "past" and not explicit_end
-    use_present_window = effective_direction == "present" and not explicit_start and not explicit_end
+    use_present_window = (
+        effective_direction == "present" and not explicit_start and not explicit_end
+    )
     if use_present_window:
         local_anchor = get_context_anchor_local(context.metadata)
         local_start = local_anchor.replace(hour=0, minute=0, second=0, microsecond=0)

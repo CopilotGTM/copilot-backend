@@ -309,9 +309,7 @@ class TestListSessions:
         assert cursor is not None
 
     @pytest.mark.asyncio
-    async def test_uses_updated_at_for_ordering_and_cursor(
-        self, service, mock_db, org_id, user_id
-    ):
+    async def test_uses_updated_at_for_ordering_and_cursor(self, service, mock_db, org_id, user_id):
         """List recency follows session updated_at, not original creation time."""
         rows = [
             _make_session_row(
