@@ -28,6 +28,7 @@ AEP_METADATA_GUIDANCE = dedent(
        - "low": Answer is uncertain, speculative, or requires significant assumptions
     3. suggested_questions (optional): array of up to 2 unique strings
        - Include only when the user would benefit from clear next steps beyond any clarifications already asked
+       - Do not ask the user to provide raw deal/contact/meeting/thread context when the agent should first resolve candidates from available context and read-only tools
        - Must be distinct from questions asked in the main answer or ask
        Example: ["Would you like pricing comparisons for competitors?", "Should I draft a follow-up email template?"]
     4. ask (use sparingly and only when absolutely necessary): object with prompt and optional fields

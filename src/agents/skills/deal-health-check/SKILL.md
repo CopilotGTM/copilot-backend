@@ -8,6 +8,10 @@ description: Assess overall deal health using a traffic-light framework across f
 Run an evidence-first deal health assessment. Do not rate dimensions from assumptions.
 Prefer collecting concrete signals before assigning any color. Treat tool names in brackets as optional hints, not mandatory calls.
 
+Follow the GeneralAgent Context Resolution Gate before asking which deal or health
+dimension the user means. Use active deal context and read-only CRM lookup first; ask
+with candidate deals only when ambiguity remains.
+
 ## Use this workflow
 
 1. Confirm scope.

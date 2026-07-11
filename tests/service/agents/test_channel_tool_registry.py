@@ -134,6 +134,21 @@ def test_send_email_is_available_on_supported_chat_and_voice_channels() -> None:
         assert "send_email_tool" in tool_names
 
 
+def test_general_agent_exposes_context_resolution_read_tools_on_web() -> None:
+    context = AgentContext(organisation_id=uuid4(), user_id=uuid4(), channel="web")
+    registry = ToolRegistry(context, lambda: None)
+
+    tools = registry.get_tools_for_agent("GeneralAgent", channel="web")
+    tool_names = {getattr(tool, "name", getattr(tool, "__name__", "")) for tool in tools}
+
+    assert "list_meetings_tool" in tool_names
+    assert "get_compressed_transcript_tool" in tool_names
+    assert "list_deal_tasks_tool" in tool_names
+    assert "list_chat_attachments_tool" in tool_names
+    assert "list_deal_meetings_tool" not in tool_names
+    assert "list_meetings_by_date_tool" not in tool_names
+
+
 def test_scheduled_alert_context_excludes_reminder_management_tools() -> None:
     context = AgentContext(
         organisation_id=uuid4(),

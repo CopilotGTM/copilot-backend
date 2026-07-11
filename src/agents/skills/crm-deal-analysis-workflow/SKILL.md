@@ -13,6 +13,10 @@ deal, people, activity, risks, and recommended next steps before answering.
 Do not use this skill for CRM mutations. If the user asks to create, update, complete,
 assign, add, or save CRM data, use `crm-change-workflow`.
 
+Follow the GeneralAgent Context Resolution Gate before asking which deal, account,
+contact, stakeholder, meeting, email, note, task, or segment the user means. Resolve from
+active context and read-only tools first; ask only with candidates or after lookup fails.
+
 ## Fast Decision
 
 | User intent | Action |

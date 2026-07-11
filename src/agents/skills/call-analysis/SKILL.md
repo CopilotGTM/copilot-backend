@@ -8,6 +8,11 @@ description: Analyze a sales call or meeting — rep performance, customer signa
 Run an evidence-first call analysis. Do not assess dimensions from assumptions.
 Every claim must trace back to a transcript excerpt, meeting detail, or attendee data. Treat tool names in brackets as optional hints, not mandatory calls.
 
+Follow the GeneralAgent Context Resolution Gate before asking which call or meeting the
+user means. For "last" or "recent" calls, resolve likely meetings from available
+calendar/deal context and read-only tools first and ask with candidates only if
+multiple plausible matches remain.
+
 ## Use this workflow
 
 1. Confirm scope.

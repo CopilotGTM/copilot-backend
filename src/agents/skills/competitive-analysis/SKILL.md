@@ -10,10 +10,15 @@ marketing claims.
 Treat tool names in brackets as optional hints, not mandatory calls.
 Bracket hints are examples, not hard constraints.
 
+Follow the GeneralAgent Context Resolution Gate before asking which deal, competitor, or
+signal the user means. If the competitor is not named, inspect active deal context and
+recent first-party evidence for candidate competitors before asking.
+
 ## Use this workflow
 
 1. Confirm scope.
-- If no specific competitor is named, ask which competitor to compare before proceeding.
+- If no specific competitor is named after context and read-only evidence lookup, ask which
+  competitor to compare and list any candidate competitors found.
 - If the request is narrow ("pricing vs X", "why are we losing to Y"), analyze only that scope.
 - If the request is broad ("competitive landscape", "compare us vs X"), run the full framework.
 - If multiple competitors are named, compare each one separately and keep evidence isolated.

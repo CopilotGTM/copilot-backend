@@ -10,6 +10,10 @@ Default to breadth over depth.
 Treat tool names in brackets as optional hints, not mandatory calls.
 Bracket hints are examples, not hard constraints.
 
+Follow the GeneralAgent Context Resolution Gate before asking which pipeline, owner,
+deal set, or forecast window the user means. Use active context and read-only CRM lookup
+first; ask with useful candidates only when ambiguity remains.
+
 ## Use this workflow
 
 1. Confirm scope.

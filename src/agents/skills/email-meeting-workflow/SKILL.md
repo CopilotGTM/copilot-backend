@@ -26,6 +26,11 @@ current draft or confirmation payload.
 Do not replace an existing calendar event by creating a new event unless the user
 explicitly asks to create a separate meeting.
 
+Follow the GeneralAgent Context Resolution Gate before asking for missing deal,
+account, contact, stakeholder, meeting, email, thread, or attachment details. Use
+conversation context and safe read-only tools to narrow candidates first; if candidates
+exist, ask a grounded choice question rather than a blank-slate question.
+
 ## Fast Decision
 
 | User intent | Action |
@@ -40,7 +45,7 @@ explicitly asks to create a separate meeting.
 | List or find meetings | Use the connected calendar, apply the requested date range, and return enough details to distinguish matching events |
 | Read/search emails for a specific mailbox | Verify the mailbox with `list_connected_email_accounts`, then use `search_mailbox_emails` with the exact email address and requested date range |
 | "Send a bot to my meeting" | List meetings, resolve one clear event, show the confirmation preview, then use the meeting bot tool |
-| Missing or ambiguous critical fields | Ask one bundled clarification covering every blocker |
+| Missing or ambiguous critical fields after context resolution | Ask one bundled clarification covering every blocker and listing any useful candidates found |
 | Tool returns unknown, timeout, or partial status | Check current state before any retry; do not blindly repeat the action |
 
 ## Non-Negotiable Action Rules
@@ -64,7 +69,8 @@ explicitly asks to create a separate meeting.
 
 ## Context Resolution Order
 
-Resolve missing details before asking the user:
+Resolve missing details before asking the user. This section specializes the global
+Context Resolution Gate for email and meeting workflows:
 
 1. Current and previous conversation turns.
 2. Active deal, account, contact, or meeting context.
@@ -77,7 +83,10 @@ Resolve missing details before asking the user:
 Never invent names, email addresses, meeting times, commitments, or factual claims.
 
 If several required fields are missing or ambiguous, ask for them together in one
-message rather than asking one question at a time.
+message rather than asking one question at a time. When lookup found candidates, include
+those candidates in the question.
+
+When a clarification remains after lookup, include those candidates in the question.
 
 ## Required Fields
 

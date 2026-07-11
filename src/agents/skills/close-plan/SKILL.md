@@ -11,6 +11,10 @@ Start from the target close date and work backward.
 Treat tool names in brackets as optional hints, not mandatory calls.
 Bracket hints are examples, not hard constraints.
 
+Follow the GeneralAgent Context Resolution Gate before asking which deal or close target
+the user means. Use active deal context and read-only CRM lookup first; ask with
+candidate deals only when ambiguity remains.
+
 ## Use this workflow
 
 1. Confirm scope.

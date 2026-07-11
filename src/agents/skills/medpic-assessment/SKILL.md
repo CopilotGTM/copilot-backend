@@ -8,6 +8,10 @@ description: Perform MEDPIC qualification analysis for a deal using evidence-bas
 Run an evidence-first MEDPIC assessment. Do not score from assumptions.
 Prefer describing and collecting data signals. Treat tool names in brackets as optional hints, not mandatory calls.
 
+Follow the GeneralAgent Context Resolution Gate before asking which deal or MEDPIC
+context the user means. Use active deal context and read-only CRM lookup first; ask
+with candidate deals only when ambiguity remains.
+
 ## Use this workflow
 
 1. Confirm scope.

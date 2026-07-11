@@ -10,10 +10,15 @@ from title alone.
 Treat tool names in brackets as optional hints, not mandatory calls.
 Bracket hints are examples, not hard constraints.
 
+Follow the GeneralAgent Context Resolution Gate before asking which deal or stakeholder
+the user means. Use active deal/account context and read-only CRM lookup first; ask with
+candidate deals or people only when ambiguity remains.
+
 ## Use this workflow
 
 1. Confirm scope.
-- If no deal context exists, ask which deal to analyze before proceeding.
+- If no deal context exists after active context and read-only lookup, ask which deal to
+  analyze and list any useful candidate deals found.
 - If the request is narrow ("who is the decision maker?", "is there a champion?"), answer that
   focus area but still enumerate stakeholders first.
 - If the request is broad ("map the stakeholders", "do we have the right coverage?"), run the full
