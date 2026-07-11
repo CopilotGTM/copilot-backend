@@ -693,9 +693,8 @@ class ContactWriteService:
     async def _clear_activity_contact_refs(self, contact: CRMContact, now: datetime) -> int:
         contact_ref_matches = col(CRMActivity.contact_id) == contact.contact_id
         related_contact_matches = (
-            (col(CRMActivity.related_object_type) == CRMActivityObjectType.CONTACT.value)
-            & (col(CRMActivity.related_local_id) == contact.contact_id)
-        )
+            col(CRMActivity.related_object_type) == CRMActivityObjectType.CONTACT.value
+        ) & (col(CRMActivity.related_local_id) == contact.contact_id)
         result = await self.org_session.execute(
             update(CRMActivity)
             .where(
