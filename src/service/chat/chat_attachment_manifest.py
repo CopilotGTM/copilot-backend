@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -13,6 +14,9 @@ class AttachmentContextItem:
     filename: str
     mimetype: str
     source_provider: str | None = None
+
+
+_MANIFEST_ID_PATTERN = re.compile(r"^\s*-\s*id:\s*(?P<id>\S+)\s*$", re.MULTILINE)
 
 
 def build_attachment_manifest(
@@ -66,6 +70,18 @@ def serialize_attachment_context(
         }
         for item in (_coerce_item(attachment) for attachment in attachments)
     ]
+
+
+def extract_attachment_ids_from_manifest(manifest: str | None) -> list[str]:
+    """Return attachment IDs from the compact manifest format used in chat history.
+
+    The manifest is already the durable, model-visible representation of chat
+    attachments. Parsing it keeps follow-up grounding aligned with what the
+    agent can see, instead of introducing a second attachment reference format.
+    """
+    if not manifest:
+        return []
+    return [match.group("id") for match in _MANIFEST_ID_PATTERN.finditer(manifest)]
 
 
 def _coerce_item(attachment: AttachmentContextItem | dict[str, Any]) -> AttachmentContextItem:

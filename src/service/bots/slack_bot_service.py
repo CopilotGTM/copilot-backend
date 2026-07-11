@@ -19,6 +19,7 @@ from typing import Any
 from uuid import UUID
 
 import aiohttp
+from sqlalchemy import update
 from src.domain.models.master_tables import User
 from src.domain.models.master_tables.bot_platform_installation_models import BotPlatformProvider
 from src.domain.models.master_tables.external_identity_models import (
@@ -743,6 +744,17 @@ class SlackBotService:
                             )
                         )
 
+                    await db.execute(
+                        update(ChatSession)
+                        .where(
+                            col(ChatSession.session_id) == session_id,
+                            col(ChatSession.user_id) == user.user_id,
+                            col(ChatSession.organisation_id) == org_id,
+                            col(ChatSession.chat_type) == ChatType.SLACK_CHAT,
+                            col(ChatSession.is_deleted).is_(False),
+                        )
+                        .values(updated_at=msg.created_at)
+                    )
                     await db.commit()
                     message_id = msg.message_id
                     break

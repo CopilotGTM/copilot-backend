@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from src.domain.models.organisation_tables.chat_session_models import ChatSession, ChatType
+from src.infra.utils.cursor import decode_cursor
 from src.service.chat.chat_session_service import ChatSessionService
 
 # ---------------------------------------------------------------------------
@@ -29,6 +30,7 @@ def _make_session_row(
     is_deleted: bool = False,
     properties: dict | None = None,
     created_at: datetime | None = None,
+    updated_at: datetime | None = None,
 ) -> MagicMock:
     """Create a mock ChatSession row that behaves like a real ORM object."""
     row = MagicMock(spec=ChatSession)
@@ -40,7 +42,7 @@ def _make_session_row(
     row.is_deleted = is_deleted
     row.properties = properties or {}
     row.created_at = created_at or datetime(2024, 1, 1)
-    row.updated_at = datetime(2024, 1, 1)
+    row.updated_at = updated_at or datetime(2024, 1, 1)
     row.tags = []
     row.chat_version = "v1"
     return row
@@ -305,6 +307,37 @@ class TestListSessions:
         items, cursor = await service.list_sessions(limit=2)
         assert len(items) == 2
         assert cursor is not None
+
+    @pytest.mark.asyncio
+    async def test_uses_updated_at_for_ordering_and_cursor(
+        self, service, mock_db, org_id, user_id
+    ):
+        """List recency follows session updated_at, not original creation time."""
+        rows = [
+            _make_session_row(
+                user_id=user_id,
+                organisation_id=org_id,
+                created_at=datetime(2024, 1, 1),
+                updated_at=datetime(2024, 1, 3),
+            ),
+            _make_session_row(
+                user_id=user_id,
+                organisation_id=org_id,
+                created_at=datetime(2024, 1, 2),
+                updated_at=datetime(2024, 1, 2),
+            ),
+        ]
+        mock_db.execute = AsyncMock(return_value=_mock_execute_returning_list(rows))
+
+        items, cursor = await service.list_sessions(limit=1)
+        statement = mock_db.execute.call_args.args[0]
+
+        assert "chat_sessions.updated_at" in str(statement)
+        assert len(items) == 1
+        assert cursor is not None
+        decoded_ts, decoded_id = decode_cursor(cursor)
+        assert decoded_ts == rows[0].updated_at
+        assert decoded_id == rows[0].session_id
 
     @pytest.mark.asyncio
     async def test_returns_none_cursor_on_last_page(self, service, mock_db, org_id, user_id):

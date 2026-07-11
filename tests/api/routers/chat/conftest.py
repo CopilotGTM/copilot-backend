@@ -68,18 +68,26 @@ class FakeChatSessionService:
         rec["title"] = title
         return SimpleNamespace(**rec)
 
-    async def list_sessions(self, *, limit: int = 20, cursor: str | None = None):
+    async def list_sessions(
+        self,
+        *,
+        limit: int = 20,
+        cursor: str | None = None,
+        chat_type: str | None = None,
+    ):
         # Collect non-deleted sessions
         rows = [rec for rec in self.sessions.values() if not rec.get("is_deleted")]
-        # Sort by created_at desc, session_id desc
-        rows.sort(key=lambda r: (r["created_at"], r["session_id"]), reverse=True)
+        if chat_type:
+            rows = [rec for rec in rows if rec.get("chat_type") == chat_type]
+        # Sort by updated_at desc, session_id desc to match the real service.
+        rows.sort(key=lambda r: (r["updated_at"], r["session_id"]), reverse=True)
 
         if cursor:
             ts, sid = decode_cursor(cursor)
 
             def is_after(r):
-                return (r["created_at"] < ts) or (
-                    r["created_at"] == ts and r["session_id"] < str(sid)
+                return (r["updated_at"] < ts) or (
+                    r["updated_at"] == ts and r["session_id"] < str(sid)
                 )
 
             rows = [r for r in rows if is_after(r)]
@@ -87,7 +95,7 @@ class FakeChatSessionService:
         has_more = len(rows) > limit
         items = rows[:limit]
         next_cursor = (
-            encode_cursor(items[-1]["created_at"], UUID(items[-1]["session_id"]))
+            encode_cursor(items[-1]["updated_at"], UUID(items[-1]["session_id"]))
             if has_more
             else None
         )

@@ -802,6 +802,7 @@ async def test_durable_job_commits_message_links_and_job_together(
         ChatMessage,
         ChatMessageAttachmentLink,
     )
+    from src.domain.models.organisation_tables.chat_session_models import ChatSession
     from src.domain.models.organisation_tables.job_models import ChatMessageJob
 
     service = WhatsAppBotService()
@@ -834,6 +835,9 @@ async def test_durable_job_commits_message_links_and_job_together(
 
     assert isinstance(job, ChatMessageJob)
     assert session.commit_count == 1
+    chat_session = next(item for item in session.added if isinstance(item, ChatSession))
+    inbound_message = next(item for item in session.added if isinstance(item, ChatMessage))
+    assert chat_session.updated_at == inbound_message.created_at
     assert sum(isinstance(item, ChatMessage) for item in session.added) == 1
     assert sum(isinstance(item, ChatMessageAttachmentLink) for item in session.added) == 1
     assert sum(isinstance(item, ChatMessageJob) for item in session.added) == 1

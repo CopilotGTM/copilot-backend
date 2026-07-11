@@ -39,6 +39,7 @@ def _make_session_row(
     row.user_id = user_id or uuid4()
     row.organisation_id = organisation_id or uuid4()
     row.is_deleted = is_deleted
+    row.updated_at = datetime(2024, 1, 1)
     return row
 
 
@@ -272,6 +273,26 @@ class TestCreateUserMessage:
 
         await service.create_user_message(session_id=session_row.session_id, content="Hello")
         mock_db.flush.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_user_message_touches_parent_session(self, service, mock_db, org_id, user_id):
+        """A new user message bumps the session for chat-list recency."""
+        session_row = _make_session_row(user_id=user_id, organisation_id=org_id)
+        original_updated_at = session_row.updated_at
+        mock_db.execute = AsyncMock(
+            side_effect=[
+                _mock_scalar_one_or_none(session_row),
+                _mock_scalars_all([]),
+            ]
+        )
+
+        msg, _job, _assistant_id = await service.create_user_message(
+            session_id=session_row.session_id,
+            content="Hello",
+        )
+
+        assert session_row.updated_at == msg.created_at
+        assert session_row.updated_at != original_updated_at
 
 
 # =============================================================================

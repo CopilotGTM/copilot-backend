@@ -258,13 +258,14 @@ class MessageProcessingService:
 
             # Rebuild manifests from canonical attachment links on every run. We do not persist
             # fully expanded file text in chat history because that would bloat prompts and go stale.
-            history_records = (
+            newest_history_records = (
                 session.query(ChatMessage)
                 .filter(col(ChatMessage.session_id) == session_id)
-                .order_by(col(ChatMessage.created_at).asc())
+                .order_by(col(ChatMessage.created_at).desc(), col(ChatMessage.message_id).desc())
                 .limit(30)
                 .all()
             )
+            history_records = list(reversed(newest_history_records))
             history_message_ids = [msg.message_id for msg in history_records]
 
             stored_attachments_by_message: dict[UUID, list[AttachmentInfo]] = {}

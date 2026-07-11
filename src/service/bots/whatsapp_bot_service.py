@@ -644,6 +644,7 @@ class WhatsAppBotService:
                 )
                 db.add(inbound_message)
                 await db.flush()
+                chat_session.updated_at = inbound_message.created_at
 
                 for index, attachment_ref in enumerate(attachment_refs):
                     try:

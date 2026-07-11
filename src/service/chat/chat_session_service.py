@@ -146,9 +146,9 @@ class ChatSessionService:
             ts, sid = decode_cursor(cursor)
             filters.append(
                 or_(
-                    col(ChatSession.created_at) < ts,
+                    col(ChatSession.updated_at) < ts,
                     and_(
-                        col(ChatSession.created_at) == ts,
+                        col(ChatSession.updated_at) == ts,
                         col(ChatSession.session_id) < sid,
                     ),
                 )
@@ -157,7 +157,7 @@ class ChatSessionService:
         stmt = (
             select(ChatSession)
             .where(*filters)
-            .order_by(col(ChatSession.created_at).desc(), col(ChatSession.session_id).desc())
+            .order_by(col(ChatSession.updated_at).desc(), col(ChatSession.session_id).desc())
             .limit(limit + 1)
         )
         res = await self._execute_with_retry(stmt)
@@ -165,7 +165,7 @@ class ChatSessionService:
         has_more = len(rows) == limit + 1
         items = list(rows[:limit])
         next_cursor = (
-            encode_cursor(items[-1].created_at, items[-1].session_id) if has_more else None
+            encode_cursor(items[-1].updated_at, items[-1].session_id) if has_more else None
         )
         return items, next_cursor
 

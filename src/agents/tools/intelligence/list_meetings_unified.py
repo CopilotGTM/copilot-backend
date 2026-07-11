@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, cast
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID
 
 from sqlalchemy import and_, func, or_, select
@@ -33,7 +33,7 @@ from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     MeetingStatus,
 )
 from src.infra.utils.agent_datetime import parse_agent_datetime
-from src.infra.utils.timezone import get_context_anchor_utc
+from src.infra.utils.timezone import get_context_anchor_local, get_context_anchor_utc
 from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
 from src.service.integrations.calendar.integration_types import (
     PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPE_VALUES as CALENDAR_INTEGRATION_TYPES,
@@ -44,6 +44,8 @@ if TYPE_CHECKING:
     from src.agents.tools.transparent_tools import AgentCapabilities
 
 logger = logging.getLogger(__name__)
+
+MeetingTimeDirection = Literal["past", "future", "present"]
 
 
 def normalize_meeting_limit(limit: int | None) -> int:
@@ -90,6 +92,12 @@ def _parse_uuid(value: str | None) -> UUID | None:
     return UUID(value)
 
 
+def _normalize_time_direction(value: str | None) -> MeetingTimeDirection | None:
+    if value in {"past", "future", "present"}:
+        return cast(MeetingTimeDirection, value)
+    return None
+
+
 async def list_meetings(
     *,
     context: AgentContext,
@@ -101,6 +109,7 @@ async def list_meetings(
     attendee_name: str | None = None,
     has_transcript: bool | None = None,
     has_summary: bool | None = None,
+    time_direction: MeetingTimeDirection | None = None,
 ) -> list[dict[str, Any]]:
     """List meetings from the current user's own connected calendar.
 
@@ -121,16 +130,32 @@ async def list_meetings(
         return []
 
     try:
-        start_dt = _parse_datetime(start_datetime, context.metadata) or get_context_anchor_utc(
-            context.metadata
-        )
+        anchor_dt = get_context_anchor_utc(context.metadata)
+        start_dt = _parse_datetime(start_datetime, context.metadata) or anchor_dt
         end_dt = _parse_datetime(end_datetime, context.metadata)
         parsed_deal_id = _parse_uuid(deal_id)
     except ValueError as exc:
         logger.warning("list_meetings: invalid input: %s", exc)
         return []
 
+    metadata_direction = _normalize_time_direction(
+        str((context.metadata or {}).get("temporal_direction") or "")
+    )
+    effective_direction = time_direction or metadata_direction
+    metadata_limit = (context.metadata or {}).get("temporal_limit")
     effective_limit = normalize_meeting_limit(limit)
+    if limit == 10 and isinstance(metadata_limit, int):
+        effective_limit = normalize_meeting_limit(metadata_limit)
+
+    explicit_start = start_datetime is not None
+    explicit_end = end_datetime is not None
+    use_past_window = effective_direction == "past" and not explicit_end
+    use_present_window = effective_direction == "present" and not explicit_start and not explicit_end
+    if use_present_window:
+        local_anchor = get_context_anchor_local(context.metadata)
+        local_start = local_anchor.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_dt = local_start.astimezone(UTC)
+        end_dt = (local_start + timedelta(days=1)).astimezone(UTC)
 
     event_c = cast(Any, CalendarEvent).__table__.c
     user_state_c = cast(Any, CalendarEventUserState).__table__.c
@@ -184,9 +209,19 @@ async def list_meetings(
             integration_c.created_by_user_id == user_id,
             integration_c.is_active.is_(True),
             integration_c.integration_type.in_(CALENDAR_INTEGRATION_TYPES),
-            event_c.start_at >= start_dt if end_dt is None else event_c.start_at < end_dt,
         )
     )
+
+    if use_past_window:
+        if explicit_start and start_dt != anchor_dt:
+            stmt = stmt.where(event_c.start_at >= start_dt)
+        stmt = stmt.where(event_c.start_at < anchor_dt)
+    elif use_present_window:
+        stmt = stmt.where(event_c.start_at < end_dt)
+    elif end_dt is None:
+        stmt = stmt.where(event_c.start_at >= start_dt)
+    else:
+        stmt = stmt.where(event_c.start_at < end_dt)
 
     if end_dt is not None:
         # Bounded windows use overlap semantics so a meeting that started before
@@ -225,7 +260,8 @@ async def list_meetings(
             )
         )
 
-    stmt = stmt.order_by(event_c.start_at.asc()).limit(effective_limit)
+    stmt = stmt.order_by(event_c.start_at.desc() if use_past_window else event_c.start_at.asc())
+    stmt = stmt.limit(effective_limit)
 
     async with context.acquire_session() as session:
         try:
@@ -325,12 +361,16 @@ def create_list_meetings(
         attendee_name: str | None = None,
         has_transcript: bool | None = None,
         has_summary: bool | None = None,
+        time_direction: str | None = None,
     ) -> list[dict[str, Any]]:
         """List meetings from your connected calendar.
 
         Use this tool for schedule and meeting-list questions. Results are
         restricted to the current user's own connected calendar; `deal_id`,
         attendee, transcript, and summary fields are only narrowing filters.
+        Use `time_direction="past"` for prior/history/recent-past requests and
+        `time_direction="future"` for upcoming/next/scheduled requests when no
+        explicit datetime range is supplied.
         """
         result = await execute_with_capabilities(
             capabilities_getter(),
@@ -346,6 +386,7 @@ def create_list_meetings(
                 "attendee_name": attendee_name,
                 "has_transcript": has_transcript,
                 "has_summary": has_summary,
+                "time_direction": _normalize_time_direction(time_direction),
             },
             description="Finding meetings from your calendar",
             fallback_value=[],

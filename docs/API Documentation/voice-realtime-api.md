@@ -542,6 +542,7 @@ GET /users/chats/list_chats?chat_type=VOICE_CHAT&limit=20&cursor=<opaque>
 ### Description
 
 Returns only voice sessions by using the new `chat_type` filter on the existing chat list endpoint.
+Sessions are ordered by `updated_at`; persisted user voice turns bump the session.
 
 ### Success Response (200)
 

@@ -128,3 +128,77 @@ async def test_list_meetings_interprets_naive_bounds_in_user_timezone() -> None:
     sql = str(compiled)
     assert "2026-04-11 04:30:00+00:00" in sql
     assert "2026-04-11 05:30:00+00:00" in sql
+
+
+@pytest.mark.asyncio
+async def test_list_meetings_uses_past_temporal_metadata() -> None:
+    # Past wording from the latest user turn must not silently default to the
+    # upcoming-meeting query shape when the model omits explicit bounds.
+    session = _CaptureSession()
+    context = AgentContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={
+            "current_datetime": "2026-05-13T12:00:00+00:00",
+            "temporal_direction": "past",
+            "temporal_limit": 5,
+        },
+    )
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))  # type: ignore[method-assign]
+
+    await list_meetings(context=context)
+
+    compiled = session.statements[0].compile(compile_kwargs={"literal_binds": True})
+    sql = str(compiled)
+    assert "calendar_events.start_at < '2026-05-13 12:00:00+00:00'" in sql
+    assert "ORDER BY calendar_events.start_at DESC" in sql
+    assert "LIMIT 5" in sql
+
+
+@pytest.mark.asyncio
+async def test_list_meetings_past_direction_caps_explicit_start_at_anchor() -> None:
+    session = _CaptureSession()
+    context = AgentContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={"current_datetime": "2026-05-13T12:00:00+00:00"},
+    )
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))  # type: ignore[method-assign]
+
+    await list_meetings(
+        context=context,
+        start_datetime=datetime(2026, 5, 1, 0, 0, tzinfo=UTC),
+        time_direction="past",
+    )
+
+    compiled = session.statements[0].compile(compile_kwargs={"literal_binds": True})
+    sql = str(compiled)
+    assert "calendar_events.start_at >= '2026-05-01 00:00:00+00:00'" in sql
+    assert "calendar_events.start_at < '2026-05-13 12:00:00+00:00'" in sql
+    assert "ORDER BY calendar_events.start_at DESC" in sql
+
+
+@pytest.mark.asyncio
+async def test_list_meetings_explicit_bounds_override_temporal_metadata() -> None:
+    session = _CaptureSession()
+    context = AgentContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={
+            "current_datetime": "2026-05-13T12:00:00+00:00",
+            "temporal_direction": "past",
+        },
+    )
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))  # type: ignore[method-assign]
+
+    await list_meetings(
+        context=context,
+        start_datetime=datetime(2026, 5, 14, 10, 0, tzinfo=UTC),
+        end_datetime=datetime(2026, 5, 14, 11, 0, tzinfo=UTC),
+    )
+
+    compiled = session.statements[0].compile(compile_kwargs={"literal_binds": True})
+    sql = str(compiled)
+    assert "calendar_events.start_at < '2026-05-14 11:00:00+00:00'" in sql
+    assert "calendar_events.end_at > '2026-05-14 10:00:00+00:00'" in sql
+    assert "ORDER BY calendar_events.start_at ASC" in sql

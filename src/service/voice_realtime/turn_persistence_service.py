@@ -60,6 +60,7 @@ class VoiceTurnPersistenceService:
             created_ids: list[UUID] = []
             first_user_text: str | None = None
             last_user_message_id: UUID | None = None
+            last_user_activity_at = None
 
             for turn in turns:
                 role = ChatMessageRole.USER if turn.speaker == "user" else ChatMessageRole.ASSISTANT
@@ -94,11 +95,14 @@ class VoiceTurnPersistenceService:
 
                 if role == ChatMessageRole.USER:
                     last_user_message_id = message.message_id
+                    last_user_activity_at = message.created_at
                 if role == ChatMessageRole.USER and first_user_text is None:
                     first_user_text = turn.text
 
             if first_user_text and chat_session.title == "Voice Session":
                 chat_session.title = self._build_voice_session_title(first_user_text)
+            if last_user_activity_at is not None:
+                chat_session.updated_at = last_user_activity_at
 
             await self.db.commit()
             return PersistVoiceTurnsResult(

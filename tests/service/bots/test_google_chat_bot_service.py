@@ -222,6 +222,7 @@ async def test_create_bot_job_creates_google_chat_personal_chat(
         email="test@example.com",
     )
     captured_jobs = []
+    executed_statements = []
 
     class FakeAsyncSession:
         def __init__(self):
@@ -238,7 +239,8 @@ async def test_create_bot_job_creates_google_chat_personal_chat(
         async def flush(self):
             pass
 
-        async def execute(self, _stmt):
+        async def execute(self, stmt):
+            executed_statements.append(stmt)
             return SimpleNamespace(scalars=lambda: SimpleNamespace(first=lambda: None))
 
     async def gen(_org_id):
@@ -252,3 +254,4 @@ async def test_create_bot_job_creates_google_chat_personal_chat(
     assert len(captured_jobs) == 1
     assert captured_jobs[0].job_type == "google_chat_response"
     assert captured_jobs[0].chat_type == "GOOGLE_CHAT"
+    assert any("UPDATE chat_sessions" in str(statement) for statement in executed_statements)
