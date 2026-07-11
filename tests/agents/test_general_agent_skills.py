@@ -71,6 +71,38 @@ def test_general_prompt_requires_english_side_effect_inputs() -> None:
     assert "Exotel" in prompt
 
 
+def test_general_prompt_has_context_resolution_gate() -> None:
+    """GeneralAgent should resolve contextual references before blank-slate questions."""
+    from src.agents.workflows.general.prompts.general_prompt import get_general_prompt
+
+    prompt = get_general_prompt("TestOrg")
+    assert "## Context Resolution Gate" in prompt
+    assert "Before asking the user for missing context" in prompt
+    assert "Use the narrowest relevant read-only tools" in prompt
+    assert "ask a grounded choice question" in prompt
+    assert "Do not ask generic questions" in prompt
+    assert "Read-only resolution is allowed automatically" in prompt
+
+
+def test_general_prompt_blocks_raw_context_suggested_questions() -> None:
+    """Suggested questions should not replace the context-resolution attempt."""
+    from src.agents.workflows.general.prompts.general_prompt import get_general_prompt
+
+    prompt = get_general_prompt("TestOrg")
+    assert "Do not suggest that the user provide raw context" in prompt
+    assert "Context Resolution Gate" in prompt
+
+
+def test_aep_guidance_blocks_raw_context_suggested_questions() -> None:
+    """Shared metadata guidance should not generate context-collection shortcuts."""
+    from src.agents.common.prompt_sections.aep_metadata import AEP_METADATA_GUIDANCE
+
+    assert "Do not ask the user to provide raw deal/contact/meeting/thread context" in (
+        AEP_METADATA_GUIDANCE
+    )
+    assert "read-only tools" in AEP_METADATA_GUIDANCE
+
+
 def test_general_prompt_does_not_contain_hardcoded_call_analysis_playbook() -> None:
     """The system prompt should not embed the old Call/Meeting Analysis playbook section."""
     from src.agents.workflows.general.prompts.general_prompt import get_general_prompt

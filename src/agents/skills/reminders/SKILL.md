@@ -7,6 +7,11 @@ description: Create, list, and cancel reminders and scheduled AI-powered alerts.
 
 Help the user create, view, and manage reminders. Classify each request correctly and call the right tool with the right parameters.
 
+Follow the GeneralAgent Context Resolution Gate before asking what a contextual reminder
+refers to. Resolve phrases like "this deal", "the proposal", "that task", or "the
+follow-up" from conversation context and safe read-only tools first; create reminders
+only after the mandatory reminder content and time are clear.
+
 ## Reminder types
 
 There are two types. Classify based on user intent:
@@ -34,7 +39,7 @@ There are two types. Classify based on user intent:
    - `deal_id`: for agentic alerts, include if the analysis targets a specific deal. Search for the deal first if the user mentions a deal name.
    - `recurrence`: default "none". Set if user says "every day", "daily", "weekly", etc. See `references/recurrence-guide.md`.
 
-2. If content, time, or reminder intent is missing, ask only for the missing piece:
+2. If content, time, or reminder intent is still missing after context resolution, ask only for the missing piece:
    - Missing content: "What should I remind you about?"
    - Missing time: "When should I remind you?"
    - Generic intent/title such as "set a reminder": ask what the reminder is about.

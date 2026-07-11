@@ -555,6 +555,43 @@ def test_email_meeting_workflow_skill_has_instructions() -> None:
     assert "send_email" in skill.instructions
 
 
+def test_resolution_heavy_skills_follow_context_gate() -> None:
+    """Entity-heavy skills should inherit context-first clarification behavior."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    required_skills = {
+        "call-analysis",
+        "close-plan",
+        "competitive-analysis",
+        "crm-change-workflow",
+        "crm-deal-analysis-workflow",
+        "deal-health-check",
+        "email-meeting-workflow",
+        "medpic-assessment",
+        "pipeline-review",
+        "reminders",
+        "stakeholder-mapping",
+    }
+
+    loaded = {skill.name: skill for skill in skills}
+    for skill_name in required_skills:
+        instructions = loaded[skill_name].instructions
+        assert "Context Resolution Gate" in instructions, skill_name
+        assert "read-only" in instructions.lower(), skill_name
+
+
+def test_email_meeting_workflow_grounds_clarifications_after_lookup() -> None:
+    """Email and meeting workflows should avoid blank-slate context questions."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "email-meeting-workflow")
+    instructions = skill.instructions
+    assert "safe read-only tools to narrow candidates first" in instructions
+    assert "ask a grounded choice question" in instructions
+    assert "after context resolution" in instructions
+    assert "include those candidates in the question" in instructions
+
+
 def test_email_meeting_workflow_skill_lists_email_context_sources() -> None:
     """The email-meeting-workflow skill must name the deal evidence it can reference."""
     loader = LocalSkills(str(SKILLS_DIR))

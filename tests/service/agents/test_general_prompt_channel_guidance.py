@@ -10,6 +10,15 @@ def test_general_prompt_uses_skills_system_instead_of_tool_selection() -> None:
     assert "**CRM Write Actions** (Teams channel only)" not in prompt
 
 
+def test_general_prompt_has_context_resolution_gate() -> None:
+    prompt = get_general_prompt("Acme")
+
+    assert "## Context Resolution Gate" in prompt
+    assert "Before asking the user for missing context" in prompt
+    assert "ask a grounded choice question" in prompt
+    assert "Do not ask generic questions" in prompt
+
+
 def test_general_prompt_does_not_embed_crm_skill_router_details() -> None:
     prompt = get_general_prompt("Acme")
 

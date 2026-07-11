@@ -249,6 +249,7 @@ GENERAL_AGENT_TOOLS: set[ToolName] = {
     ToolName.GET_MEETING_DETAILS,
     ToolName.GET_MEETING_SUMMARY,
     ToolName.GET_MEETING_TRANSCRIPT,
+    ToolName.GET_COMPRESSED_TRANSCRIPT,
     ToolName.GET_MEETING_DEAL_CONTEXT,
     # Contact tools
     ToolName.SEARCH_CONTACTS,
@@ -264,6 +265,7 @@ GENERAL_AGENT_TOOLS: set[ToolName] = {
     ToolName.SEARCH_MAILBOX_EMAILS,
     ToolName.SEND_EMAIL,
     ToolName.READ_CHAT_ATTACHMENT,
+    ToolName.LIST_CHAT_ATTACHMENTS,
     ToolName.LIST_DEAL_NOTES,
     ToolName.LIST_DEAL_CHANNEL_MESSAGES,
     # Research tools
@@ -290,6 +292,7 @@ GENERAL_AGENT_TOOLS: set[ToolName] = {
     ToolName.UPDATE_DEAL_ACCOUNT,
     # Task tools (channel-only)
     ToolName.CREATE_TASK,
+    ToolName.LIST_DEAL_TASKS,
     # Reminder tools (channel-only)
     ToolName.CREATE_REMINDER,
     ToolName.LIST_REMINDERS,

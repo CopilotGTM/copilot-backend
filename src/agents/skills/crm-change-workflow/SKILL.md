@@ -13,6 +13,10 @@ Do not use this skill for read-only analysis. If the user asks to explain stakeh
 summarize a deal, assess deal health, or compare CRM data, gather data and answer without
 calling CRM write tools.
 
+Follow the GeneralAgent Context Resolution Gate before asking which CRM record, person,
+task, note, or deal the user means. Read-only resolution may happen automatically; CRM
+writes still require a clear target, safe payload, and normal confirmation behavior.
+
 ## Fast Decision
 
 Before calling tools, classify the turn:
@@ -24,7 +28,7 @@ Before calling tools, classify the turn:
 | "Change it/make it..." with a pending CRM action | Patch the pending action |
 | Multiple requested CRM writes | Build a dependency plan before any write tool call |
 | "What is/who is/analyze/summarize..." | Read-only path, no CRM change tool |
-| Ambiguous target or missing required field | Ask one focused clarification question |
+| Ambiguous target or missing required field after context resolution | Ask one focused clarification question with any useful candidates found |
 
 Pending CRM state wins over new tool selection. If the current context shows a pending
 CRM action and the user approves or edits it, operate on that pending action first.
@@ -49,7 +53,7 @@ prevent wrong writes, duplicate writes, and misleading final answers.
 Ask a question only when all three are true:
 
 - A required field is missing.
-- No safe default or active context can fill it.
+- No safe default, active context, or read-only lookup can fill it.
 - Guessing could change the wrong CRM record or create a useless record.
 
 Do not ask for optional fields before using a CRM change tool. Include optional fields

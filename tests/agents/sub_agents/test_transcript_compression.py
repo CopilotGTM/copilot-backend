@@ -166,6 +166,16 @@ class TestToolRegistration:
 
         assert ToolName.GET_COMPRESSED_TRANSCRIPT in AGENT_TOOLS["SummaryAgent"]
 
+    def test_general_agent_has_read_only_context_resolvers(self):
+        """GeneralAgent can resolve common GTM shorthand before asking."""
+        from src.agents.tools.registry import AGENT_TOOLS, ToolName
+
+        general_tools = AGENT_TOOLS["GeneralAgent"]
+        assert ToolName.GET_COMPRESSED_TRANSCRIPT in general_tools
+        assert ToolName.LIST_MEETINGS in general_tools
+        assert ToolName.LIST_DEAL_TASKS in general_tools
+        assert ToolName.LIST_CHAT_ATTACHMENTS in general_tools
+
     def test_tool_factory_import(self):
         """create_get_compressed_transcript can be imported."""
         from src.agents.tools.intelligence import create_get_compressed_transcript
