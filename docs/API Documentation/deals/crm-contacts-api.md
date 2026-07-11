@@ -491,7 +491,6 @@ export interface ContactDeleteImpact {
   cleared_lead_contacts: number;
   archived_lead_participants: number;
   detached_integration_participants: number;
-  detached_conversation_speakers: number;
   removed_contact_activity_links: number;
   cleared_activity_contact_refs: number;
   archived_contact_only_activities: number;
@@ -1419,7 +1418,6 @@ The endpoint does **not** delete business history. Deals, leads, emails, meeting
       "cleared_lead_contacts": 1,
       "archived_lead_participants": 1,
       "detached_integration_participants": 3,
-      "detached_conversation_speakers": 1,
       "removed_contact_activity_links": 4,
       "cleared_activity_contact_refs": 2,
       "archived_contact_only_activities": 2,

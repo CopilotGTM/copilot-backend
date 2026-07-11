@@ -8,7 +8,6 @@ from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
-from src.domain.models.organisation_tables.sync.conversation_intelligence import CICallSpeaker
 from src.domain.models.organisation_tables.sync.crm.activities import (
     CRMActivity,
     CRMActivityLink,
@@ -1018,13 +1017,6 @@ async def test_delete_contact_archives_and_detaches_linked_records(monkeypatch) 
         resolution_confidence=0.99,
         last_resolved_at=now,
     )
-    speaker = CICallSpeaker(
-        organisation_id=org_id,
-        integration_id=integration_id,
-        speaker_id=uuid4(),
-        call_id=uuid4(),
-        crm_contact_id=contact_id,
-    )
     contact_only_activity = CRMActivity(
         organisation_id=org_id,
         integration_id=integration_id,
@@ -1065,7 +1057,6 @@ async def test_delete_contact_archives_and_detaches_linked_records(monkeypatch) 
             _FakeResult(scalars=[lead]),
             _FakeResult(scalars=[lead_participant]),
             _FakeResult(scalars=[integration_participant]),
-            _FakeResult(scalars=[speaker]),
             _FakeResult(scalars=[activity_link]),
             _FakeResult(scalars=[real_activity]),
             _FakeResult(scalars=[contact_only_activity]),
@@ -1105,7 +1096,6 @@ async def test_delete_contact_archives_and_detaches_linked_records(monkeypatch) 
     assert lead_participant.is_deleted is True
     assert integration_participant.crm_contact_id is None
     assert integration_participant.resolution_status == "unresolved"
-    assert speaker.crm_contact_id is None
     assert real_activity.contact_id is None
     assert real_activity.related_local_id is None
     assert job.status == JobStatus.CANCELLED
@@ -1114,7 +1104,6 @@ async def test_delete_contact_archives_and_detaches_linked_records(monkeypatch) 
     assert result.impact.cleared_lead_contacts == 1
     assert result.impact.archived_lead_participants == 1
     assert result.impact.detached_integration_participants == 1
-    assert result.impact.detached_conversation_speakers == 1
     assert result.impact.archived_contact_only_activities == 1
     assert result.impact.cleared_activity_contact_refs == 1
     assert result.impact.removed_contact_activity_links == 1
