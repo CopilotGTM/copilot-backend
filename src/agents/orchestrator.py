@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 from src.agents.context import AgentContext
+from src.agents.context_resolution import resolve_context_references
 from src.agents.utils import latest_user_text
 from src.agents.workflows.general.agent import GeneralAgent
 from src.domain.models.organisation_tables.chat_message_models import ChatMessage
@@ -48,6 +49,10 @@ async def run_agent_for_chat(
         if temporal_hints.get("limit"):
             metadata["temporal_limit"] = temporal_hints["limit"]
         context = context.with_metadata(**metadata)
+
+    resolution = await resolve_context_references(context=context, latest_user_text=user_text)
+    if resolution:
+        context = context.with_metadata(context_resolution=resolution)
 
     agent = GeneralAgent(context=context)
     async for frame in agent.run_stream(messages, images=images, attachment_text=attachment_text):

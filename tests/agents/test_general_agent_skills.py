@@ -82,6 +82,8 @@ def test_general_prompt_has_context_resolution_gate() -> None:
     assert "ask a grounded choice question" in prompt
     assert "Do not ask generic questions" in prompt
     assert "Read-only resolution is allowed automatically" in prompt
+    assert "When `context_resolution` metadata is present" in prompt
+    assert "Do not ignore `context_resolution`" in prompt
 
 
 def test_general_prompt_blocks_raw_context_suggested_questions() -> None:
