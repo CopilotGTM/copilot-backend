@@ -37,6 +37,7 @@ from src.agents.tools.crm.update_contact import create_update_contact
 from src.agents.tools.crm.update_deal_account import create_update_deal_account
 from src.agents.tools.crm.update_deal_fields import create_update_deal_fields
 from src.agents.tools.crm.update_deal_lifecycle import create_update_deal_lifecycle
+from src.agents.tools.crm.update_deal_note import create_update_deal_note
 from src.agents.tools.crm.update_deal_stage import create_update_deal_stage
 
 __all__ = [
@@ -60,6 +61,7 @@ __all__ = [
     "create_update_deal_fields",
     "create_update_deal_lifecycle",
     "create_update_deal_account",
+    "create_update_deal_note",
     # Stakeholder tools
     "create_list_deal_stakeholders",
     # Contact tools

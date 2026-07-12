@@ -106,6 +106,7 @@ async def list_deal_notes(
 
             item: dict[str, Any] = {
                 "activity_id": str(n.activity_id),
+                "note_id": str(n.note_id),
                 "subject": note_title_or_preview(n),
                 "body": note_body,
                 "owner": {
