@@ -88,6 +88,11 @@ def test_whatsapp_personal_chat_gets_mobile_plain_text_system_message() -> None:
     }
 
 
+def test_guess_mimetype_covers_whatsapp_audio_extensions() -> None:
+    assert BotMessageProcessingService._guess_mimetype("voice.aac", "aac") == "audio/aac"
+    assert BotMessageProcessingService._guess_mimetype("voice.amr", "amr") == "audio/amr"
+
+
 def test_google_chat_personal_chat_gets_chat_plain_text_system_message() -> None:
     service = BotMessageProcessingService(uuid4())
 

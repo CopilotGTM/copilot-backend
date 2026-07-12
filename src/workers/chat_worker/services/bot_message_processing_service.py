@@ -2132,6 +2132,7 @@ class BotMessageProcessingService:
             "audio/webm",
             "audio/flac",
             "audio/aac",
+            "audio/amr",
             "audio/m4a",
             "audio/mp4",
             "audio/x-m4a",
@@ -2273,6 +2274,7 @@ class BotMessageProcessingService:
             "audio/webm",
             "audio/flac",
             "audio/aac",
+            "audio/amr",
             "audio/m4a",
             "audio/mp4",
             "audio/x-m4a",
@@ -2404,10 +2406,6 @@ class BotMessageProcessingService:
         """Guess mimetype from filename extension or Teams fileType field."""
         import mimetypes
 
-        mt, _ = mimetypes.guess_type(filename)
-        if mt:
-            return mt.lower()
-
         # Fallback to Teams fileType field (e.g. "pdf", "docx")
         ext_map = {
             "pdf": "application/pdf",
@@ -2427,6 +2425,16 @@ class BotMessageProcessingService:
             "wav": "audio/wav",
             "ogg": "audio/ogg",
             "m4a": "audio/mp4",
+            "aac": "audio/aac",
+            "amr": "audio/amr",
             "webm": "audio/webm",
         }
-        return ext_map.get(file_type.lower(), "application/octet-stream")
+        extension = (file_type or filename.rsplit(".", maxsplit=1)[-1]).lower()
+        if extension in ext_map:
+            return ext_map[extension]
+
+        mt, _ = mimetypes.guess_type(filename)
+        if mt:
+            return mt.lower()
+
+        return "application/octet-stream"

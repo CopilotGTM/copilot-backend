@@ -489,6 +489,8 @@ def test_guess_mimetype_audio_formats() -> None:
     assert "audio" in ExternalChatAttachmentIngestService._guess_mimetype("a.mp3", "mp3", "")
     assert "audio" in ExternalChatAttachmentIngestService._guess_mimetype("a.wav", "wav", "")
     assert "audio" in ExternalChatAttachmentIngestService._guess_mimetype("a.m4a", "m4a", "")
+    assert ExternalChatAttachmentIngestService._guess_mimetype("a.aac", "aac", "") == "audio/aac"
+    assert ExternalChatAttachmentIngestService._guess_mimetype("a.amr", "amr", "") == "audio/amr"
 
 
 def test_guess_mimetype_image_formats() -> None:

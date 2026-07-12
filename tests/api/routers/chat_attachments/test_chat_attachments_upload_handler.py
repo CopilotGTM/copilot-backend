@@ -5,6 +5,7 @@ Covers presign validation, finalize lifecycle, get-status polling, and delete.
 
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 from src.api.schemas.upload_models import ALLOWED_MIMETYPES, MAX_FILE_SIZE_BYTES
 from src.domain.models.organisation_tables.chat_message_models import AttachmentStatus
@@ -59,6 +60,21 @@ def test_presign_rejects_invalid_mimetype(client: TestClient, dependency_overrid
     payload = {"filename": "video.mp4", "mimetype": "video/mp4", "size_bytes": 1234}
     resp = client.post("/users/chats/upload/presign", json=payload)
     assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.parametrize(
+    "mimetype",
+    ["audio/ogg", "audio/mpeg", "audio/mp4", "audio/aac", "audio/amr"],
+)
+def test_presign_accepts_whatsapp_audio_mimetypes(
+    client: TestClient,
+    dependency_overrides,
+    mimetype: str,
+):
+    payload = {"filename": "voice-note", "mimetype": mimetype, "size_bytes": 1234}
+    resp = client.post("/users/chats/upload/presign", json=payload)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["mimetype"] == mimetype
 
 
 def test_presign_rejects_oversized_file(client: TestClient, dependency_overrides):

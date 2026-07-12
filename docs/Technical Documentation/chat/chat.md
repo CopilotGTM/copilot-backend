@@ -64,6 +64,13 @@ class ChatAttachmentView(BaseModel):
     filename: str
     mimetype: str
     thumbnail_small_url: Optional[str] = None
+    playback_url: Optional[str] = None  # completed audio attachments only
+
+# playback_url points to the original stored audio blob. It is not transcoded,
+# so native browser playback depends on client codec support.
+
+# Frontend v1 rendering: show native <audio controls preload="metadata"> below
+# message content only when mimetype starts with "audio/" and playback_url is set.
 
 class SendMessageRequest(BaseModel):
     session_id: UUID
