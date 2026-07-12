@@ -109,7 +109,8 @@ Use the narrowest available tool for the requested change:
 | Add stakeholder | Resolved existing deal ID/name and stakeholder name, email, or LinkedIn profile URL | Search/resolve the deal first, then call `AddStakeholder`. Add only external contacts |
 | Add deal note | Resolved existing deal ID/name and note text | Search/resolve the deal first, then call `AddDealNote` |
 | Create task | Meaningful task title | Call `create_task`. Include assignee, due date, priority, reminder, and deal only when provided or already in context |
-| Update/complete task | Resolved task or unambiguous active task context | Resolve the task if needed, then call the matching task tool |
+| Update/complete task | Resolved task or unambiguous active task context | Call `list_deal_tasks` when needed, resolve one task, then call `update_task` with only changed fields |
+| Update note | Resolved deal and internal note | Call `list_deal_notes`, resolve one note, then call `update_deal_note` with only changed fields |
 
 Avoid a broad "do anything in CRM" tool when a specific tool exists. Specific tools give
 the model clearer schemas and reduce wrong writes.

@@ -1,6 +1,6 @@
 ---
 name: reminders
-description: Create, list, and cancel reminders and scheduled AI-powered alerts. Use when the user asks to set a reminder, schedule an alert, manage existing reminders, or asks about reminder capabilities. Covers static reminders (fixed messages) and agentic alerts (AI analysis at trigger time).
+description: Create, list, update, and cancel reminders and scheduled AI-powered alerts. Use when the user asks to set a reminder, schedule an alert, manage existing reminders, or asks about reminder capabilities. Covers static reminders (fixed messages) and agentic alerts (AI analysis at trigger time).
 ---
 
 # Reminders & Scheduled Alerts
@@ -60,6 +60,14 @@ There are two types. Classify based on user intent:
 2. Once identified, call `CancelReminder` with the `reminder_id`.
 3. Confirm cancellation to the user.
 
+### Updating a reminder
+
+1. Call `ListReminders` unless the conversation already contains one unambiguous reminder ID.
+2. Resolve the user's reference from the returned title, type, and schedule. Never guess an ID; ask the user to choose when multiple reminders match.
+3. Call `UpdateReminder` with only the fields the user asked to change. Pass time expressions exactly as stated.
+4. Use `message` only for a static reminder and `agent_prompt` only for an agentic reminder. The tool verifies the stored type and rejects mismatches.
+5. Confirm the updated fields and schedule.
+
 ## Parameter reference
 
 | Parameter | Required | Default | Notes |
@@ -79,6 +87,7 @@ There are two types. Classify based on user intent:
 - **Preserve local weekday intent** — phrases like "Saturday 10 PM" mean the user's local Saturday, not a UTC day boundary.
 - **Always include content** — static needs `message`, agentic needs `agent_prompt`. Tool will error without them.
 - **Create directly** — once mandatory fields are known, call `CreateReminder`; the reminder is active immediately.
+- **Update narrowly** — omitted fields remain unchanged; never reconstruct and resend the whole reminder.
 - **Agentic prompts must be self-contained** — at trigger time, the agent runs independently. Include enough context (deal name, what to analyze) in the `agent_prompt`.
 
 ## Output contract

@@ -9,9 +9,11 @@ Redis sorted set poller in chat_worker.
 from src.agents.tools.reminders.cancel_reminder import create_cancel_reminder
 from src.agents.tools.reminders.create_reminder import create_create_reminder
 from src.agents.tools.reminders.list_reminders import create_list_reminders
+from src.agents.tools.reminders.update_reminder import create_update_reminder
 
 __all__ = [
     "create_create_reminder",
     "create_list_reminders",
     "create_cancel_reminder",
+    "create_update_reminder",
 ]

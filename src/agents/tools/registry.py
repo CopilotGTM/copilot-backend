@@ -66,6 +66,7 @@ class ToolName(str, Enum):
     CREATE_DRAFT_LEAD_FORM = "create_draft_lead_form"
     UPDATE_DRAFT_LEAD_FORM = "update_draft_lead_form"
     ADD_DEAL_NOTE = "add_deal_note"  # Create a note directly on an existing deal
+    UPDATE_DEAL_NOTE = "update_deal_note"
     ADD_STAKEHOLDER = "add_stakeholder"  # Create a stakeholder directly on an existing deal
     UPDATE_DEAL_STAGE = "update_deal_stage"
     UPDATE_DEAL_FIELDS = "update_deal_fields"
@@ -156,6 +157,7 @@ class ToolName(str, Enum):
     # Used by: Chat Agent, DealTaskAgent
     # -------------------------------------------------------------------------
     CREATE_TASK = "create_task"
+    UPDATE_TASK = "update_task"
     LIST_DEAL_TASKS = "list_deal_tasks"
     CREATE_DEAL_TASK = "create_deal_task"
     COMPLETE_DEAL_TASK = "complete_deal_task"
@@ -165,12 +167,14 @@ class ToolName(str, Enum):
     # Used by: Chat Agent (Teams-channel-only)
     # -------------------------------------------------------------------------
     CREATE_REMINDER = "create_reminder"
+    UPDATE_REMINDER = "update_reminder"
     LIST_REMINDERS = "list_reminders"
     CANCEL_REMINDER = "cancel_reminder"
 
 
 REMINDER_MANAGEMENT_TOOLS = {
     ToolName.CREATE_REMINDER,
+    ToolName.UPDATE_REMINDER,
     ToolName.LIST_REMINDERS,
     ToolName.CANCEL_REMINDER,
     ToolName.SEND_CALENDAR_INVITE,
@@ -207,10 +211,13 @@ CHANNEL_ONLY_TOOLS: dict[ToolName, set[str]] = {
     ToolName.UPDATE_CONTACT: {"teams", "slack", "whatsapp", "web"},
     ToolName.UPDATE_ACCOUNT: {"teams", "slack", "whatsapp", "web"},
     ToolName.ADD_DEAL_NOTE: {"teams", "slack", "whatsapp", "web", "voice"},
+    ToolName.UPDATE_DEAL_NOTE: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.ADD_STAKEHOLDER: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.UPDATE_DEAL_STAGE: {"teams", "slack"},
     ToolName.CREATE_TASK: {"teams", "slack", "whatsapp", "web", "voice"},
+    ToolName.UPDATE_TASK: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.CREATE_REMINDER: {"teams", "slack", "whatsapp", "web", "voice"},
+    ToolName.UPDATE_REMINDER: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.LIST_REMINDERS: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.CANCEL_REMINDER: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.SEND_CALENDAR_INVITE: {"teams", "slack", "whatsapp", "web", "voice"},
@@ -285,6 +292,7 @@ GENERAL_AGENT_TOOLS: set[ToolName] = {
     ToolName.CREATE_DRAFT_LEAD_FORM,
     ToolName.UPDATE_DRAFT_LEAD_FORM,
     ToolName.ADD_DEAL_NOTE,
+    ToolName.UPDATE_DEAL_NOTE,
     ToolName.ADD_STAKEHOLDER,
     ToolName.UPDATE_DEAL_STAGE,
     ToolName.UPDATE_DEAL_FIELDS,
@@ -292,9 +300,11 @@ GENERAL_AGENT_TOOLS: set[ToolName] = {
     ToolName.UPDATE_DEAL_ACCOUNT,
     # Task tools (channel-only)
     ToolName.CREATE_TASK,
+    ToolName.UPDATE_TASK,
     ToolName.LIST_DEAL_TASKS,
     # Reminder tools (channel-only)
     ToolName.CREATE_REMINDER,
+    ToolName.UPDATE_REMINDER,
     ToolName.LIST_REMINDERS,
     ToolName.CANCEL_REMINDER,
     # Calendar write tools (channel-only)
@@ -514,6 +524,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.GET_PIPELINE_DETAILS: ToolCategory.CRM,
     ToolName.CREATE_DEAL: ToolCategory.CRM,
     ToolName.ADD_DEAL_NOTE: ToolCategory.CRM,
+    ToolName.UPDATE_DEAL_NOTE: ToolCategory.CRM,
     ToolName.ADD_STAKEHOLDER: ToolCategory.CRM,
     ToolName.UPDATE_DEAL_STAGE: ToolCategory.CRM,
     ToolName.UPDATE_DEAL_FIELDS: ToolCategory.CRM,
@@ -571,6 +582,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.RESEARCH_LINKEDIN_PROFILE: ToolCategory.SEARCH,
     # Tasks
     ToolName.CREATE_TASK: ToolCategory.CRM,
+    ToolName.UPDATE_TASK: ToolCategory.CRM,
     ToolName.LIST_LEADS: ToolCategory.CRM,
     ToolName.CREATE_LEAD: ToolCategory.CRM,
     ToolName.CREATE_DRAFT_LEAD_FORM: ToolCategory.CRM,
@@ -580,6 +592,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.COMPLETE_DEAL_TASK: ToolCategory.CRM,
     # Reminders
     ToolName.CREATE_REMINDER: ToolCategory.REMINDERS,
+    ToolName.UPDATE_REMINDER: ToolCategory.REMINDERS,
     ToolName.LIST_REMINDERS: ToolCategory.REMINDERS,
     ToolName.CANCEL_REMINDER: ToolCategory.REMINDERS,
 }
@@ -654,6 +667,7 @@ class ToolRegistry:
             create_update_deal_account,
             create_update_deal_fields,
             create_update_deal_lifecycle,
+            create_update_deal_note,
             create_update_deal_stage,
             create_update_draft_lead_form,
             create_update_risk_blocker,
@@ -673,6 +687,7 @@ class ToolRegistry:
             create_cancel_reminder,
             create_create_reminder,
             create_list_reminders,
+            create_update_reminder,
         )
         from src.agents.tools.research import (
             create_crawl_webpage,
@@ -692,6 +707,7 @@ class ToolRegistry:
             create_create_deal_task,
             create_create_task,
             create_list_deal_tasks,
+            create_update_task,
         )
 
         # Search tools
@@ -740,6 +756,9 @@ class ToolRegistry:
             lambda: create_update_draft_lead_form(self.context, self.capabilities_getter)
         )
         self._tool_factories[ToolName.ADD_DEAL_NOTE] = lambda: create_add_deal_note(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.UPDATE_DEAL_NOTE] = lambda: create_update_deal_note(
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.ADD_STAKEHOLDER] = lambda: create_add_stakeholder(
@@ -886,6 +905,9 @@ class ToolRegistry:
         self._tool_factories[ToolName.CREATE_TASK] = lambda: create_create_task(
             self.context, self.capabilities_getter
         )
+        self._tool_factories[ToolName.UPDATE_TASK] = lambda: create_update_task(
+            self.context, self.capabilities_getter
+        )
         self._tool_factories[ToolName.LIST_DEAL_TASKS] = lambda: create_list_deal_tasks(
             self.context, self.capabilities_getter
         )
@@ -898,6 +920,9 @@ class ToolRegistry:
 
         # Reminder tools
         self._tool_factories[ToolName.CREATE_REMINDER] = lambda: create_create_reminder(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.UPDATE_REMINDER] = lambda: create_update_reminder(
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.LIST_REMINDERS] = lambda: create_list_reminders(

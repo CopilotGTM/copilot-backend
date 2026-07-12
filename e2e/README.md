@@ -45,8 +45,13 @@ jobs or send messages require an explicit non-production opt-in:
 $env:E2E_WHATSAPP_ENABLE_LIVE_DELIVERY="true"
 $env:E2E_WHATSAPP_DATABASE_URL="postgresql://read_only_user:...@host/database"
 $env:E2E_WHATSAPP_ORG_SCHEMA="org_schema_name"
+$env:E2E_CRM_DEAL_ID="dedicated-internal-deal-uuid"
+$env:E2E_CRM_DEAL_NAME="Exact E2E Deal Name"
+$env:E2E_USER_EMAIL="dedicated-e2e-user@example.com"
+$env:E2E_USER_PASSWORD="..."
 $env:E2E_WHATSAPP_DELIVERY_TIMEOUT_SECONDS="180" # optional
 uv run pytest e2e/whatsapp/test_delivery_pipeline.py -m e2e -v
+uv run pytest e2e/whatsapp/test_note_tools.py -m e2e -v
 ```
 
 Use a dedicated WhatsApp test number, recipient mapping, organisation, and read-only
@@ -63,6 +68,10 @@ database credential. The pipeline suite verifies:
 not currently persist Meta `delivered` or `read` callbacks, so this suite does not claim
 that a handset displayed the message.
 
+The note-tool scenario creates a uniquely titled internal deal note through WhatsApp,
+updates that same note through WhatsApp, verifies that no duplicate row was created, and
+soft-deletes the synthetic note through the authenticated API in a `finally` cleanup.
+
 ## Web Chat Delivery
 
 Run against a dedicated non-production user and existing chat session:
@@ -76,6 +85,8 @@ $env:E2E_USER_PASSWORD="..."
 $env:E2E_WEB_CHAT_SESSION_ID="..."
 $env:E2E_WEB_CHAT_DATABASE_URL="postgresql://read_only_user:...@host/database"
 $env:E2E_WEB_CHAT_ORG_SCHEMA="org_schema_name"
+$env:E2E_CRM_DEAL_ID="dedicated-internal-deal-uuid"
+$env:E2E_CRM_DEAL_NAME="Exact E2E Deal Name"
 uv run pytest e2e/web_chat -m e2e -v
 ```
 
@@ -86,6 +97,9 @@ The web-chat suite verifies:
 - the exact input reaches the durable job and its enqueue attempt has a Celery task ID;
 - the completed result and persisted assistant message contain the same non-empty answer;
 - three rapidly accepted messages create three distinct jobs and three durable outputs.
+
+`e2e/web_chat/test_note_tools.py` uses the same create-update-no-duplicate contract as
+WhatsApp and performs authenticated API cleanup even when an assertion fails.
 
 The database credential is read-only. The suite blocks production targets and requires
 an explicit live-delivery opt-in because successful cases invoke the real agent stack.
