@@ -326,6 +326,7 @@ export interface ChatAttachmentView {
   filename: string;
   mimetype: string;
   thumbnail_small_url?: string | null;
+  playback_url?: string | null; // completed audio attachments only
 }
 
 export interface ChatMessageListItem {
@@ -1330,7 +1331,8 @@ Notes:
             "attachment_id": "<UUID>",
             "filename": "file.pdf",
             "mimetype": "application/pdf",
-            "thumbnail_small_url": "https://...sas..."
+            "thumbnail_small_url": "https://...sas...",
+            "playback_url": null
           }
         ],
         "confidence_score": "high",
@@ -1755,6 +1757,38 @@ Thumbnails are automatically generated during post-upload processing for support
 - **Expiration**: Thumbnail SAS URLs expire after **120 minutes** (2 hours).
 - **Availability**: `thumbnail_small_url` is `null` until processing completes successfully.
 - **Sizes**: Two thumbnail sizes are generated internally (`thumbnail_small_path`, `thumbnail_medium_path`), but only the small thumbnail URL is currently exposed via SSE events.
+
+## Audio Playback URL Properties
+
+- `playback_url` is returned only for completed `audio/*` chat attachments.
+- The URL is a short-lived SAS for the original stored audio blob, intended for native browser `<audio controls>` rendering.
+- The backend does not transcode audio for browser compatibility; unsupported codecs should fall back to download or a future transcoding flow.
+- Native browser controls guarantee play/pause and seeking when the codec is supported. Visible playback speed controls are browser-dependent.
+
+## Frontend Audio Rendering Guidance
+
+- Render native audio only when both conditions are true:
+  - `attachment.mimetype.startsWith("audio/")`
+  - `attachment.playback_url` is a non-empty string
+- Position the player below the message transcript/content in the user message bubble.
+- Use native controls for v1:
+
+```tsx
+{message.attachments
+  .filter((attachment) => attachment.mimetype.startsWith("audio/") && attachment.playback_url)
+  .map((attachment) => (
+    <audio
+      key={attachment.attachment_id}
+      controls
+      preload="metadata"
+      src={attachment.playback_url}
+    />
+  ))}
+```
+
+- If `playback_url` is `null`, do not render a broken player. The attachment may still be processing; refresh `GET /users/chats/messages/list` after attachment/job completion or when the user reopens the chat.
+- If the browser cannot play the original codec, show a simple "Download audio" fallback using the existing `GET /users/chats/upload/attachment/{attachment_id}/download` endpoint.
+- Do not assume a visible 1.5x speed control with native audio. If guaranteed playback speed controls are required, build a custom player around `HTMLMediaElement.playbackRate`.
 
 ## Thumbnail Environment Variables
 

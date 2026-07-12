@@ -21,6 +21,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import select
 from src.domain.models.organisation_tables.chat_message_models import (
     Attachment,
+    AttachmentStatus,
     ChatMessage,
     ChatMessageAttachmentLink,
     ChatMessageRole,
@@ -287,17 +288,25 @@ class ChatMessageService:
         attachments_by_msg: dict[UUID, list[Attachment]],
         minutes: int = 30,
     ) -> dict[UUID, list[dict[str, Any]]]:
-        """Build thumbnail SAS URLs for attachments per message.
+        """Build display/download SAS URLs for attachments per message.
 
         Returns dict[message_id] -> list of dicts conforming to ChatAttachmentView.
         """
         storage = AzureOrganisationBlobStorage(self.organisation_id)
 
-        async def _sas(path: str | None) -> str | None:
+        async def _sas(
+            path: str | None,
+            *,
+            content_type: str | None = None,
+        ) -> str | None:
             if not path:
                 return None
             try:
-                return await storage.generate_read_sas(path, minutes=minutes)
+                return await storage.generate_read_sas(
+                    path,
+                    minutes=minutes,
+                    content_type=content_type,
+                )
             except Exception:
                 return None
 
@@ -313,6 +322,12 @@ class ChatMessageService:
                         "thumbnail_small_url": await _sas(
                             getattr(att, "thumbnail_small_path", None)
                         ),
+                        "playback_url": await _sas(
+                            getattr(att, "storage_path", None),
+                            content_type=att.mimetype,
+                        )
+                        if _is_completed_audio(att)
+                        else None,
                     }
                 )
             out[mid] = enriched
@@ -412,3 +427,13 @@ class ChatMessageService:
         """Close any resources held by the service, including the database session."""
         if self.db:
             await self.db.close()
+
+
+def _is_completed_audio(attachment: Attachment) -> bool:
+    status = getattr(attachment, "status", None)
+    status_value = status.value if hasattr(status, "value") else str(status or "")
+    return (
+        status_value == AttachmentStatus.COMPLETED.value
+        and str(getattr(attachment, "mimetype", "") or "").lower().startswith("audio/")
+        and bool(getattr(attachment, "storage_path", None))
+    )

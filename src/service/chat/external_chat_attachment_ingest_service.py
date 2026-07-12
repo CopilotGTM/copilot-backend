@@ -452,10 +452,6 @@ class ExternalChatAttachmentIngestService:
         if response_content_type and response_content_type != "application/octet-stream":
             return response_content_type
 
-        guessed, _ = mimetypes.guess_type(filename)
-        if guessed:
-            return guessed.lower()
-
         ext_map = {
             "pdf": "application/pdf",
             "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -474,9 +470,19 @@ class ExternalChatAttachmentIngestService:
             "wav": "audio/wav",
             "ogg": "audio/ogg",
             "m4a": "audio/mp4",
+            "aac": "audio/aac",
+            "amr": "audio/amr",
             "webm": "audio/webm",
         }
-        return ext_map.get(file_type.lower(), "application/octet-stream")
+        extension = (file_type or filename.rsplit(".", maxsplit=1)[-1]).lower()
+        if extension in ext_map:
+            return ext_map[extension]
+
+        guessed, _ = mimetypes.guess_type(filename)
+        if guessed:
+            return guessed.lower()
+
+        return "application/octet-stream"
 
     async def close(self) -> None:
         """Release the organization blob client owned by this service."""

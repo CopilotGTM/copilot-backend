@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 import pytest
 from src.domain.models.organisation_tables.chat_message_models import (
     Attachment,
+    AttachmentStatus,
     ChatMessage,
     ChatMessageRole,
     ChatMessageType,
@@ -77,6 +78,8 @@ def _make_attachment_row(
     filename: str = "file.pdf",
     mimetype: str = "application/pdf",
     thumbnail_small_path: str | None = None,
+    storage_path: str | None = "chat_uploads/file.pdf",
+    status: AttachmentStatus = AttachmentStatus.COMPLETED,
 ) -> MagicMock:
     row = MagicMock(spec=Attachment)
     row.attachment_id = attachment_id or uuid4()
@@ -86,6 +89,8 @@ def _make_attachment_row(
     row.filename = filename
     row.mimetype = mimetype
     row.thumbnail_small_path = thumbnail_small_path
+    row.storage_path = storage_path
+    row.status = status
     return row
 
 
@@ -454,6 +459,87 @@ class TestBuildAttachmentUrls:
 
         msg_atts = list(result.values())[0]
         assert msg_atts[0]["thumbnail_small_url"] is None
+        assert msg_atts[0]["playback_url"] is None
+
+    @pytest.mark.asyncio
+    async def test_generates_playback_url_for_completed_audio(self, service):
+        """Completed audio attachments get an original-file URL for inline playback."""
+        att = _make_attachment_row(
+            filename="voice.ogg",
+            mimetype="audio/ogg",
+            storage_path="chat_uploads/user/voice.ogg",
+            status=AttachmentStatus.COMPLETED,
+        )
+        generated: list[dict] = []
+
+        async def generate_read_sas(path, **kwargs):
+            generated.append({"path": path, **kwargs})
+            return "https://audio-sas-url"
+
+        with patch(
+            "src.service.chat.chat_message_service.AzureOrganisationBlobStorage"
+        ) as mock_storage:
+            storage_instance = AsyncMock()
+            storage_instance.generate_read_sas = AsyncMock(side_effect=generate_read_sas)
+            storage_instance.close = AsyncMock()
+            mock_storage.return_value = storage_instance
+
+            result = await service.build_attachment_urls(attachments_by_msg={uuid4(): [att]})
+
+        msg_atts = list(result.values())[0]
+        assert msg_atts[0]["playback_url"] == "https://audio-sas-url"
+        assert generated == [
+            {
+                "path": "chat_uploads/user/voice.ogg",
+                "minutes": 30,
+                "content_type": "audio/ogg",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_playback_url_is_null_until_audio_completed(self, service):
+        """Processing audio is listed but not yet playable."""
+        att = _make_attachment_row(
+            filename="voice.ogg",
+            mimetype="audio/ogg",
+            storage_path="chat_uploads/user/voice.ogg",
+            status=AttachmentStatus.PROCESSING,
+        )
+
+        with patch(
+            "src.service.chat.chat_message_service.AzureOrganisationBlobStorage"
+        ) as mock_storage:
+            storage_instance = AsyncMock()
+            storage_instance.close = AsyncMock()
+            mock_storage.return_value = storage_instance
+
+            result = await service.build_attachment_urls(attachments_by_msg={uuid4(): [att]})
+
+        msg_atts = list(result.values())[0]
+        assert msg_atts[0]["playback_url"] is None
+        storage_instance.generate_read_sas.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_non_audio_attachment_has_no_playback_url(self, service):
+        """Documents keep thumbnail/download behavior separate from audio playback."""
+        att = _make_attachment_row(
+            mimetype="application/pdf",
+            storage_path="chat_uploads/user/doc.pdf",
+            status=AttachmentStatus.COMPLETED,
+        )
+
+        with patch(
+            "src.service.chat.chat_message_service.AzureOrganisationBlobStorage"
+        ) as mock_storage:
+            storage_instance = AsyncMock()
+            storage_instance.close = AsyncMock()
+            mock_storage.return_value = storage_instance
+
+            result = await service.build_attachment_urls(attachments_by_msg={uuid4(): [att]})
+
+        msg_atts = list(result.values())[0]
+        assert msg_atts[0]["playback_url"] is None
+        storage_instance.generate_read_sas.assert_not_awaited()
 
 
 class TestBuildMessageListItems:

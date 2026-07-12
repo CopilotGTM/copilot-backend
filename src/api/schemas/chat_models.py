@@ -149,6 +149,7 @@ class ChatAttachmentView(BaseModel):
     filename: str
     mimetype: str
     thumbnail_small_url: str | None = None
+    playback_url: str | None = None
 
 
 class MessageFeedbackRequest(BaseModel):

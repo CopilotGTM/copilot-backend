@@ -14,6 +14,7 @@ AUDIO_MIMETYPES = {
     "audio/webm",
     "audio/flac",
     "audio/aac",
+    "audio/amr",
     "audio/m4a",
     "audio/mp4",
     "audio/x-m4a",
