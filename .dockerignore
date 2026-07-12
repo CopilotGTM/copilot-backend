@@ -37,6 +37,7 @@ htmlcov/
 .nox/
 test-local-scripts/
 tests/
+e2e/
 conftest.py
 pytest.ini
 
