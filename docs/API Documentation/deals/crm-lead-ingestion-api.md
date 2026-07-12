@@ -111,11 +111,11 @@ Create response returns the plaintext secret once:
 ```json
 {
   "status": "SUCCESS",
-  "message": "Lead form private key created",
-  "data": {
-    "key_id": "skid_example",
-    "secret": "cgtm_live_example",
-    "status": "active",
+    "message": "Lead form private key created",
+    "data": {
+      "key_id": "skid_example",
+      "secret": "",
+      "status": "active",
     "created_at": "2026-05-03T10:00:00Z"
   }
 }

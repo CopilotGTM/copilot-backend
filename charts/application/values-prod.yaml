@@ -53,13 +53,13 @@ api:
     DATABASE_MAX_OVERFLOW: "2"
     USE_SHARED_TENANT_DATABASE: "true"
     TENANT_DATABASE_USER: "app_tenant_runtime"
-    TENANT_DATABASE_PASSWORD_SECRET_NAME: "shared-tenant-db-password"
+    TENANT_DATABASE_PASSWORD_SECRET_NAME: "shared-tenant-db-password"  # pragma: allowlist secret
     GOOGLE_REDIRECT_URI: "https://api.copilotgtm.com/users/integrations/copilot-oauth/callback"
     GOOGLE_CHAT_AUTH_AUDIENCE: "https://api.copilotgtm.com/users/bots/google-chat/events"
     GOOGLE_WEBHOOK_BASE_URL: "https://api.copilotgtm.com"
     GOOGLE_GMAIL_PUBSUB_TOPIC: "projects/copilotgtm/topics/gmail-push"
     GOOGLE_GMAIL_PUBSUB_SUBSCRIPTION: "projects/copilotgtm/subscriptions/gmail-push-sub"
-    GOOGLE_GMAIL_PUBSUB_PUSH_TOKEN_SECRET_NAME: "google-gmail-pubsub-push-token"
+    GOOGLE_GMAIL_PUBSUB_PUSH_TOKEN_SECRET_NAME: "google-gmail-pubsub-push-token"  # pragma: allowlist secret
     MICROSOFT_REDIRECT_URI: "https://api.copilotgtm.com/users/integrations/copilot-oauth/callback"
     MICROSOFT_GRAPH_WEBHOOK_BASE_URL: "https://api.copilotgtm.com"
     SLACK_REDIRECT_URI: "https://api.copilotgtm.com/users/integrations/copilot-oauth/callback"

@@ -25,7 +25,7 @@ from src.domain.models.master_tables import (
 from src.infra.config.configs import security_secrets_config
 
 _KEY_ID_PREFIX = "skid_"
-_SECRET_PREFIX = "cgtm_live_"
+_SECRET_PREFIX = "cgtm_live_"  # pragma: allowlist secret
 _HASH_PREFIX = "hmac_sha256$"
 
 
