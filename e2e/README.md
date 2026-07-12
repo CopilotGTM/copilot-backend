@@ -3,6 +3,19 @@
 These tests run against a deployed backend over HTTP. They are intentionally outside
 `tests/` so local unit and integration runs stay fast and isolated.
 
+## Authentication Smoke Test
+
+Store the dedicated E2E user's credentials in the dev Key Vault as
+`e2e-user-email` and `e2e-user-password`. After `az login`, run locally with:
+
+```powershell
+.\scripts\e2e\run-dev.ps1 auth
+```
+
+The runner reads both credentials from Key Vault without writing them to a local file.
+The suite logs in at runtime and keeps the short-lived access token only in process
+memory. CI sets `E2E_REQUIRE_CONFIG=1` so missing configuration fails instead of skips.
+
 ## WhatsApp Delivery
 
 Run:
@@ -58,7 +71,8 @@ Run against a dedicated non-production user and existing chat session:
 $env:E2E_API_BASE_URL="https://your-deployed-api.example.com"
 $env:E2E_TARGET_ENVIRONMENT="dev"
 $env:E2E_WEB_CHAT_ENABLE_LIVE_DELIVERY="true"
-$env:E2E_WEB_CHAT_AUTH_TOKEN="..."
+$env:E2E_USER_EMAIL="..."
+$env:E2E_USER_PASSWORD="..."
 $env:E2E_WEB_CHAT_SESSION_ID="..."
 $env:E2E_WEB_CHAT_DATABASE_URL="postgresql://read_only_user:...@host/database"
 $env:E2E_WEB_CHAT_ORG_SCHEMA="org_schema_name"

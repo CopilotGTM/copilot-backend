@@ -695,3 +695,43 @@ stages:
                         echo "Rolling back to previous release revision..."
                         helm rollback $(HELM_RELEASE_NAME) -n copilotgtm --wait --timeout 20m
                       fi
+
+  # ========================================================================
+  # Stage 4: Deployed authentication smoke test
+  # ========================================================================
+  - stage: E2ESmoke
+    displayName: Deployed E2E Smoke Test
+    dependsOn:
+      - Deploy
+    condition: succeeded()
+    jobs:
+      - job: AuthenticationSmoke
+        displayName: Authenticate dedicated E2E user
+        pool:
+          name: $(DEV_FAST_AGENT_POOL)
+        steps:
+          - checkout: self
+
+          - task: AzureKeyVault@2
+            displayName: Read E2E credentials from dev Key Vault
+            inputs:
+              azureSubscription: 'copilotgtm-arc-ci-cd-service--dev'
+              KeyVaultName: 'copilot-master-kv-dev'
+              SecretsFilter: >-
+                e2e-user-email,
+                e2e-user-password
+
+          - script: |
+              curl -LsSf https://astral.sh/uv/install.sh | sh
+              echo "##vso[task.prependpath]$HOME/.local/bin"
+            displayName: Install UV
+
+          - script: |
+              uv run --no-project --with pytest --with httpx \
+                pytest e2e/test_auth.py -m e2e -v
+            displayName: Run deployed authentication smoke test
+            env:
+              E2E_REQUIRE_CONFIG: '1'
+              E2E_API_BASE_URL: 'https://devapi.copilotgtm.com'
+              E2E_USER_EMAIL: $(e2e-user-email)
+              E2E_USER_PASSWORD: $(e2e-user-password)

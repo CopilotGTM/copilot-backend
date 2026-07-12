@@ -13,7 +13,7 @@ import pytest
 from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
 
-from e2e.conftest import required_env
+from e2e.conftest import e2e_access_token, required_env
 
 _PRODUCTION_ENVIRONMENTS = {"prod", "production"}
 
@@ -26,7 +26,7 @@ def base_url() -> str:
 def auth_headers() -> dict[str, str]:
     """Build the authenticated headers for the dedicated E2E user."""
     return {
-        "Authorization": f"Bearer {required_env('E2E_WEB_CHAT_AUTH_TOKEN')}",
+        "Authorization": f"Bearer {e2e_access_token()}",
         "Content-Type": "application/json",
     }
 
@@ -38,7 +38,8 @@ def require_live_delivery_target() -> None:
 
     for name in (
         "E2E_API_BASE_URL",
-        "E2E_WEB_CHAT_AUTH_TOKEN",
+        "E2E_USER_EMAIL",
+        "E2E_USER_PASSWORD",
         "E2E_WEB_CHAT_SESSION_ID",
         "E2E_WEB_CHAT_DATABASE_URL",
         "E2E_WEB_CHAT_ORG_SCHEMA",
