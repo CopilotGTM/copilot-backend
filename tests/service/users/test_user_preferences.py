@@ -1,4 +1,7 @@
-from src.service.users.user_preferences import normalize_user_preferences
+from src.service.users.user_preferences import (
+    normalize_user_preferences,
+    set_preferred_deal_currency,
+)
 
 
 def test_normalize_user_preferences_adds_default_contact_list_columns() -> None:
@@ -110,6 +113,53 @@ def test_normalize_user_preferences_preserves_user_deal_list_columns() -> None:
         "amount",
         "owner.name",
     ]
+
+
+def test_normalize_user_preferences_normalizes_preferred_deal_currency() -> None:
+    preferences = {
+        "crm": {
+            "deals": {
+                "preferred_currency": " inr ",
+                "list": {"columns": ["name", "amount"]},
+            }
+        }
+    }
+
+    normalized = normalize_user_preferences(preferences)
+
+    assert normalized["crm"]["deals"]["preferred_currency"] == "INR"
+    assert normalized["crm"]["deals"]["list"]["columns"] == ["name", "amount"]
+
+
+def test_normalize_user_preferences_ignores_invalid_preferred_deal_currency() -> None:
+    for value in ["rupee", "12$", 123, None]:
+        preferences = {"crm": {"deals": {"preferred_currency": value}}}
+
+        normalized = normalize_user_preferences(preferences)
+
+        assert "preferred_currency" not in normalized["crm"]["deals"]
+
+
+def test_set_preferred_deal_currency_preserves_unrelated_preferences() -> None:
+    preferences = {
+        "notifications": {"email": True},
+        "crm": {"deals": {"list": {"columns": ["name"]}}},
+    }
+
+    updated = set_preferred_deal_currency(preferences, " usd ")
+
+    assert updated["notifications"] == {"email": True}
+    assert updated["crm"]["deals"]["list"]["columns"] == ["name"]
+    assert updated["crm"]["deals"]["preferred_currency"] == "USD"
+
+
+def test_set_preferred_deal_currency_ignores_empty_or_invalid_currency() -> None:
+    preferences = {"crm": {"deals": {"preferred_currency": "INR"}}}
+
+    assert set_preferred_deal_currency(preferences, None) == preferences
+    assert set_preferred_deal_currency(preferences, "") == preferences
+    assert set_preferred_deal_currency(preferences, "USDT") == preferences
+    assert set_preferred_deal_currency(preferences, "12$") == preferences
 
 
 def test_normalize_user_preferences_preserves_user_task_list_columns() -> None:

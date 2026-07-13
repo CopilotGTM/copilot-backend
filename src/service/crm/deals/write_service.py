@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
+from src.domain.models.master_tables import User
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
@@ -48,6 +49,7 @@ from src.service.crm.utils.pipeline_shape import (
     has_required_pipeline_shape,
     required_pipeline_shape_message,
 )
+from src.service.users.user_preferences import set_preferred_deal_currency
 
 logger = get_logger(__name__)
 
@@ -231,6 +233,32 @@ class DealWriteService:
     def _validate_uuid_field(field_name: str, value: Any) -> None:
         if value is not None and not isinstance(value, UUID):
             raise DealWriteServiceError(f"Invalid {field_name}", status_code=400)
+
+    async def _store_preferred_deal_currency(self, currency: str | None) -> None:
+        if currency is None:
+            return
+        get_user = getattr(self.master_session, "get", None)
+        commit = getattr(self.master_session, "commit", None)
+        rollback = getattr(self.master_session, "rollback", None)
+        if not callable(get_user) or not callable(commit):
+            return
+        try:
+            user = await get_user(User, self.actor_user_id)
+            if user is None:
+                return
+            user.preferences = set_preferred_deal_currency(user.preferences, currency)
+            await commit()
+        except Exception:
+            if callable(rollback):
+                try:
+                    await rollback()
+                except Exception:
+                    logger.debug("Preferred deal currency rollback failed", exc_info=True)
+            logger.warning(
+                "Failed to store preferred deal currency for user %s",
+                self.actor_user_id,
+                exc_info=True,
+            )
 
     @staticmethod
     def _validate_string_field(field_name: str, value: Any) -> None:
@@ -545,6 +573,7 @@ class DealWriteService:
             summary=f"Created deal {deal.name}" if deal.name else "Created deal",
             context=write_context,
         )
+        await self._store_preferred_deal_currency(payload.get("currency"))
         logger.info("Created internal CRM deal %s: %s", deal.deal_id, deal.name)
         return deal
 
@@ -695,6 +724,8 @@ class DealWriteService:
             summary=f"Updated deal {deal.name}" if deal.name else "Updated deal",
             context=write_context,
         )
+        if payload.get("currency") is not None:
+            await self._store_preferred_deal_currency(payload["currency"])
         logger.info("Updated internal CRM deal %s", deal.deal_id)
         return deal
 

@@ -281,6 +281,39 @@ async def test_create_deal_projects_deal_created_and_initial_stage_history() -> 
 
 
 @pytest.mark.asyncio
+async def test_create_deal_stores_preferred_currency_when_currency_provided() -> None:
+    session = _FakeOrgSession()
+    service = DealWriteService(
+        org_session=session,
+        master_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+
+    pipeline_id = uuid4()
+    stage_id = uuid4()
+    integration_id = uuid4()
+    service._get_default_pipeline = AsyncMock(
+        return_value=SimpleNamespace(pipeline_id=pipeline_id, name="Sales")
+    )
+    service._get_first_stage = AsyncMock(
+        return_value=SimpleNamespace(stage_id=stage_id, name="Discovery")
+    )
+    service._load_pipeline_stages = AsyncMock(return_value=_usable_stage_shape())
+    service._record_mutation_event = AsyncMock()  # type: ignore[method-assign]
+    service._projection = AsyncMock()  # type: ignore[assignment]
+    service._store_preferred_deal_currency = AsyncMock()  # type: ignore[method-assign]
+
+    with patch(
+        "src.service.crm.deals.write_service.InternalCRMSetupService.get_internal_integration",
+        new=AsyncMock(return_value=SimpleNamespace(integration_id=integration_id)),
+    ):
+        await service.create_deal({"name": "New Deal", "currency": "inr"})
+
+    service._store_preferred_deal_currency.assert_awaited_once_with("INR")
+
+
+@pytest.mark.asyncio
 async def test_move_stage_projects_created_stage_history() -> None:
     """Internal stage moves project the exact history row created for the transition."""
     session = _FakeOrgSession()
