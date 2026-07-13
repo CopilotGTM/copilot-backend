@@ -721,7 +721,7 @@ Contact creation still performs its own duplicate-email check, so search endpoin
         "match_type": "additional_email"
       }
     ],
-    "next_cursor": "eyJyYW5rIjoxLCJuYW1lIjoic2FtIGFsdG1hbiIsImNvbnRhY3RfaWQiOiJhMWIyYzNkNC1lNWY2LTc4OTAtYWJjZC1lZjEyMzQ1Njc4OTAifQ==",
+    "next_cursor": "opaque-cursor-from-this-response",
     "has_more": true
   }
 }
