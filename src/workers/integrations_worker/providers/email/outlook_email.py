@@ -41,6 +41,12 @@ logger = get_logger(__name__)
 # Batch size for body backfill requests (Microsoft Graph $batch supports up to 20)
 _BODY_BATCH_SIZE = 20
 _DELTA_PAGE_SIZE = 500
+_FULL_MESSAGE_SELECT = (
+    "id,conversationId,subject,bodyPreview,from,toRecipients,"
+    "ccRecipients,bccRecipients,replyTo,sentDateTime,receivedDateTime,"
+    "hasAttachments,importance,isRead,isDraft,internetMessageId,"
+    "parentFolderId,inferenceClassification,categories,body"
+)
 
 
 @dataclass
@@ -94,6 +100,192 @@ def _filter_other_inbox_messages(
     return filtered, skipped
 
 
+def _is_deleted_message(message: dict[str, Any]) -> bool:
+    """Return true for Graph delta tombstones that should bypass hydration."""
+    return (
+        "@removed" in message
+        or message.get("_sync_metadata", {}).get("sync_action") == "DELETED"
+    )
+
+
+def _missing_required_message_fields(message: dict[str, Any]) -> list[str]:
+    """List stable Outlook fields required before a message can be persisted."""
+    missing: list[str] = []
+
+    if not message.get("id"):
+        missing.append("id")
+    if not message.get("internetMessageId"):
+        missing.append("internetMessageId")
+    if "subject" not in message or message.get("subject") is None:
+        missing.append("subject")
+    from_address = message.get("from", {}).get("emailAddress", {})
+    if not from_address.get("address"):
+        missing.append("from")
+    if not message.get("parentFolderId"):
+        missing.append("parentFolderId")
+    if not (message.get("receivedDateTime") or message.get("sentDateTime")):
+        missing.append("receivedDateTime|sentDateTime")
+
+    return missing
+
+
+def _is_complete_message(message: dict[str, Any]) -> bool:
+    """Return true when a non-deleted Outlook message has stable identity fields."""
+    return not _missing_required_message_fields(message)
+
+
+def _merge_hydrated_message(
+    base_message: dict[str, Any],
+    hydrated_message: dict[str, Any],
+) -> dict[str, Any]:
+    """Overlay full Graph details while preserving delta-only sync metadata."""
+    merged = dict(base_message)
+    merged.update(hydrated_message)
+    if "_sync_metadata" in base_message:
+        merged["_sync_metadata"] = base_message["_sync_metadata"]
+    return merged
+
+
+async def _hydrate_incomplete_messages(
+    client: httpx.AsyncClient,
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Fetch full details for sparse delta items before they reach persistence."""
+    messages_with_identity: list[dict[str, Any]] = []
+    for message in messages:
+        if not _is_deleted_message(message) and not message.get("id"):
+            raise RuntimeError(
+                "Outlook Email partial hydration failed: "
+                "non-deleted message missing id"
+            )
+        messages_with_identity.append(message)
+
+    messages = messages_with_identity
+    candidates = [
+        message
+        for message in messages
+        if not _is_deleted_message(message)
+        and message.get("id")
+        and not _is_complete_message(message)
+    ]
+    if not candidates:
+        return messages
+
+    logger.warning(
+        "Outlook Email: hydrating %d partial delta messages before persistence",
+        len(candidates),
+    )
+
+    candidate_by_id: dict[str, dict[str, Any]] = {
+        str(message["id"]): message for message in candidates
+    }
+    hydrated_by_id: dict[str, dict[str, Any]] = {}
+    dropped_ids: set[str] = set()
+
+    for i in range(0, len(candidates), _BODY_BATCH_SIZE):
+        batch_messages = candidates[i : i + _BODY_BATCH_SIZE]
+        request_id_to_message_id: dict[str, str] = {}
+        batch_requests: list[dict[str, str]] = []
+
+        for idx, message in enumerate(batch_messages):
+            request_id = str(idx)
+            message_id = str(message["id"])
+            request_id_to_message_id[request_id] = message_id
+            batch_requests.append(
+                {
+                    "id": request_id,
+                    "method": "GET",
+                    "url": f"/me/messages/{message_id}?$select={_FULL_MESSAGE_SELECT}",
+                }
+            )
+
+        batch_resp = await client.post(
+            "https://graph.microsoft.com/v1.0/$batch",
+            json={"requests": batch_requests},
+        )
+        batch_resp.raise_for_status()
+        batch_data = batch_resp.json()
+
+        seen_request_ids: set[str] = set()
+        for response in batch_data.get("responses", []):
+            request_id = str(response.get("id"))
+            seen_request_ids.add(request_id)
+            message_id = request_id_to_message_id.get(request_id)
+            if not message_id:
+                continue
+
+            status = int(response.get("status") or 0)
+            if status == 200:
+                body_data = response.get("body", {})
+                merged = _merge_hydrated_message(candidate_by_id[message_id], body_data)
+                missing = _missing_required_message_fields(merged)
+                if missing:
+                    raise RuntimeError(
+                        "Outlook Email partial hydration returned incomplete message "
+                        f"id={message_id} missing={missing}"
+                    )
+                hydrated_by_id[message_id] = merged
+                continue
+
+            if status == 404:
+                logger.info(
+                    "Outlook Email: dropping partial message because hydration returned 404 id=%s",
+                    message_id,
+                )
+                dropped_ids.add(message_id)
+                continue
+
+            raise RuntimeError(
+                "Outlook Email partial hydration failed "
+                f"id={message_id} status={status}"
+            )
+
+        missing_responses = set(request_id_to_message_id) - seen_request_ids
+        if missing_responses:
+            raise RuntimeError(
+                "Outlook Email partial hydration batch missing responses "
+                f"request_ids={sorted(missing_responses)}"
+            )
+
+    hydrated_messages: list[dict[str, Any]] = []
+    partial_detected = len(candidates)
+    partial_hydrated = 0
+    partial_dropped = 0
+
+    for message in messages:
+        if _is_deleted_message(message):
+            hydrated_messages.append(message)
+            continue
+
+        message_id = message.get("id")
+        if _is_complete_message(message):
+            hydrated_messages.append(message)
+            continue
+
+        replacement = hydrated_by_id.get(str(message_id))
+        if replacement:
+            hydrated_messages.append(replacement)
+            partial_hydrated += 1
+        elif str(message_id) in dropped_ids:
+            partial_dropped += 1
+        else:
+            missing = _missing_required_message_fields(message)
+            logger.warning(
+                "Outlook Email: dropping unhydrated partial message id=%s missing=%s",
+                message_id,
+                missing,
+            )
+            partial_dropped += 1
+
+    logger.info(
+        "Outlook Email partial hydration complete: detected=%d hydrated=%d dropped=%d",
+        partial_detected,
+        partial_hydrated,
+        partial_dropped,
+    )
+    return hydrated_messages
+
+
 async def _backfill_bodies(
     client: httpx.AsyncClient,
     messages: list[dict[str, Any]],
@@ -105,7 +297,9 @@ async def _backfill_bodies(
     Deleted messages (@removed) are skipped.
     """
     ids_to_fetch = [
-        m["id"] for m in messages if "body" not in m and "@removed" not in m and m.get("id")
+        m["id"]
+        for m in messages
+        if "body" not in m and not _is_deleted_message(m) and m.get("id")
     ]
 
     if not ids_to_fetch:
@@ -294,6 +488,7 @@ async def fetch_messages(
                 )
 
             if items:
+                items = await _hydrate_incomplete_messages(client, items)
                 await _backfill_bodies(client, items)
 
         return items, delta_result.delta_link
