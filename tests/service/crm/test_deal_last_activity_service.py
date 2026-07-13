@@ -48,6 +48,8 @@ async def test_refresh_deal_uses_latest_allowed_activity_or_mutation() -> None:
     assert result == mutation_at
     assert deal.last_activity_at == mutation_at
     assert session.added == [deal]
+    activity_sql = str(session.statements[1])
+    assert "crm_activity_links.occurred_at <= now()" in activity_sql
 
 
 @pytest.mark.asyncio
