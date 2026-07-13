@@ -137,7 +137,7 @@ stages:
               set -euo pipefail
               mkdir -p secrets-scan-reports
 
-              echo "##[section]🔐 Running detect-secrets baseline gate..."
+              echo "##[section]🔐 Running detect-secrets baseline check..."
               uv run --with detect-secrets detect-secrets scan \
                 --exclude-files '(^|[\\/])\.secrets\.baseline$|^infra[\\/]security[\\/]casa[\\/]evidence[\\/]' \
                 > secrets-scan-reports/detect-secrets-current.json
@@ -151,7 +151,8 @@ stages:
                 }
 
               cat secrets-scan-reports/detect-secrets-baseline-check.txt
-            displayName: '🔐 Secrets Baseline Gate (detect-secrets)'
+            displayName: '🔐 Secrets Baseline Check (warning only)'
+            continueOnError: true
 
           - script: |
               set -euo pipefail

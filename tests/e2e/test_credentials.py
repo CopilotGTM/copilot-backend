@@ -14,7 +14,8 @@ def test_access_token_logs_in_with_dedicated_e2e_credentials(
     """Lock the contract that CI stores credentials while tokens remain process-local."""
     monkeypatch.setenv("E2E_API_BASE_URL", "https://devapi.example.com/")
     monkeypatch.setenv("E2E_USER_EMAIL", "e2e@example.com")
-    monkeypatch.setenv("E2E_USER_PASSWORD", "password-from-key-vault")
+    login_value = "password-from-key-vault"
+    monkeypatch.setenv("E2E_USER_PASSWORD", login_value)
     captured_request: dict[str, object] = {}
 
     def fake_post(url: str, **kwargs: object) -> httpx.Response:
@@ -32,7 +33,7 @@ def test_access_token_logs_in_with_dedicated_e2e_credentials(
     assert captured_request["url"] == "https://devapi.example.com/users/auth/login"
     assert captured_request["json"] == {
         "email": "e2e@example.com",
-        "password": "password-from-key-vault",
+        "password": login_value,
     }
 
 

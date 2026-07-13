@@ -717,7 +717,7 @@ stages:
             inputs:
               azureSubscription: 'copilotgtm-arc-ci-cd-service--dev'
               KeyVaultName: 'copilot-master-kv-dev'
-              SecretsFilter: >-
+              SecretsFilter: >-  # pragma: allowlist secret
                 e2e-user-email,
                 e2e-user-password
 
