@@ -180,6 +180,8 @@ class DealReadService:
         min_expected_close_date: datetime | None = None,
         max_expected_close_date: datetime | None = None,
         q: str | None = None,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
     ) -> tuple[list[CRMDeal], int]:
         """List deals with pagination and filters.
 
@@ -196,6 +198,8 @@ class DealReadService:
             min_expected_close_date: Optional minimum forecast close date
             max_expected_close_date: Optional maximum forecast close date
             q: Optional search query for deal name (case-insensitive)
+            sort_by: Optional sort field. Currently supports last_activity_at.
+            sort_order: Optional sort direction (asc or desc)
 
         Returns:
             Tuple of (deals list, total_count)
@@ -293,12 +297,23 @@ class DealReadService:
         count_res = await self.org_session.execute(count_stmt)
         total_count = count_res.scalar() or 0
 
-        # Order by created_at DESC, deal_id DESC for consistent pagination
+        normalized_sort_order = (sort_order or "desc").lower()
+        if normalized_sort_order not in {"asc", "desc"}:
+            raise DealReadServiceError("sort_order must be asc or desc", status_code=400)
+
+        if sort_by is not None and sort_by != "last_activity_at":
+            raise DealReadServiceError("Unsupported sort field", status_code=400)
+
+        order_by = (
+            [c.last_activity_at.asc().nullslast(), c.deal_id.asc()]
+            if sort_by == "last_activity_at" and normalized_sort_order == "asc"
+            else [c.last_activity_at.desc().nullslast(), c.deal_id.desc()]
+            if sort_by == "last_activity_at"
+            else [c.created_at.desc(), c.deal_id.desc()]
+        )
+
         stmt = (
-            stmt.order_by(
-                c.created_at.desc(),
-                c.deal_id.desc(),
-            )
+            stmt.order_by(*order_by)
             .offset(offset)
             .limit(limit)
         )

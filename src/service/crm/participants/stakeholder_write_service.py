@@ -870,6 +870,14 @@ class StakeholderWriteService:
         self._apply_participant_behavior_updates(participant, updates)
         participant.updated_at = datetime.now(UTC)
 
+        await ActivityFeedProjectionService(
+            self.session,
+            self.organisation_id,
+        ).upsert_stakeholder_updated(
+            participant,
+            contact=contact,
+            actor_user_id=self.user_id,
+        )
         await self._finish_write(participant)
         contact = await self._get_participant_contact(participant)
         return self._participant_detail(participant, contact=contact)

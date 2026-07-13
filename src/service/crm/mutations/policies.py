@@ -105,6 +105,8 @@ class DealMutationPolicy:
                 update_semantics.append("crm.deal.stage_changed")
             if "amount" in changed_fields:
                 update_semantics.append("crm.deal.amount_changed")
+            if "expected_close_date" in changed_fields:
+                update_semantics.append("crm.deal.expected_close_date_changed")
             if "owner_id" in changed_fields:
                 update_semantics.append("crm.deal.owner_changed")
             return update_semantics

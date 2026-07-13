@@ -75,6 +75,7 @@ class _FakeSession:
         contacts: list[object] | None = None,
     ) -> None:
         self.statements: list[object] = []
+        self.added: list[object] = []
         self._deal = deal
         self._contacts = contacts or []
 
@@ -87,6 +88,9 @@ class _FakeSession:
         if "FROM crm_contacts" in statement_text:
             return _FakeExecuteResult(self._contacts)
         return _FakeExecuteResult()
+
+    def add(self, obj: object) -> None:
+        self.added.append(obj)
 
 
 def _compiled_values(statement: object) -> dict[str, object]:
@@ -102,6 +106,7 @@ def _activity_link_values(session: _FakeSession) -> set[tuple[object, object, ob
     return {
         (values["object_type"], values["object_id"], values["link_role"], values["link_source"])
         for values in link_values
+        if "object_type" in values
     }
 
 
@@ -630,6 +635,79 @@ async def test_meeting_association_projection_writes_meeting_activity_and_attend
         ("CONTACT", contact_id, "ATTENDEE", "SYSTEM"),
         ("COMPANY", company_id, "RELATED", "SYSTEM"),
     }
+
+
+@pytest.mark.asyncio
+async def test_future_meeting_projection_uses_association_time_not_future_start() -> None:
+    """Scheduling a future meeting should not make deal freshness a future date."""
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    associated_at = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
+    future_start = datetime(2099, 7, 1, 15, 0, tzinfo=UTC)
+    association = CalendarEventDealAssociation(
+        association_id=uuid4(),
+        organisation_id=organisation_id,
+        deal_id=deal_id,
+        event_id=uuid4(),
+        status=AssociationStatus.ACTIVE,
+        created_at=associated_at,
+        updated_at=associated_at,
+    )
+    event = CalendarEvent(
+        organisation_id=organisation_id,
+        event_id=association.event_id,
+        external_id="future-calendar-event",
+        provider="google",
+        title="Future kickoff",
+        start_at=future_start,
+        status="confirmed",
+    )
+    session = _FakeSession()
+
+    await ActivityFeedProjectionService(session, organisation_id).upsert_meeting_association(
+        association,
+        event,
+    )
+
+    values = _activity_values_by_source_type(session, "MEETING")
+    assert values["occurred_at"] == associated_at
+
+
+@pytest.mark.asyncio
+async def test_soft_delete_activity_projection_refreshes_linked_deals(monkeypatch) -> None:
+    """Removing a projected latest activity should recompute cached deal freshness."""
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    activity_id = uuid4()
+
+    class Session(_FakeSession):
+        async def execute(self, statement):  # noqa: ANN001
+            self.statements.append(statement)
+            if "SELECT crm_activity_links.object_id" in str(statement):
+                return _FakeExecuteResult([deal_id])
+            return _FakeExecuteResult()
+
+    refreshed: list[object] = []
+
+    class FakeLastActivityService:
+        def __init__(self, session, organisation_id):  # noqa: ANN001
+            self.session = session
+            self.organisation_id = organisation_id
+
+        async def refresh_deal(self, deal_id):  # noqa: ANN001
+            refreshed.append(deal_id)
+
+    monkeypatch.setattr(
+        "src.service.crm.activity_feed_projection_service.DealLastActivityService",
+        FakeLastActivityService,
+    )
+    session = Session()
+
+    await ActivityFeedProjectionService(session, organisation_id).soft_delete_activity_projection(
+        activity_id
+    )
+
+    assert refreshed == [deal_id]
 
 
 @pytest.mark.asyncio

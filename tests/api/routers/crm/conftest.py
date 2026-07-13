@@ -1076,6 +1076,8 @@ class FakeDealsAccessService:
         min_expected_close_date: datetime | None = None,
         max_expected_close_date: datetime | None = None,
         q: str | None = None,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
     ):
         """List deals with pagination and filtering."""
         deals = list(self._deals.values())
@@ -1095,8 +1097,16 @@ class FakeDealsAccessService:
             q,
         )
 
-        # Sort by created_at desc
-        deals.sort(key=lambda d: (d.created_at, str(d.deal_id)), reverse=True)
+        if sort_by == "last_activity_at":
+            dated = [d for d in deals if getattr(d, "last_activity_at", None) is not None]
+            undated = [d for d in deals if getattr(d, "last_activity_at", None) is None]
+            dated.sort(
+                key=lambda d: (d.last_activity_at, str(d.deal_id)),
+                reverse=sort_order != "asc",
+            )
+            deals = dated + undated
+        else:
+            deals.sort(key=lambda d: (d.created_at, str(d.deal_id)), reverse=True)
 
         total_count = len(deals)
         start = max(page - 1, 0) * limit

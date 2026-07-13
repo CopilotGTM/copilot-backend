@@ -36,6 +36,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 )
 from src.domain.models.organisation_tables.sync.email_models import DealEmailAssociation, Email
 from src.domain.models.organisation_tables.sync.risk_blocker_models import DealRiskBlocker
+from src.service.crm.deals.last_activity_service import DealLastActivityService
 from src.service.crm.participants.stakeholder_adapter import (
     participant_to_stakeholder_detail_dict,
 )
@@ -297,7 +298,9 @@ class ActivityFeedProjectionService:
         Meeting association rows own the deal context. Calendar events remain the
         source for timing, organizer, and attendee display details.
         """
-        occurred_at = event.start_at or association.created_at or _now_utc()
+        now = _now_utc()
+        occurred_at = event.start_at if event.start_at and event.start_at <= now else None
+        occurred_at = occurred_at or association.updated_at or association.created_at or now
         attendee_emails = {
             normalized
             for attendee in event.attendees or []
@@ -535,6 +538,68 @@ class ActivityFeedProjectionService:
                 "mutation_source": source,
                 "source_label": source_label,
                 "created_via": created_via,
+            },
+        )
+        await self._sync_primary_deal_link(
+            activity_id=activity_id,
+            deal_id=participant.deal_id,
+            occurred_at=occurred_at,
+        )
+        await self._sync_related_object_link(
+            activity_id=activity_id,
+            object_type=CRMActivityObjectType.CONTACT.value,
+            object_id=contact_id,
+            occurred_at=occurred_at,
+        )
+        await self._sync_owner_user_link(
+            activity_id=activity_id,
+            user_id=actor_user_id,
+            occurred_at=occurred_at,
+        )
+
+    async def upsert_stakeholder_updated(
+        self,
+        participant: CRMDealParticipant,
+        *,
+        contact: CRMContact | None = None,
+        actor_user_id: UUID | None = None,
+    ) -> None:
+        """Project stakeholder role/profile edits into the unified activity feed."""
+        if participant.organisation_id != self.organisation_id:
+            raise ValueError("participant does not belong to projection organisation")
+
+        occurred_at = participant.updated_at or _now_utc()
+        source_record_id = f"{participant.participant_id}:STAKEHOLDER_UPDATED:{occurred_at.isoformat()}"
+        activity_id = uuid5(
+            NAMESPACE_URL,
+            f"crm-stakeholder:{self.organisation_id}:{source_record_id}",
+        )
+        profile = _participant_profile_payload(participant, contact)
+        display_name = profile["name"] or profile["email"]
+        title = f"Stakeholder updated: {display_name}" if display_name else "Stakeholder updated"
+        contact_id = contact.contact_id if contact is not None else participant.related_local_id
+        await self._upsert_activity(
+            activity_id=activity_id,
+            integration_id=participant.integration_id,
+            activity_type=CRMActivityType.EVENT.value,
+            title=title,
+            summary=profile["email"],
+            preview=_compact_preview(profile["email"] or profile["name"]),
+            occurred_at=occurred_at,
+            source_type="STAKEHOLDER_UPDATED",
+            source_record_id=source_record_id,
+            source_provider=None,
+            actor_name=None,
+            actor_email=None,
+            display_payload={
+                "participant_id": str(participant.participant_id),
+                "contact_id": str(contact_id) if contact_id else None,
+                "stakeholder_name": profile["name"],
+                "email": profile["email"],
+                "job_title": profile["job_title"],
+                "relationship_role": participant.relationship_role,
+                "stance": participant.stance,
+                "decision_power": participant.decision_power,
             },
         )
         await self._sync_primary_deal_link(
@@ -823,6 +888,12 @@ class ActivityFeedProjectionService:
         """
         activity_c = cast(Any, CRMActivity).__table__.c
         link_c = cast(Any, CRMActivityLink).__table__.c
+        deal_ids_stmt = select(col(CRMActivityLink.object_id)).where(
+            link_c.organisation_id == self.organisation_id,
+            link_c.activity_id == activity_id,
+            link_c.object_type == CRMActivityObjectType.DEAL.value,
+        )
+        deal_ids = list((await self.session.execute(deal_ids_stmt)).scalars().all())
         await self.session.execute(
             update(CRMActivity)
             .where(
@@ -837,6 +908,9 @@ class ActivityFeedProjectionService:
                 link_c.activity_id == activity_id,
             )
         )
+        refresher = DealLastActivityService(self.session, self.organisation_id)
+        for deal_id in deal_ids:
+            await refresher.refresh_deal(deal_id)
 
     async def _upsert_activity(
         self,
@@ -1216,6 +1290,7 @@ class ActivityFeedProjectionService:
             set_={"occurred_at": occurred_at},
         )
         await self.session.execute(stmt)
+        await DealLastActivityService(self.session, self.organisation_id).refresh_deal(deal_id)
 
     async def _upsert_contact_lifecycle_event(
         self,
