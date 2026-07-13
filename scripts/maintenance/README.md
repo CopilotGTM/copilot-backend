@@ -27,6 +27,19 @@ Scripts for ongoing system maintenance, optimization, and cleanup tasks.
 - Performance metrics summary
 - Capacity planning data
 
+## Gmail master routing
+
+`backfill_gmail_master_routes.py` audits enabled Gmail integrations against the
+public integration locator. It is read-only by default and does not print email
+addresses:
+
+```powershell
+python scripts/maintenance/backfill_gmail_master_routes.py
+```
+
+After the master migration has added `integration_email`, pass `--execute` to
+write only normalized emails whose connection, organisation, and integration
+identifiers already match.
 ## Access Control
 - **Operations Team**: Read/Execute/Modify
 - **Database Admins**: Read/Execute (DB scripts)

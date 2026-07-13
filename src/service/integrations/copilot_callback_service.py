@@ -1,3 +1,5 @@
+"""Complete integration OAuth callbacks and persist their routing metadata."""
+
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, cast
@@ -535,7 +537,7 @@ class CopilotCallbackService:
         Reuses the existing DB record to preserve integration_id continuity —
         any deal associations or sync history linked to this integration remain intact.
         """
-        # Update name to current metadata — old integrations may have stale names
+        # Earlier integration rows may retain stale provider labels.
         # from the deprecated Nango flow
         metadata = INTEGRATION_METADATA[integration_type]
         integration.name = metadata.name
@@ -735,11 +737,11 @@ class CopilotCallbackService:
     ) -> None:
         """Persist connection→integration mapping in the master (public) schema.
 
-        This cross-schema mapping allows the token refresh worker to look up
-        which org and integration a connection belongs to without scanning
-        every tenant schema.
+        The mapping locates callback and webhook candidates. Tenant state remains
+        authoritative and is revalidated after lookup.
         """
         connection_uuid = UUID(connection_id)
+        integration_email = (integration.integration_email or "").strip().lower() or None
 
         async for master_session in acquire_master_async_session():
             stmt = select(OrganisationIntegrationDetails).where(
@@ -752,6 +754,7 @@ class CopilotCallbackService:
                 mapping.organisation_id = integration.organisation_id
                 mapping.integration_id = integration.integration_id
                 mapping.provider_config_key = provider_config_key
+                mapping.integration_email = integration_email
                 master_session.add(mapping)
                 await master_session.commit()
                 return
@@ -762,6 +765,7 @@ class CopilotCallbackService:
                     organisation_id=integration.organisation_id,
                     integration_id=integration.integration_id,
                     provider_config_key=provider_config_key,
+                    integration_email=integration_email,
                 )
             )
             await master_session.commit()

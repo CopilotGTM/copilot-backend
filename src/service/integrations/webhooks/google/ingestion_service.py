@@ -12,9 +12,9 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlmodel import col
-from src.domain.models.master_tables import Organisation, OrganisationStatus
+from src.domain.models.master_tables import OrganisationIntegrationDetails
 from src.domain.models.organisation_tables.sync import (
     IntegrationSyncState,
     IntegrationType,
@@ -211,7 +211,7 @@ class GoogleWebhookIngestionService:
             # externally supplied and cannot be used without tenant scoping.
             provider = (
                 IntegrationType.GOOGLE
-                if integration_type == IntegrationType.GOOGLE_CALENDAR
+                if integration_type in {IntegrationType.GOOGLE_CALENDAR, IntegrationType.GMAIL}
                 else integration_type
             )
             parent_stmt = select(KnowledgeIntegration).where(
@@ -259,52 +259,44 @@ class GoogleWebhookIngestionService:
         if not normalized_email:
             return []
 
-        # Gmail Pub/Sub does not carry our tenant id. Scan approved orgs first,
-        # then query each tenant schema so routing still respects isolation.
-        organisation_ids: list[UUID] = []
+        # Gmail Pub/Sub provides only the mailbox email. The public mapping is
+        # a candidate index; each tenant integration is still revalidated.
+        mappings: list[OrganisationIntegrationDetails] = []
         async for session in acquire_master_async_session():
-            org_stmt = select(col(Organisation.organisation_id)).where(
-                col(Organisation.is_active).is_(True),
-                col(Organisation.status) == OrganisationStatus.APPROVED,
+            mapping_stmt = select(OrganisationIntegrationDetails).where(
+                col(OrganisationIntegrationDetails.integration_email) == normalized_email,
             )
-            org_result = await session.execute(org_stmt)
-            organisation_ids = list(org_result.scalars().all())
+            mapping_result = await session.execute(mapping_stmt)
+            mappings = list(mapping_result.scalars().all())
 
         targets: list[GoogleWebhookIntegrationTarget] = []
-        for organisation_id in organisation_ids:
-            async for session in acquire_org_async_session(organisation_id):
-                # Match on integration_email only. Connection metadata can
-                # contain provider profile fields, but the persisted integration
-                # owner email is the stable routing key from OAuth connect.
-                integration_stmt = select(KnowledgeIntegration).where(
-                    col(KnowledgeIntegration.organisation_id) == organisation_id,
-                    col(KnowledgeIntegration.integration_type) == IntegrationType.GOOGLE.value,
-                    col(KnowledgeIntegration.is_active).is_(True),
-                    col(KnowledgeIntegration.connection_id).isnot(None),
-                    func.lower(col(KnowledgeIntegration.integration_email)) == normalized_email,
+        for mapping in mappings:
+            try:
+                integration = await self._load_integration(
+                    organisation_id=mapping.organisation_id,
+                    integration_id=mapping.integration_id,
+                    integration_type=IntegrationType.GMAIL,
                 )
-                integration_result = await session.execute(integration_stmt)
-                for integration in integration_result.scalars().all():
-                    state_stmt = select(IntegrationSyncState).where(
-                        col(IntegrationSyncState.organisation_id) == organisation_id,
-                        col(IntegrationSyncState.integration_id) == integration.integration_id,
-                        col(IntegrationSyncState.capability) == IntegrationType.GMAIL,
-                        col(IntegrationSyncState.enabled).is_(True),
-                    )
-                    state_result = await session.execute(state_stmt)
-                    state = state_result.scalar_one_or_none()
-                    if state is None:
-                        continue
-                    targets.append(
-                        GoogleWebhookIntegrationTarget(
-                            organisation_id=organisation_id,
-                            integration_id=integration.integration_id,
-                            integration=self._snapshot_integration(
-                                integration,
-                                connection_metadata=dict(state.webhook_metadata or {}),
-                            ),
-                        )
-                    )
+            except Exception:
+                # A stale or unavailable tenant route must not suppress another
+                # organisation that connected the same mailbox.
+                logger.exception(
+                    "Skipping unavailable Gmail webhook route",
+                    extra={
+                        "organisation_id": str(mapping.organisation_id),
+                        "integration_id": str(mapping.integration_id),
+                    },
+                )
+                continue
+            if integration is None:
+                continue
+            targets.append(
+                GoogleWebhookIntegrationTarget(
+                    organisation_id=mapping.organisation_id,
+                    integration_id=mapping.integration_id,
+                    integration=integration,
+                )
+            )
         return targets
 
     def _snapshot_integration(

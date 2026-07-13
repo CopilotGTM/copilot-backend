@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
+from src.domain.models.master_tables import OrganisationIntegrationDetails
 from src.domain.models.organisation_tables.sync import (
     IntegrationScope,
     IntegrationSyncState,
@@ -288,11 +289,18 @@ async def test_gmail_ingestion_resolves_provider_parent_capability_state(monkeyp
         integration_id=integration_id,
     )
     send_task = AsyncMock(return_value="task-123")
+    mapping = OrganisationIntegrationDetails(
+        connection_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        provider_config_key="custom-google",
+        integration_email="seller@example.com",
+    )
 
     monkeypatch.setattr(
         ingestion_service,
         "acquire_master_async_session",
-        lambda: _fake_async_session(_FakeMasterSession([organisation_id])),
+        lambda: _fake_async_session(_FakeRoutingMasterSession([mapping])),
     )
     monkeypatch.setattr(
         ingestion_service,
@@ -546,3 +554,101 @@ class _FakeGoogleOrgSession:
         if params.get("capability_1") == IntegrationType.GOOGLE_CALENDAR:
             return _FakeResult([self.state])
         return _FakeResult([])
+
+
+class _FakeRoutingMasterSession:
+    """Capture the mailbox lookup and return configured master candidates."""
+
+    def __init__(self, mappings: list[OrganisationIntegrationDetails]) -> None:
+        self.mappings = mappings
+        self.normalized_email: str | None = None
+
+    async def execute(self, statement: object) -> _FakeResult:
+        """Return candidates while recording the normalized query value."""
+        params = statement.compile().params
+        self.normalized_email = next(
+            (value for key, value in params.items() if key.startswith("integration_email")),
+            None,
+        )
+        return _FakeResult(self.mappings)
+
+
+@pytest.mark.asyncio
+async def test_gmail_target_lookup_uses_master_email_candidates(monkeypatch) -> None:
+    """Gmail routing must query master once and revalidate only returned tenants."""
+    service = GoogleWebhookIngestionService()
+    organisation_ids = [uuid4(), uuid4()]
+    integration_ids = [uuid4(), uuid4()]
+    mappings = [
+        OrganisationIntegrationDetails(
+            connection_id=uuid4(),
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            provider_config_key="custom-google",
+        )
+        for organisation_id, integration_id in zip(organisation_ids, integration_ids, strict=True)
+    ]
+    master_session = _FakeRoutingMasterSession(mappings)
+    parents = [
+        _google_parent_integration(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+        )
+        for organisation_id, integration_id in zip(organisation_ids, integration_ids, strict=True)
+    ]
+    monkeypatch.setattr(
+        ingestion_service,
+        "acquire_master_async_session",
+        lambda: _fake_async_session(master_session),
+    )
+    load_integration = AsyncMock(side_effect=parents)
+    monkeypatch.setattr(service, "_load_integration", load_integration)
+
+    targets = await service._load_gmail_targets_by_email(" Seller@Example.com ")
+
+    assert master_session.normalized_email == "seller@example.com"
+    assert [target.organisation_id for target in targets] == organisation_ids
+    assert [target.integration_id for target in targets] == integration_ids
+    assert load_integration.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_gmail_target_lookup_isolates_broken_candidate(monkeypatch) -> None:
+    """One stale tenant route must not block another mailbox target."""
+    service = GoogleWebhookIngestionService()
+    broken_org_id = uuid4()
+    healthy_org_id = uuid4()
+    broken_integration_id = uuid4()
+    healthy_integration_id = uuid4()
+    mappings = [
+        OrganisationIntegrationDetails(
+            connection_id=uuid4(),
+            organisation_id=broken_org_id,
+            integration_id=broken_integration_id,
+            provider_config_key="custom-google",
+        ),
+        OrganisationIntegrationDetails(
+            connection_id=uuid4(),
+            organisation_id=healthy_org_id,
+            integration_id=healthy_integration_id,
+            provider_config_key="custom-google",
+        ),
+    ]
+    healthy_parent = _google_parent_integration(
+        organisation_id=healthy_org_id,
+        integration_id=healthy_integration_id,
+    )
+    monkeypatch.setattr(
+        ingestion_service,
+        "acquire_master_async_session",
+        lambda: _fake_async_session(_FakeRoutingMasterSession(mappings)),
+    )
+    monkeypatch.setattr(
+        service,
+        "_load_integration",
+        AsyncMock(side_effect=[RuntimeError("tenant unavailable"), healthy_parent]),
+    )
+
+    targets = await service._load_gmail_targets_by_email("seller@example.com")
+
+    assert [target.integration_id for target in targets] == [healthy_integration_id]
