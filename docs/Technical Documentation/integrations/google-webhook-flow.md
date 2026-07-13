@@ -209,11 +209,13 @@ POST /users/integrations/google/webhook?kind=calendar&organisation_id=...&integr
 
 `kind` is explicit because Gmail and Calendar use different provider delivery
 mechanisms and validation rules. Gmail Pub/Sub push endpoints are static, so
-Gmail routing uses the decoded `emailAddress` to find active Gmail integrations
-with the same `integration_email`. Calendar channel URLs are per watch, so
-Calendar also carries `organisation_id` and `integration_id`. The ingestion
-layer still reloads and validates active integrations before scheduling any
-sync.
+Gmail routing uses the decoded `emailAddress` to query the indexed
+`public.organisation_integration_details.integration_email` locator. Every
+candidate is then reloaded from its tenant schema and must still be an active
+Google parent with Gmail enabled. Calendar channel URLs are per watch, so
+Calendar also carries `organisation_id` and `integration_id`. A stale or
+unavailable Gmail candidate is isolated and does not block another organisation
+that connected the same mailbox.
 
 Gmail Pub/Sub push requests must include the configured shared token in the
 endpoint query string and the Pub/Sub envelope must match
