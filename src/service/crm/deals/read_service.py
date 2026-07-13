@@ -312,11 +312,7 @@ class DealReadService:
             else [c.created_at.desc(), c.deal_id.desc()]
         )
 
-        stmt = (
-            stmt.order_by(*order_by)
-            .offset(offset)
-            .limit(limit)
-        )
+        stmt = stmt.order_by(*order_by).offset(offset).limit(limit)
 
         # Execute query
         res = await self.org_session.execute(stmt)

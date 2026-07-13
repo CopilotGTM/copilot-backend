@@ -297,7 +297,9 @@ class ParticipantWriteService:
             )
         return participant
 
-    async def _get_contact(self, contact_id: UUID | None, integration_id: UUID) -> CRMContact | None:
+    async def _get_contact(
+        self, contact_id: UUID | None, integration_id: UUID
+    ) -> CRMContact | None:
         if contact_id is None:
             return None
         stmt = select(CRMContact).where(
