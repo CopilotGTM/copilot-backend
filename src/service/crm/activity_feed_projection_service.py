@@ -569,7 +569,9 @@ class ActivityFeedProjectionService:
             raise ValueError("participant does not belong to projection organisation")
 
         occurred_at = participant.updated_at or _now_utc()
-        source_record_id = f"{participant.participant_id}:STAKEHOLDER_UPDATED:{occurred_at.isoformat()}"
+        source_record_id = (
+            f"{participant.participant_id}:STAKEHOLDER_UPDATED:{occurred_at.isoformat()}"
+        )
         activity_id = uuid5(
             NAMESPACE_URL,
             f"crm-stakeholder:{self.organisation_id}:{source_record_id}",
