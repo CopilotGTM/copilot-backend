@@ -54,6 +54,31 @@ DEFAULT_TASK_LIST_COLUMNS = [
 ]
 
 
+def _normalize_preferred_deal_currency(currency: Any) -> str | None:
+    if not isinstance(currency, str):
+        return None
+    normalized = currency.strip().upper()
+    return normalized if len(normalized) == 3 and normalized.isalpha() else None
+
+
+def set_preferred_deal_currency(
+    preferences: dict[str, Any] | None,
+    currency: str | None,
+) -> dict[str, Any]:
+    """Return preferences with a normalized deal currency default stored."""
+    normalized = _normalize_preferred_deal_currency(currency)
+    root = dict(preferences or {})
+    if normalized is None:
+        return root
+
+    crm = dict(root.get("crm") or {})
+    deals = dict(crm.get("deals") or {})
+    deals["preferred_currency"] = normalized
+    crm["deals"] = deals
+    root["crm"] = crm
+    return root
+
+
 def normalize_user_preferences(preferences: dict[str, Any] | None) -> dict[str, Any]:
     """Return user UI preferences with backend-owned defaults filled in."""
     root = dict(preferences or {})
@@ -88,6 +113,14 @@ def normalize_user_preferences(preferences: dict[str, Any] | None) -> dict[str, 
         isinstance(column, str) for column in deal_columns
     ):
         deal_list["columns"] = list(DEFAULT_DEAL_LIST_COLUMNS)
+
+    preferred_currency = _normalize_preferred_deal_currency(
+        deals.get("preferred_currency")
+    )
+    if preferred_currency:
+        deals["preferred_currency"] = preferred_currency
+    else:
+        deals.pop("preferred_currency", None)
 
     deals["list"] = deal_list
     crm["deals"] = deals

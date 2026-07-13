@@ -14,6 +14,60 @@ def _allow_required_custom_fields(service: DealWriteService) -> None:
     service._custom_fields.validate_required_not_cleared = AsyncMock()
 
 
+def _existing_deal(**overrides):
+    fields = {
+        "deal_id": uuid4(),
+        "name": "Existing",
+        "amount": 1000,
+        "currency": "INR",
+        "deal_status": "open",
+        "close_date": None,
+        "expected_close_date": None,
+        "closed_won_at": None,
+        "closed_lost_at": None,
+        "closed_reason": None,
+        "crm_url": None,
+        "source_created_at": None,
+        "last_activity_at": None,
+        "description": None,
+        "deal_type": None,
+        "priority": None,
+        "lead_source": None,
+        "probability": None,
+        "forecast_category": None,
+        "properties": {},
+        "source_modified_at": None,
+        "synced_at": None,
+        "last_seen_at": None,
+    }
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+class _FakeMasterSession:
+    def __init__(self, user):
+        self.user = user
+        self.committed = False
+
+    async def get(self, _model, _user_id):
+        return self.user
+
+    async def commit(self):
+        self.committed = True
+
+
+class _FailingCommitMasterSession(_FakeMasterSession):
+    def __init__(self, user):
+        super().__init__(user)
+        self.rolled_back = False
+
+    async def commit(self):
+        raise RuntimeError("commit failed")
+
+    async def rollback(self):
+        self.rolled_back = True
+
+
 @pytest.mark.asyncio
 async def test_create_deal_does_not_emit_stage_or_owner_semantics() -> None:
     service = DealWriteService(
@@ -64,6 +118,46 @@ async def test_update_deal_description_is_audit_only() -> None:
 
 
 @pytest.mark.asyncio
+async def test_store_preferred_deal_currency_updates_user_preferences() -> None:
+    user = SimpleNamespace(
+        preferences={
+            "notifications": {"email": True},
+            "crm": {"deals": {"list": {"columns": ["name"]}}},
+        }
+    )
+    master_session = _FakeMasterSession(user)
+    service = DealWriteService(
+        org_session=SimpleNamespace(),
+        master_session=master_session,
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+
+    await service._store_preferred_deal_currency(" usd ")
+
+    assert master_session.committed is True
+    assert user.preferences["notifications"] == {"email": True}
+    assert user.preferences["crm"]["deals"]["list"]["columns"] == ["name"]
+    assert user.preferences["crm"]["deals"]["preferred_currency"] == "USD"
+
+
+@pytest.mark.asyncio
+async def test_store_preferred_deal_currency_rolls_back_failed_preference_commit() -> None:
+    user = SimpleNamespace(preferences={})
+    master_session = _FailingCommitMasterSession(user)
+    service = DealWriteService(
+        org_session=SimpleNamespace(),
+        master_session=master_session,
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+
+    await service._store_preferred_deal_currency("USD")
+
+    assert master_session.rolled_back is True
+
+
+@pytest.mark.asyncio
 async def test_load_internal_deal_rejects_invalid_deal_id_before_session_lookup() -> None:
     service = DealWriteService(
         org_session=SimpleNamespace(),
@@ -87,31 +181,7 @@ async def test_update_deal_same_value_records_no_changed_fields() -> None:
         organisation_id=uuid4(),
         actor_user_id=uuid4(),
     )
-    deal = SimpleNamespace(
-        deal_id=uuid4(),
-        name="Existing",
-        amount=1000,
-        currency="USD",
-        deal_status="open",
-        close_date=None,
-        expected_close_date=None,
-        closed_won_at=None,
-        closed_lost_at=None,
-        closed_reason=None,
-        crm_url=None,
-        source_created_at=None,
-        last_activity_at=None,
-        description=None,
-        deal_type=None,
-        priority=None,
-        lead_source=None,
-        probability=None,
-        forecast_category=None,
-        properties={},
-        source_modified_at=None,
-        synced_at=None,
-        last_seen_at=None,
-    )
+    deal = _existing_deal(currency="USD")
     service._load_internal_deal = AsyncMock(return_value=deal)
     service._record_mutation_event = AsyncMock()
 
@@ -120,6 +190,60 @@ async def test_update_deal_same_value_records_no_changed_fields() -> None:
     service._record_mutation_event.assert_awaited_once()
     kwargs = service._record_mutation_event.await_args.kwargs
     assert kwargs["changed_fields"] == {}
+
+
+@pytest.mark.asyncio
+async def test_update_deal_with_currency_stores_preferred_currency() -> None:
+    service = DealWriteService(
+        org_session=SimpleNamespace(add=lambda obj: None, flush=AsyncMock()),
+        master_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    deal = _existing_deal(currency="INR")
+    service._load_internal_deal = AsyncMock(return_value=deal)
+    service._record_mutation_event = AsyncMock()
+    service._store_preferred_deal_currency = AsyncMock()  # type: ignore[method-assign]
+
+    await service.update_deal(deal.deal_id, {"currency": " usd "})
+
+    service._store_preferred_deal_currency.assert_awaited_once_with("USD")
+
+
+@pytest.mark.asyncio
+async def test_update_deal_without_currency_does_not_store_preferred_currency() -> None:
+    service = DealWriteService(
+        org_session=SimpleNamespace(add=lambda obj: None, flush=AsyncMock()),
+        master_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    deal = _existing_deal()
+    service._load_internal_deal = AsyncMock(return_value=deal)
+    service._record_mutation_event = AsyncMock()
+    service._store_preferred_deal_currency = AsyncMock()  # type: ignore[method-assign]
+
+    await service.update_deal(deal.deal_id, {"amount": 2000})
+
+    service._store_preferred_deal_currency.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_deal_with_null_currency_does_not_store_preferred_currency() -> None:
+    service = DealWriteService(
+        org_session=SimpleNamespace(add=lambda obj: None, flush=AsyncMock()),
+        master_session=SimpleNamespace(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+    deal = _existing_deal()
+    service._load_internal_deal = AsyncMock(return_value=deal)
+    service._record_mutation_event = AsyncMock()
+    service._store_preferred_deal_currency = AsyncMock()  # type: ignore[method-assign]
+
+    await service.update_deal(deal.deal_id, {"currency": None})
+
+    service._store_preferred_deal_currency.assert_not_awaited()
 
 
 @pytest.mark.asyncio
