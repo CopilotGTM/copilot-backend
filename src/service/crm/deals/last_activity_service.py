@@ -102,6 +102,7 @@ class DealLastActivityService:
                 link.organisation_id == self.organisation_id,
                 link.object_type == "DEAL",
                 link.object_id == deal_id,
+                link.occurred_at <= func.now(),
                 activity.is_deleted.is_(False),
                 activity.source_type.in_(ALLOWED_ACTIVITY_SOURCE_TYPES),
             )
