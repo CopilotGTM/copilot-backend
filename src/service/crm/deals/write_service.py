@@ -28,6 +28,10 @@ from src.service.crm.accounts.write_service import AccountWriteService
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.deals.contracts import DealWriteContext, DealWriteServiceError
 from src.service.crm.deals.custom_field_service import DealCustomFieldWriteService
+from src.service.crm.deals.last_activity_service import (
+    DealLastActivityService,
+    is_last_activity_mutation,
+)
 from src.service.crm.deals.mutation_event_service import DealMutationEventService, changed_field
 from src.service.crm.deals.owner_service import DealOwnerService
 from src.service.crm.deals.stage_service import DealStageService
@@ -154,6 +158,10 @@ class DealWriteService:
             context=context or self._write_context(),
             summary=summary,
         )
+        if is_last_activity_mutation(semantic_event_types):
+            await DealLastActivityService(self.session, self.organisation_id).refresh_deal(
+                deal.deal_id
+            )
 
     @staticmethod
     def _collect_changed_fields(

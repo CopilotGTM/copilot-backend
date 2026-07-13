@@ -20,13 +20,15 @@ def test_deal_create_semantics_are_creation_only() -> None:
 def test_deal_update_semantics_are_curated() -> None:
     changed_fields = {
         "amount": {"old": 1000, "new": 2000},
+        "expected_close_date": {"old": None, "new": "2026-07-31T00:00:00Z"},
         "priority": {"old": "medium", "new": "high"},
         "description": {"old": "old", "new": "new"},
         "custom_properties.procurement_stage": {"old": "legal", "new": "security"},
     }
 
     assert DealMutationPolicy.semantic_for_event("crm.deal.updated", changed_fields) == [
-        "crm.deal.amount_changed"
+        "crm.deal.amount_changed",
+        "crm.deal.expected_close_date_changed",
     ]
 
 

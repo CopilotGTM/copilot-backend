@@ -888,3 +888,5 @@ class DealsListParams(NamedTuple):
     min_expected_close_date: datetime | None
     max_expected_close_date: datetime | None
     q: str | None
+    sort_by: str | None
+    sort_order: str | None

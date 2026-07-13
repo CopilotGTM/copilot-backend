@@ -22,6 +22,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMParticipantType,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
 from src.service.crm.participants.contracts import (
     ParticipantServiceError,
@@ -284,7 +285,28 @@ class ParticipantWriteService:
         participant.last_seen_at = now
         participant.participant_source = "MANUAL"
         self.session.add(participant)
+        if participant_type == CRMParticipantType.CONTACT:
+            contact = await self._get_contact(participant.related_local_id, integration_id)
+            await ActivityFeedProjectionService(
+                self.session,
+                self.organisation_id,
+            ).upsert_stakeholder_updated(
+                participant,
+                contact=contact,
+                actor_user_id=self.actor_user_id,
+            )
         return participant
+
+    async def _get_contact(self, contact_id: UUID | None, integration_id: UUID) -> CRMContact | None:
+        if contact_id is None:
+            return None
+        stmt = select(CRMContact).where(
+            col(CRMContact.organisation_id) == self.organisation_id,
+            col(CRMContact.integration_id) == integration_id,
+            col(CRMContact.contact_id) == contact_id,
+            col(CRMContact.is_deleted).is_(False),
+        )
+        return (await self.session.execute(stmt)).scalar_one_or_none()
 
     async def sync_owner_participant(self, *, deal: CRMDeal, owner_user_id: UUID) -> None:
         """Create the owner participant projection and remove stale owner rows."""

@@ -161,6 +161,8 @@ def get_deals_list_params(
         None, description="Maximum expected close date"
     ),
     q: str | None = Query(None, description="Case-insensitive search on deal or company name"),
+    sort_by: str | None = Query(None, description="Sort field. Supports last_activity_at."),
+    sort_order: str | None = Query("desc", pattern="^(asc|desc)$", description="Sort direction"),
 ) -> DealsListParams:
     """Dependency that parses and returns deals list query parameters."""
     return DealsListParams(
@@ -176,6 +178,8 @@ def get_deals_list_params(
         min_expected_close_date=min_expected_close_date,
         max_expected_close_date=max_expected_close_date,
         q=q,
+        sort_by=sort_by,
+        sort_order=sort_order,
     )
 
 
@@ -533,6 +537,8 @@ async def list_deals(
             min_expected_close_date=params.min_expected_close_date,
             max_expected_close_date=params.max_expected_close_date,
             q=params.q,
+            sort_by=params.sort_by,
+            sort_order=params.sort_order,
         )
 
         # Fetch deal team members (owners, collaborators, split_owners) in one batch query

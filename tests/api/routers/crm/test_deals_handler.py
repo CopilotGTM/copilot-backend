@@ -680,6 +680,39 @@ def test_list_deals_includes_default_column_fields(client: TestClient, deals_dep
     assert item["last_activity_at"] == "2026-06-30T15:45:00Z"
 
 
+def test_list_deals_sorts_by_last_activity_desc(client: TestClient, deals_dependency_overrides):
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+
+    deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="Older Activity",
+            last_activity_at=datetime(2026, 6, 29, 15, 45, tzinfo=UTC),
+        )
+    )
+    deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="Fresh Activity",
+            last_activity_at=datetime(2026, 6, 30, 15, 45, tzinfo=UTC),
+        )
+    )
+    deals_service.add_deal(create_deal(org_id, name="No Activity", last_activity_at=None))
+
+    resp = client.get(
+        "/users/crm/deals",
+        params={"sort_by": "last_activity_at", "sort_order": "desc"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert [item["name"] for item in resp.json()["data"]["items"]] == [
+        "Fresh Activity",
+        "Older Activity",
+        "No Activity",
+    ]
+
+
 def test_list_deals_search_matches_company_name(client: TestClient, deals_dependency_overrides):
     """Router test fake should mirror production q search across deal and company names."""
     deals_service = deals_dependency_overrides["deals_service"]
@@ -815,6 +848,8 @@ async def test_list_deals_default_includes_crm_only_owner_deals(
             min_expected_close_date=None,
             max_expected_close_date=None,
             q=None,
+            sort_by=None,
+            sort_order="desc",
         ),
         service=fake_deals_service,
         _rl_read=None,
@@ -861,6 +896,8 @@ async def test_list_deals_includes_stage_and_pipeline_ids(
             min_expected_close_date=None,
             max_expected_close_date=None,
             q=None,
+            sort_by=None,
+            sort_order="desc",
         ),
         service=fake_deals_service,
         _rl_read=None,
