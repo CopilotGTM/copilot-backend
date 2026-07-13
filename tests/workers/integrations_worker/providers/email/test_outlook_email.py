@@ -326,9 +326,7 @@ async def test_fetch_messages_raises_when_hydration_is_incomplete() -> None:
         client.__aenter__ = AsyncMock(return_value=client)
         client.__aexit__ = AsyncMock(return_value=False)
         client.post = AsyncMock(
-            return_value=_batch_response(
-                [{"id": "0", "status": 200, "body": incomplete_hydration}]
-            )
+            return_value=_batch_response([{"id": "0", "status": 200, "body": incomplete_hydration}])
         )
         client_cls.return_value = client
 

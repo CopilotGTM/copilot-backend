@@ -103,8 +103,7 @@ def _filter_other_inbox_messages(
 def _is_deleted_message(message: dict[str, Any]) -> bool:
     """Return true for Graph delta tombstones that should bypass hydration."""
     return (
-        "@removed" in message
-        or message.get("_sync_metadata", {}).get("sync_action") == "DELETED"
+        "@removed" in message or message.get("_sync_metadata", {}).get("sync_action") == "DELETED"
     )
 
 
@@ -155,8 +154,7 @@ async def _hydrate_incomplete_messages(
     for message in messages:
         if not _is_deleted_message(message) and not message.get("id"):
             raise RuntimeError(
-                "Outlook Email partial hydration failed: "
-                "non-deleted message missing id"
+                "Outlook Email partial hydration failed: non-deleted message missing id"
             )
         messages_with_identity.append(message)
 
@@ -236,8 +234,7 @@ async def _hydrate_incomplete_messages(
                 continue
 
             raise RuntimeError(
-                "Outlook Email partial hydration failed "
-                f"id={message_id} status={status}"
+                f"Outlook Email partial hydration failed id={message_id} status={status}"
             )
 
         missing_responses = set(request_id_to_message_id) - seen_request_ids
@@ -297,9 +294,7 @@ async def _backfill_bodies(
     Deleted messages (@removed) are skipped.
     """
     ids_to_fetch = [
-        m["id"]
-        for m in messages
-        if "body" not in m and not _is_deleted_message(m) and m.get("id")
+        m["id"] for m in messages if "body" not in m and not _is_deleted_message(m) and m.get("id")
     ]
 
     if not ids_to_fetch:
