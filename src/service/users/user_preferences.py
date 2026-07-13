@@ -114,9 +114,7 @@ def normalize_user_preferences(preferences: dict[str, Any] | None) -> dict[str, 
     ):
         deal_list["columns"] = list(DEFAULT_DEAL_LIST_COLUMNS)
 
-    preferred_currency = _normalize_preferred_deal_currency(
-        deals.get("preferred_currency")
-    )
+    preferred_currency = _normalize_preferred_deal_currency(deals.get("preferred_currency"))
     if preferred_currency:
         deals["preferred_currency"] = preferred_currency
     else:
