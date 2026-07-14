@@ -89,6 +89,53 @@ def test_normalize_salesforce_pipelines_derives_composite_stage_ids_and_stage_st
     assert pipeline.stages[3].probability is None
 
 
+def test_normalize_salesforce_pipelines_treats_only_zero_omitted_stage_as_lost() -> None:
+    record_types = [
+        {
+            "Id": "012A",
+            "Name": "Enterprise Sales",
+            "DeveloperName": "Enterprise_Sales",
+            "IsActive": True,
+            "IsMaster": False,
+        }
+    ]
+    stage_values_by_record_type = {
+        "012A": [
+            {"value": "No Decision", "label": "No Decision"},
+            {"value": "On Hold", "label": "On Hold"},
+        ]
+    }
+    opportunity_stages = [
+        {
+            "ApiName": "No Decision",
+            "DefaultProbability": 0,
+            "IsClosed": False,
+            "IsWon": False,
+            "IsActive": True,
+            "ForecastCategory": "Omitted",
+        },
+        {
+            "ApiName": "On Hold",
+            "DefaultProbability": 0,
+            "IsClosed": False,
+            "IsWon": False,
+            "IsActive": True,
+            "ForecastCategory": "Pipeline",
+        },
+    ]
+
+    pipelines, *_ = normalize_salesforce_pipelines(
+        record_types=record_types,
+        stage_values_by_record_type=stage_values_by_record_type,
+        opportunity_stages=opportunity_stages,
+    )
+
+    assert [stage.stage_state for stage in pipelines[0].stages] == [
+        CRMStageState.LOST,
+        CRMStageState.OPEN,
+    ]
+
+
 def test_normalize_salesforce_pipelines_uses_master_record_type_fallback() -> None:
     record_types = [
         {

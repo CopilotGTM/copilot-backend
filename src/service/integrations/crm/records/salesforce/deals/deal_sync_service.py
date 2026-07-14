@@ -1316,6 +1316,7 @@ async def _load_stage_map(
             col(CRMDealStage.name),
             col(CRMDealStage.label),
             col(CRMDealStage.pipeline_id),
+            col(CRMDealStage.stage_state),
         ).where(
             col(CRMDealStage.organisation_id) == organisation_id,
             col(CRMDealStage.integration_id) == integration_id,
@@ -1330,8 +1331,9 @@ async def _load_stage_map(
             name=name,
             label=label,
             pipeline_id=pipeline_id,
+            stage_state=stage_state,
         )
-        for stage_id, name, label, pipeline_id in rows
+        for stage_id, name, label, pipeline_id, stage_state in rows
         if stage_id in local_to_external
     }
 

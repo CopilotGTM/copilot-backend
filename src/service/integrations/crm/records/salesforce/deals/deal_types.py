@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
+from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus, CRMStageState
 from src.service.integrations.crm.records.common.record_sync_types import RecordSyncResult
 
 
@@ -134,6 +134,7 @@ class DimensionHit:
     email: str | None = None
     domain: str | None = None
     pipeline_id: Any | None = None
+    stage_state: CRMStageState | None = None
 
 
 @dataclass(slots=True, frozen=True)

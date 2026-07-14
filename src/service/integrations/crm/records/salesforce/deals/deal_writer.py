@@ -9,7 +9,11 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDeal,
+    CRMDealStatus,
+    CRMStageState,
+)
 from src.domain.models.organisation_tables.sync.crm.source_mappings import (
     CRMSourceObjectType,
 )
@@ -41,6 +45,7 @@ class _ResolvedFks:
     stage_id: UUID | None
     stage_name: str | None
     stage_label: str | None
+    stage_state: CRMStageState | None
     owner_id: UUID | None
     owner_name: str | None
     owner_email: str | None
@@ -188,6 +193,7 @@ class SalesforceDealWriter:
             stage_id=stage_hit.internal_id if stage_hit is not None else None,
             stage_name=stage_hit.name if stage_hit is not None else None,
             stage_label=stage_hit.label if stage_hit is not None else None,
+            stage_state=stage_hit.stage_state if stage_hit is not None else None,
             owner_id=owner_hit.internal_id if owner_hit is not None else None,
             owner_name=owner_hit.name if owner_hit is not None else None,
             owner_email=owner_hit.email if owner_hit is not None else None,
@@ -261,7 +267,7 @@ class SalesforceDealWriter:
             amount=deal.amount,
             currency=deal.currency,
             amount_home_currency=deal.amount_home_currency,
-            deal_status=deal.deal_status,
+            deal_status=_effective_deal_status(deal.deal_status, resolved.stage_state),
             probability=deal.probability,
             predicted_amount=deal.predicted_amount,
             close_date=deal.close_date,
@@ -320,7 +326,7 @@ class SalesforceDealWriter:
         row.amount = deal.amount
         row.currency = deal.currency
         row.amount_home_currency = deal.amount_home_currency
-        row.deal_status = deal.deal_status
+        row.deal_status = _effective_deal_status(deal.deal_status, resolved.stage_state)
         row.probability = deal.probability
         row.predicted_amount = deal.predicted_amount
         row.close_date = deal.close_date
@@ -372,3 +378,13 @@ def _lookup(key: str | None, mapping: dict[str, DimensionHit]) -> DimensionHit |
     if key is None:
         return None
     return mapping.get(key)
+
+
+def _effective_deal_status(
+    deal_status: CRMDealStatus,
+    stage_state: CRMStageState | None,
+) -> CRMDealStatus:
+    # Opportunity flags win; stage metadata only repairs Salesforce's false-open edge case.
+    if deal_status == CRMDealStatus.OPEN and stage_state == CRMStageState.LOST:
+        return CRMDealStatus.LOST
+    return deal_status

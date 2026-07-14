@@ -147,6 +147,13 @@ def _derive_stage_state(metadata: Mapping[str, Any]) -> CRMStageState:
         return CRMStageState.WON
     if bool(metadata.get("IsClosed")):
         return CRMStageState.LOST
+    # Salesforce orgs can leave IsClosed false for terminal omitted stages.
+    if (
+        _coerce_probability(metadata.get("DefaultProbability")) == 0.0
+        and _coerce_text_or_none(metadata.get("ForecastCategory")) is not None
+        and str(metadata["ForecastCategory"]).casefold() == "omitted"
+    ):
+        return CRMStageState.LOST
     if bool(metadata.get("IsActive")):
         return CRMStageState.OPEN
     return CRMStageState.OPEN
