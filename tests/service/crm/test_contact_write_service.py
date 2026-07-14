@@ -93,6 +93,22 @@ async def test_local_contact_resolution_rejects_conflicting_email_and_linkedin()
     service._create_contact_record.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_unverified_local_contact_requires_name_and_skips_identity_matching() -> None:
+    service = ContactWriteService(MagicMock(), uuid4())
+    created = SimpleNamespace(created=True)
+    service._create_contact_record = AsyncMock(return_value=created)  # type: ignore[method-assign]
+
+    result = await service.create_unverified_local_contact(
+        ContactCreateCommand(email=None, name="Pat Buyer")
+    )
+
+    assert result is created
+    service._create_contact_record.assert_awaited_once()
+    with pytest.raises(ContactWriteServiceError, match="name is required"):
+        await service.create_unverified_local_contact(ContactCreateCommand(email=None))
+
+
 class _FakeResult:
     def __init__(self, *, scalar=None, scalars=None, rowcount=None):
         self._scalar = scalar

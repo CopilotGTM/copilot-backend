@@ -78,6 +78,7 @@ ACCOUNT_IDENTITY_FIELDS = {
     "account.linkedin_url",
 }
 CONTACT_IDENTITY_FIELDS = {"contact.email", "contact.linkedin_url"}
+CONTACT_NAME_FIELDS = {"contact.name", "contact.first_name", "contact.last_name"}
 
 _STANDARD_TARGETS: tuple[tuple[str, str, str, str], ...] = (
     ("account.name", "Account name", "account", "text"),
@@ -573,33 +574,80 @@ class CRMImportService:
                 )
                 async with self._row_savepoint():
                     await self._acquire_identity_locks(prepared)
-                    account_result = await self._process_account(row, mapping, account_writer)
-                    contact_result = await self._process_contact(
-                        row,
-                        mapping,
-                        contact_writer,
-                        account_id=account_result.account.company_id,
-                    )
+                    normalized = prepared["normalized_values"]
+                    account_values = _nonempty_values_for_prefix(normalized, "account.")
+                    contact_values = _nonempty_values_for_prefix(normalized, "contact.")
+                    warnings: list[str] = []
+                    account_result = None
+                    contact_result = None
+                    account_outcome = "not_provided"
+                    contact_outcome = "not_provided"
+                    if account_values:
+                        if set(account_values).intersection(ACCOUNT_IDENTITY_FIELDS):
+                            account_result = await self._process_account(
+                                row, mapping, account_writer
+                            )
+                            account_outcome = "created" if account_result.created else "matched"
+                        else:
+                            account_outcome = "skipped_incomplete"
+                            warnings.append(
+                                "Account fields were skipped because no name or web identity was provided."
+                            )
+                    account_id = account_result.account.company_id if account_result else None
+                    if contact_values:
+                        has_strong_identity = bool(
+                            set(contact_values).intersection(CONTACT_IDENTITY_FIELDS)
+                        )
+                        has_name = bool(set(contact_values).intersection(CONTACT_NAME_FIELDS))
+                        if has_strong_identity or has_name:
+                            contact_result = await self._process_contact(
+                                row,
+                                mapping,
+                                contact_writer,
+                                account_id=account_id,
+                                allow_unverified=not has_strong_identity,
+                            )
+                            contact_outcome = (
+                                "created_unverified"
+                                if not has_strong_identity
+                                else "created"
+                                if contact_result.created
+                                else "matched"
+                            )
+                        else:
+                            contact_outcome = "skipped_incomplete"
+                            warnings.append(
+                                "Contact fields were skipped because no name, email, or LinkedIn URL was provided."
+                            )
+                    contact_id = contact_result.contact.contact_id if contact_result else None
                     deal_id, _deal_created = await self._process_deal(
                         row,
                         mapping,
-                        account_id=account_result.account.company_id,
-                        contact_id=contact_result.contact.contact_id,
+                        account_id=account_id,
+                        contact_id=contact_id,
                         stage_id=prepared["stage_id"],
                         owner_user_id=prepared["owner_user_id"],
                         custom_properties=prepared["custom_properties"],
                         metadata=metadata,
                     )
-                row.account_id = account_result.account.company_id
-                row.contact_id = contact_result.contact.contact_id
+                row.account_id = account_id
+                row.contact_id = contact_id
                 row.deal_id = deal_id
-                prepared["normalized_values"].update(
-                    {
-                        "resolved.account_name": account_result.account.name,
-                        "resolved.contact_name": getattr(contact_result.contact, "full_name", None),
-                        "resolved.contact_email": getattr(contact_result.contact, "email", None),
-                    }
-                )
+                if account_result:
+                    prepared["normalized_values"]["resolved.account_name"] = (
+                        account_result.account.name
+                    )
+                if contact_result:
+                    prepared["normalized_values"].update(
+                        {
+                            "resolved.contact_name": getattr(
+                                contact_result.contact, "full_name", None
+                            ),
+                            "resolved.contact_email": getattr(
+                                contact_result.contact, "email", None
+                            ),
+                        }
+                    )
                 public_values = prepared["normalized_values"]
                 row.normalized_values = public_values
                 _update_row_audit(
@@ -607,8 +655,9 @@ class CRMImportService:
                     attempt_count=attempt_count,
                     owner_user_id=prepared["owner_user_id"],
                     stage_id=prepared["stage_id"],
-                    account_outcome="created" if account_result.created else "matched",
-                    contact_outcome="created" if contact_result.created else "matched",
+                    account_outcome=account_outcome,
+                    contact_outcome=contact_outcome,
+                    warnings=warnings,
                     error_field=None,
                 )
                 row.target_type = "deal"
@@ -779,6 +828,7 @@ class CRMImportService:
         contact_writer: ContactWriteService,
         *,
         account_id: UUID | None,
+        allow_unverified: bool = False,
     ):
         values = _values_for_prefix(row.raw_values, mapping, "contact.")
         name = values.get("name") or " ".join(
@@ -803,6 +853,8 @@ class CRMImportService:
             source="crm_import",
             actor_user_id=self._current_actor_user_id,
         )
+        if allow_unverified:
+            return await contact_writer.create_unverified_local_contact(command, context=context)
         resolver = getattr(contact_writer, "resolve_or_create_local_contact", None)
         if resolver is not None:
             return await resolver(command, context=context)
@@ -813,8 +865,8 @@ class CRMImportService:
         row: CRMImportRow,
         mapping: dict[str, str],
         *,
-        account_id: UUID,
-        contact_id: UUID,
+        account_id: UUID | None,
+        contact_id: UUID | None,
         stage_id: UUID,
         owner_user_id: UUID | None,
         custom_properties: dict[str, Any],
@@ -837,12 +889,14 @@ class CRMImportService:
             {
                 "pipeline_id": _metadata_uuid(metadata, "pipeline_id"),
                 "stage_id": stage_id,
-                "account": {"company_id": account_id},
-                "contact_participants": [{"contact_id": contact_id}],
                 "custom_properties": custom_properties,
                 "created_via": "crm_import",
             }
         )
+        if account_id:
+            payload["account"] = {"company_id": account_id}
+        if contact_id:
+            payload["contact_participants"] = [{"contact_id": contact_id}]
         if owner_user_id:
             payload["owner_user_id"] = owner_user_id
 
@@ -962,10 +1016,6 @@ class CRMImportService:
         }
         if not normalized_values.get("deal.name"):
             raise CRMImportServiceError("Deal name is required", 400)
-        if not any(normalized_values.get(field) for field in ACCOUNT_IDENTITY_FIELDS):
-            raise CRMImportServiceError("Usable Account identity is required", 400)
-        if not any(normalized_values.get(field) for field in CONTACT_IDENTITY_FIELDS):
-            raise CRMImportServiceError("Usable Contact identity is required", 400)
         account_linkedin = normalized_values.get("account.linkedin_url")
         contact_linkedin = normalized_values.get("contact.linkedin_url")
         contact_email = normalized_values.get("contact.email")
@@ -1235,10 +1285,6 @@ class CRMImportService:
         missing: list[str] = []
         if "deal.name" not in targets:
             missing.append("deal.name")
-        if not targets.intersection(ACCOUNT_IDENTITY_FIELDS):
-            missing.append("account identity")
-        if not targets.intersection(CONTACT_IDENTITY_FIELDS):
-            missing.append("contact identity")
         required_custom = {
             item["target_field"]
             for item in catalog.targets
@@ -1357,6 +1403,14 @@ def _values_for_prefix(
         if text:
             values[target.removeprefix(prefix)] = text
     return values
+
+
+def _nonempty_values_for_prefix(normalized_values: dict[str, Any], prefix: str) -> dict[str, str]:
+    return {
+        target: str(value).strip()
+        for target, value in normalized_values.items()
+        if target.startswith(prefix) and str(value or "").strip()
+    }
 
 
 def _deal_payload_from_values(
@@ -1626,11 +1680,29 @@ def _counts_from_rows(rows: list[CRMImportRow], *, total_rows: int | None = None
             _row_audit(row).get("account_outcome") == "matched" for row in successful
         ),
         "created_contacts": sum(
-            _row_audit(row).get("contact_outcome") == "created" for row in successful
+            _row_audit(row).get("contact_outcome") in {"created", "created_unverified"}
+            for row in successful
         ),
         "matched_contacts": sum(
             _row_audit(row).get("contact_outcome") == "matched" for row in successful
         ),
+        "unverified_contacts": sum(
+            _row_audit(row).get("contact_outcome") == "created_unverified" for row in successful
+        ),
+        "skipped_accounts": sum(
+            _row_audit(row).get("account_outcome") == "skipped_incomplete" for row in successful
+        ),
+        "skipped_contacts": sum(
+            _row_audit(row).get("contact_outcome") == "skipped_incomplete" for row in successful
+        ),
+        "absent_accounts": sum(
+            _row_audit(row).get("account_outcome") == "not_provided" for row in successful
+        ),
+        "absent_contacts": sum(
+            _row_audit(row).get("contact_outcome") == "not_provided" for row in successful
+        ),
+        "deals_without_accounts": sum(row.account_id is None for row in successful),
+        "deals_without_contacts": sum(row.contact_id is None for row in successful),
         "failed_rows": len(failed),
         "skipped_rows": len(skipped),
     }

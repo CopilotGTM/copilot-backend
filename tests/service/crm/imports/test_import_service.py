@@ -117,6 +117,8 @@ def test_batch_counts_are_added_to_committed_progress_once() -> None:
         raw_values={},
         normalized_values={"_audit": {"account_outcome": "matched", "contact_outcome": "created"}},
         status=CRMImportRowStatus.CREATED,
+        account_id=uuid4(),
+        contact_id=uuid4(),
     )
 
     counts = _increment_counts(
@@ -145,6 +147,13 @@ def test_batch_counts_are_added_to_committed_progress_once() -> None:
         "matched_accounts": 1,
         "created_contacts": 1,
         "matched_contacts": 1,
+        "unverified_contacts": 0,
+        "skipped_accounts": 0,
+        "skipped_contacts": 0,
+        "absent_accounts": 0,
+        "absent_contacts": 0,
+        "deals_without_accounts": 0,
+        "deals_without_contacts": 0,
         "failed_rows": 0,
         "skipped_rows": 0,
     }
@@ -451,6 +460,31 @@ async def test_mapping_requires_explicit_order_for_ambiguous_numeric_dates():
         mapping=mapping,
         ignored_columns=[],
         column_formats={"Close": "DMY"},
+        pipeline_id=uuid4(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_mapping_accepts_deal_name_without_optional_entities():
+    service = CRMImportService(_Session(), uuid4(), uuid4(), storage=_Storage())
+    service.get_targets = AsyncMock(  # type: ignore[method-assign]
+        return_value=SimpleNamespace(
+            targets=[
+                {
+                    "target_field": "deal.name",
+                    "value_type": "text",
+                    "required": True,
+                    "custom_field_id": None,
+                }
+            ]
+        )
+    )
+
+    await service._validate_mapping_draft(
+        metadata={"analysis": {"headers": ["Deal"]}},
+        mapping={"Deal": "deal.name"},
+        ignored_columns=[],
+        column_formats={},
         pipeline_id=uuid4(),
     )
 
@@ -818,6 +852,188 @@ async def test_process_next_batch_creates_deal_and_records_deal_id(monkeypatch):
     assert row.contact_id == contact_id
     assert row.deal_id == deal_id
     assert result.job.result_data["created_deals"] == 1
+
+
+@pytest.mark.asyncio
+async def test_process_deal_omits_optional_relationship_payloads(monkeypatch):
+    org_id = uuid4()
+    user_id = uuid4()
+    pipeline_id = uuid4()
+    stage_id = uuid4()
+    deal_id = uuid4()
+    session = _Session()
+    master_session = _Session()
+
+    class DealWriter:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def create_deal(self, payload, *, context=None):
+            assert payload["name"] == "Deal only"
+            assert payload["pipeline_id"] == pipeline_id
+            assert payload["stage_id"] == stage_id
+            assert "account" not in payload
+            assert "contact_participants" not in payload
+            return SimpleNamespace(deal_id=deal_id)
+
+    monkeypatch.setattr("src.service.crm.imports.import_service.DealWriteService", DealWriter)
+    service = CRMImportService(
+        session,
+        org_id,
+        user_id,
+        storage=_Storage(),
+        master_session=master_session,
+    )
+    row = CRMImportRow(
+        import_job_id=uuid4(),
+        organisation_id=org_id,
+        row_number=2,
+        raw_values={"Deal": "Deal only"},
+        normalized_values={},
+        status=CRMImportRowStatus.READY,
+    )
+
+    result = await service._process_deal(
+        row,
+        {"Deal": "deal.name"},
+        account_id=None,
+        contact_id=None,
+        stage_id=stage_id,
+        owner_user_id=None,
+        custom_properties={},
+        metadata={"pipeline_id": str(pipeline_id)},
+    )
+
+    assert result == (deal_id, True)
+
+
+@pytest.mark.asyncio
+async def test_batch_creates_deals_with_optional_and_weak_relationships(monkeypatch):
+    org_id = uuid4()
+    user_id = uuid4()
+    pipeline_id = uuid4()
+    stage_id = uuid4()
+    contact_id = uuid4()
+    deal_ids = [uuid4(), uuid4()]
+    job = _job(
+        org_id=org_id,
+        user_id=user_id,
+        metadata={
+            "crm_import_status": "importing",
+            "pipeline_id": str(pipeline_id),
+            "default_stage_id": str(stage_id),
+            "mapping": {
+                "Deal": "deal.name",
+                "Contact": "contact.name",
+                "Address": "account.address",
+            },
+            "analysis": {"total_rows": 2},
+        },
+        status=JobStatus.IN_PROGRESS,
+    )
+    rows = [
+        CRMImportRow(
+            import_job_id=job.job_id,
+            organisation_id=org_id,
+            row_number=1,
+            raw_values={"Deal": "Deal only"},
+            status=CRMImportRowStatus.PREVIEW,
+        ),
+        CRMImportRow(
+            import_job_id=job.job_id,
+            organisation_id=org_id,
+            row_number=2,
+            raw_values={
+                "Deal": "Weak contact",
+                "Contact": "Pat Buyer",
+                "Address": "1 Main St",
+            },
+            status=CRMImportRowStatus.PREVIEW,
+        ),
+    ]
+
+    class AccountWriter:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    class ContactWriter:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def create_unverified_local_contact(self, command, *, context=None):
+            assert command.name == "Pat Buyer"
+            assert command.email is None
+            return ContactWriteResult(
+                contact=SimpleNamespace(
+                    contact_id=contact_id,
+                    full_name=command.name,
+                    email=None,
+                ),
+                created=True,
+                matched_by="created",
+            )
+
+    monkeypatch.setattr("src.service.crm.imports.import_service.AccountWriteService", AccountWriter)
+    monkeypatch.setattr("src.service.crm.imports.import_service.ContactWriteService", ContactWriter)
+    session = _Session([job])
+    service = CRMImportService(
+        session,
+        org_id,
+        user_id,
+        storage=_Storage(),
+        master_session=_Session(),
+    )
+    service._load_ready_batch = AsyncMock(return_value=rows)
+    service._validate_configuration = AsyncMock()
+    service._has_ready_rows = AsyncMock(return_value=False)
+    service._load_rows = AsyncMock(return_value=rows)
+    service._prepare_row = AsyncMock(
+        side_effect=[
+            {
+                "normalized_values": {"deal.name": "Deal only"},
+                "stage_id": stage_id,
+                "owner_user_id": None,
+                "custom_properties": {},
+                "lock_keys": [],
+            },
+            {
+                "normalized_values": {
+                    "deal.name": "Weak contact",
+                    "contact.name": "Pat Buyer",
+                    "account.address": "1 Main St",
+                },
+                "stage_id": stage_id,
+                "owner_user_id": None,
+                "custom_properties": {},
+                "lock_keys": [],
+            },
+        ]
+    )
+    service._acquire_identity_locks = AsyncMock()
+    service._process_deal = AsyncMock(side_effect=[(deal_ids[0], True), (deal_ids[1], True)])
+
+    result = await service.process_next_batch(job.job_id)
+
+    assert [row.status for row in rows] == [
+        CRMImportRowStatus.CREATED,
+        CRMImportRowStatus.CREATED,
+    ]
+    assert rows[0].account_id is None and rows[0].contact_id is None
+    assert rows[1].account_id is None and rows[1].contact_id == contact_id
+    assert rows[0].normalized_values["_audit"]["account_outcome"] == "not_provided"
+    assert rows[0].normalized_values["_audit"]["contact_outcome"] == "not_provided"
+    assert rows[1].normalized_values["_audit"]["account_outcome"] == "skipped_incomplete"
+    assert rows[1].normalized_values["_audit"]["contact_outcome"] == "created_unverified"
+    assert result.job.result_data["created_deals"] == 2
+    assert result.job.result_data["created_contacts"] == 1
+    assert result.job.result_data["unverified_contacts"] == 1
+    assert result.job.result_data["skipped_accounts"] == 1
+    assert result.job.result_data["absent_accounts"] == 1
+    assert result.job.result_data["absent_contacts"] == 1
+    assert result.job.result_data["deals_without_accounts"] == 2
+    assert result.job.result_data["deals_without_contacts"] == 1
+    assert service._process_deal.await_args_list[0].kwargs["account_id"] is None
+    assert service._process_deal.await_args_list[0].kwargs["contact_id"] is None
 
 
 def test_csv_value_parsing_is_isolated_from_shared_deal_coercion() -> None:

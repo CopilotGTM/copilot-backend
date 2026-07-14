@@ -4,11 +4,11 @@ This is the implemented frontend contract for the three-step flow:
 
 `Upload → Map & Import → Results`
 
-Every successful CSV row creates one new Deal linked to one resolved-or-created Account and one resolved-or-created Contact. Matched Accounts and Contacts are preserved; CSV values never overwrite them.
+Every successful CSV row creates one new Deal. Account and Contact relationships are optional and are created or matched only when the row contains usable values. Matched records are preserved; CSV values never overwrite them.
 
 Base path: `/users/crm/imports/csv`
 
-All endpoints require the normal authenticated CRM user session. Presign, finalize, mapping save, and start require all three create permissions: `accounts:create`, `contacts:create`, and `deals:create`.
+All endpoints require the normal authenticated CRM user session. Write operations require `deals:create`; mapping save and start additionally require `accounts:create` or `contacts:create` only when those entity groups are mapped.
 
 ## Frontend Checklist
 
@@ -230,8 +230,7 @@ Content-Type: application/json
 - Every analyzed header must appear in `mapping` or `ignored_columns`.
 - One target can be mapped only once.
 - `deal.name` is required.
-- Account identity requires at least one mapped target from `account.name`, `account.domain`, `account.website`, or `account.linkedin_url`.
-- Contact identity requires `contact.email` or `contact.linkedin_url`.
+- Account and Contact mappings are optional.
 - Every active required Deal custom field must be mapped.
 - Custom fields must come from the latest target catalog.
 - `column_formats` accepts only `DMY` or `MDY`, only for mapped date/datetime columns.
@@ -266,9 +265,16 @@ GET /users/crm/imports/csv/{import_id}
       "processed_rows": 250,
       "successful_rows": 243,
       "created_accounts": 32,
-      "matched_accounts": 211,
+      "matched_accounts": 198,
       "created_contacts": 45,
-      "matched_contacts": 198,
+      "matched_contacts": 175,
+      "unverified_contacts": 4,
+      "skipped_accounts": 3,
+      "skipped_contacts": 2,
+      "absent_accounts": 10,
+      "absent_contacts": 21,
+      "deals_without_accounts": 13,
+      "deals_without_contacts": 23,
       "created_deals": 243,
       "failed_rows": 7,
       "skipped_rows": 0
@@ -324,6 +330,7 @@ Query parameters:
         "stage_id": "uuid",
         "account_outcome": "matched",
         "contact_outcome": "created",
+        "warnings": [],
         "attempt_count": 1,
         "error_code": null,
         "error_field": null,
@@ -393,7 +400,10 @@ The target catalog is authoritative. Standard targets currently include:
 ## Resolution Semantics
 
 - Accounts match by normalized domain, Account LinkedIn URL, then unique case-insensitive name; otherwise they are created.
-- Contacts match by normalized email, then Contact LinkedIn URL; otherwise they are created.
+- Account values without name or web identity are skipped with a row warning.
+- Contacts match by normalized email, then Contact LinkedIn URL; otherwise strong-identity Contacts are created.
+- Name-only Contacts are created as new unverified records and are never weakly matched.
+- Rows without usable Account or Contact values still create an unlinked Deal.
 - Conflicting or ambiguous identities fail the row instead of guessing.
 - Matched records are not updated.
 - Empty stage values use the default stage. Non-empty unknown stages fail without fallback.

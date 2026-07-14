@@ -227,6 +227,22 @@ class ContactWriteService:
             raise ContactWriteServiceError("Contact email or LinkedIn URL is required", 400)
         return await self._create_contact_record(command, context=context)
 
+    async def create_unverified_local_contact(
+        self,
+        command: ContactCreateCommand,
+        *,
+        context: ContactWriteContext | None = None,
+    ) -> ContactWriteResult:
+        """Create a name-only local contact without attempting a weak identity match."""
+        if not command.name or not command.name.strip():
+            raise ContactWriteServiceError("Contact name is required", 400)
+        if command.email or command.linkedin_url:
+            raise ContactWriteServiceError(
+                "Use contact identity resolution when email or LinkedIn URL is provided",
+                400,
+            )
+        return await self._create_contact_record(command, context=context)
+
     async def _create_contact_record(
         self,
         command: ContactCreateCommand,

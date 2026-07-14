@@ -5,10 +5,13 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.api.dependencies.crm_write_guard import require_crm_write_scope
+from src.api.dependencies.crm_write_guard import (
+    is_crm_write_scope_enabled,
+    require_crm_write_scope,
+)
 from src.api.dependencies.master_dependencies import get_master_async_session
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -43,6 +46,34 @@ logger = get_logger("crm_imports_handler")
 
 imports_router = APIRouter()
 _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your request"
+_ACCOUNT_CREATING_TARGETS = {
+    "account.name",
+    "account.domain",
+    "account.website",
+    "account.linkedin_url",
+}
+_CONTACT_CREATING_TARGETS = {
+    "contact.name",
+    "contact.first_name",
+    "contact.last_name",
+    "contact.email",
+    "contact.linkedin_url",
+}
+
+
+async def _require_optional_entity_scopes(organisation_id: UUID, mapping: dict[str, str]) -> None:
+    mapped_targets = set(mapping.values())
+    for creating_targets, scope in (
+        (_ACCOUNT_CREATING_TARGETS, "accounts:create"),
+        (_CONTACT_CREATING_TARGETS, "contacts:create"),
+    ):
+        if mapped_targets.intersection(creating_targets) and not await is_crm_write_scope_enabled(
+            organisation_id, scope
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"CRM write scope '{scope}' is not enabled for this organisation",
+            )
 
 
 async def get_crm_import_service(
@@ -122,8 +153,6 @@ async def presign_csv_import(
     response: FastAPIResponse,
     service: CRMImportService = Depends(get_crm_import_service),
     _rl_write: None = Depends(rate_limit_user_write),
-    _accounts_create_guard: None = Depends(require_crm_write_scope("accounts:create")),
-    _contacts_create_guard: None = Depends(require_crm_write_scope("contacts:create")),
     _deals_create_guard: None = Depends(require_crm_write_scope("deals:create")),
 ) -> GenericResponse[CRMImportPresignResponse]:
     """Validate import configuration and issue a scoped CSV upload URL."""
@@ -163,8 +192,6 @@ async def finalize_csv_import(
     response: FastAPIResponse,
     service: CRMImportService = Depends(get_crm_import_service),
     _rl_write: None = Depends(rate_limit_user_write),
-    _accounts_create_guard: None = Depends(require_crm_write_scope("accounts:create")),
-    _contacts_create_guard: None = Depends(require_crm_write_scope("contacts:create")),
     _deals_create_guard: None = Depends(require_crm_write_scope("deals:create")),
 ) -> GenericResponse[CRMImportStatusResponse]:
     """Verify the upload and queue deterministic CSV analysis."""
@@ -233,14 +260,14 @@ async def save_csv_import_mapping(
     import_id: UUID,
     body: CRMImportMappingRequest,
     response: FastAPIResponse,
+    user_ids: UserIDs = Depends(get_current_user),
     service: CRMImportService = Depends(get_crm_import_service),
     _rl_write: None = Depends(rate_limit_user_write),
-    _accounts_create_guard: None = Depends(require_crm_write_scope("accounts:create")),
-    _contacts_create_guard: None = Depends(require_crm_write_scope("contacts:create")),
     _deals_create_guard: None = Depends(require_crm_write_scope("deals:create")),
 ) -> GenericResponse[CRMImportStatusResponse]:
     """Validate and persist a complete mapping or failed-row retry draft."""
     try:
+        await _require_optional_entity_scopes(user_ids.organisation_id, body.mapping)
         result = await service.save_mapping(
             import_id,
             body.mapping,
@@ -272,14 +299,18 @@ async def save_csv_import_mapping(
 async def start_csv_import(
     import_id: UUID,
     response: FastAPIResponse,
+    user_ids: UserIDs = Depends(get_current_user),
     service: CRMImportService = Depends(get_crm_import_service),
     _rl_write: None = Depends(rate_limit_user_write),
-    _accounts_create_guard: None = Depends(require_crm_write_scope("accounts:create")),
-    _contacts_create_guard: None = Depends(require_crm_write_scope("contacts:create")),
     _deals_create_guard: None = Depends(require_crm_write_scope("deals:create")),
 ) -> GenericResponse[CRMImportStatusResponse]:
     """Start or safely redispatch a configured import."""
     try:
+        current = await service.get_status(import_id)
+        await _require_optional_entity_scopes(
+            user_ids.organisation_id,
+            (current.job.job_metadata or {}).get("mapping") or {},
+        )
         result = await service.start(import_id)
         return Response.accepted_response(
             "CRM import started",
@@ -411,6 +442,13 @@ def _counts(job: DealJobs, metadata: dict[str, Any]) -> dict[str, int]:
     counts.setdefault("matched_accounts", 0)
     counts.setdefault("created_contacts", 0)
     counts.setdefault("matched_contacts", 0)
+    counts.setdefault("unverified_contacts", 0)
+    counts.setdefault("skipped_accounts", 0)
+    counts.setdefault("skipped_contacts", 0)
+    counts.setdefault("absent_accounts", 0)
+    counts.setdefault("absent_contacts", 0)
+    counts.setdefault("deals_without_accounts", 0)
+    counts.setdefault("deals_without_contacts", 0)
     counts.setdefault("created_deals", 0)
     counts.setdefault("failed_rows", 0)
     counts.setdefault("skipped_rows", counts.pop("skipped_duplicates", 0))
@@ -458,6 +496,7 @@ def _present_row(row: CRMImportRow) -> CRMImportRowItem:
         stage_id=_optional_uuid(audit.get("stage_id")),
         account_outcome=audit.get("account_outcome"),
         contact_outcome=audit.get("contact_outcome"),
+        warnings=audit.get("warnings") or [],
         attempt_count=int(audit.get("attempt_count") or 0),
         error_code=row.error_code,
         error_field=audit.get("error_field"),
