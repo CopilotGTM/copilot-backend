@@ -1,7 +1,9 @@
 from types import SimpleNamespace
+from unittest.mock import call
 from uuid import uuid4
 
 import pytest
+from src.api.dependencies.organisation_dependencies import UserIDs, get_current_user
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
 from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync.crm.imports import (
@@ -163,7 +165,14 @@ def import_api(client, mocker):
     async def allow_rate_limit():
         return None
 
+    async def current_user():
+        return UserIDs(
+            user_id=service.job.user_id,
+            organisation_id=service.job.organisation_id,
+        )
+
     fastapp.dependency_overrides[imports_handler.get_crm_import_service] = override_service
+    fastapp.dependency_overrides[get_current_user] = current_user
     fastapp.dependency_overrides[rate_limit_user_read] = allow_rate_limit
     fastapp.dependency_overrides[rate_limit_user_write] = allow_rate_limit
     for route in imports_handler.imports_router.routes:
@@ -176,6 +185,10 @@ def import_api(client, mocker):
     send_task = mocker.patch(
         "src.api.routers.crm.imports_handler.send_deal_task_async",
         new=mocker.AsyncMock(return_value="task-id"),
+    )
+    mocker.patch(
+        "src.api.routers.crm.imports_handler.is_crm_write_scope_enabled",
+        new=mocker.AsyncMock(return_value=True),
     )
     try:
         yield client, service, send_task
@@ -316,4 +329,33 @@ def test_import_write_endpoints_require_crm_create_scopes():
             for cell in getattr(dependency.call, "__closure__", None) or ():
                 if cell.cell_contents in expected_scopes:
                     scopes.add(cell.cell_contents)
-        assert scopes == expected_scopes, route.path
+        assert scopes == {"deals:create"}, route.path
+
+
+@pytest.mark.asyncio
+async def test_optional_entity_scopes_follow_the_saved_mapping(mocker):
+    from src.api.routers.crm.imports_handler import _require_optional_entity_scopes
+
+    enabled = mocker.patch(
+        "src.api.routers.crm.imports_handler.is_crm_write_scope_enabled",
+        new=mocker.AsyncMock(return_value=True),
+    )
+    org_id = uuid4()
+
+    await _require_optional_entity_scopes(org_id, {"Deal": "deal.name"})
+    enabled.assert_not_awaited()
+
+    await _require_optional_entity_scopes(
+        org_id,
+        {"Address": "account.address", "Phone": "contact.phone"},
+    )
+    enabled.assert_not_awaited()
+
+    await _require_optional_entity_scopes(
+        org_id,
+        {"Company": "account.name", "Email": "contact.email"},
+    )
+    assert enabled.await_args_list == [
+        call(org_id, "accounts:create"),
+        call(org_id, "contacts:create"),
+    ]

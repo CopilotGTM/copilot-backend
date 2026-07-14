@@ -17,9 +17,9 @@ flowchart TD
     I --> J["Frontend reviews every column"]
     J --> K["Save mapping and configuration"]
     K --> L["Start durable worker batches"]
-    L --> M["Resolve/create Account locally"]
-    M --> N["Resolve/create Contact locally"]
-    N --> O["Create Deal and relationships"]
+    L --> M["Optionally resolve/create Account locally"]
+    M --> N["Optionally resolve/create Contact locally"]
+    N --> O["Create Deal and available relationships"]
     O --> P["Commit row outcome and batch counts"]
     P --> Q{"Rows remain?"}
     Q -- Yes --> L
@@ -48,7 +48,8 @@ The feature introduces no database migration or new table.
 
 ## Dependency Boundaries
 
-- Account and Contact imports use opt-in local resolution methods and never invoke external enrichment.
+- Account and Contact imports are optional, use opt-in local write methods, and never invoke external enrichment.
+- Name-only Contacts are created without weak matching; incomplete optional entities are audited and skipped.
 - Matched Account/Contact records are returned untouched.
 - Deal and Deal custom-field writes still pass through canonical validation services.
 - CSV-specific parsing occurs inside the import service, so Lead forms and ordinary Deal custom-field callers retain their existing coercion behavior.

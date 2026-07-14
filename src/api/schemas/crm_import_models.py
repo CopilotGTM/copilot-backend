@@ -120,6 +120,7 @@ class CRMImportRowItem(BaseModel):
     stage_id: UUID | None = None
     account_outcome: str | None = None
     contact_outcome: str | None = None
+    warnings: list[str] = Field(default_factory=list)
     attempt_count: int = 0
     error_code: str | None = None
     error_field: str | None = None
