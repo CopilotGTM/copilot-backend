@@ -217,7 +217,7 @@ Implemented backend slice 2026-07-05:
 - Agent create-deal now accepts `custom_columns` and passes them through the existing `DealWriteService` custom-field validation path.
 - Agent create-deal checks `DealSchemaService` before direct creation and returns `needs_input` with `required_custom_fields` when required writable custom fields are missing.
 - Voice realtime `create_deal` schema exposes `custom_columns`, so collected required custom field answers can be sent back through the same agent tool path.
-- CSV import now uses the generic `/users/crm/imports/csv` backend API; import-mapping work should consume `GET /users/crm/schema?entity=deal`.
+- CSV import uses the generic `/users/crm/imports/csv` backend API; mapping work must consume the Pipeline-scoped `GET /users/crm/imports/csv/targets` catalog.
 - Remaining work: frontend table column picker and frontend create/edit consumers still need to consume `GET /users/crm/schema?entity=deal`.
 
 ## Phase 3: Reorder and bulk operations
