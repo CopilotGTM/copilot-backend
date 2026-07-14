@@ -60,6 +60,19 @@ def is_person_linkedin_url(value: str | None) -> bool:
     return any(path.startswith(prefix) for prefix in _LINKEDIN_PERSON_PATH_PREFIXES)
 
 
+def normalize_linkedin_url(value: str | None) -> str | None:
+    """Return a scheme-insensitive LinkedIn host/path identity key."""
+    cleaned = clean_optional_string(value)
+    if not cleaned:
+        return None
+    parsed = urlparse(cleaned if "://" in cleaned else f"https://{cleaned}")
+    host = (parsed.netloc or "").lower().removeprefix("www.")
+    if host != "linkedin.com" and not host.endswith(".linkedin.com"):
+        return None
+    path = (parsed.path or "").lower().rstrip("/")
+    return f"linkedin.com{path}" if path else None
+
+
 def _linkedin_path(value: str | None) -> str | None:
     cleaned = clean_optional_string(value)
     if not cleaned:

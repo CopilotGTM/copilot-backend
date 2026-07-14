@@ -63,7 +63,7 @@ The three supported flows this API powers:
 | **CRM Deals** | Deals reference pipelines and stages via `pipeline_id` and `stage_id` FKs | `crm-deals-api.md` |
 | **CRM Settings** | Organisation-level defaults and feature flags | `crm-settings-api.md` |
 | **Deprecated Deal Timeline** | Stage transitions recorded in `crm_deal_stage_history`; the legacy timeline API doc moved to `deprecated/docs/API Documentation/deals/deal-timeline-api.md` | `deprecated/docs/API Documentation/deals/deal-timeline-api.md` |
-| **CRM CSV Imports** | Generic CSV import can create deals through existing deal services; pipeline/stage selection by CSV is unsupported in V1 | `crm-imports-api.md` |
+| **CRM CSV Imports** | Generic CSV Deal import requires a selected Pipeline/default stage and supports row-level stage mapping from that Pipeline | `crm-imports-api.md` |
 
 ### Pipeline ↔ Stage ↔ Deal relationship
 
@@ -1658,6 +1658,6 @@ This is safe because the pipeline-level in-use guard has already confirmed no de
 ## Related Documents
 
 - `crm-deals-api.md` — Deals CRUD (uses `pipeline_id` and `stage_id` from this API)
-- `crm-imports-api.md` — Generic CRM CSV import flow; pipeline/stage selection by CSV is unsupported in V1
+- `crm-imports-api.md` — Generic CRM CSV Deal import with Pipeline-scoped targets and stage mapping
 - `crm-settings-api.md` — Organisation-level CRM settings
 - `deprecated/docs/API Documentation/deals/deal-timeline-api.md` — Deprecated stage transition timeline API

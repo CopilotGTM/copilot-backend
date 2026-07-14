@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStageHistory
+from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStageHistory, CRMDealStatus
 from src.service.crm.deals.contracts import DealWriteServiceError
 from src.service.crm.internal.deal_write_service import DealWriteService
 
@@ -46,6 +46,42 @@ def _usable_stage_shape() -> list[SimpleNamespace]:
         SimpleNamespace(stage_id=uuid4(), stage_state="won"),
         SimpleNamespace(stage_id=uuid4(), stage_state="lost"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("stage_state", "expected_status", "won_is_set", "lost_is_set"),
+    [
+        ("won", CRMDealStatus.WON, True, False),
+        ("lost", CRMDealStatus.LOST, False, True),
+    ],
+)
+def test_create_lifecycle_is_initialized_from_terminal_stage(
+    stage_state: str,
+    expected_status: CRMDealStatus,
+    won_is_set: bool,
+    lost_is_set: bool,
+) -> None:
+    """Creating directly in a terminal stage must produce closed lifecycle state."""
+    now = datetime.now(UTC)
+    deal = SimpleNamespace(
+        deal_status=CRMDealStatus.OPEN,
+        close_date=None,
+        closed_won_at=None,
+        closed_lost_at=None,
+        properties={"created_via": "crm_import"},
+    )
+
+    DealWriteService._initialize_lifecycle_from_stage(
+        deal=deal,
+        stage=SimpleNamespace(stage_state=stage_state),
+        now=now,
+    )
+
+    assert deal.deal_status == expected_status
+    assert deal.close_date == now
+    assert (deal.closed_won_at == now) is won_is_set
+    assert (deal.closed_lost_at == now) is lost_is_set
+    assert deal.properties["closed_via"] == "deal_create"
 
 
 @pytest.mark.asyncio

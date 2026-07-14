@@ -45,7 +45,7 @@ This API is for **internally-managed** custom columns. Externally-synced fields 
 | **CRM Schema** | Canonical field metadata for deal create/edit/import/agent consumers, including provider fields marked read-only | `crm-deals-api.md` |
 | **CRM Deals** | Deals carry custom column values inside `properties` JSONB; deal detail returns `custom_columns` and `custom_column_definitions` using definitions from this API | `crm-deals-api.md` |
 | **CRM Lead Intake** | Lead forms map property fields to `entity=lead` definitions and validate submitted custom values/options before storing them on `crm_leads.properties` | `crm-lead-ingestion-api.md` |
-| **CRM CSV Imports** | Generic CSV import supports standard account/contact/deal fields in V1; custom fields are not supported in the import flow yet | `crm-imports-api.md` |
+| **CRM CSV Imports** | Generic CSV import supports active writable Deal custom fields returned by the backend target catalog; Account and Contact custom fields remain unsupported | `crm-imports-api.md` |
 | **CRM Pipelines** | Standard pipeline/stage fields, separate from custom columns | `crm-pipelines-api.md` |
 
 ---
@@ -1497,5 +1497,5 @@ A small `_to_response_item()` helper converts the model row to the `CustomFieldD
 ## Related Documents
 
 - `crm-deals-api.md` — Deals CRUD; deal `properties` JSONB carries custom column values
-- `crm-imports-api.md` — Generic CRM CSV import flow; custom fields are unsupported in V1
+- `crm-imports-api.md` — Generic CRM CSV Deal import flow with active writable Deal custom-field mapping
 - `crm-pipelines-api.md` — Standard pipeline/stage management (separate concern from custom columns)

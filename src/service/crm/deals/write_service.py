@@ -505,6 +505,7 @@ class DealWriteService:
             last_seen_at=now,
             properties=properties,
         )
+        self._initialize_lifecycle_from_stage(deal=deal, stage=stage, now=now)
 
         self.session.add(deal)
         await self.session.flush()
@@ -1988,6 +1989,22 @@ class DealWriteService:
             self.session, self.organisation_id, self.actor_user_id, self.master_session
         )
         await participant_service.add_participants(deal.deal_id, payloads)
+
+    @staticmethod
+    def _initialize_lifecycle_from_stage(
+        *, deal: CRMDeal, stage: CRMDealStage, now: datetime
+    ) -> None:
+        """Initialize lifecycle columns when a Deal is created in a terminal stage."""
+        stage_state = DealWriteService._normalize_stage_state(
+            getattr(stage, "stage_state", CRMDealStatus.OPEN.value)
+        )
+        if stage_state not in {CRMDealStatus.WON.value, CRMDealStatus.LOST.value}:
+            return
+        deal.deal_status = CRMDealStatus(stage_state)
+        deal.close_date = now
+        deal.closed_won_at = now if stage_state == CRMDealStatus.WON.value else None
+        deal.closed_lost_at = now if stage_state == CRMDealStatus.LOST.value else None
+        deal.properties = {**(deal.properties or {}), "closed_via": "deal_create"}
 
     async def _load_org_contact(self, contact_id: UUID) -> CRMContact:
         contact = await self.session.get(CRMContact, contact_id)

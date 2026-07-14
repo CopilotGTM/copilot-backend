@@ -1,105 +1,74 @@
-# CRM CSV Import Flow
+# Audited CRM CSV Deal Import Flow
 
-This document shows the implemented CRM CSV import path for accounts, contacts, deals, and combined rows. Deal import uses the generic CRM import route; the old deal-scoped import endpoints have been removed.
+This document describes the implemented backend flow. The frontend wire contract and examples are in [`crm-imports-api.md`](../API%20Documentation/deals/crm-imports-api.md).
 
 ## Runtime Flow
 
 ```mermaid
 flowchart TD
-    A["Select CSV"] --> B["Presign upload"]
-    B --> C["Create import job"]
-    C --> D["Return SAS URL"]
-    D --> E["Browser uploads to Azure"]
-    E --> F["Finalize import"]
-    F --> G["Verify blob and size"]
-    G --> H["Queue analyze task"]
-
-    H --> I["Worker downloads CSV"]
-    I --> J["Parse and validate CSV"]
-    J --> K{Parse blocked?}
-    K -- Yes --> L["Mark import failed"]
-    K -- No --> M["Create preview rows"]
-    M --> N["Suggest mappings"]
-    N --> O["Ready for mapping"]
-
-    O --> P["Frontend polls status"]
-    P --> Q["User reviews mapping"]
-    Q --> R["Save mapping"]
-    R --> S["Validate target fields"]
-    S --> T{Update existing?}
-    T -- Yes --> U["Reject V1 request"]
-    T -- No --> V["Mapping saved"]
-
-    V --> W["Start import"]
-    W --> X["Mark importing"]
-    X --> Y["Queue process task"]
-
-    Y --> Z["Load pending rows"]
-    Z --> AA["Account first"]
-    AA --> AB["Contact second"]
-    AB --> AC["Deal last"]
-    AC --> AD{Row result}
-    AD -- Created --> AE["Store record IDs"]
-    AD -- Duplicate --> AF["Mark skipped"]
-    AD -- Failed --> AG["Mark failed"]
-    AE --> AH["Update final counts"]
-    AF --> AH
-    AG --> AH
-    AH --> AI["Poll status or errors"]
+    A["Select Pipeline and defaults"] --> B["Load backend target catalog"]
+    B --> C["Presign and upload CSV"]
+    C --> D["Finalize"]
+    D --> E["Worker analyzes bounded CSV"]
+    E --> F{"Valid CSV?"}
+    F -- No --> G["Fatal failed state"]
+    F -- Yes --> H["Persist preview ledger rows"]
+    H --> I["Return deterministic suggestions"]
+    I --> J["Frontend reviews every column"]
+    J --> K["Save mapping and configuration"]
+    K --> L["Start durable worker batches"]
+    L --> M["Resolve/create Account locally"]
+    M --> N["Resolve/create Contact locally"]
+    N --> O["Create Deal and relationships"]
+    O --> P["Commit row outcome and batch counts"]
+    P --> Q{"Rows remain?"}
+    Q -- Yes --> L
+    Q -- No --> R["Completed, possibly with row failures"]
+    R --> S["Results, error CSV, or failed-row retry"]
 ```
 
-## What Gets Stored
+## Persistence
 
-- `deal_jobs` is the import header and public `import_id`.
-- `deal_jobs.job_metadata` stores filename, storage path, mode, analysis, mapping suggestions, and saved mapping.
-- `crm_import_rows` stores row-level raw values, normalized values, status, `target_type`, `account_id`, `contact_id`, `deal_id`, and row errors.
-- `deal_jobs.result_data` stores final counts, including `created_accounts`, `created_contacts`, `created_deals`, `skipped_duplicates`, and `failed_rows`.
+The feature introduces no database migration or new table.
 
-## Frontend Completion View
+- Existing `deal_jobs` rows store configuration, analysis, mapping, state, and aggregate counts.
+- Existing `crm_import_rows` rows store raw/normalized values, status, record IDs, and row errors.
+- Supplementary owner, stage, outcome, attempt, and error-field audit details live under the existing `normalized_values._audit` JSONB key.
+- API presentation removes `_audit` from `normalized_values` and projects approved audit fields into typed response properties.
 
-The completion UI should use two backend reads:
+## Processing Guarantees
 
-1. `GET /users/crm/imports/csv/{import_id}` for aggregate counts:
-   - `total_rows`
-   - `processed_rows`
-   - `created_accounts`
-   - `created_contacts`
-   - `created_deals`
-   - `skipped_duplicates`
-   - `failed_rows`
-2. `GET /users/crm/imports/csv/{import_id}/rows?limit=100` for row-level outcomes:
-   - row number
-   - row status
-   - `target_type`
-   - created/resolved `account_id`, `contact_id`, `deal_id`
-   - row error or duplicate reason
+- A transaction-scoped import lock serializes duplicate worker deliveries.
+- Each task processes at most 250 ready rows.
+- Each row uses a nested savepoint, so one validation failure does not roll back sibling rows.
+- A batch commits before its continuation task is published.
+- Celery redelivery resumes only rows still in preview/ready state.
+- Account and Contact identity locks prevent simultaneous imports from creating the same local identity.
+- Failed-row retry resets only failed ledger rows; successful Deal IDs remain immutable.
 
-The frontend should not fetch only `/rows?status=failed` after completion. That hides successful rows and duplicate/skipped rows, which makes an import with `0` created records look like a successful but unexplained no-op. If `processed_rows > 0` and `created_accounts`, `created_contacts`, and `created_deals` are all `0`, the UI should explicitly show that no CRM records were created and direct the user to the result table.
+## Dependency Boundaries
 
-## Row Processing Order
+- Account and Contact imports use opt-in local resolution methods and never invoke external enrichment.
+- Matched Account/Contact records are returned untouched.
+- Deal and Deal custom-field writes still pass through canonical validation services.
+- CSV-specific parsing occurs inside the import service, so Lead forms and ordinary Deal custom-field callers retain their existing coercion behavior.
+- The only shared Deal behavior change is correct lifecycle initialization when any caller creates directly in a won/lost stage.
 
-1. Account fields are handled first through `AccountWriteService`.
-2. Contact fields are handled second through `ContactWriteService`; explicit account linkage is passed as `company_id`.
-3. Deal fields are handled last through `DealWriteService.create_deal(...)`, with account/contact relationship payloads when available.
+## State and Failure Semantics
 
-This order is intentional: deal creation can safely attach the account and contact records created or resolved earlier in the same row.
+- `uploading`: waiting for direct blob upload/finalize.
+- `analyzing`: worker parsing and generating mapping suggestions.
+- `ready_for_mapping`: analysis succeeded; mapping may be reviewed or retried.
+- `importing`: durable row batches are running.
+- `completed`: all eligible rows were attempted; row failures may exist.
+- `failed`: fatal upload, analysis, configuration, or exhausted worker failure.
 
-## Failure Paths
+Expected row errors are persisted with safe messages and do not fail the parent job. Unexpected worker failures retry and only mark the job failed if retries are exhausted while the job is still in the expected state.
 
-- Missing upload blob: finalize returns an error before worker processing starts.
-- CSV parse limit or encoding failure: analyze marks the import failed and stores parse details.
-- Unsupported mapping target: mapping save returns an error before import start.
-- `update_existing=true`: rejected in V1.
-- Row duplicate: row becomes `skipped_duplicate`.
-- Row validation error: row becomes `failed` and appears in `/errors.csv`.
-- Unexpected row exception: row becomes `failed` without logging raw PII values.
+## Frontend Reads
 
-## API Touchpoints
+- `GET /users/crm/imports/csv/{import_id}` is the source of truth for state, configuration, aggregate counts, progress, and recent errors.
+- `GET /users/crm/imports/csv/{import_id}/rows` is the source of truth for the Results table.
+- `GET /users/crm/imports/csv/{import_id}/errors.csv` provides spreadsheet-safe failed/skipped rows.
 
-- `POST /users/crm/imports/csv/presign`
-- `POST /users/crm/imports/csv/{import_id}/finalize`
-- `GET /users/crm/imports/csv/{import_id}`
-- `PATCH /users/crm/imports/csv/{import_id}/mapping`
-- `POST /users/crm/imports/csv/{import_id}/start`
-- `GET /users/crm/imports/csv/{import_id}/rows`
-- `GET /users/crm/imports/csv/{import_id}/errors.csv`
+The default Results view must fetch all row statuses. A failed-only query is appropriate only after the user selects a Failed tab.
