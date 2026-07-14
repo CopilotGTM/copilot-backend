@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any, cast
+from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
@@ -42,6 +43,7 @@ from src.service.crm.utils.account import (
     is_account_linkedin_url,
     normalize_account_domain,
     normalize_company_name,
+    normalize_linkedin_url,
 )
 from src.service.crm.utils.crm_user_identity import (
     CRMUserIdentityResolutionError,
@@ -150,6 +152,109 @@ class AccountWriteService:
                     status_code=404,
                 )
 
+        return await self._create_account_record(command, context=context)
+
+    async def resolve_or_create_local_account(
+        self,
+        command: AccountCreateCommand,
+        *,
+        context: AccountWriteContext | None = None,
+    ) -> AccountWriteResult:
+        """Resolve deterministic local identity or create without provider research.
+
+        CSV imports call this boundary because uploaded customer data must never
+        trigger Apollo enrichment. Existing records are returned untouched.
+        """
+        linkedin_url = clean_optional_string(command.linkedin_url)
+        if linkedin_url and not is_account_linkedin_url(linkedin_url):
+            raise AccountWriteServiceError(ACCOUNT_LINKEDIN_URL_ERROR, status_code=400)
+
+        domain = normalize_account_domain(command.domain or command.website)
+        if domain:
+            c = cast(Any, CRMCompany).__table__.c
+            # Imports must match legacy stored URL-shaped domains without
+            # changing the domain semantics used by existing CRM callers.
+            stmt = select(CRMCompany).where(
+                c.organisation_id == self.organisation_id,
+                c.is_deleted.is_(False),
+                func.lower(
+                    func.split_part(
+                        func.split_part(
+                            func.split_part(
+                                func.regexp_replace(
+                                    func.trim(c.domain),
+                                    r"^(https?://)?(www\.)?",
+                                    "",
+                                    "i",
+                                ),
+                                "/",
+                                1,
+                            ),
+                            "?",
+                            1,
+                        ),
+                        "#",
+                        1,
+                    )
+                )
+                == domain,
+            )
+            result = await self.session.execute(stmt)
+            matches = list(result.scalars().all())
+            if len(matches) == 1:
+                return AccountWriteResult(matches[0], False, "domain")
+            if len(matches) > 1:
+                raise AccountWriteServiceError("Account domain is ambiguous", status_code=409)
+
+        if linkedin_url:
+            normalized_linkedin = normalize_linkedin_url(linkedin_url)
+            stmt = select(CRMCompany).where(
+                col(CRMCompany.organisation_id) == self.organisation_id,
+                col(CRMCompany.is_deleted).is_(False),
+                func.lower(
+                    func.rtrim(
+                        func.split_part(
+                            func.split_part(
+                                func.regexp_replace(
+                                    func.trim(col(CRMCompany.linkedin_url)),
+                                    r"^(https?://)?([a-z0-9-]+\.)*linkedin\.com",
+                                    "linkedin.com",
+                                    "i",
+                                ),
+                                "?",
+                                1,
+                            ),
+                            "#",
+                            1,
+                        ),
+                        "/",
+                    )
+                )
+                == normalized_linkedin,
+            )
+            result = await self.session.execute(stmt)
+            matches = list(result.scalars().all())
+            if len(matches) == 1:
+                return AccountWriteResult(matches[0], False, "linkedin")
+            if len(matches) > 1:
+                raise AccountWriteServiceError("Account LinkedIn URL is ambiguous", 409)
+
+        name = clean_optional_string(command.name)
+        if name:
+            matches = await self.find_accounts_by_name(name)
+            if len(matches) == 1:
+                return AccountWriteResult(matches[0], False, "name")
+            if len(matches) > 1:
+                raise AccountWriteServiceError("Account name is ambiguous", status_code=409)
+
+        if not name and not domain and linkedin_url:
+            path = urlparse(
+                linkedin_url if "://" in linkedin_url else f"https://{linkedin_url}"
+            ).path
+            slug = path.rstrip("/").rsplit("/", 1)[-1]
+            command = AccountCreateCommand(
+                **{**command.__dict__, "name": slug.replace("-", " ").strip() or linkedin_url}
+            )
         return await self._create_account_record(command, context=context)
 
     async def _create_account_record(

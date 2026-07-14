@@ -2,6 +2,8 @@ from src.service.crm.imports.csv_mapping import suggest_csv_mappings
 
 
 def _by_header(headers: list[str], rows: list[dict[str, str]] | None = None):
+    if rows is None:
+        return {header: suggest_csv_mappings([header], [])[0] for header in headers}
     return {item.header: item for item in suggest_csv_mappings(headers, rows or [])}
 
 
@@ -149,3 +151,36 @@ def test_unknown_headers_are_unmapped_with_short_reason_code() -> None:
     assert suggestions["Favorite Color"].target_field is None
     assert suggestions["Favorite Color"].confidence == "unmapped"
     assert suggestions["Favorite Color"].reason_code == "no_match"
+
+
+def test_duplicate_alias_targets_are_left_unmapped_instead_of_guessed() -> None:
+    """Equal header matches must not silently map two columns to one CRM field."""
+    suggestions = _by_header(["Company", "Account Name"], [])
+
+    assert suggestions["Company"].target_field is None
+    assert suggestions["Account Name"].target_field is None
+    assert suggestions["Company"].reason_code == "duplicate_or_ambiguous_target"
+
+
+def test_custom_field_keys_map_but_duplicate_labels_remain_unmapped() -> None:
+    suggestions = suggest_csv_mappings(
+        ["renewal_region", "Region"],
+        [{"renewal_region": "APAC", "Region": "APAC"}],
+        targets=[
+            {
+                "target_field": "deal.custom.renewal_region",
+                "label": "Region",
+                "custom_field_key": "renewal_region",
+                "value_type": "text",
+            },
+            {
+                "target_field": "deal.custom.sales_region",
+                "label": "Region",
+                "custom_field_key": "sales_region",
+                "value_type": "text",
+            },
+        ],
+    )
+
+    assert suggestions[0].target_field == "deal.custom.renewal_region"
+    assert suggestions[1].target_field is None

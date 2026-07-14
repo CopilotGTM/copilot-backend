@@ -55,12 +55,13 @@ from src.service.crm.utils.account import (
     PERSON_LINKEDIN_URL_ERROR,
     clean_optional_string,
     is_person_linkedin_url,
+    normalize_linkedin_url,
 )
 from src.service.crm.utils.crm_user_identity import (
     CRMUserIdentityResolutionError,
     ensure_app_user_crm_identity,
 )
-from src.service.crm.utils.identity import normalize_email
+from src.service.crm.utils.identity import is_valid_email, normalize_email
 from src.service.crm.utils.person import split_full_name
 
 ContactIdentityResolutionService = None
@@ -144,6 +145,86 @@ class ContactWriteService:
                     status_code=404,
                 )
 
+        return await self._create_contact_record(command, context=context)
+
+    async def resolve_or_create_local_contact(
+        self,
+        command: ContactCreateCommand,
+        *,
+        context: ContactWriteContext | None = None,
+    ) -> ContactWriteResult:
+        """Resolve email/LinkedIn locally or create without external enrichment.
+
+        When both identities are present they must identify the same contact;
+        choosing one would silently link a Deal to the wrong person.
+        """
+        email = normalize_email(command.email)
+        linkedin_url = command.linkedin_url.strip() if command.linkedin_url else None
+        normalized_linkedin = normalize_linkedin_url(linkedin_url)
+        if linkedin_url and (len(linkedin_url) > 500 or not is_person_linkedin_url(linkedin_url)):
+            raise ContactWriteServiceError(PERSON_LINKEDIN_URL_ERROR, status_code=400)
+        if email and (len(email) > 320 or not is_valid_email(email)):
+            raise ContactWriteServiceError("Invalid Contact email", status_code=400)
+
+        async def _matches_for(column, value: str | None) -> list[CRMContact]:
+            if not value:
+                return []
+            stmt = select(CRMContact).where(
+                col(CRMContact.organisation_id) == self.organisation_id,
+                col(CRMContact.is_deleted).is_(False),
+                func.lower(func.trim(column)) == value.lower(),
+            )
+            result = await self.org_session.execute(stmt)
+            return list(result.scalars().all())
+
+        email_matches = await _matches_for(col(CRMContact.email), email)
+        linkedin_matches: list[CRMContact] = []
+        if normalized_linkedin:
+            stmt = select(CRMContact).where(
+                col(CRMContact.organisation_id) == self.organisation_id,
+                col(CRMContact.is_deleted).is_(False),
+                func.lower(
+                    func.rtrim(
+                        func.split_part(
+                            func.split_part(
+                                func.regexp_replace(
+                                    func.trim(col(CRMContact.linkedin_url)),
+                                    r"^(https?://)?([a-z0-9-]+\.)*linkedin\.com",
+                                    "linkedin.com",
+                                    "i",
+                                ),
+                                "?",
+                                1,
+                            ),
+                            "#",
+                            1,
+                        ),
+                        "/",
+                    )
+                )
+                == normalized_linkedin,
+            )
+            result = await self.org_session.execute(stmt)
+            linkedin_matches = list(result.scalars().all())
+        if len(email_matches) > 1 or len(linkedin_matches) > 1:
+            raise ContactWriteServiceError("Contact identity is ambiguous", status_code=409)
+        email_contact = email_matches[0] if email_matches else None
+        linkedin_contact = linkedin_matches[0] if linkedin_matches else None
+        if (
+            email_contact
+            and linkedin_contact
+            and email_contact.contact_id != linkedin_contact.contact_id
+        ):
+            raise ContactWriteServiceError("Contact email and LinkedIn URL conflict", 409)
+        matched = email_contact or linkedin_contact
+        if matched:
+            return ContactWriteResult(
+                matched,
+                False,
+                "email" if email_contact else "linkedin",
+            )
+        if not email and not linkedin_url:
+            raise ContactWriteServiceError("Contact email or LinkedIn URL is required", 400)
         return await self._create_contact_record(command, context=context)
 
     async def _create_contact_record(

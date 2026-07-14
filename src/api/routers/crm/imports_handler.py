@@ -1,3 +1,5 @@
+"""HTTP endpoints for the audited Account, Contact, and Deal CSV import flow."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -21,11 +23,17 @@ from src.api.schemas.crm_import_models import (
     CRMImportPresignResponse,
     CRMImportRowItem,
     CRMImportRowsResponse,
+    CRMImportStageItem,
     CRMImportStatusResponse,
+    CRMImportTargetItem,
+    CRMImportTargetsResponse,
 )
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.job_models import DealJobs
-from src.domain.models.organisation_tables.sync.crm.imports import CRMImportRow
+from src.domain.models.organisation_tables.sync.crm.imports import (
+    CRMImportRow,
+    CRMImportRowStatus,
+)
 from src.infra.utils.logger import get_logger
 from src.service.crm.imports.import_service import CRMImportService, CRMImportServiceError
 from src.workers.deal_worker.client import send_deal_task_async
@@ -42,7 +50,10 @@ async def get_crm_import_service(
     org_session: AsyncSession = Depends(get_org_async_session),
     master_session: AsyncSession = Depends(get_master_async_session),
 ):
+    """Build the request-scoped import service and its Deal worker dispatcher."""
+
     async def send_process_task(*, organisation_id: UUID, import_job_id: UUID) -> None:
+        """Publish one durable import batch to the Deal worker queue."""
         await send_deal_task_async(
             "crm_import.process_csv",
             kwargs={
@@ -61,6 +72,46 @@ async def get_crm_import_service(
     )
 
 
+@imports_router.get(
+    "/imports/csv/targets",
+    response_model=GenericResponse[CRMImportTargetsResponse],
+    tags=["crm-imports"],
+)
+async def get_csv_import_targets(
+    pipeline_id: UUID,
+    response: FastAPIResponse,
+    service: CRMImportService = Depends(get_crm_import_service),
+    _rl_read: None = Depends(rate_limit_user_read),
+) -> GenericResponse[CRMImportTargetsResponse]:
+    """Return the writable import catalog and stages for one internal pipeline."""
+    try:
+        result = await service.get_targets(pipeline_id)
+        data = CRMImportTargetsResponse(
+            pipeline_id=result.pipeline.pipeline_id,
+            pipeline_name=result.pipeline.name,
+            targets=[CRMImportTargetItem(**target) for target in result.targets],
+            stages=[
+                CRMImportStageItem(
+                    stage_id=stage.stage_id,
+                    stage_key=stage.stage_key,
+                    name=stage.name,
+                    label=stage.label,
+                    stage_state=_enum_value(stage.stage_state),
+                    probability=stage.probability,
+                )
+                for stage in result.stages
+            ],
+        )
+        return Response.success_response("CRM import targets retrieved", data=data)
+    except CRMImportServiceError as exc:
+        return Response.error_response(
+            exc.status_code, exc.message, data=exc.data, response=response
+        )
+    except Exception:
+        logger.exception("Unexpected error retrieving CRM CSV import targets")
+        return Response.internal_server_error_response(_UNEXPECTED_ERR_MSG, response=response)
+
+
 @imports_router.post(
     "/imports/csv/presign",
     response_model=GenericResponse[CRMImportPresignResponse],
@@ -75,10 +126,14 @@ async def presign_csv_import(
     _contacts_create_guard: None = Depends(require_crm_write_scope("contacts:create")),
     _deals_create_guard: None = Depends(require_crm_write_scope("deals:create")),
 ) -> GenericResponse[CRMImportPresignResponse]:
+    """Validate import configuration and issue a scoped CSV upload URL."""
     try:
         result = await service.presign(
             body.filename,
             mode=body.mode,
+            pipeline_id=body.pipeline_id,
+            default_stage_id=body.default_stage_id,
+            default_owner_user_id=body.default_owner_user_id,
             options={"update_existing": body.update_existing},
         )
         data = CRMImportPresignResponse(
@@ -112,16 +167,18 @@ async def finalize_csv_import(
     _contacts_create_guard: None = Depends(require_crm_write_scope("contacts:create")),
     _deals_create_guard: None = Depends(require_crm_write_scope("deals:create")),
 ) -> GenericResponse[CRMImportStatusResponse]:
+    """Verify the upload and queue deterministic CSV analysis."""
     try:
         result = await service.finalize(import_id)
-        await send_deal_task_async(
-            "crm_import.analyze_csv",
-            kwargs={
-                "organisation_id": str(result.job.organisation_id),
-                "import_job_id": str(import_id),
-            },
-            queue="deal",
-        )
+        if (result.job.job_metadata or {}).get("crm_import_status") == "analyzing":
+            await send_deal_task_async(
+                "crm_import.analyze_csv",
+                kwargs={
+                    "organisation_id": str(result.job.organisation_id),
+                    "import_job_id": str(import_id),
+                },
+                queue="deal",
+            )
         return Response.accepted_response(
             "CRM import finalized for analysis",
             data=_present_status(result.job),
@@ -147,6 +204,7 @@ async def get_csv_import_status(
     service: CRMImportService = Depends(get_crm_import_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[CRMImportStatusResponse]:
+    """Return stored configuration, progress counts, and recent row errors."""
     try:
         result = await service.get_status(import_id)
         latest_errors = await service.list_rows(import_id, limit=5, status="failed")
@@ -181,10 +239,17 @@ async def save_csv_import_mapping(
     _contacts_create_guard: None = Depends(require_crm_write_scope("contacts:create")),
     _deals_create_guard: None = Depends(require_crm_write_scope("deals:create")),
 ) -> GenericResponse[CRMImportStatusResponse]:
+    """Validate and persist a complete mapping or failed-row retry draft."""
     try:
         result = await service.save_mapping(
             import_id,
             body.mapping,
+            ignored_columns=body.ignored_columns,
+            column_formats=dict(body.column_formats),
+            pipeline_id=body.pipeline_id,
+            default_stage_id=body.default_stage_id,
+            default_owner_user_id=body.default_owner_user_id,
+            retry_failed_rows=body.retry_failed_rows,
             options={"update_existing": body.update_existing},
         )
         return Response.success_response(
@@ -213,6 +278,7 @@ async def start_csv_import(
     _contacts_create_guard: None = Depends(require_crm_write_scope("contacts:create")),
     _deals_create_guard: None = Depends(require_crm_write_scope("deals:create")),
 ) -> GenericResponse[CRMImportStatusResponse]:
+    """Start or safely redispatch a configured import."""
     try:
         result = await service.start(import_id)
         return Response.accepted_response(
@@ -239,12 +305,20 @@ async def list_csv_import_rows(
     response: FastAPIResponse,
     cursor: int | None = Query(None, ge=0),
     limit: int = Query(100, ge=1, le=500),
-    status: str | None = Query(None),
+    status: CRMImportRowStatus | None = Query(None),
+    q: str | None = Query(None, min_length=1, max_length=200),
     service: CRMImportService = Depends(get_crm_import_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[CRMImportRowsResponse]:
+    """Page persisted import outcomes with optional status and text filters."""
     try:
-        result = await service.list_rows(import_id, cursor=cursor, limit=limit, status=status)
+        result = await service.list_rows(
+            import_id,
+            cursor=cursor,
+            limit=limit,
+            status=status.value if status else None,
+            q=q,
+        )
         data = CRMImportRowsResponse(
             items=[_present_row(row) for row in result.items],
             next_cursor=result.next_cursor,
@@ -271,6 +345,7 @@ async def download_csv_import_errors(
     service: CRMImportService = Depends(get_crm_import_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ):
+    """Download failed and skipped rows as formula-safe CSV."""
     try:
         csv_text = await service.build_error_csv(import_id)
         return StarletteResponse(
@@ -307,6 +382,12 @@ def _present_status(
         storage_path=metadata.get("storage_path"),
         analysis=metadata.get("analysis"),
         mapping=metadata.get("mapping") or {},
+        ignored_columns=metadata.get("ignored_columns") or [],
+        column_formats=metadata.get("column_formats") or {},
+        pipeline_id=_optional_uuid(metadata.get("pipeline_id")),
+        default_stage_id=_optional_uuid(metadata.get("default_stage_id")),
+        default_owner_user_id=_optional_uuid(metadata.get("default_owner_user_id")),
+        update_existing=bool((metadata.get("options") or {}).get("update_existing", False)),
         mapping_suggestions=metadata.get("mapping_suggestions") or [],
         counts=counts,
         percent_complete=percent_complete,
@@ -325,11 +406,14 @@ def _counts(job: DealJobs, metadata: dict[str, Any]) -> dict[str, int]:
     if "total_rows" not in counts and analysis.get("total_rows") is not None:
         counts["total_rows"] = int(analysis["total_rows"])
     counts.setdefault("processed_rows", 0)
+    counts.setdefault("successful_rows", 0)
     counts.setdefault("created_accounts", 0)
+    counts.setdefault("matched_accounts", 0)
     counts.setdefault("created_contacts", 0)
+    counts.setdefault("matched_contacts", 0)
     counts.setdefault("created_deals", 0)
-    counts.setdefault("skipped_duplicates", 0)
     counts.setdefault("failed_rows", 0)
+    counts.setdefault("skipped_rows", counts.pop("skipped_duplicates", 0))
     return counts
 
 
@@ -354,28 +438,52 @@ def _summarize_mapping_confidence(suggestions: list[dict[str, Any]]) -> dict[str
 
 
 def _present_row(row: CRMImportRow) -> CRMImportRowItem:
+    normalized = dict(row.normalized_values or {})
+    audit = normalized.pop("_audit", {})
+    audit = audit if isinstance(audit, dict) else {}
     return CRMImportRowItem(
         row_number=row.row_number,
         status=_enum_value(row.status),
+        deal_name=normalized.get("deal.name"),
+        account_name=normalized.get("resolved.account_name") or normalized.get("account.name"),
+        contact_name=normalized.get("resolved.contact_name") or normalized.get("contact.name"),
+        contact_email=normalized.get("resolved.contact_email") or normalized.get("contact.email"),
+        owner_name=normalized.get("resolved.owner_name") or normalized.get("deal.owner"),
+        stage_name=normalized.get("resolved.stage_name") or normalized.get("deal.stage"),
         target_type=row.target_type,
         account_id=row.account_id,
         contact_id=row.contact_id,
         deal_id=row.deal_id,
+        owner_user_id=_optional_uuid(audit.get("owner_user_id")),
+        stage_id=_optional_uuid(audit.get("stage_id")),
+        account_outcome=audit.get("account_outcome"),
+        contact_outcome=audit.get("contact_outcome"),
+        attempt_count=int(audit.get("attempt_count") or 0),
         error_code=row.error_code,
+        error_field=audit.get("error_field"),
         error_message=row.error_message,
         raw_values=row.raw_values or {},
-        normalized_values=row.normalized_values or {},
+        normalized_values=normalized,
     )
 
 
 def _present_error(row: CRMImportRow) -> dict[str, Any]:
+    audit = (row.normalized_values or {}).get("_audit")
+    audit = audit if isinstance(audit, dict) else {}
     return {
         "row_number": row.row_number,
         "status": _enum_value(row.status),
         "error_code": row.error_code,
+        "error_field": audit.get("error_field"),
         "error_message": row.error_message,
     }
 
 
 def _enum_value(value: Any) -> str:
     return value.value if hasattr(value, "value") else str(value)
+
+
+def _optional_uuid(value: Any) -> UUID | None:
+    if value in {None, ""}:
+        return None
+    return value if isinstance(value, UUID) else UUID(str(value))

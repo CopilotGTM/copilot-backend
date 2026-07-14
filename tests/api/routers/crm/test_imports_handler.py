@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -20,12 +21,42 @@ class _FakeImportService:
         self.job = job
         self.calls = []
 
-    async def presign(self, filename, *, mode, options=None):
-        self.calls.append(("presign", filename, mode, options))
+    async def presign(self, filename, *, mode, options=None, **configuration):
+        self.calls.append(("presign", filename, mode, options, configuration))
         return CRMImportPresignResult(
             import_id=self.job.job_id,
             upload_url="https://upload.example/import.csv",
             storage_path="crm_imports/file.csv",
+        )
+
+    async def get_targets(self, pipeline_id):
+        self.calls.append(("get_targets", pipeline_id))
+        return SimpleNamespace(
+            pipeline=SimpleNamespace(pipeline_id=pipeline_id, name="Enterprise Sales"),
+            stages=[
+                SimpleNamespace(
+                    stage_id=uuid4(),
+                    stage_key="proposal",
+                    name="Proposal",
+                    label="Proposal",
+                    stage_state="open",
+                    probability=50,
+                )
+            ],
+            targets=[
+                {
+                    "target_field": "deal.name",
+                    "label": "Deal name",
+                    "group": "deal",
+                    "value_type": "text",
+                    "required": True,
+                    "read_only": False,
+                    "custom_field_id": None,
+                    "custom_field_key": None,
+                    "options": {},
+                    "validation": {},
+                }
+            ],
         )
 
     async def finalize(self, import_id):
@@ -41,8 +72,8 @@ class _FakeImportService:
         self.calls.append(("get_status", import_id))
         return CRMImportJobResult(self.job)
 
-    async def save_mapping(self, import_id, mapping, *, options=None):
-        self.calls.append(("save_mapping", import_id, mapping, options))
+    async def save_mapping(self, import_id, mapping, *, options=None, **configuration):
+        self.calls.append(("save_mapping", import_id, mapping, options, configuration))
         self.job.job_metadata = {
             **(self.job.job_metadata or {}),
             "mapping": mapping,
@@ -56,14 +87,20 @@ class _FakeImportService:
         self.job.job_metadata = {**(self.job.job_metadata or {}), "crm_import_status": "importing"}
         return CRMImportJobResult(self.job)
 
-    async def list_rows(self, import_id, *, cursor=None, limit=100, status=None):
-        self.calls.append(("list_rows", import_id, cursor, limit, status))
+    async def list_rows(self, import_id, *, cursor=None, limit=100, status=None, q=None):
+        self.calls.append(("list_rows", import_id, cursor, limit, status, q))
         row = CRMImportRow(
             import_job_id=import_id,
             organisation_id=self.job.organisation_id,
             row_number=2,
             raw_values={"Email": "bad@example.com"},
-            normalized_values={"contact.email": "bad@example.com"},
+            normalized_values={
+                "contact.email": "bad@example.com",
+                "_audit": {
+                    "attempt_count": 2,
+                    "error_field": "contact.email",
+                },
+            },
             status=CRMImportRowStatus.FAILED,
             deal_id=uuid4(),
             error_code="validation_error",
@@ -81,6 +118,8 @@ class _FakeImportService:
 def _job():
     org_id = uuid4()
     user_id = uuid4()
+    pipeline_id = uuid4()
+    stage_id = uuid4()
     job = DealJobs(
         organisation_id=org_id,
         user_id=user_id,
@@ -101,6 +140,8 @@ def _job():
             "crm_import_status": "ready_for_mapping",
             "analysis": {"headers": ["Email"], "total_rows": 10, "sampled_rows": 10},
             "mapping": {"Email": "contact.email"},
+            "pipeline_id": str(pipeline_id),
+            "default_stage_id": str(stage_id),
             "mapping_suggestions": [
                 {"header": "Email", "target_field": "contact.email", "confidence": "high"}
             ],
@@ -145,10 +186,19 @@ def import_api(client, mocker):
 def test_imports_lifecycle_endpoints(import_api):
     client, service, send_task = import_api
     import_id = service.job.job_id
+    pipeline_id = service.job.job_metadata["pipeline_id"]
+    stage_id = service.job.job_metadata["default_stage_id"]
 
     presign = client.post(
         "/users/crm/imports/csv/presign",
-        json={"filename": "accounts.csv", "mode": "account_contact", "update_existing": False},
+        json={
+            "filename": "deals.csv",
+            "mode": "account_contact_deal",
+            "update_existing": False,
+            "pipeline_id": pipeline_id,
+            "default_stage_id": stage_id,
+            "default_owner_user_id": None,
+        },
     )
     assert presign.status_code == 201
     assert presign.json()["data"]["import_id"] == str(import_id)
@@ -160,7 +210,13 @@ def test_imports_lifecycle_endpoints(import_api):
 
     mapping = client.patch(
         f"/users/crm/imports/csv/{import_id}/mapping",
-        json={"mapping": {"Email": "contact.email"}, "update_existing": False},
+        json={
+            "mapping": {"Email": "contact.email"},
+            "update_existing": False,
+            "pipeline_id": pipeline_id,
+            "default_stage_id": stage_id,
+            "default_owner_user_id": None,
+        },
     )
     assert mapping.status_code == 200
     assert mapping.json()["data"]["mapping"] == {"Email": "contact.email"}
@@ -177,6 +233,32 @@ def test_imports_lifecycle_endpoints(import_api):
     assert data["mapping_confidence_summary"] == {"high": 1, "medium": 0, "low": 0}
 
 
+def test_target_catalog_endpoint_returns_pipeline_scoped_backend_fields(import_api):
+    """The frontend receives targets and stages from one backend-owned catalog."""
+    client, service, _send_task = import_api
+    pipeline_id = service.job.job_metadata["pipeline_id"]
+
+    response = client.get("/users/crm/imports/csv/targets", params={"pipeline_id": pipeline_id})
+
+    assert response.status_code == 200
+    assert response.json()["data"]["targets"][0]["target_field"] == "deal.name"
+    assert response.json()["data"]["stages"][0]["stage_key"] == "proposal"
+
+
+def test_finalize_does_not_redispatch_analysis_after_it_finished(import_api, mocker):
+    client, service, send_task = import_api
+    service.job.job_metadata = {
+        **service.job.job_metadata,
+        "crm_import_status": "ready_for_mapping",
+    }
+    service.finalize = mocker.AsyncMock(return_value=CRMImportJobResult(service.job))
+
+    response = client.post(f"/users/crm/imports/csv/{service.job.job_id}/finalize")
+
+    assert response.status_code == 202
+    send_task.assert_not_awaited()
+
+
 def test_rows_and_error_csv_endpoints(import_api):
     client, service, _send_task = import_api
     import_id = service.job.job_id
@@ -189,7 +271,10 @@ def test_rows_and_error_csv_endpoints(import_api):
     assert rows.json()["data"]["items"][0]["row_number"] == 2
     assert rows.json()["data"]["items"][0]["deal_id"]
     assert rows.json()["data"]["items"][0]["raw_values"] == {"Email": "bad@example.com"}
-    assert service.calls[-1] == ("list_rows", import_id, 1, 50, "failed")
+    assert rows.json()["data"]["items"][0]["attempt_count"] == 2
+    assert rows.json()["data"]["items"][0]["error_field"] == "contact.email"
+    assert "_audit" not in rows.json()["data"]["items"][0]["normalized_values"]
+    assert service.calls[-1] == ("list_rows", import_id, 1, 50, "failed", None)
 
     errors = client.get(f"/users/crm/imports/csv/{import_id}/errors.csv")
     assert errors.status_code == 200

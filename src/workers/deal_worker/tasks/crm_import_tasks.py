@@ -1,7 +1,9 @@
+"""Retry-safe Celery entry points for CRM CSV analysis and durable batches."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from celery import Task
@@ -12,6 +14,7 @@ from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.crm.imports.import_service import CRMImportService
 from src.workers.deal_worker.celery_app import app
+from src.workers.deal_worker.client import send_deal_task_async
 
 logger = get_logger(__name__)
 
@@ -37,10 +40,11 @@ def analyze_csv_import_task(
     organisation_id: str,
     import_job_id: str,
 ) -> dict[str, Any]:
+    """Analyze one uploaded CSV; retries are safe because row numbers are idempotent."""
     org_id = UUID(organisation_id)
     job_id = UUID(import_job_id)
     try:
-        return run_async(analyze_csv_import(org_id, job_id))
+        return cast(dict[str, Any], run_async(analyze_csv_import(org_id, job_id)))
     except Exception as exc:
         logger.error(
             "CRM CSV analyze task failed",
@@ -49,6 +53,14 @@ def analyze_csv_import_task(
         )
         if self.request.retries < self.max_retries:
             raise self.retry(exc=exc, countdown=60 * (2**self.request.retries)) from exc
+        run_async(
+            _record_import_failure(
+                organisation_id=org_id,
+                import_job_id=job_id,
+                error=str(exc),
+                expected_import_status="analyzing",
+            )
+        )
         return {
             "status": "failed",
             "organisation_id": organisation_id,
@@ -71,10 +83,11 @@ def process_csv_import_task(
     organisation_id: str,
     import_job_id: str,
 ) -> dict[str, Any]:
+    """Process one durable batch; committed rows make redelivery idempotent."""
     org_id = UUID(organisation_id)
     job_id = UUID(import_job_id)
     try:
-        return run_async(process_csv_import(org_id, job_id))
+        return cast(dict[str, Any], run_async(process_csv_import(org_id, job_id)))
     except Exception as exc:
         logger.error(
             "CRM CSV process task failed",
@@ -83,6 +96,14 @@ def process_csv_import_task(
         )
         if self.request.retries < self.max_retries:
             raise self.retry(exc=exc, countdown=60 * (2**self.request.retries)) from exc
+        run_async(
+            _record_import_failure(
+                organisation_id=org_id,
+                import_job_id=job_id,
+                error=str(exc),
+                expected_import_status="importing",
+            )
+        )
         return {
             "status": "failed",
             "organisation_id": organisation_id,
@@ -92,27 +113,15 @@ def process_csv_import_task(
 
 
 async def analyze_csv_import(organisation_id: UUID, import_job_id: UUID) -> dict[str, Any]:
-    try:
-        result = await _run_with_org_session(
+    """Run analysis inside one organisation session owned by the worker."""
+    result = await _run_with_org_session(
+        organisation_id,
+        lambda org_session: CRMImportService(
+            org_session,
             organisation_id,
-            lambda org_session: CRMImportService(
-                org_session,
-                organisation_id,
-                user_id=None,
-            ).analyze(import_job_id),
-        )
-    except Exception as exc:
-        await _record_import_failure(
-            organisation_id=organisation_id,
-            import_job_id=import_job_id,
-            error=str(exc),
-        )
-        return {
-            "status": "failed",
-            "organisation_id": str(organisation_id),
-            "import_job_id": str(import_job_id),
-            "error": exc.__class__.__name__,
-        }
+            user_id=None,
+        ).analyze(import_job_id),
+    )
     return {
         "status": result.job.job_metadata.get("crm_import_status"),
         "organisation_id": str(organisation_id),
@@ -121,28 +130,27 @@ async def analyze_csv_import(organisation_id: UUID, import_job_id: UUID) -> dict
 
 
 async def process_csv_import(organisation_id: UUID, import_job_id: UUID) -> dict[str, Any]:
-    try:
-        result = await _run_with_org_and_master_session(
+    """Commit one batch, then dispatch its continuation outside the DB session."""
+    result = await _run_with_org_and_master_session(
+        organisation_id,
+        lambda org_session, master_session: CRMImportService(
+            org_session,
             organisation_id,
-            lambda org_session, master_session: CRMImportService(
-                org_session,
-                organisation_id,
-                user_id=None,
-                master_session=master_session,
-            ).process_next_batch(import_job_id),
+            user_id=None,
+            master_session=master_session,
+        ).process_next_batch(import_job_id),
+    )
+    # Dispatch only after the batch commit. If queue publication fails, Celery
+    # retries this task and the committed row states advance it safely.
+    if result.has_more and result.lock_acquired:
+        await send_deal_task_async(
+            "crm_import.process_csv",
+            kwargs={
+                "organisation_id": str(organisation_id),
+                "import_job_id": str(import_job_id),
+            },
+            queue="deal",
         )
-    except Exception as exc:
-        await _record_import_failure(
-            organisation_id=organisation_id,
-            import_job_id=import_job_id,
-            error=str(exc),
-        )
-        return {
-            "status": "failed",
-            "organisation_id": str(organisation_id),
-            "import_job_id": str(import_job_id),
-            "error": exc.__class__.__name__,
-        }
     return {
         "status": result.job.job_metadata.get("crm_import_status"),
         "organisation_id": str(organisation_id),
@@ -168,14 +176,20 @@ async def _record_import_failure(
     organisation_id: UUID,
     import_job_id: UUID,
     error: str,
+    expected_import_status: str,
 ) -> None:
     async with org_async_session_scope(organisation_id) as org_session:
         job = await org_session.get(DealJobs, import_job_id)
         if job is None or job.organisation_id != organisation_id:
             return
+        metadata = dict(job.job_metadata or {})
+        if (
+            job.status == JobStatus.COMPLETED
+            or metadata.get("crm_import_status") != expected_import_status
+        ):
+            return
         job.status = JobStatus.FAILED
         job.error_message = error[:500]
-        metadata = dict(job.job_metadata or {})
         metadata["crm_import_status"] = "failed"
         metadata["failed_at"] = datetime.now(UTC).isoformat()
         job.job_metadata = metadata

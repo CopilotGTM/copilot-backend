@@ -2,6 +2,7 @@ from src.service.crm.imports.csv_parser import (
     MAX_CSV_COLUMNS,
     MAX_CSV_FILE_SIZE_BYTES,
     MAX_CSV_ROWS,
+    iter_crm_csv_rows,
     parse_crm_csv_content,
     sanitize_csv_cell_for_export,
 )
@@ -42,10 +43,26 @@ def test_parse_csv_reports_invalid_csv() -> None:
     assert result.total_rows == 0
 
 
+def test_iter_csv_rows_streams_sparse_nonblank_rows() -> None:
+    rows = list(iter_crm_csv_rows("A,B,C\none,,three\n,,\n,two,\n", ["A", "B", "C"]))
+
+    assert rows == [{"A": "one", "C": "three"}, {"B": "two"}]
+
+
 def test_parse_csv_reports_invalid_utf8_bytes() -> None:
     result = parse_crm_csv_content(b"\xff\xfe\x00")
 
     assert [error.code for error in result.blocking_errors] == ["invalid_csv"]
+
+
+def test_parse_csv_rejects_nul_oversized_headers_and_extra_row_values() -> None:
+    nul = parse_crm_csv_content("Email\nuser@example.com\x00")
+    long_header = parse_crm_csv_content(f"{'x' * 513}\nvalue")
+    extra_value = parse_crm_csv_content("Email\nuser@example.com,unexpected")
+
+    assert [error.code for error in nul.blocking_errors] == ["invalid_csv"]
+    assert [error.code for error in long_header.blocking_errors] == ["invalid_csv"]
+    assert [error.code for error in extra_value.blocking_errors] == ["invalid_csv"]
 
 
 def test_parse_csv_reports_file_size_row_and_column_caps() -> None:
@@ -72,5 +89,7 @@ def test_formula_looking_values_are_preserved_for_preview_and_sanitized_for_expo
     assert sanitize_csv_cell_for_export("+1") == "'+1"
     assert sanitize_csv_cell_for_export("-1") == "'-1"
     assert sanitize_csv_cell_for_export("@cmd") == "'@cmd"
+    assert sanitize_csv_cell_for_export("  =1+1") == "'  =1+1"
+    assert sanitize_csv_cell_for_export("\t=1+1") == "'\t=1+1"
     assert sanitize_csv_cell_for_export("safe") == "safe"
     assert sanitize_csv_cell_for_export(None) == ""

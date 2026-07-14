@@ -80,6 +80,31 @@ def test_account_create_command_is_minimal_frontend_create_shape() -> None:
 
 
 @pytest.mark.asyncio
+async def test_local_account_resolution_uses_domain_first_without_provider_or_write() -> None:
+    organisation_id = uuid4()
+    account = _company(organisation_id, uuid4())
+    session = SimpleNamespace(execute=AsyncMock(return_value=_result(all_rows=[account])))
+    service = AccountWriteService(session, organisation_id)
+    service.find_accounts_by_name = AsyncMock()  # type: ignore[method-assign]
+    service._create_account_record = AsyncMock()  # type: ignore[method-assign]
+
+    result = await service.resolve_or_create_local_account(
+        AccountCreateCommand(
+            name="Different CSV Name",
+            domain="https://acme.com/about",
+            linkedin_url="https://linkedin.com/company/different",
+        )
+    )
+
+    assert result.account is account
+    assert result.created is False
+    assert result.matched_by == "domain"
+    session.execute.assert_awaited_once()
+    service.find_accounts_by_name.assert_not_awaited()
+    service._create_account_record.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_create_account_accepts_typed_command() -> None:
     organisation_id = uuid4()
     integration = _integration(organisation_id)

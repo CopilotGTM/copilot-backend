@@ -57,6 +57,42 @@ def test_contact_create_command_supports_import_location_fields() -> None:
     }
 
 
+@pytest.mark.asyncio
+async def test_local_contact_resolution_rejects_conflicting_email_and_linkedin() -> None:
+    org_id = uuid4()
+    email_contact = CRMContact(
+        contact_id=uuid4(),
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        email="jane@example.com",
+    )
+    linkedin_contact = CRMContact(
+        contact_id=uuid4(),
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        linkedin_url="https://linkedin.com/in/jane-doe",
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            _FakeResult(scalars=[email_contact]),
+            _FakeResult(scalars=[linkedin_contact]),
+        ]
+    )
+    service = ContactWriteService(session, org_id)
+    service._create_contact_record = AsyncMock()  # type: ignore[method-assign]
+
+    with pytest.raises(ContactWriteServiceError, match="conflict"):
+        await service.resolve_or_create_local_contact(
+            ContactCreateCommand(
+                email="Jane@Example.com",
+                linkedin_url="https://linkedin.com/in/jane-doe",
+            )
+        )
+
+    service._create_contact_record.assert_not_awaited()
+
+
 class _FakeResult:
     def __init__(self, *, scalar=None, scalars=None, rowcount=None):
         self._scalar = scalar
