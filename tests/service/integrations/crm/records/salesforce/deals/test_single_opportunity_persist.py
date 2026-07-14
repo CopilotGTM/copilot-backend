@@ -9,7 +9,11 @@ from src.domain.models.organisation_tables.sync.crm.associations import (
     CRMAssociationCategory,
     CRMObjectType,
 )
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus, CRMParticipantType
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDealStatus,
+    CRMParticipantType,
+    CRMStageState,
+)
 from src.domain.models.organisation_tables.sync.crm.source_mappings import CRMSourceObjectType
 from src.service.integrations.crm.records.salesforce.deals import deal_sync_service
 from src.service.integrations.crm.records.salesforce.deals.deal_sync_service import (
@@ -497,7 +501,11 @@ async def test_load_resolution_maps_uses_source_mappings_for_all_deal_dimensions
     session.execute = AsyncMock(
         side_effect=[
             SimpleNamespace(all=lambda: [(pipeline_id, "Enterprise", "Enterprise")]),
-            SimpleNamespace(all=lambda: [(stage_id, "Prospecting", "Prospecting", pipeline_id)]),
+            SimpleNamespace(
+                all=lambda: [
+                    (stage_id, "Prospecting", "Prospecting", pipeline_id, CRMStageState.LOST)
+                ]
+            ),
             SimpleNamespace(all=lambda: [(user_id, "Owner", "owner@example.com")]),
             SimpleNamespace(all=lambda: [(company_id, "Acme", "acme.com")]),
             SimpleNamespace(all=lambda: [(contact_id, "Alex Morgan", "alex@example.com")]),
@@ -518,6 +526,7 @@ async def test_load_resolution_maps_uses_source_mappings_for_all_deal_dimensions
 
     assert maps.pipeline_map["012A"].internal_id == pipeline_id
     assert maps.stage_map["012A:Prospecting"].pipeline_id == pipeline_id
+    assert maps.stage_map["012A:Prospecting"].stage_state == CRMStageState.LOST
     assert maps.user_map["005A"].email == "owner@example.com"
     assert maps.company_map["001A"].domain == "acme.com"
     assert maps.contact_map["003A"].name == "Alex Morgan"

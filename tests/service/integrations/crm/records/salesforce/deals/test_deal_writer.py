@@ -8,7 +8,11 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStatus
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDeal,
+    CRMDealStatus,
+    CRMStageState,
+)
 from src.domain.models.organisation_tables.sync.crm.source_mappings import (
     CRMSourceObjectType,
 )
@@ -24,7 +28,10 @@ from src.service.integrations.crm.records.salesforce.deals.deal_writer import (
 
 
 def _normalized_deal(
-    *, external_id: str, company_external_id: str | None
+    *,
+    external_id: str,
+    company_external_id: str | None,
+    deal_status: CRMDealStatus = CRMDealStatus.OPEN,
 ) -> NormalizedSalesforceOpportunity:
     return NormalizedSalesforceOpportunity(
         external_id=external_id,
@@ -32,7 +39,7 @@ def _normalized_deal(
         amount=100.0,
         amount_home_currency=None,
         currency="USD",
-        deal_status=CRMDealStatus.OPEN,
+        deal_status=deal_status,
         probability=25.0,
         predicted_amount=25.0,
         close_date=None,
@@ -67,6 +74,61 @@ def _normalized_deal(
         associations_payload={"contact_count": 1},
         data_payload={"Id": external_id},
     )
+
+
+@pytest.mark.asyncio
+async def test_writer_uses_lost_stage_only_for_otherwise_open_deals() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    existing_open = CRMDeal(
+        deal_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_id="006OPEN",
+        name="Open deal",
+        deal_status=CRMDealStatus.OPEN,
+    )
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    writer = SalesforceDealWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer._load_existing_rows = AsyncMock(  # type: ignore[method-assign]
+        return_value={"006OPEN": existing_open}
+    )
+    writer.source_mappings = MagicMock()
+    writer.source_mappings.bulk_upsert_integration_mappings = AsyncMock(return_value=3)
+    maps = DealResolutionMaps(
+        stage_map={
+            "012PIPE:Prospecting": DimensionHit(
+                internal_id=uuid4(),
+                stage_state=CRMStageState.LOST,
+            )
+        }
+    )
+
+    await writer.apply(
+        normalized=[
+            _normalized_deal(external_id="006OPEN", company_external_id=None),
+            _normalized_deal(
+                external_id="006WON",
+                company_external_id=None,
+                deal_status=CRMDealStatus.WON,
+            ),
+            _normalized_deal(external_id="006NEW", company_external_id=None),
+        ],
+        maps=maps,
+    )
+
+    assert existing_open.deal_status == CRMDealStatus.LOST
+    created_rows = [call.args[0] for call in session.add.call_args_list]
+    assert [row.deal_status for row in created_rows] == [
+        CRMDealStatus.WON,
+        CRMDealStatus.LOST,
+    ]
 
 
 @pytest.mark.asyncio
