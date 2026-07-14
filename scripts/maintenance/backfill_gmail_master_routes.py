@@ -139,26 +139,48 @@ def _load_master_routes(master_session: Any, *, has_email_column: bool) -> dict[
     }
 
 
-def _load_gmail_routes(organisation_id: str) -> list[GmailRoute]:
+def _route_query(*, all_integrations: bool) -> Any:
+    """Select the broad or Gmail-only tenant source without dynamic SQL."""
+    if all_integrations:
+        return text(
+            """
+            SELECT ki.connection_id, ki.organisation_id::text, ki.integration_id::text,
+                   ki.integration_email
+            FROM knowledge_integrations AS ki
+            WHERE ki.organisation_id = CAST(:organisation_id AS uuid)
+              AND ki.is_active IS TRUE
+              AND ki.connection_id IS NOT NULL
+            ORDER BY ki.integration_id
+            """
+        )
+    return text(
+        """
+        SELECT ki.connection_id, ki.organisation_id::text, ki.integration_id::text,
+               ki.integration_email
+        FROM knowledge_integrations AS ki
+        JOIN integration_sync_states AS state
+          ON state.integration_id = ki.integration_id
+         AND state.organisation_id = ki.organisation_id
+        WHERE ki.organisation_id = CAST(:organisation_id AS uuid)
+          AND ki.integration_type = 'google'
+          AND ki.is_active IS TRUE
+          AND ki.connection_id IS NOT NULL
+          AND state.capability = 'gmail'
+          AND state.enabled IS TRUE
+        ORDER BY ki.integration_id
+        """
+    )
+
+
+def _load_routes(
+    organisation_id: str,
+    *,
+    all_integrations: bool,
+) -> list[GmailRoute]:
+    """Load active connected integrations, optionally restricted to enabled Gmail."""
     with org_session_scope(organisation_id) as session:
         result = session.execute(
-            text(
-                """
-                SELECT ki.connection_id, ki.organisation_id::text, ki.integration_id::text,
-                       ki.integration_email
-                FROM knowledge_integrations AS ki
-                JOIN integration_sync_states AS state
-                  ON state.integration_id = ki.integration_id
-                 AND state.organisation_id = ki.organisation_id
-                WHERE ki.organisation_id = CAST(:organisation_id AS uuid)
-                  AND ki.integration_type = 'google'
-                  AND ki.is_active IS TRUE
-                  AND ki.connection_id IS NOT NULL
-                  AND state.capability = 'gmail'
-                  AND state.enabled IS TRUE
-                ORDER BY ki.integration_id
-                """
-            ),
+            _route_query(all_integrations=all_integrations),
             {"organisation_id": organisation_id},
         )
         return [
@@ -200,7 +222,7 @@ def _apply_updates(master_session: Any, plan: list[PlannedRoute]) -> int:
     return updated
 
 
-def run(*, execute: bool = False) -> dict[str, Any]:
+def run(*, execute: bool = False, all_integrations: bool = False) -> dict[str, Any]:
     """Build the environment report and optionally apply exact-match updates."""
     with master_session_scope() as master_session:
         organisation_ids = _load_organisation_ids(master_session)
@@ -210,17 +232,22 @@ def run(*, execute: bool = False) -> dict[str, Any]:
             has_email_column=has_email_column,
         )
 
-        gmail_routes: list[GmailRoute] = []
+        routes: list[GmailRoute] = []
         tenant_errors: list[str] = []
         for organisation_id in organisation_ids:
             try:
-                gmail_routes.extend(_load_gmail_routes(organisation_id))
+                routes.extend(
+                    _load_routes(
+                        organisation_id,
+                        all_integrations=all_integrations,
+                    )
+                )
             except Exception:
                 # A tenant permission or schema problem belongs in the report;
                 # it must not hide healthy organisations from the audit.
                 tenant_errors.append(organisation_id)
 
-        plan = build_plan(gmail_routes, master_routes)
+        plan = build_plan(routes, master_routes)
         counts = Counter(item.status for item in plan)
         email_counts = Counter(
             email
@@ -236,8 +263,9 @@ def run(*, execute: bool = False) -> dict[str, Any]:
     return {
         "mode": "execute" if execute else "dry-run",
         "migration_required": not has_email_column,
+        "route_scope": "all-integrations" if all_integrations else "gmail",
         "active_approved_organisations": len(organisation_ids),
-        "gmail_routes": len(gmail_routes),
+        "integration_routes": len(routes),
         "routable": counts["routable"],
         "would_update": counts["would_update"],
         "blank_email": counts["blank_email"],
@@ -266,8 +294,22 @@ def main() -> None:
         action="store_true",
         help="Write normalized emails for exact master/tenant matches.",
     )
+    parser.add_argument(
+        "--all-integrations",
+        action="store_true",
+        help="Backfill every active connected integration, not only Gmail.",
+    )
     args = parser.parse_args()
-    print(json.dumps(run(execute=args.execute), indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            run(
+                execute=args.execute,
+                all_integrations=args.all_integrations,
+            ),
+            indent=2,
+            sort_keys=True,
+        )
+    )
 
 
 if __name__ == "__main__":

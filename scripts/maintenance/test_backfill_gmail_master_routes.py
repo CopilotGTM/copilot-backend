@@ -5,6 +5,7 @@ import importlib.util
 from scripts.maintenance.backfill_gmail_master_routes import (
     GmailRoute,
     MasterRoute,
+    _route_query,
     build_plan,
     normalize_email,
 )
@@ -45,3 +46,20 @@ def test_build_plan_classifies_safe_updates_and_blockers() -> None:
         "missing_mapping",
         "mismatched_mapping",
     ]
+
+
+def test_all_integration_scope_does_not_require_gmail_state() -> None:
+    """All-provider backfills must include active connected parent integrations."""
+    sql = str(_route_query(all_integrations=True))
+
+    assert "JOIN integration_sync_states" not in sql
+    assert "ki.is_active IS TRUE" in sql
+    assert "ki.connection_id IS NOT NULL" in sql
+
+
+def test_default_scope_remains_gmail_only() -> None:
+    """The existing default must retain its Gmail capability guard."""
+    sql = str(_route_query(all_integrations=False))
+
+    assert "JOIN integration_sync_states" in sql
+    assert "state.capability = 'gmail'" in sql
