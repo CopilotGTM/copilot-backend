@@ -28,13 +28,13 @@ class EventDetails(BaseModel):
 
 
 class BriefingInput(BaseModel):
-    """Minimal input for BriefingAgent (tool-first).
+    """Small, trusted starting context for the tool-first briefing agent.
 
-    This input is intentionally small. The agent must use tools to fetch:
+    The agent receives seller context that tools cannot infer safely, then uses
+    read-only tools to fetch:
     - the target meeting details (first step)
-    - prior meetings
-    - emails
-    - stakeholders (only if needed)
+    - account and deal history
+    - communications, tasks, and stakeholders
     """
 
     deal_id: str = Field(..., description="UUID of the deal")
@@ -63,6 +63,14 @@ class BriefingInput(BaseModel):
     # Small hints (do not duplicate large datasets here)
     deal_name: str | None = Field(None, description="Deal name")
     company_name: str | None = Field(None, description="Company name")
+    organisation_website_urls: list[str] = Field(
+        default_factory=list,
+        description="Configured official websites for the seller organisation",
+    )
+    organisation_summary: str | None = Field(
+        None,
+        description="Configured summary of the seller organisation, its products, and problems",
+    )
     event_details: EventDetails | None = Field(
         None, description="Event details for which to prepare briefing"
     )

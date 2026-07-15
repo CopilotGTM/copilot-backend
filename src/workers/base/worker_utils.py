@@ -35,3 +35,34 @@ async def get_organisation_name(session: AsyncSession, org_id: UUID) -> str | No
         with contextlib.suppress(Exception):
             await session.rollback()
         return None
+
+
+async def get_organisation_briefing_context(
+    session: AsyncSession,
+    org_id: UUID,
+) -> tuple[str | None, list[str], str | None]:
+    """Load seller identity and website context for a meeting briefing.
+
+    Meeting-prep workers use the public-schema record instead of knowledge
+    documents so the briefing agent receives an authoritative organisation name,
+    configured websites, and summary before it performs any web research.
+    Missing records and database failures return empty values because seller
+    context should improve a briefing, not make generation fail.
+    """
+    stmt = select(
+        col(Organisation.organisation_name),
+        col(Organisation.website_urls),
+        col(Organisation.summary),
+    ).where(col(Organisation.organisation_id) == org_id)
+    try:
+        result = await session.execute(stmt)
+        row = result.one_or_none()
+        if not row:
+            return None, [], None
+        return row.organisation_name, list(row.website_urls or []), row.summary
+    except SQLAlchemyError:
+        # Seller context is optional for generation. Roll back the failed master
+        # query and let the worker continue with its existing safe defaults.
+        with contextlib.suppress(Exception):
+            await session.rollback()
+        return None, [], None

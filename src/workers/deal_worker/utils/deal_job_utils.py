@@ -1,7 +1,9 @@
-"""Utility functions for deal job processing.
+"""Org-scoped data loaders and context formatting for deal-job workers.
 
-This module provides helper functions for loading deal-related entities
-and building context for job handlers.
+Meeting insight services call these readers before releasing their database
+sessions and invoking agents. Every entity lookup keeps the organisation ID in
+the query because an externally supplied deal or event ID is not a tenant
+boundary by itself.
 """
 
 from __future__ import annotations
@@ -26,10 +28,13 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
 from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
 
-# Re-export from shared module so existing imports keep working
-from src.workers.base.worker_utils import get_organisation_name
+# Re-export shared public-schema readers so deal workers keep one import path.
+from src.workers.base.worker_utils import (
+    get_organisation_briefing_context,
+    get_organisation_name,
+)
 
-__all__ = ["get_organisation_name"]
+__all__ = ["get_organisation_briefing_context", "get_organisation_name"]
 
 
 async def get_deal(session: AsyncSession, org_id: UUID, deal_id: UUID) -> CRMDeal | None:
@@ -443,7 +448,8 @@ async def get_previous_emails(
         Email,
     )
 
-    # Get email associations before the date
+    # Apply the cutoff in SQL so post-meeting messages cannot leak into a
+    # pre-meeting briefing even when a caller requests the maximum page size.
     stmt = (
         select(DealEmailAssociation)
         .where(
@@ -738,7 +744,6 @@ def build_briefing_context_string(
         [f"- {s.related_name}: {s.stance} (Temp: {s.temperature})" for s in stakeholders]
     )
 
-    # Get attendees for the upcoming meeting
     attendees_info = _get_event_attendees_info(event)
 
     # Build previous meetings section if transcripts are available
