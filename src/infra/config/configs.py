@@ -694,6 +694,82 @@ class ApolloConfig:
             logger.error("Apollo API key missing from Key Vault")
 
 
+class ExaConfig:
+    """Configuration for application-level Exa web search.
+
+    Local development reads ``EXA_API_KEY`` directly. Deployed agents load the
+    shared key from the master Key Vault and cache it so every search does not
+    add a secrets-provider round trip.
+    """
+
+    SECRET_NAME_API_KEY: str = "exa-api-key"
+
+    _api_key: str | None = (os.getenv("EXA_API_KEY") or "").strip() or None
+    _credentials_ttl_hours: float = float(os.getenv("EXA_CREDENTIALS_TTL_HOURS", "6"))
+    _credentials_loaded_at: float | None = None
+    _credentials_from_env: bool = bool(_api_key)
+    _refresh_lock: asyncio.Lock | None = None
+
+    async def get_api_key(self) -> str | None:
+        """Return the environment key or a TTL-cached master-vault key."""
+        if self._credentials_from_env:
+            return self._api_key
+        if not self._is_expired():
+            return self._api_key
+
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+
+        async with self._refresh_lock:
+            if not self._is_expired():
+                return self._api_key
+            await self._load_from_vault()
+        return self._api_key
+
+    async def refresh_rejected_api_key(self, rejected_key: str) -> str | None:
+        """Refresh a rejected vault key once without stampeding Key Vault.
+
+        Environment keys remain operator-controlled and are never replaced from
+        Key Vault. Concurrent workers that rejected the same cached key share
+        the first refresh because later callers see that the value has changed.
+        """
+        if self._credentials_from_env:
+            return self._api_key
+
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+
+        async with self._refresh_lock:
+            if self._api_key and self._api_key != rejected_key:
+                return self._api_key
+            await self._load_from_vault()
+        return self._api_key
+
+    def _is_expired(self) -> bool:
+        if self._credentials_loaded_at is None:
+            return True
+        import time
+
+        elapsed_hours = (time.time() - self._credentials_loaded_at) / 3600
+        return elapsed_hours >= self._credentials_ttl_hours
+
+    async def _load_from_vault(self) -> None:
+        import time
+
+        from src.infra.secrets.manager import master_secrets_manager
+
+        logger.info("Loading Exa API key from Key Vault (TTL refresh)")
+        self._api_key = (
+            await master_secrets_manager.get(self.SECRET_NAME_API_KEY) or ""
+        ).strip() or None
+        self._credentials_loaded_at = time.time()
+
+        if self._api_key:
+            logger.info("Exa API key cached (TTL=%.1fh)", self._credentials_ttl_hours)
+        else:
+            logger.error("Exa API key missing from Key Vault")
+
+
 class RecallConfig:
     """Configuration for Recall.ai meeting bot access and webhook verification.
 
@@ -1731,6 +1807,7 @@ microsoft_integration_config = MicrosoftIntegrationConfig()
 hubspot_integration_config = HubSpotIntegrationConfig()
 salesforce_integration_config = SalesforceIntegrationConfig()
 apollo_config = ApolloConfig()
+exa_config = ExaConfig()
 recall_config = RecallConfig()
 teams_config = TeamsConfig()
 

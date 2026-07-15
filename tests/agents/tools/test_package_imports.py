@@ -5,12 +5,14 @@ import importlib
 import sys
 
 
-def test_registry_import_does_not_require_optional_search_dependency(monkeypatch) -> None:
+def test_registry_import_does_not_require_exa_sdk(monkeypatch) -> None:
+    # Exa search uses the base httpx dependency, so importing an agent registry
+    # must never start requiring the provider's optional synchronous SDK.
     original_import = builtins.__import__
 
     def guarded_import(name, module_globals=None, module_locals=None, fromlist=(), level=0):
-        if name == "duckduckgo_search":
-            raise ModuleNotFoundError("No module named 'duckduckgo_search'")
+        if name == "exa_py":
+            raise ModuleNotFoundError("No module named 'exa_py'")
         return original_import(name, module_globals, module_locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
