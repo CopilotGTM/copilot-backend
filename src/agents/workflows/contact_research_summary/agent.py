@@ -1,7 +1,7 @@
 """Tool-free contact research summary agent.
 
 Called after provider enrichment has already been persisted. This agent only
-turns trusted provider fields into short UI copy; it has no tools and does not
+turns selected provider evidence into concise UI copy; it has no tools and does not
 own any source-of-truth contact fields.
 """
 
@@ -22,7 +22,11 @@ from src.agents.workflows.contact_research_summary.prompts import (
 )
 from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
-from src.service.crm.contacts.research_service import ContactResearchSummaryResult
+from src.service.crm.contacts.research_service import (
+    MAX_CONTACT_RESEARCH_CHARS,
+    ContactResearchSummaryResult,
+    build_contact_research_fact_pack,
+)
 
 logger = get_logger(__name__)
 
@@ -33,11 +37,11 @@ class _SummaryOutput(BaseModel):
         description="generated, skipped, or error",
     )
     error_detail: str | None = None
-    summary_markdown: str | None = None
+    summary_markdown: str | None = Field(default=None, max_length=MAX_CONTACT_RESEARCH_CHARS)
 
 
 class ContactResearchSummaryAgent:
-    """Generate a short contact UI summary from already-persisted provider data."""
+    """Generate a career-complete contact profile from persisted provider evidence."""
 
     def __init__(self, organisation_id: UUID, org_name: str | None = None):
         self.organisation_id = organisation_id
@@ -68,18 +72,19 @@ class ContactResearchSummaryAgent:
         contact_id: UUID,
         profile_enrichment: dict[str, Any],
     ) -> ContactResearchSummaryResult:
-        """Summarize provider data for one contact without calling tools."""
+        """Summarize selected provider evidence for one contact without calling tools."""
         if not profile_enrichment:
             return ContactResearchSummaryResult(status="skipped")
 
+        fact_pack = build_contact_research_fact_pack(profile_enrichment)
         response = await self.agent.arun(
             [
                 Message(
                     role="user",
                     content=(
-                        "Write the contact summary from this provider data only.\n\n"
+                        "Create the contact profile from this provider evidence only.\n\n"
                         f"Contact ID: {contact_id}\n"
-                        f"Provider data:\n{json.dumps(profile_enrichment, default=str)}"
+                        f"Provider evidence:\n{json.dumps(fact_pack, default=str)}"
                     ),
                 )
             ]
@@ -120,6 +125,11 @@ class ContactResearchSummaryAgent:
                 )
             except (ValidationError, json.JSONDecodeError):
                 if content.strip():
+                    if len(content.strip()) > MAX_CONTACT_RESEARCH_CHARS:
+                        return ContactResearchSummaryResult(
+                            status="error",
+                            error_detail="Summary agent exceeded the output size limit",
+                        )
                     return ContactResearchSummaryResult(
                         status="generated",
                         summary_markdown=content.strip(),

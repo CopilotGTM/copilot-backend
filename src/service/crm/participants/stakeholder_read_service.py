@@ -8,11 +8,12 @@ profile data so list and detail reads both prefer durable person fields from
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 from sqlmodel import col
 from src.contracts.crm.stakeholders import StakeholderDetail, StakeholderListResponse
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
@@ -51,10 +52,14 @@ class StakeholderReadService:
 
         # The participant ID is not enough as a trust boundary; the contact join
         # must stay inside the current organisation's schema data.
-        contact_stmt = select(CRMContact).where(
-            col(CRMContact.contact_id) == participant.related_local_id,
-            col(CRMContact.organisation_id) == self.organisation_id,
-            col(CRMContact.is_deleted).is_(False),
+        contact_stmt = (
+            select(CRMContact)
+            .options(defer(cast(Any, CRMContact).profile_enrichment))
+            .where(
+                col(CRMContact.contact_id) == participant.related_local_id,
+                col(CRMContact.organisation_id) == self.organisation_id,
+                col(CRMContact.is_deleted).is_(False),
+            )
         )
         contact_result = await self.session.execute(contact_stmt)
         return contact_result.scalar_one_or_none()
@@ -74,10 +79,14 @@ class StakeholderReadService:
 
         # List responses can contain caller-supplied deal IDs, so the contact
         # join repeats the organisation predicate instead of trusting local IDs.
-        contact_stmt = select(CRMContact).where(
-            col(CRMContact.contact_id).in_(contact_ids),
-            col(CRMContact.organisation_id) == self.organisation_id,
-            col(CRMContact.is_deleted).is_(False),
+        contact_stmt = (
+            select(CRMContact)
+            .options(defer(cast(Any, CRMContact).profile_enrichment))
+            .where(
+                col(CRMContact.contact_id).in_(contact_ids),
+                col(CRMContact.organisation_id) == self.organisation_id,
+                col(CRMContact.is_deleted).is_(False),
+            )
         )
         contact_result = await self.session.execute(contact_stmt)
         return {contact.contact_id: contact for contact in contact_result.scalars().all()}
@@ -150,7 +159,11 @@ class StakeholderReadService:
             stakeholders=[
                 self._participant_detail(
                     participant,
-                    contact=contacts_by_id.get(participant.related_local_id),
+                    contact=(
+                        contacts_by_id.get(participant.related_local_id)
+                        if participant.related_local_id
+                        else None
+                    ),
                 )
                 for participant in participants
             ],

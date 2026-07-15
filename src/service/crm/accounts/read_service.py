@@ -17,6 +17,7 @@ from uuid import UUID
 
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
@@ -556,6 +557,7 @@ class AccountReadService:
 
         stmt = (
             select(CRMContact, deal_count_expr.label("deal_count"))
+            .options(defer(cast(Any, CRMContact).profile_enrichment))
             .where(
                 co.organisation_id == self.organisation_id,
                 co.is_deleted.is_(False),

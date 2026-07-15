@@ -26,6 +26,14 @@ class _Result:
         """Return the configured row for service lookups."""
         return self.row
 
+    def scalars(self):
+        """Return the scalar facade used by the persistence query."""
+        return self
+
+    def first(self):
+        """Return the configured row as the first scalar result."""
+        return self.row
+
 
 class _SessionSource:
     """Async iterable that yields fake sessions in workflow phase order."""
@@ -72,8 +80,8 @@ class _WriteSession:
         return self.contact
 
     async def execute(self, stmt):  # noqa: ANN001
-        """Capture propagation SQL without executing it."""
-        self.statements.append(stmt)
+        """Return the fixture contact for the service's locked tenant query."""
+        return _Result(self.contact)
 
     async def commit(self):
         """Count transaction commits issued by the workflow."""
@@ -131,9 +139,11 @@ async def test_existing_provider_enrichment_generates_summary_without_apollo(
     monkeypatch.setattr(workflow_module, "ActivityFeedProjectionService", _Projection)
 
     async def provider_should_not_run(_payload):  # noqa: ANN001
+        """Fail if cached provider evidence triggers an unnecessary Apollo lookup."""
         raise AssertionError("existing provider enrichment should skip Apollo")
 
     async def summary_generator(profile_enrichment):  # noqa: ANN001
+        """Return deterministic markdown after checking cached evidence reaches the generator."""
         assert profile_enrichment["name"] == "Ada Buyer"
         return service_module.ContactResearchSummaryResult(
             status="generated",
@@ -151,6 +161,7 @@ async def test_existing_provider_enrichment_generates_summary_without_apollo(
     assert result.provider_status == "cached"
     assert result.summary_status == "generated"
     assert contact.contact_research == "## Ada Buyer\nVP Engineering at Acme."
+    assert contact.profile_enrichment["_metadata"]["prompt_version"] == "contact_career_v1"
     assert summary_session.commits == 1
     assert completion_session.commits == 1
 

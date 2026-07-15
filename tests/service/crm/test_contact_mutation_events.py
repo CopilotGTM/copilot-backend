@@ -265,7 +265,12 @@ async def test_update_contact_profile_enrichment_is_audit_only() -> None:
     session = _ContactSession(existing_contact=contact)
     service = ContactWriteService(session, org_id)
 
-    enrichment = {"apollo_id": "person_123", "seniority": "executive"}
+    enrichment = {
+        "apollo_id": "person_123",
+        "seniority": "executive",
+        "_raw": {"personal_email": "private@example.com"},
+        "_metadata": {"payload_hash": "private-hash"},
+    }
     await service.update_contact(
         contact.contact_id,
         {
@@ -281,7 +286,7 @@ async def test_update_contact_profile_enrichment_is_audit_only() -> None:
     assert events[0].semantic_event_types == []
     assert events[0].changed_fields["profile_enrichment"] == {
         "old": {},
-        "new": enrichment,
+        "new": {"apollo_id": "person_123", "seniority": "executive"},
     }
     assert events[0].changed_fields["profile_enrichment_source"] == {
         "old": None,

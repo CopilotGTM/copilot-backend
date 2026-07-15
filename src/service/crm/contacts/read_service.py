@@ -9,6 +9,7 @@ from uuid import UUID
 
 from sqlalchemy import String, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
@@ -24,6 +25,7 @@ from src.domain.models.organisation_tables.sync.integration_models import (
 )
 from src.infra.utils.logger import get_logger
 from src.service.crm.contacts.contracts import ContactReadServiceError
+from src.service.crm.contacts.research_service import PROFILE_METADATA_KEY, PROFILE_RAW_KEY
 
 logger = get_logger("contact_read_service")
 
@@ -163,7 +165,8 @@ class ContactReadService:
         total_count = count_res.scalar() or 0
 
         stmt = (
-            base.order_by(
+            base.options(defer(cast(Any, CRMContact).profile_enrichment))
+            .order_by(
                 col(CRMContact.created_at).desc(),
                 col(CRMContact.contact_id).desc(),
             )
@@ -203,16 +206,16 @@ class ContactReadService:
                 ),
             )
             co_res = await self.org_session.execute(co_stmt)
-            for company in co_res.scalars().all():
-                company_by_id[company.company_id] = company
-                if company.domain:
-                    company_by_domain[company.domain.lower()] = company
+            for matched_company in co_res.scalars().all():
+                company_by_id[matched_company.company_id] = matched_company
+                if matched_company.domain:
+                    company_by_domain[matched_company.domain.lower()] = matched_company
 
         result: list[dict] = []
         for row in rows:
             contact: CRMContact = row.CRMContact
             email_domain = self._extract_domain(contact.email) if contact.email else None
-            company = None
+            company: CRMCompany | None = None
             if contact.company_id:
                 company = company_by_id.get(contact.company_id)
             elif email_domain:
@@ -380,6 +383,7 @@ class ContactReadService:
                 match_value.label("match_value"),
                 match_type.label("match_type"),
             )
+            .options(defer(cast(Any, CRMContact).profile_enrichment))
             .where(*filters)
             .order_by(total_score.desc(), c.last_activity_at.desc().nullslast())
             .limit(effective_limit)
@@ -468,6 +472,7 @@ class ContactReadService:
 
         stmt = (
             select(CRMContact)
+            .options(defer(cast(Any, CRMContact).profile_enrichment))
             .where(*filters)
             .order_by(rank_expr.asc(), name_key.asc(), c.contact_id.asc())
             .limit(limit + 1)
@@ -593,16 +598,24 @@ class ContactReadService:
 
     async def get_contact_detail(self, contact_id: UUID) -> dict:
         """Full contact + deal involvement via contact participants."""
-        stmt = select(CRMContact).where(
-            col(CRMContact.contact_id) == contact_id,
-            col(CRMContact.organisation_id) == self.organisation_id,
-            col(CRMContact.is_deleted).is_(False),
+        profile_column = cast(Any, CRMContact).__table__.c.profile_enrichment
+        public_profile = profile_column.op("-")(PROFILE_RAW_KEY).op("-")(PROFILE_METADATA_KEY)
+        # Fetch the public JSONB projection separately and defer the mapped field.
+        # This keeps the full Apollo object out of routine contact-detail memory.
+        stmt = (
+            select(CRMContact, public_profile.label("public_profile_enrichment"))
+            .options(defer(cast(Any, CRMContact).profile_enrichment))
+            .where(
+                col(CRMContact.contact_id) == contact_id,
+                col(CRMContact.organisation_id) == self.organisation_id,
+                col(CRMContact.is_deleted).is_(False),
+            )
         )
         res = await self.org_session.execute(stmt)
-        contact = res.scalars().first()
-
-        if not contact:
+        row = res.first()
+        if row is None:
             raise ContactReadServiceError("Contact not found", status_code=404)
+        contact = row[0]
 
         participant_contact_match = col(CRMDealParticipant.related_local_id) == contact_id
         if contact.email:
@@ -661,6 +674,7 @@ class ContactReadService:
 
         return {
             "contact": contact,
+            "profile_enrichment": row.public_profile_enrichment or {},
             "deals": deals,
             "company": self._contact_detail_company_payload(
                 contact=contact,

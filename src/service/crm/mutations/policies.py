@@ -217,6 +217,10 @@ class ContactMutationPolicy:
         changed_fields: dict[str, dict[str, Any]] = {}
         for field_name in cls.CREATE_AUDIT_FIELDS:
             value = getattr(contact, field_name, None)
+            if field_name == "profile_enrichment":
+                # Raw provider evidence belongs only in the mutable contact row;
+                # copying it into the immutable audit ledger expands PII retention.
+                value = cls._audit_safe_profile_enrichment(value)
             if value is not None:
                 changed_fields[field_name] = {"old": None, "new": value}
         return changed_fields
@@ -231,7 +235,17 @@ class ContactMutationPolicy:
         """Return an audit change only for whitelisted contact fields."""
         if field_name not in cls.UPDATE_AUDIT_FIELDS:
             return None
+        if field_name == "profile_enrichment":
+            old = cls._audit_safe_profile_enrichment(old)
+            new = cls._audit_safe_profile_enrichment(new)
         return changed_field(old, new)
+
+    @staticmethod
+    def _audit_safe_profile_enrichment(value: Any) -> Any:
+        """Remove backend-only provider evidence before creating immutable audit data."""
+        if not isinstance(value, dict):
+            return value
+        return {key: nested for key, nested in value.items() if not str(key).startswith("_")}
 
     @staticmethod
     def semantic_for_update(changed_fields: dict[str, dict[str, Any]]) -> list[str]:

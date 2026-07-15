@@ -25,6 +25,10 @@ class _Result:
         """Return all queued rows for active-job lookup assertions."""
         return self.rows
 
+    def first(self):
+        """Return the first row for locked contact lookup assertions."""
+        return self.rows[0] if self.rows else None
+
 
 class _Session:
     def __init__(self, contact, active_jobs=None):
@@ -33,12 +37,15 @@ class _Session:
         self.added = []
         self.commits = 0
 
-    async def get(self, _model, _item_id):  # noqa: ANN001
+    async def get(self, _model, _item_id, **_kwargs):  # noqa: ANN001
         """Return the configured contact for dispatcher load checks."""
         return self.contact
 
     async def execute(self, _stmt):  # noqa: ANN001
-        """Return active jobs without evaluating SQLAlchemy expressions."""
+        """Return the contact for its locked query, otherwise active jobs."""
+        entity = _stmt.column_descriptions[0].get("entity")
+        if entity is CRMContact:
+            return _Result([self.contact] if self.contact else [])
         return _Result(self.active_jobs)
 
     def add(self, row):
@@ -366,6 +373,66 @@ async def test_dispatch_creates_contact_research_job(monkeypatch) -> None:
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_skips_recent_summary_only_when_prompt_and_payload_are_current(
+    monkeypatch,
+) -> None:
+    """Prompt upgrades and changed Apollo evidence must invalidate a cached summary."""
+    import src.workers.deal_worker.utils.contact_research_dispatch as dispatch_module
+
+    organisation_id = uuid4()
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="buyer@acme.com",
+        contact_research="Existing complete profile",
+        last_researched_at=datetime.now(UTC),
+        profile_enrichment={
+            "provider": "apollo",
+            "_metadata": {
+                "prompt_version": dispatch_module.CONTACT_RESEARCH_PROMPT_VERSION,
+                "payload_hash": "same-hash",
+                "summary_source_hash": "same-hash",
+            },
+        },
+    )
+    session = _Session(contact)
+
+    monkeypatch.setattr(
+        dispatch_module,
+        "acquire_org_async_session",
+        lambda _organisation_id: _SessionSource(session),
+    )
+
+    job_id = await dispatch_module.dispatch_contact_research_async(
+        organisation_id=organisation_id,
+        contact_id=contact.contact_id,
+    )
+
+    assert job_id is None
+    assert session.added == []
+
+
+def test_summary_freshness_rejects_legacy_prompt_and_changed_payload() -> None:
+    """A cached narrative is reusable only for the current prompt and evidence hash."""
+    import src.workers.deal_worker.utils.contact_research_dispatch as dispatch_module
+
+    assert dispatch_module._has_current_summary({"provider": "apollo"}) is False
+    assert (
+        dispatch_module._has_current_summary(
+            {
+                "_metadata": {
+                    "prompt_version": dispatch_module.CONTACT_RESEARCH_PROMPT_VERSION,
+                    "payload_hash": "new-hash",
+                    "summary_source_hash": "old-hash",
+                }
+            }
+        )
+        is False
+    )
 
 
 def test_contact_research_has_no_scheduled_retry_route() -> None:
