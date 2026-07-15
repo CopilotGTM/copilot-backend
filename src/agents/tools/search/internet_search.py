@@ -163,9 +163,8 @@ async def _request_exa_search(
                 json=payload,
                 headers={"x-api-key": api_key, "Content-Type": "application/json"},
             ) as response:
-                if (
-                    response.status_code in _RETRIABLE_STATUS_CODES
-                    and attempt < len(_RETRY_DELAYS_SECONDS)
+                if response.status_code in _RETRIABLE_STATUS_CODES and attempt < len(
+                    _RETRY_DELAYS_SECONDS
                 ):
                     retry_delay = _retry_delay(response, attempt)
                 else:
@@ -257,6 +256,8 @@ def _normalize_results(raw_results: object) -> list[dict[str, str]]:
             }
         )
     return results
+
+
 def create_search_internet(
     capabilities_getter: Callable[[], AgentCapabilities | None],
 ) -> Callable:

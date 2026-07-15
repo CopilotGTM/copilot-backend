@@ -16,7 +16,9 @@ internet_search_module = importlib.import_module("src.agents.tools.search.intern
 class _FakeAsyncClient:
     """Return queued responses while recording the requests sent to Exa."""
 
-    def __init__(self, responses: list[httpx.Response], requests: list[dict[str, Any]], **_) -> None:
+    def __init__(
+        self, responses: list[httpx.Response], requests: list[dict[str, Any]], **_
+    ) -> None:
         self._responses = responses
         self._requests = requests
 
@@ -271,9 +273,7 @@ async def test_oversized_response_is_rejected(monkeypatch) -> None:
             _response(
                 200,
                 json={"results": []},
-                headers={
-                    "Content-Length": str(internet_search_module._MAX_RESPONSE_BYTES + 1)
-                },
+                headers={"Content-Length": str(internet_search_module._MAX_RESPONSE_BYTES + 1)},
             )
         ],
     )

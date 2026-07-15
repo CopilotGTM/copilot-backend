@@ -123,6 +123,7 @@ async def crawl_webpage(
 
 async def _guard_browser_requests(page: Any, **_kwargs: Any) -> Any:
     """Abort browser requests whose current DNS answers include private networks."""
+
     async def route_request(route: Any) -> None:
         """Continue one public request or abort it before Chromium sends bytes."""
         request_url = route.request.url
