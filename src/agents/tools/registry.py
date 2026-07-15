@@ -330,9 +330,11 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
     # -------------------------------------------------------------------------
     "BriefingAgent": {
         # Search tools
-        ToolName.SEARCH_INTERNAL_KNOWLEDGE,
         ToolName.SEARCH_INTERNET,
+        ToolName.CRAWL_WEBPAGE,
+        ToolName.RESEARCH_LINKEDIN_PROFILE,
         # Deal tools (for understanding deal context)
+        ToolName.GET_DEAL_DETAILS,
         ToolName.GET_DEAL_MEMORY,  # Pre-built deal context for meeting prep
         ToolName.GET_DEAL_CHANGE_HISTORY,
         ToolName.GET_PIPELINE_DETAILS,
@@ -350,6 +352,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.READ_CHAT_ATTACHMENT,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
         ToolName.LIST_DEAL_NOTES,  # Internal notes contain prep context
+        ToolName.LIST_DEAL_TASKS,
     },
     # -------------------------------------------------------------------------
     # SummaryAgent - Meeting Summary Agent

@@ -41,7 +41,7 @@ from src.workers.deal_worker.utils.deal_job_utils import (
     get_association,
     get_deal,
     get_event,
-    get_organisation_name,
+    get_organisation_briefing_context,
 )
 
 logger = get_logger(__name__)
@@ -116,6 +116,8 @@ class MeetingPrepService:
         self._publish_progress("Loading context...", "Querying Database", 0.1)
 
         org_name: str | None = None
+        organisation_website_urls: list[str] = []
+        organisation_summary: str | None = None
         deal_name: str | None = None
         company_name: str | None = None
         event_title: str | None = None
@@ -131,7 +133,14 @@ class MeetingPrepService:
         association_id: UUID | None = None
 
         async for master_session in acquire_master_async_session():
-            org_name = await get_organisation_name(master_session, self.organisation_id)
+            (
+                org_name,
+                organisation_website_urls,
+                organisation_summary,
+            ) = await get_organisation_briefing_context(
+                master_session,
+                self.organisation_id,
+            )
 
         async for session in acquire_org_async_session(self.organisation_id):
             deal = await get_deal(session, self.organisation_id, self.deal_id)
@@ -165,7 +174,8 @@ class MeetingPrepService:
             if association:
                 association_id = association.association_id
 
-            # Get interaction counts (non-fatal if fails)
+            # Counts only help the agent navigate history; a failed advisory
+            # query must not block a briefing whose tools can confirm context.
             current_dt = datetime.now(UTC)
             try:
                 prior_meetings_count = await count_prior_meetings_for_briefing(
@@ -211,6 +221,8 @@ class MeetingPrepService:
             emails_exchanged_count=emails_exchanged_count,
             deal_name=deal_name,
             company_name=company_name,
+            organisation_website_urls=organisation_website_urls,
+            organisation_summary=organisation_summary,
             event_details=EventDetails(
                 title=event_title,
                 description=event_description,
@@ -441,8 +453,8 @@ class MeetingPrepService:
             },
         )
 
-        # Check if all past meeting summaries are complete
-        # Prep needs context from past meetings, so wait until all summaries are done
+        # Wait for summaries that can materially change the prep; generating
+        # early would persist an incomplete brief that the pipeline will not redo.
         if await self._has_pending_summaries(deal_id):
             logger.info(
                 "Skipping prep for deal %s - past meeting summaries still pending",
@@ -457,10 +469,11 @@ class MeetingPrepService:
             result.skipped_pending_summaries = True
             return result
 
-        # Check if job already exists and create if not
         job_id: UUID | None = None
 
         async for session in acquire_org_async_session(self.organisation_id):
+            # The active-job check and insert share one session so concurrent
+            # pipeline ticks do not intentionally enqueue duplicate prep work.
             existing_job = await self._get_active_prep_job(session, deal_id, event_id)
             if existing_job:
                 logger.debug(
@@ -472,7 +485,6 @@ class MeetingPrepService:
                 result.job_skipped = True
                 return result
 
-            # Create new job
             job = await self._create_prep_job(session, deal_id, event_id)
             job_id = job.job_id
             result.job_created = True

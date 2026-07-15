@@ -42,8 +42,9 @@ logger = get_logger(__name__)
 class BriefingAgent:
     """Agent for generating meeting briefings.
 
-    Tool-first workflow: first fetch the target meeting details, classify call type,
-    then pull only the additional context needed.
+    The tool-first workflow fetches the target event before gathering account,
+    participant, and interaction context. Its prompt decides which optional
+    research is worth doing instead of classifying the event into a call type.
 
     ARCHITECTURE: This agent does NOT hold database sessions during LLM calls.
     Tools acquire sessions on-demand via context.acquire_session().
@@ -87,13 +88,11 @@ class BriefingAgent:
             org_name=org_name or "Our Organization",
         )
 
-        # Get tools for this agent (for deeper analysis)
         tools = self._get_tools()
-
-        # Get model config
         config = agent_config.get_config("briefing_agent")
 
-        # Create agent with tools
+        # The model may collect independent baseline sources concurrently, while
+        # the schema keeps the externally stored result to one stable field.
         self.agent = Agent(
             model=AzureOpenAI(
                 id=config.model,
@@ -118,7 +117,6 @@ class BriefingAgent:
         Tools are defined in AGENT_TOOLS["BriefingAgent"] in registry.py.
         This agent is tool-first: fetches meeting details then gathers deal context.
         """
-        # Get tools from central registry (no capabilities - not streaming to chat)
         return get_tools_for_agent("BriefingAgent", self.context, lambda: None)
 
     def _publish_progress(self, message: str, step: str, progress: float) -> None:
@@ -127,7 +125,7 @@ class BriefingAgent:
             self.publisher.publish_progress(message, step, progress)
 
     async def generate(self, input_data: BriefingInput) -> BriefingData:
-        """Generate a meeting briefing via a call-type-first, tool-driven workflow.
+        """Generate an adaptive, evidence-led briefing with read-only tools.
 
         SECURITY: deal_id is already baked into context (immutable).
         Tools use context.deal_id and cannot query other deals.
