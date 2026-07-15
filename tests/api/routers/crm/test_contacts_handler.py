@@ -853,7 +853,11 @@ async def test_get_contact_detail_returns_page_ready_contract() -> None:
         owner_email="nikhil@example.com",
         contact_research="Vickesh leads regional sales at LemonEdge.",
         last_researched_at=researched_at,
-        profile_enrichment={"headline": "Sales leader"},
+        profile_enrichment={
+            "headline": "Sales leader",
+            "_raw": {"employment_history": [{"title": "Head of Sales"}]},
+            "_metadata": {"payload_hash": "secret-backend-metadata"},
+        },
         profile_enrichment_source="apollo",
         profile_enriched_at=researched_at,
         created_at=now,

@@ -59,6 +59,7 @@ from src.service.crm.contacts.contracts import (
 )
 from src.service.crm.contacts.deal_link_service import ContactDealLinkService
 from src.service.crm.contacts.read_service import ContactReadService
+from src.service.crm.contacts.research_service import public_profile_enrichment
 from src.service.crm.contacts.write_service import ContactWriteService
 from src.workers.deal_worker.utils.account_research_dispatch import (
     dispatch_account_research_async,
@@ -221,7 +222,7 @@ async def list_contacts(
                 last_activity_at=row["contact"].last_activity_at,
                 source=row["source"],
                 is_profile_enriched=bool(
-                    row["contact"].profile_enriched_at or row["contact"].profile_enrichment
+                    row["contact"].profile_enriched_at or row["contact"].profile_enrichment_source
                 ),
                 profile_enriched_at=row["contact"].profile_enriched_at,
                 created_at=row["contact"].created_at,
@@ -450,7 +451,13 @@ async def get_contact_detail(
             )
             for d in deals
         ]
-        profile_enrichment = contact.profile_enrichment or {}
+        # Do not use dict.get with the deferred ORM attribute as its default:
+        # Python evaluates that default eagerly and would reload the private raw JSONB.
+        try:
+            profile_source = result["profile_enrichment"]
+        except KeyError:
+            profile_source = contact.profile_enrichment
+        profile_enrichment = public_profile_enrichment(profile_source)
         research_summary = None
         # A last-researched timestamp without a text summary still matters to clients because it
         # tells them research ran and found no stored narrative.

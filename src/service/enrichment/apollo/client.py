@@ -7,6 +7,7 @@ Apollo's raw response shape.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -16,6 +17,11 @@ from src.infra.config.configs import apollo_config
 logger = logging.getLogger(__name__)
 
 API_TIMEOUT_SECONDS = 30
+MAX_APOLLO_RESPONSE_BYTES = 2 * 1024 * 1024
+
+
+class ApolloResponseTooLargeError(ValueError):
+    """Raised before an anomalous Apollo response can exhaust worker memory."""
 
 
 async def apollo_enrich_person(
@@ -54,17 +60,20 @@ async def apollo_enrich_person(
         return {"success": False, "error": "No search parameters provided"}
 
     try:
-        async with httpx.AsyncClient(timeout=API_TIMEOUT_SECONDS) as client:
-            response = await client.post(
+        async with (
+            httpx.AsyncClient(timeout=API_TIMEOUT_SECONDS) as client,
+            client.stream(
+                "POST",
                 f"{apollo_config.APOLLO_BASE_URL}/people/match",
                 json=body,
                 headers={
                     "x-api-key": api_key,
                     "Content-Type": "application/json",
                 },
-            )
+            ) as response,
+        ):
             response.raise_for_status()
-            data: dict[str, Any] = response.json()
+            data = await _read_bounded_json_response(response)
 
         return _normalize_response(data)
 
@@ -110,17 +119,20 @@ async def apollo_enrich_organization(
         return {"success": False, "error": "No organization search parameters provided"}
 
     try:
-        async with httpx.AsyncClient(timeout=API_TIMEOUT_SECONDS) as client:
-            response = await client.get(
+        async with (
+            httpx.AsyncClient(timeout=API_TIMEOUT_SECONDS) as client,
+            client.stream(
+                "GET",
                 f"{apollo_config.APOLLO_BASE_URL}/organizations/enrich",
                 params=params,
                 headers={
                     "x-api-key": api_key,
                     "Content-Type": "application/json",
                 },
-            )
+            ) as response,
+        ):
             response.raise_for_status()
-            data: dict[str, Any] = response.json()
+            data = await _read_bounded_json_response(response)
 
         return _normalize_organization_response(data)
 
@@ -137,6 +149,29 @@ async def apollo_enrich_organization(
     except Exception as e:
         logger.exception("Apollo organization enrichment unexpected error: %s", e)
         return {"success": False, "error": str(e)}
+
+
+async def _read_bounded_json_response(response: httpx.Response) -> dict[str, Any]:
+    """Stream one Apollo JSON response and reject it before crossing 2 MiB."""
+    content_length = response.headers.get("content-length")
+    if content_length:
+        try:
+            declared_length = int(content_length)
+        except ValueError as exc:
+            raise ApolloResponseTooLargeError("Apollo returned an invalid Content-Length") from exc
+        if declared_length > MAX_APOLLO_RESPONSE_BYTES:
+            raise ApolloResponseTooLargeError("Apollo response exceeds the safe size limit")
+
+    body = bytearray()
+    async for chunk in response.aiter_bytes():
+        body.extend(chunk)
+        if len(body) > MAX_APOLLO_RESPONSE_BYTES:
+            raise ApolloResponseTooLargeError("Apollo response exceeds the safe size limit")
+
+    parsed = json.loads(body)
+    if not isinstance(parsed, dict):
+        raise ValueError("Apollo response must be a JSON object")
+    return parsed
 
 
 def _normalize_response(data: dict[str, Any]) -> dict[str, Any]:

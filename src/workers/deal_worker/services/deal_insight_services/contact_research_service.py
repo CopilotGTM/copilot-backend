@@ -2,7 +2,7 @@
 
 Called by contact research Celery tasks. The workflow loads a tenant-owned
 contact snapshot, releases the org session before provider/LLM calls, persists
-structured provider fields first, then optionally writes a short no-tool summary.
+structured provider fields first, then optionally writes a concise career profile.
 """
 
 from __future__ import annotations
@@ -19,10 +19,12 @@ from src.infra.utils.logger import get_logger
 from src.service.crm.accounts.domain_resolution_service import AccountDomainResolutionService
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.contacts.research_service import (
+    CONTACT_RESEARCH_PROMPT_VERSION,
     ContactProviderLookup,
     ContactProviderResearchInput,
     ContactResearchService,
     ContactResearchSummaryResult,
+    profile_payload_hash,
     research_contact_with_apollo,
 )
 
@@ -143,12 +145,22 @@ class ContactResearchWorkflowService:
             profile_enrichment,
         )
         if summary_result.status == "generated":
+            persisted = False
             async for session in acquire_org_async_session(self.organisation_id):
-                await ContactResearchService(session, self.organisation_id).persist_summary(
+                persisted = await ContactResearchService(
+                    session, self.organisation_id
+                ).persist_summary(
                     snapshot.contact_id,
                     summary_result,
+                    prompt_version=CONTACT_RESEARCH_PROMPT_VERSION,
+                    source_payload_hash=profile_payload_hash(profile_enrichment),
                 )
                 break
+            if not persisted:
+                summary_result = ContactResearchSummaryResult(
+                    status="skipped",
+                    error_detail="Summary output was stale or failed persistence validation",
+                )
 
         await self._record_completion_activity(
             snapshot.contact_id,

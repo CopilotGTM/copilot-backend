@@ -18,6 +18,11 @@ from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.infra.database.sessions import acquire_org_async_session
 from src.service.crm.accounts.domain_resolution_service import AccountDomainResolutionService
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
+from src.service.crm.contacts.research_service import (
+    CONTACT_RESEARCH_PROMPT_VERSION,
+    PROFILE_METADATA_KEY,
+    profile_payload_hash,
+)
 from src.workers.deal_worker.client import send_deal_task_async
 
 logger = logging.getLogger(__name__)
@@ -57,8 +62,19 @@ async def dispatch_contact_research_async(
 ) -> str | None:
     """Create and enqueue a contact research job when the contact is eligible."""
     async for session in acquire_org_async_session(organisation_id):
-        contact = await session.get(CRMContact, contact_id)
-        if not contact or contact.organisation_id != organisation_id or contact.is_deleted:
+        # Lock the contact through job creation so simultaneous API/meeting/email
+        # triggers cannot both pass dedupe; the org predicate is the tenant boundary.
+        contact_result = await session.execute(
+            select(CRMContact)
+            .where(
+                col(CRMContact.contact_id) == contact_id,
+                col(CRMContact.organisation_id) == organisation_id,
+                col(CRMContact.is_deleted).is_(False),
+            )
+            .with_for_update()
+        )
+        contact = contact_result.scalars().first()
+        if not contact:
             logger.warning(
                 "Contact research dispatch skipped because contact was not found",
                 extra={
@@ -82,6 +98,7 @@ async def dispatch_contact_research_async(
             not force_refresh
             and contact.contact_research
             and _is_recent(contact.last_researched_at)
+            and _has_current_summary(profile_enrichment)
         ):
             return None
 
@@ -133,3 +150,14 @@ def _is_recent(last_researched_at: datetime | None) -> bool:
     if not last_researched_at:
         return False
     return last_researched_at >= datetime.now(UTC) - timedelta(days=CONTACT_RESEARCH_COOLDOWN_DAYS)
+
+
+def _has_current_summary(profile_enrichment: dict) -> bool:
+    """Treat legacy summaries as stale after prompt or provider evidence changes."""
+    metadata = profile_enrichment.get(PROFILE_METADATA_KEY)
+    if not isinstance(metadata, dict):
+        return False
+    if metadata.get("prompt_version") != CONTACT_RESEARCH_PROMPT_VERSION:
+        return False
+    payload_hash = profile_payload_hash(profile_enrichment)
+    return bool(payload_hash) and metadata.get("summary_source_hash") == payload_hash
