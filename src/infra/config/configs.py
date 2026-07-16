@@ -1592,6 +1592,12 @@ class ChatFileUploadConfig:
     )
     ATTACHMENT_MANIFEST_MAX_ITEMS: int = int(os.getenv("CHAT_ATTACHMENT_MANIFEST_MAX_ITEMS", "10"))
     ATTACHMENT_READ_MAX_CHARS: int = int(os.getenv("CHAT_ATTACHMENT_READ_MAX_CHARS", "12000"))
+    # Automatic grounding is deliberately smaller than upload limits. Larger or
+    # older content remains available through read_chat_attachment.
+    ATTACHMENT_AUTO_READ_MAX_ITEMS: int = int(os.getenv("CHAT_ATTACHMENT_AUTO_READ_MAX_ITEMS", "3"))
+    ATTACHMENT_AUTO_READ_MAX_TOKENS: int = int(
+        os.getenv("CHAT_ATTACHMENT_AUTO_READ_MAX_TOKENS", "3000")
+    )
     ATTACHMENT_RETENTION_DAYS: int = int(os.getenv("CHAT_ATTACHMENT_RETENTION_DAYS", "30"))
 
 

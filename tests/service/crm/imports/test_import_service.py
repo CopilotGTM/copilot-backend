@@ -11,6 +11,7 @@ from src.domain.models.organisation_tables.sync.crm.imports import (
 from src.service.crm.accounts.contracts import AccountWriteResult
 from src.service.crm.contacts.contracts import ContactWriteResult, ContactWriteServiceError
 from src.service.crm.imports.import_service import (
+    _STANDARD_TARGETS,
     CRMImportRowsResult,
     CRMImportService,
     CRMImportServiceError,
@@ -19,6 +20,13 @@ from src.service.crm.imports.import_service import (
     _parse_import_custom_value,
     _parse_import_number,
 )
+
+
+def test_standard_targets_include_deal_note():
+    """The mapping catalog must expose the note column used by deal imports."""
+    targets = {target for target, _label, _group, _type in _STANDARD_TARGETS}
+
+    assert "deal.note" in targets
 
 
 class _ScalarRows:
@@ -896,6 +904,69 @@ async def test_process_deal_omits_optional_relationship_payloads(monkeypatch):
     result = await service._process_deal(
         row,
         {"Deal": "deal.name"},
+        account_id=None,
+        contact_id=None,
+        stage_id=stage_id,
+        owner_user_id=None,
+        custom_properties={},
+        metadata={"pipeline_id": str(pipeline_id)},
+    )
+
+    assert result == (deal_id, True)
+
+
+@pytest.mark.asyncio
+async def test_process_deal_creates_note_from_mapped_note_column(monkeypatch):
+    """A mapped deal note becomes a CRM note and never enters the deal payload."""
+    org_id = uuid4()
+    user_id = uuid4()
+    pipeline_id = uuid4()
+    stage_id = uuid4()
+    deal_id = uuid4()
+    session = _Session()
+
+    class DealWriter:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def create_deal(self, payload, *, context=None):
+            assert "note" not in payload
+            return SimpleNamespace(deal_id=deal_id)
+
+    class NoteWriter:
+        def __init__(self, org_session, organisation_id):
+            assert org_session is session
+            assert organisation_id == org_id
+
+        async def create_user_note(self, created_deal_id, content, subject, context):
+            assert created_deal_id == deal_id
+            assert content == "First note\nSecond note"
+            assert subject is None
+            assert context.source == "crm_import"
+            assert context.actor_user_id == user_id
+            assert context.created_via == "crm_import"
+
+    monkeypatch.setattr("src.service.crm.imports.import_service.DealWriteService", DealWriter)
+    monkeypatch.setattr("src.service.crm.imports.import_service.NotesWriteService", NoteWriter)
+    service = CRMImportService(
+        session,
+        org_id,
+        user_id,
+        storage=_Storage(),
+        master_session=_Session(),
+    )
+    row = CRMImportRow(
+        import_job_id=uuid4(),
+        organisation_id=org_id,
+        row_number=1,
+        raw_values={"Deal": "Deal only", "Deal Note": "First note\nSecond note"},
+        normalized_values={},
+        status=CRMImportRowStatus.READY,
+    )
+
+    result = await service._process_deal(
+        row,
+        {"Deal": "deal.name", "Deal Note": "deal.note"},
         account_id=None,
         contact_id=None,
         stage_id=stage_id,

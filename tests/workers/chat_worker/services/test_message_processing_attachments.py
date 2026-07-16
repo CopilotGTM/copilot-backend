@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -281,3 +282,70 @@ async def test_resolve_attachments_skips_no_storage_path(
     )
 
     assert images == []
+
+
+@pytest.mark.asyncio
+async def test_webchat_defers_current_images_to_shared_agent_grounding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = MessageProcessingService(uuid4())
+    captured: dict[str, object] = {}
+
+    async def fake_master_session():
+        yield object()
+
+    async def fake_get_organisation_name(_session, _organisation_id):
+        return "Test Org"
+
+    async def fake_run_agent_for_chat(**kwargs):
+        captured.update(kwargs)
+        if False:
+            yield None
+
+    async def fail_duplicate_loader(*_args, **_kwargs):
+        raise AssertionError("WebChat must not load images before GeneralAgent")
+
+    monkeypatch.setattr(
+        "src.workers.chat_worker.services.message_processing_service.acquire_master_async_session",
+        fake_master_session,
+    )
+    monkeypatch.setattr(
+        "src.workers.chat_worker.services.message_processing_service.get_organisation_name",
+        fake_get_organisation_name,
+    )
+    monkeypatch.setattr("src.agents.orchestrator.run_agent_for_chat", fake_run_agent_for_chat)
+    monkeypatch.setattr(service, "_resolve_attachments", fail_duplicate_loader)
+
+    attachment = AttachmentInfo(
+        attachment_id=uuid4(),
+        storage_path="attachments/image.png",
+        mimetype="image/png",
+        filename="image.png",
+    )
+    history = [
+        {
+            "role": "user",
+            "content": "inspect this",
+            "attachment_manifest": (
+                f"[Attached files]\n- id: {attachment.attachment_id}\n"
+                "  name: image.png\n  type: image/png"
+            ),
+        }
+    ]
+    data = SimpleNamespace(
+        user_id=uuid4(),
+        user_email="user@example.com",
+        assistant_message_id=uuid4(),
+        session_id=uuid4(),
+        user_message_id=uuid4(),
+        attachments=[attachment],
+        job_metadata={},
+        chat_type="GENERAL_CHAT",
+        history=history,
+        job_id=uuid4(),
+    )
+
+    await service._consume_agent_stream(data)
+
+    assert captured["images"] is None
+    assert captured["messages"] == history

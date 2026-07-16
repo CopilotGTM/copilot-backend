@@ -481,16 +481,11 @@ class MessageProcessingService:
             },
         )
 
-        # Current-turn images stay as native vision input. Non-image files remain out of the
-        # prompt and are read on demand through the attachment tool. Message history already carries
-        # per-message attachment manifests for all persisted files in the conversation.
-        images = await self._resolve_attachments(data.attachments)
-
         async for frame in run_agent_for_chat(
             chat_type=data.chat_type,
             messages=data.history,
             context=context,
-            images=images or None,
+            images=None,
             attachment_text=None,
         ):
             try:

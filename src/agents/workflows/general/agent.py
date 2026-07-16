@@ -10,8 +10,8 @@ from typing import Any
 from agno.agent import Agent as AgnoAgent
 from agno.models.azure.openai_chat import AzureOpenAI
 from agno.skills import LocalSkills, Skills
-from agno.tools.function import ToolResult as AgnoToolResult
 from dotenv import load_dotenv
+from src.agents.attachment_grounding import ground_chat_attachments
 from src.agents.base import Agent as BaseAgent
 from src.agents.common.agent_tasks_extractor import AgentTasksExtractor
 from src.agents.common.json_extractor import JsonExtractor
@@ -20,13 +20,13 @@ from src.agents.common.stream_buffer import StreamingAnswerBuffer
 from src.agents.common.token_tracking import extract_token_usage
 from src.agents.context import AgentContext
 from src.agents.timezone import get_agno_datetime_settings
-from src.agents.tools.communication.chat_attachments import read_chat_attachment
 from src.agents.tools.registry import get_tools_for_agent
 from src.agents.tools.transparent_tools import AgentCapabilities
-from src.agents.utils import pending_attachment_ids_for_followup, prepare_messages
+from src.agents.utils import prepare_messages
 from src.agents.workflows.general.prompts.general_prompt import get_general_prompt
 from src.domain.models.organisation_tables import ChatMessage
 from src.infra.config.agent_config import agent_config
+from src.infra.config.configs import chat_file_upload_config
 from src.infra.messaging.chat_stream_models import (
     AnswerDelta,
     Finalize,
@@ -132,7 +132,7 @@ class GeneralAgent(BaseAgent):
         )
 
         async def _run() -> AsyncIterator[Frame]:
-            images_for_run, attachment_text_for_run = await self._ground_pending_attachments(
+            images_for_run, attachment_text_for_run = await self._ground_automatic_attachments(
                 message_list=message_list,
                 images=images,
                 attachment_text=attachment_text,
@@ -172,55 +172,25 @@ class GeneralAgent(BaseAgent):
 
         return _run()
 
-    async def _ground_pending_attachments(
+    async def _ground_automatic_attachments(
         self,
         *,
         message_list: Sequence[ChatMessage | dict[str, Any]],
         images: Sequence[Any] | None,
         attachment_text: str | None,
     ) -> tuple[list[Any] | None, str | None]:
-        """Reopen a pending prior attachment turn through the existing attachment tool.
-
-        Current-turn uploads are already passed as native media or manifests by
-        the worker. This only covers the general two-turn pattern where the user
-        uploads first and gives the instruction in the next message.
-        """
-        pending_ids = pending_attachment_ids_for_followup(message_list)
-        if not pending_ids:
-            return list(images or []) or None, attachment_text
-
-        grounded_images = list(images or [])
-        text_parts: list[str] = [attachment_text] if attachment_text else []
-
-        for attachment_id in pending_ids:
-            result = await read_chat_attachment(attachment_id, context=self.context)
-            if isinstance(result, AgnoToolResult):
-                grounded_images.extend(result.images or [])
-                if result.content:
-                    text_parts.append(str(result.content))
-                continue
-
-            if isinstance(result, dict):
-                filename = result.get("filename") or attachment_id
-                if result.get("error"):
-                    message = result.get("message") or "Attachment content unavailable"
-                    text_parts.append(f"--- Attachment unavailable: {filename} ---\n{message}")
-                    continue
-
-                content = result.get("content")
-                if content:
-                    content_type = result.get("content_type") or "text"
-                    text_parts.append(
-                        f"--- Grounded attachment ({content_type}): {filename} ---\n{content}"
-                    )
-
-        logger.info(
-            "GeneralAgent grounded pending attachments: ids=%d images=%d text_chars=%d",
-            len(pending_ids),
-            len(grounded_images),
-            len("\n\n".join(text_parts)),
+        """Delegate attachment grounding while preserving the existing adapter contract."""
+        grounded = await ground_chat_attachments(
+            message_list=message_list,
+            context=self.context,
+            images=images,
+            attachment_text=attachment_text,
+            max_items=chat_file_upload_config.ATTACHMENT_AUTO_READ_MAX_ITEMS,
+            max_text_tokens=chat_file_upload_config.ATTACHMENT_AUTO_READ_MAX_TOKENS,
+            max_chars=chat_file_upload_config.ATTACHMENT_READ_MAX_CHARS,
+            model_id=agent_config.get_config("general_agent").model,
         )
-        return grounded_images or None, "\n\n".join(text_parts) if text_parts else None
+        return grounded.images, grounded.text
 
     def _get_frame_message_id(self) -> str:
         """Use the worker-provided assistant message id when available."""

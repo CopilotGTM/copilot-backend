@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 from agno.media import Image
-from agno.tools.function import ToolResult as AgnoToolResult
 from src.agents.workflows.general.agent import GeneralAgent
 from src.infra.messaging.chat_stream_models import AnswerDelta, TokenUsageFrame
+from src.service.chat.chat_attachment_reader import AttachmentReadResult
 
 
 class _FakeBuffer:
@@ -149,22 +149,23 @@ def test_get_frame_message_id_is_stable_without_context_value() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ground_pending_attachments_adds_extracted_text(monkeypatch) -> None:
+async def test_ground_automatic_attachments_adds_extracted_text(monkeypatch) -> None:
     agent = object.__new__(GeneralAgent)
     agent.context = SimpleNamespace(metadata={})
 
     async def fake_read_chat_attachment(attachment_id, *, context, max_chars=12000):
         assert attachment_id == "doc-id"
         assert context is agent.context
-        return {
-            "filename": "doc.txt",
-            "content_type": "text",
-            "content": "file text",
-            "truncated": False,
-        }
+        return AttachmentReadResult(
+            attachment_id=attachment_id,
+            filename="doc.txt",
+            mimetype="text/plain",
+            kind="text",
+            text="file text",
+        )
 
     monkeypatch.setattr(
-        "src.agents.workflows.general.agent.read_chat_attachment",
+        "src.agents.attachment_grounding.read_attachment_content",
         fake_read_chat_attachment,
     )
 
@@ -172,13 +173,13 @@ async def test_ground_pending_attachments_adds_extracted_text(monkeypatch) -> No
         {
             "role": "user",
             "content": "",
-            "attachment_manifest": "[Attached files]\n- id: doc-id\n  name: doc.txt",
+            "attachment_manifest": "[Attached files]\n- id: doc-id\n  name: doc.txt\n  type: text/plain",
         },
         {"role": "assistant", "content": "What should I do with it?"},
         {"role": "user", "content": "summarize it", "attachment_manifest": None},
     ]
 
-    images, attachment_text = await agent._ground_pending_attachments(
+    images, attachment_text = await agent._ground_automatic_attachments(
         message_list=messages,
         images=None,
         attachment_text=None,
@@ -189,16 +190,21 @@ async def test_ground_pending_attachments_adds_extracted_text(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_ground_pending_attachments_adds_native_images(monkeypatch) -> None:
+async def test_ground_automatic_attachments_adds_native_images(monkeypatch) -> None:
     agent = object.__new__(GeneralAgent)
     agent.context = SimpleNamespace(metadata={})
-    image = Image(content=b"image", format="png")
 
     async def fake_read_chat_attachment(_attachment_id, *, context, max_chars=12000):
-        return AgnoToolResult(content="opened image", images=[image])
+        return AttachmentReadResult(
+            attachment_id=_attachment_id,
+            filename="chart.png",
+            mimetype="image/png",
+            kind="image",
+            content_bytes=b"image",
+        )
 
     monkeypatch.setattr(
-        "src.agents.workflows.general.agent.read_chat_attachment",
+        "src.agents.attachment_grounding.read_attachment_content",
         fake_read_chat_attachment,
     )
 
@@ -206,17 +212,139 @@ async def test_ground_pending_attachments_adds_native_images(monkeypatch) -> Non
         {
             "role": "user",
             "content": "attached",
-            "attachment_manifest": "[Attached files]\n- id: image-id\n  name: chart.png",
+            "attachment_manifest": "[Attached files]\n- id: image-id\n  name: chart.png\n  type: image/png",
         },
         {"role": "assistant", "content": "What should I do with it?"},
         {"role": "user", "content": "what does it show?", "attachment_manifest": None},
     ]
 
-    images, attachment_text = await agent._ground_pending_attachments(
+    images, attachment_text = await agent._ground_automatic_attachments(
         message_list=messages,
         images=None,
         attachment_text=None,
     )
 
+    assert len(images) == 1
+    assert images[0].id == "image-id"
+    assert images[0].content == b"image"
+    assert attachment_text is None
+
+
+@pytest.mark.asyncio
+async def test_ground_automatic_attachments_skips_audio(monkeypatch) -> None:
+    agent = object.__new__(GeneralAgent)
+    agent.context = SimpleNamespace(metadata={})
+
+    async def fail_read(*_args, **_kwargs):
+        raise AssertionError("WhatsApp audio must not be transcribed twice")
+
+    monkeypatch.setattr(
+        "src.agents.attachment_grounding.read_attachment_content",
+        fail_read,
+    )
+
+    messages = [
+        {
+            "role": "user",
+            "content": "voice message",
+            "attachment_manifest": (
+                "[Attached files]\n- id: audio-id\n  name: voice.ogg\n  type: audio/ogg"
+            ),
+        }
+    ]
+
+    images, attachment_text = await agent._ground_automatic_attachments(
+        message_list=messages,
+        images=None,
+        attachment_text=None,
+    )
+
+    assert images is None
+    assert attachment_text is None
+
+
+@pytest.mark.asyncio
+async def test_ground_automatic_attachments_shares_one_text_budget(monkeypatch) -> None:
+    agent = object.__new__(GeneralAgent)
+    agent.context = SimpleNamespace(metadata={})
+    reads: list[str] = []
+
+    async def fake_read(attachment_id, *, context, max_chars=12000):
+        reads.append(attachment_id)
+        return AttachmentReadResult(
+            attachment_id=attachment_id,
+            filename=f"{attachment_id}.txt",
+            mimetype="text/plain",
+            kind="text",
+            text="x" * 200,
+            truncated=True,
+        )
+
+    monkeypatch.setattr(
+        "src.agents.attachment_grounding.read_attachment_content",
+        fake_read,
+    )
+    monkeypatch.setattr(
+        "src.agents.attachment_grounding.truncate_to_token_budget",
+        lambda text, budget, _model: (
+            text[:budget],
+            len(text) > budget,
+            min(len(text), budget),
+        ),
+    )
+    monkeypatch.setattr(
+        "src.agents.workflows.general.agent.chat_file_upload_config."
+        "ATTACHMENT_AUTO_READ_MAX_TOKENS",
+        80,
+    )
+
+    manifest = (
+        "[Attached files]\n"
+        "- id: one\n  name: one.txt\n  type: text/plain\n"
+        "- id: two\n  name: two.txt\n  type: text/plain"
+    )
+    _images, attachment_text = await agent._ground_automatic_attachments(
+        message_list=[
+            {
+                "role": "user",
+                "content": "compare",
+                "attachment_manifest": manifest,
+            }
+        ],
+        images=None,
+        attachment_text=None,
+    )
+
+    assert len(attachment_text) == 80
+    assert reads == ["one"]
+
+
+@pytest.mark.asyncio
+async def test_ground_automatic_attachments_deduplicates_preloaded_image(monkeypatch) -> None:
+    agent = object.__new__(GeneralAgent)
+    agent.context = SimpleNamespace(metadata={})
+    image = Image(id="image-id", content=b"image", format="png")
+
+    async def fail_read(*_args, **_kwargs):
+        raise AssertionError("image was already supplied by the caller")
+
+    monkeypatch.setattr(
+        "src.agents.attachment_grounding.read_attachment_content",
+        fail_read,
+    )
+
+    images, _text = await agent._ground_automatic_attachments(
+        message_list=[
+            {
+                "role": "user",
+                "content": "inspect",
+                "attachment_manifest": (
+                    "[Attached files]\n- id: image-id\n  name: image.png\n  type: image/png"
+                ),
+            }
+        ],
+        images=[image],
+        attachment_text=None,
+    )
+
     assert images == [image]
-    assert "opened image" in attachment_text

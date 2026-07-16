@@ -5,6 +5,7 @@ from src.service.chat.chat_attachment_manifest import (
     append_attachment_manifest,
     build_attachment_manifest,
     extract_attachment_ids_from_manifest,
+    extract_attachment_items_from_manifest,
     serialize_attachment_context,
 )
 
@@ -198,3 +199,22 @@ def test_extract_attachment_ids_from_manifest() -> None:
     manifest = "[Attached files]\n- id: first-id\n  name: one.png\n- id: second-id\n  name: two.pdf"
 
     assert extract_attachment_ids_from_manifest(manifest) == ["first-id", "second-id"]
+
+
+def test_extract_attachment_items_from_manifest_preserves_metadata() -> None:
+    manifest = (
+        "[Attached files]\n"
+        "- id: first-id\n"
+        "  name: report.pdf\n"
+        "  type: application/pdf\n"
+        "  source: whatsapp\n"
+        "- id: legacy-id\n"
+        "  name: old.png"
+    )
+
+    items = extract_attachment_items_from_manifest(manifest)
+
+    assert items[0] == AttachmentContextItem(
+        "first-id", "report.pdf", "application/pdf", "whatsapp"
+    )
+    assert items[1] == AttachmentContextItem("legacy-id", "old.png", "", None)

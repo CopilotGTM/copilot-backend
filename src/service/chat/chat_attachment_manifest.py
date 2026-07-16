@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -14,9 +13,6 @@ class AttachmentContextItem:
     filename: str
     mimetype: str
     source_provider: str | None = None
-
-
-_MANIFEST_ID_PATTERN = re.compile(r"^\s*-\s*id:\s*(?P<id>\S+)\s*$", re.MULTILINE)
 
 
 def build_attachment_manifest(
@@ -72,6 +68,43 @@ def serialize_attachment_context(
     ]
 
 
+def extract_attachment_items_from_manifest(
+    manifest: str | None,
+) -> list[AttachmentContextItem]:
+    """Parse attachment metadata from the compact chat-history manifest."""
+    if not manifest:
+        return []
+
+    items: list[AttachmentContextItem] = []
+    current: dict[str, str] | None = None
+
+    def append_current() -> None:
+        if current and current.get("attachment_id"):
+            items.append(
+                AttachmentContextItem(
+                    attachment_id=current["attachment_id"],
+                    filename=current.get("filename", "attachment"),
+                    mimetype=current.get("mimetype", ""),
+                    source_provider=current.get("source_provider"),
+                )
+            )
+
+    for raw_line in manifest.splitlines():
+        line = raw_line.strip()
+        if line.startswith("- id:"):
+            append_current()
+            current = {"attachment_id": line.removeprefix("- id:").strip()}
+        elif current is not None and line.startswith("name:"):
+            current["filename"] = line.removeprefix("name:").strip()
+        elif current is not None and line.startswith("type:"):
+            current["mimetype"] = line.removeprefix("type:").strip()
+        elif current is not None and line.startswith("source:"):
+            current["source_provider"] = line.removeprefix("source:").strip()
+
+    append_current()
+    return items
+
+
 def extract_attachment_ids_from_manifest(manifest: str | None) -> list[str]:
     """Return attachment IDs from the compact manifest format used in chat history.
 
@@ -81,7 +114,7 @@ def extract_attachment_ids_from_manifest(manifest: str | None) -> list[str]:
     """
     if not manifest:
         return []
-    return [match.group("id") for match in _MANIFEST_ID_PATTERN.finditer(manifest)]
+    return [item.attachment_id for item in extract_attachment_items_from_manifest(manifest)]
 
 
 def _coerce_item(attachment: AttachmentContextItem | dict[str, Any]) -> AttachmentContextItem:
