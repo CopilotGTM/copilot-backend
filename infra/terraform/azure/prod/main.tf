@@ -491,13 +491,6 @@ module "azure_openai" {
 
   # Define all models to deploy - add/remove models as needed
   models = {
-    gpt5 = {
-      deployment_name = "gpt-5"
-      model_name      = "gpt-5"
-      sku             = "GlobalStandard"
-      capacity        = 300
-      version         = "2025-08-07"
-    }
     gpt5_mini = {
       deployment_name = "gpt-5-mini"
       model_name      = "gpt-5-mini"
