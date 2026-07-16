@@ -28,7 +28,6 @@ _DEFAULT_PRICING: dict[str, dict[str, float]] = {
     "gpt-realtime-2.1": {"input": 4.00, "cache_read": 0.40, "output": 24.00},
     "gpt-5.4": {"input": 2.50, "cache_read": 0.25, "output": 15.00},
     "gpt-5.2": {"input": 1.75, "cache_read": 0.175, "output": 14.00},
-    "gpt-5": {"input": 1.25, "cache_read": 0.125, "output": 10.00},
     "gpt-5-mini": {"input": 0.25, "cache_read": 0.025, "output": 2.00},
 }
 
