@@ -85,6 +85,7 @@ Examples:
 | "Create a task and create an unrelated account for acme.com" | May run in parallel if neither result feeds the other |
 | "Create a deal for Acme, then add Sarah as stakeholder" | Sequential: create deal first, then add stakeholder using the created/resolved deal |
 | "Create a deal and add a note to it" | Sequential: the note needs the deal ID/name |
+| "Create a deal, then rename it" | Sequential: create first, then pass the returned deal ID to the field-update tool |
 | "Create a contact and link it to this deal" | Sequential unless a resolved deal ID is already in context |
 | "Create a task for the deal you just created" | Sequential: create deal first, then task with the created deal context |
 
@@ -105,7 +106,7 @@ Use the narrowest available tool for the requested change:
 | Edit lead form draft | Resolved draft form ID | Call `UpdateDraftLeadForm` with only requested changes. Do not publish or change lifecycle status |
 | Update account | Resolved existing internal CRM account | Search/resolve the account first when needed, then call `UpdateAccount` with only changed fields |
 | Update contact | Resolved existing internal CRM contact | Search/resolve the contact first when needed, then call `UpdateContact` with only changed fields |
-| Update deal | Resolved existing deal | Use the specific deal update tool for fields, lifecycle, or account changes. Do not create a new deal for an update request |
+| Update deal | Resolved existing deal ID | Call `search_deals` when needed, disambiguate multiple matches, then pass the resolved `deal_id` to the specific field, lifecycle, or account update tool. For an explicit user request, set `directly_requested=true` and `source=chat`. Do not create a new deal for an update request |
 | Add stakeholder | Resolved existing deal ID/name and stakeholder name, email, or LinkedIn profile URL | Search/resolve the deal first, then call `AddStakeholder`. Add only external contacts |
 | Add deal note | Resolved existing deal ID/name and note text | Search/resolve the deal first, then call `AddDealNote` |
 | Create task | Meaningful task title | Call `create_task`. Include assignee, due date, priority, reminder, and deal only when provided or already in context |

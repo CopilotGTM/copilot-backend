@@ -1,17 +1,18 @@
-"""Agent tool for updating safe scalar CRM deal fields on a scoped context.
+"""Agent tool for updating safe scalar fields on an explicitly resolved deal.
 
-The function is used by conversational and autonomous deal-update flows.
-The tool always validates tenant/deal context and applies approval policy
-before it writes through the shared write service.
+Conversational callers resolve a deal with ``search_deals`` and pass its ID;
+autonomous callers pass the ID from their deal-scoped workflow. The immutable
+organization context remains the tenant boundary for every write.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from src.contracts.crm.deal_write import DealUpdateRequest
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
@@ -37,6 +38,40 @@ ALLOWED_DEAL_FIELDS = {
     "lead_source",
     "deal_type",
 }
+
+
+class DealFieldUpdateInput(BaseModel):
+    """LLM-facing scalar fields accepted by the deal field update action."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, max_length=500)
+    amount: float | None = Field(default=None, ge=0)
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
+    source_created_at: datetime | None = None
+    description: str | None = None
+    expected_close_date: datetime | None = None
+    priority: str | None = None
+    probability: float | None = Field(default=None, ge=0, le=100)
+    forecast_category: str | None = None
+    lead_source: str | None = None
+    deal_type: str | None = None
+
+
+def _resolve_deal_id(context: AgentContext, deal_id: str) -> UUID:
+    """Validate a caller-provided deal ID against any scoped workflow boundary.
+
+    General chat has no scoped deal and may target any deal resolved inside the
+    organization. Autonomous deal workflows already have an immutable target,
+    so their explicit argument must match it exactly.
+    """
+    try:
+        resolved_deal_id = UUID(deal_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Invalid deal_id. Search for the deal again.") from exc
+    if context.deal_id and resolved_deal_id != context.deal_id:
+        raise ValueError("deal_id does not match the scoped deal context.")
+    return resolved_deal_id
 
 
 def _result(
@@ -77,8 +112,11 @@ def _deal_context_fields(deal: Any) -> dict[str, Any]:
     return context
 
 
-def _normalize_deal_fields(fields: dict[str, Any]) -> dict[str, Any]:
-    request = DealUpdateRequest(**fields)
+def _normalize_deal_fields(
+    fields: DealFieldUpdateInput | dict[str, Any],
+) -> dict[str, Any]:
+    payload = fields if isinstance(fields, dict) else fields.model_dump(exclude_unset=True)
+    request = DealUpdateRequest(**payload)
     return request.model_dump(exclude_unset=True)
 
 
@@ -86,34 +124,53 @@ def create_update_deal_fields(
     context: AgentContext,
     capabilities_getter: Callable[[], AgentCapabilities | None],
 ) -> Callable[..., Any]:
-    """Build the `update_deal_fields` tool for the currently scoped deal.
+    """Build the organization-scoped `update_deal_fields` tool.
 
-    The returned callable enforces supported field constraints, routes
-    sensitive updates through approval when inference-based, and writes only if
-    the full update set is policy-compliant.
+    Callers must pass a deal ID returned by ``search_deals`` or creation. The
+    tool validates that identifier before applying field and approval policy.
     """
 
     async def update_deal_fields_tool(
-        fields: dict[str, Any],
+        deal_id: str,
+        fields: DealFieldUpdateInput,
         directly_requested: bool = False,
         source: str = "agent",
     ) -> dict[str, Any]:
-        """Apply safe scalar field updates with policy-driven approval guards."""
-        _ = capabilities_getter
-        # Both org and deal are required boundary inputs; no trust in raw IDs.
-        if not context.organisation_id or not context.deal_id:
-            return _result("failed", "Deal context is required.")
-        if not fields:
-            return _result("failed", "At least one field is required.")
+        """Update safe scalar fields on one resolved deal.
 
-        unsupported = sorted(set(fields) - ALLOWED_DEAL_FIELDS)
-        if unsupported:
-            return _result("skipped", f"Fields are not supported: {', '.join(unsupported)}")
+        In general chat, first use ``search_deals`` and disambiguate multiple
+        results. Deal-scoped workflows pass their assigned deal ID. Supported
+        field keys are name, amount, currency, source_created_at, description,
+        expected_close_date, priority, probability, forecast_category,
+        lead_source, and deal_type.
+
+        Set ``directly_requested=True`` and ``source="chat"`` when the current
+        user explicitly requested the change. Leave the defaults only for
+        inferred or autonomous updates that require approval.
+        """
+        _ = capabilities_getter
+        if not context.organisation_id:
+            return _result("failed", "Organisation context is required.")
+        try:
+            resolved_deal_id = _resolve_deal_id(context, deal_id)
+        except ValueError as exc:
+            return _result("failed", str(exc))
+        if isinstance(fields, dict):
+            unsupported = sorted(set(fields) - ALLOWED_DEAL_FIELDS)
+            if unsupported:
+                return _result("skipped", f"Fields are not supported: {', '.join(unsupported)}")
         try:
             normalized_fields = _normalize_deal_fields(fields)
         except ValidationError as exc:
-            error = exc.errors()[0] if exc.errors() else {"msg": "Invalid deal field payload."}
-            return _result("failed", str(error["msg"]))
+            errors = exc.errors()
+            reason = str(errors[0]["msg"]) if errors else "Invalid deal field payload."
+            return _result("failed", reason)
+        if not normalized_fields:
+            return _result("failed", "At least one field is required.")
+
+        unsupported = sorted(set(normalized_fields) - ALLOWED_DEAL_FIELDS)
+        if unsupported:
+            return _result("skipped", f"Fields are not supported: {', '.join(unsupported)}")
 
         effective_fields = (
             normalized_fields
@@ -147,7 +204,11 @@ def create_update_deal_fields(
             return _result(
                 "approval_required",
                 "One or more deal field updates require approval.",
-                approval_payload={"fields": approval_fields, "source": source},
+                approval_payload={
+                    "deal_id": str(resolved_deal_id),
+                    "fields": approval_fields,
+                    "source": source,
+                },
             )
 
         actor_user_id = context.user_id or AUTOMATED_PIPELINE_USER_ID
@@ -162,7 +223,7 @@ def create_update_deal_fields(
                     actor_user_id=actor_user_id,
                 )
                 try:
-                    deal = await service.update_deal(context.deal_id, effective_fields)
+                    deal = await service.update_deal(resolved_deal_id, effective_fields)
                     await org_session.commit()
                     return _result(
                         "applied",

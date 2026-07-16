@@ -1,9 +1,8 @@
-"""Agent tool for updating CRM account/company fields on a context-bound deal.
+"""Agent tool for updating account/company fields on a resolved CRM deal.
 
-The returned tool is used by AI-run CRM workflows and expects both
-``organisation_id`` and ``deal_id`` to be present in the AgentContext.
-This keeps tenant isolation explicit: caller-provided IDs are never treated
-as trust anchors on their own.
+The organization ID remains immutable in AgentContext, while callers pass a
+deal ID returned by search or creation. The write service validates and mutates
+the target inside that tenant boundary.
 """
 
 from __future__ import annotations
@@ -12,9 +11,9 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
-from src.agents.tools.crm.update_deal_fields import _deal_context_fields
+from src.agents.tools.crm.update_deal_fields import _deal_context_fields, _resolve_deal_id
 from src.contracts.crm.deal_write import DealAccountUpdateRequest
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.service.crm.deals.contracts import DealWriteServiceError
@@ -27,6 +26,19 @@ if TYPE_CHECKING:
 
 AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 ALLOWED_ACCOUNT_FIELDS = {"name", "domain", "website", "linkedin_url", "industry", "country"}
+
+
+class DealAccountUpdateInput(BaseModel):
+    """LLM-facing profile fields accepted by the deal account update action."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    domain: str | None = None
+    website: str | None = None
+    linkedin_url: str | None = None
+    industry: str | None = None
+    country: str | None = None
 
 
 def _result(
@@ -54,34 +66,58 @@ def create_update_deal_account(
     context: AgentContext,
     capabilities_getter: Callable[[], AgentCapabilities | None],
 ) -> Callable[..., Any]:
-    """Build the `update_deal_account` tool for the currently scoped deal.
+    """Build the organization-scoped `update_deal_account` tool.
 
-    The tool enforces tenant + deal context, validates supported fields, applies
-    the approval policy, and only then mutates CRM state through
-    ``DealWriteService``.
+    Callers resolve the target deal first. The tool validates that ID, applies
+    field and approval policy, then mutates through ``DealWriteService``.
     """
 
     async def update_deal_account_tool(
-        account: dict[str, Any],
+        deal_id: str,
+        account: DealAccountUpdateInput,
         directly_requested: bool = False,
         source: str = "agent",
     ) -> dict[str, Any]:
-        """Apply incoming account/company updates with policy-aware short-circuiting."""
+        """Update account/company fields for one resolved deal.
+
+        In general chat, first use ``search_deals`` and disambiguate multiple
+        results. Deal-scoped workflows pass their assigned deal ID. Include only
+        the requested account fields.
+
+        Set ``directly_requested=True`` and ``source="chat"`` when the current
+        user explicitly requested the change. Leave the defaults only for
+        inferred or autonomous updates that require approval.
+        """
         _ = capabilities_getter
-        # Security boundary: both org and deal must come from runtime context.
-        if not context.organisation_id or not context.deal_id:
-            return _result("failed", "Deal context is required.")
-        if not account:
+        if not context.organisation_id:
+            return _result("failed", "Organisation context is required.")
+        try:
+            resolved_deal_id = _resolve_deal_id(context, deal_id)
+        except ValueError as exc:
+            return _result("failed", str(exc))
+        if isinstance(account, dict):
+            unsupported = sorted(set(account) - ALLOWED_ACCOUNT_FIELDS)
+            if unsupported:
+                return _result(
+                    "skipped",
+                    f"Account fields are not supported: {', '.join(unsupported)}",
+                )
+        try:
+            payload = (
+                account if isinstance(account, dict) else account.model_dump(exclude_unset=True)
+            )
+            request = DealAccountUpdateRequest(**payload)
+            normalized_account = request.model_dump(exclude_unset=True)
+        except ValidationError as exc:
+            errors = exc.errors()
+            reason = str(errors[0]["msg"]) if errors else "Invalid account field payload."
+            return _result("failed", reason)
+        if not normalized_account:
             return _result("failed", "At least one account field is required.")
 
-        unsupported = sorted(set(account) - ALLOWED_ACCOUNT_FIELDS)
+        unsupported = sorted(set(normalized_account) - ALLOWED_ACCOUNT_FIELDS)
         if unsupported:
             return _result("skipped", f"Account fields are not supported: {', '.join(unsupported)}")
-        try:
-            normalized_account = DealAccountUpdateRequest(**account).model_dump(exclude_unset=True)
-        except ValidationError as exc:
-            error = exc.errors()[0] if exc.errors() else {"msg": "Invalid account field payload."}
-            return _result("failed", str(error["msg"]))
 
         effective_account = (
             normalized_account
@@ -117,7 +153,11 @@ def create_update_deal_account(
             return _result(
                 "approval_required",
                 "One or more account updates require approval.",
-                approval_payload={"account": approval_fields, "source": source},
+                approval_payload={
+                    "deal_id": str(resolved_deal_id),
+                    "account": approval_fields,
+                    "source": source,
+                },
             )
 
         actor_user_id = context.user_id or AUTOMATED_PIPELINE_USER_ID
@@ -133,7 +173,7 @@ def create_update_deal_account(
                 # Guard write consistency by committing only after the service
                 # mutation succeeds; rollback every failure path.
                 try:
-                    deal = await service.update_account(context.deal_id, effective_account)
+                    deal = await service.update_account(resolved_deal_id, effective_account)
                     await org_session.commit()
                     return _result(
                         "applied",
