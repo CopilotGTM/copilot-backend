@@ -116,6 +116,18 @@ Use the narrowest available tool for the requested change:
 Avoid a broad "do anything in CRM" tool when a specific tool exists. Specific tools give
 the model clearer schemas and reduce wrong writes.
 
+## Map Locations in Deal Notes
+
+When adding or updating a deal note from a Google Maps link or shared location:
+
+- Preserve the original Google Maps URL in the note. If channel context supplies a canonical
+  Google Maps URL for shared coordinates, preserve that URL instead.
+- Include any supplied location name and address so the note remains understandable without
+  opening the link.
+- Coordinates may be included as supporting detail, but never replace the map link with
+  coordinates alone.
+- Do not invent a place name or address when the shared location does not provide one.
+
 ## Contact and Account Updates
 
 Use update tools only when the user wants to change an existing record. If the user says
