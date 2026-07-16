@@ -19,13 +19,7 @@ from src.domain.models.organisation_tables.chat_message_models import (
     ChatMessageAttachmentLink,
 )
 from src.infra.config.configs import chat_file_upload_config
-from src.infra.media.audio_transcription import transcribe_audio
-from src.infra.media.chat_attachment_text import (
-    extract_text_from_bytes,
-    is_audio_mimetype,
-    is_image_mimetype,
-)
-from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
+from src.service.chat.chat_attachment_reader import read_attachment_content
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -67,12 +61,6 @@ def _allowed_attachment_ids_from_context(context: AgentContext) -> set[UUID]:
         except Exception:
             logger.warning("chat attachment tools: invalid allowed attachment id=%s", raw_id)
     return allowed
-
-
-def _truncate_text(content: str, max_chars: int) -> tuple[str, bool]:
-    if len(content) <= max_chars:
-        return content, False
-    return content[:max_chars], True
 
 
 async def list_chat_attachments(
@@ -215,180 +203,43 @@ async def read_chat_attachment(
     *,
     context: AgentContext,
     max_chars: int = chat_file_upload_config.ATTACHMENT_READ_MAX_CHARS,
-) -> dict[str, Any] | None:
-    """Read a chat attachment by internal attachment ID.
-
-    Use this when a message-level attachment manifest gives you an `id` for a file.
-    It reads the attachment from CopilotGTM-managed storage instead of depending on
-    Slack/Teams provider URLs.
-    """
-    session_id = _session_id_from_context(context)
-    allowed_ids = _allowed_attachment_ids_from_context(context)
-    if not session_id and not allowed_ids:
-        return ToolResult.not_found("No chat attachment context is available for this run.")
-
-    if max_chars <= 0:
-        max_chars = chat_file_upload_config.ATTACHMENT_READ_MAX_CHARS
-
-    if attachment_id.startswith(_BOT_CONTEXT_PREFIX):
-        return await _read_legacy_bot_context(
-            attachment_id=attachment_id, context=context, max_chars=max_chars
-        )
-
-    try:
-        parsed_attachment_id = UUID(attachment_id)
-    except Exception:
-        return ToolResult.error("attachment_id must be a valid attachment UUID")
-
-    async with context.acquire_session() as session:
-        attachment = await _load_attachment_for_context(
-            session=session,
-            context=context,
-            session_id=session_id,
-            allowed_ids=allowed_ids,
-            attachment_id=parsed_attachment_id,
-        )
-        if not attachment:
-            return ToolResult.not_found("Attachment not found in this conversation")
-
-    mimetype = (attachment.mimetype or "").lower()
-
-    if not attachment.storage_path:
-        return ToolResult.not_found("Attachment storage path unavailable")
-
-    storage = AzureOrganisationBlobStorage(context.organisation_id)
-    try:
-        extracted: str = ""
-        content_type = "text"
-        content_bytes = await storage.get_blob_content(attachment.storage_path)
-
-        if is_image_mimetype(mimetype):
-            return AgnoToolResult(
-                content=(
-                    f"Opened image attachment {attachment.filename}. Analyze the image directly before answering."
-                ),
-                images=[
-                    AgnoImage(
-                        id=str(attachment.attachment_id),
-                        content=content_bytes,
-                        format=(attachment.mimetype or "image/png").split("/")[-1],
-                        mime_type=attachment.mimetype or "image/png",
-                    )
-                ],
-            )
-
-        if is_audio_mimetype(mimetype):
-            extracted = await transcribe_audio(content_bytes, attachment.filename)
-            content_type = "audio_transcript"
-        else:
-            extracted = extract_text_from_bytes(content_bytes, mimetype, attachment.filename)
-
-        if not extracted:
-            return {
-                "attachment_id": str(attachment.attachment_id),
-                "filename": attachment.filename,
-                "mimetype": attachment.mimetype,
-                "content_type": "unavailable",
-                "content": "No readable text could be extracted from this attachment.",
-                "truncated": False,
-            }
-
-        content, truncated = _truncate_text(extracted, max_chars)
-        return {
-            "attachment_id": str(attachment.attachment_id),
-            "filename": attachment.filename,
-            "mimetype": attachment.mimetype,
-            "content_type": content_type,
-            "content": content,
-            "truncated": truncated,
-        }
-    finally:
-        await storage.close()
-
-
-async def _load_attachment_for_context(
-    *,
-    session,
-    context: AgentContext,
-    session_id: UUID | None,
-    allowed_ids: set[UUID],
-    attachment_id: UUID,
-) -> Attachment | None:
-    if attachment_id in allowed_ids:
-        # This branch is only for current-turn transient access. Session history still uses
-        # the persisted message-to-attachment link as the security boundary.
-        stmt = select(Attachment).where(
-            Attachment.attachment_id == attachment_id,
-            Attachment.organisation_id == context.organisation_id,
-            Attachment.is_deleted.is_(False),
-            Attachment.status.notin_(
-                [AttachmentStatus.PENDING_UPLOAD.value, AttachmentStatus.FAILED.value]
-            ),
-        )
-        if context.user_id:
-            stmt = stmt.where(Attachment.user_id == context.user_id)
-        return (await session.execute(stmt)).scalar_one_or_none()
-
-    if not session_id:
-        return None
-
-    stmt = (
-        select(Attachment)
-        .join(
-            ChatMessageAttachmentLink,
-            ChatMessageAttachmentLink.attachment_id == Attachment.attachment_id,
-        )
-        .join(ChatMessage, ChatMessage.message_id == ChatMessageAttachmentLink.message_id)
-        .where(
-            Attachment.attachment_id == attachment_id,
-            Attachment.organisation_id == context.organisation_id,
-            Attachment.is_deleted.is_(False),
-            Attachment.status.notin_(
-                [AttachmentStatus.PENDING_UPLOAD.value, AttachmentStatus.FAILED.value]
-            ),
-            ChatMessage.session_id == session_id,
-        )
+) -> dict[str, Any] | AgnoToolResult:
+    """Read a conversation attachment and adapt neutral content for Agno."""
+    result = await read_attachment_content(
+        attachment_id,
+        context=context,
+        max_chars=max_chars,
     )
-    if context.user_id:
-        stmt = stmt.where(Attachment.user_id == context.user_id)
-    return (await session.execute(stmt)).scalar_one_or_none()
+    if result.error_code:
+        message = result.error or "Attachment content unavailable"
+        if result.error_code == "invalid":
+            return ToolResult.error(message)
+        return ToolResult.not_found(message)
 
+    if result.kind == "image" and result.content_bytes is not None:
+        mimetype = result.mimetype or "image/png"
+        return AgnoToolResult(
+            content=(
+                f"Opened image attachment {result.filename}. "
+                "Analyze the image directly before answering."
+            ),
+            images=[
+                AgnoImage(
+                    id=result.attachment_id,
+                    content=result.content_bytes,
+                    format=mimetype.split("/")[-1],
+                    mime_type=mimetype,
+                )
+            ],
+        )
 
-async def _read_legacy_bot_context(
-    *,
-    attachment_id: str,
-    context: AgentContext,
-    max_chars: int,
-) -> dict[str, Any] | None:
-    session_id = _session_id_from_context(context)
-    if not session_id:
-        return ToolResult.not_found("This conversation has no persisted chat attachment context.")
-
-    try:
-        payload = attachment_id.removeprefix(_BOT_CONTEXT_PREFIX)
-        message_id_raw, index_raw = payload.split(":", 1)
-        message_id = UUID(message_id_raw)
-        index = int(index_raw)
-    except Exception:
-        return ToolResult.error("Invalid bot attachment context ID")
-
-    async with context.acquire_session() as session:
-        message = await session.get(ChatMessage, message_id)
-        if not message or message.session_id != session_id:
-            return ToolResult.not_found("Attachment context not found in this conversation")
-        contexts = (message.extra or {}).get("attachment_contexts") or []
-        if index < 0 or index >= len(contexts):
-            return ToolResult.not_found("Attachment context not found in this conversation")
-        ctx_entry = contexts[index]
-
-    content, truncated = _truncate_text(str(ctx_entry.get("content") or ""), max_chars)
     return {
-        "attachment_id": attachment_id,
-        "filename": ctx_entry.get("filename", "attachment"),
-        "mimetype": ctx_entry.get("mimetype", ""),
-        "content_type": ctx_entry.get("content_type", "text"),
-        "content": content,
-        "truncated": truncated,
+        "attachment_id": result.attachment_id,
+        "filename": result.filename,
+        "mimetype": result.mimetype,
+        "content_type": result.kind,
+        "content": result.text or "",
+        "truncated": result.truncated,
     }
 
 

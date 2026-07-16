@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from src.agents.utils import (
-    _MAX_ATTACHMENT_TEXT_CHARS,
-    pending_attachment_ids_for_followup,
-    prepare_messages,
+from src.agents.attachment_grounding import (
+    automatic_attachment_items,
+    truncate_to_token_budget,
 )
+from src.agents.utils import _MAX_ATTACHMENT_TEXT_CHARS, prepare_messages
 
 # ---------------------------------------------------------------------------
 # prepare_messages — basic message extraction
@@ -174,76 +174,111 @@ def test_prepare_messages_empty_list_with_attachment_text() -> None:
     assert result == []
 
 
-def test_pending_attachment_ids_for_followup_uses_prior_upload_setup_turn() -> None:
-    # An upload-only/setup turn establishes context for the next user instruction
-    # without forcing users to re-upload the same file.
+def test_automatic_attachment_items_prefers_current_user_attachments() -> None:
     messages = [
         {
             "role": "user",
-            "content": "reuploaded",
-            "attachment_manifest": "[Attached files]\n- id: image-id\n  name: chart.png",
+            "content": "first",
+            "attachment_manifest": (
+                "[Attached files]\n- id: old-id\n  name: old.pdf\n  type: application/pdf"
+            ),
         },
-        {"role": "assistant", "content": "What would you like me to do?"},
-        {"role": "user", "content": "summarize it", "attachment_manifest": None},
+        {"role": "assistant", "content": "first response"},
+        {
+            "role": "user",
+            "content": "second",
+            "attachment_manifest": (
+                "[Attached files]\n- id: current-id\n  name: current.png\n  type: image/png"
+            ),
+        },
     ]
 
-    assert pending_attachment_ids_for_followup(messages) == ["image-id"]
-
-
-def test_pending_attachment_ids_for_followup_skips_prior_substantive_attachment_turn() -> None:
-    # If the attachment turn already had a real instruction, later unrelated
-    # chat should not keep auto-reading that file forever.
-    messages = [
-        {
-            "role": "user",
-            "content": "summarize this sales deck",
-            "attachment_manifest": "[Attached files]\n- id: deck-id\n  name: deck.pdf",
-        },
-        {"role": "assistant", "content": "Here is the summary."},
-        {"role": "user", "content": "show my meetings", "attachment_manifest": None},
+    assert [item.attachment_id for item in automatic_attachment_items(messages, max_items=3)] == [
+        "current-id"
     ]
 
-    assert pending_attachment_ids_for_followup(messages) == []
 
-
-def test_pending_attachment_ids_for_followup_uses_attachment_clarification_turn() -> None:
+def test_automatic_attachment_items_carries_previous_user_attachments_once() -> None:
     messages = [
         {
             "role": "user",
-            "content": "can you read this?",
-            "attachment_manifest": "[Attached files]\n- id: image-id\n  name: screenshot.png",
+            "content": "first",
+            "attachment_manifest": (
+                "[Attached files]\n- id: prior-id\n  name: prior.pdf\n  type: application/pdf"
+            ),
         },
-        {
-            "role": "assistant",
-            "content": "Yes, I can inspect the screenshot and summarize or extract details.",
-        },
-        {"role": "user", "content": "yes", "attachment_manifest": None},
+        {"role": "assistant", "content": "first response"},
+        {"role": "user", "content": "follow up", "attachment_manifest": None},
     ]
 
-    assert pending_attachment_ids_for_followup(messages) == ["image-id"]
-
-
-def test_pending_attachment_ids_for_followup_skips_unrelated_short_followup() -> None:
-    messages = [
-        {
-            "role": "user",
-            "content": "summarize this sales deck",
-            "attachment_manifest": "[Attached files]\n- id: deck-id\n  name: deck.pdf",
-        },
-        {"role": "assistant", "content": "Done."},
-        {"role": "user", "content": "yes", "attachment_manifest": None},
+    assert [item.attachment_id for item in automatic_attachment_items(messages, max_items=3)] == [
+        "prior-id"
     ]
 
-    assert pending_attachment_ids_for_followup(messages) == []
 
-
-def test_pending_attachment_ids_for_followup_skips_current_turn_attachments() -> None:
+def test_automatic_attachment_items_expires_after_one_empty_user_turn() -> None:
     messages = [
         {
             "role": "user",
-            "content": "summarize this",
-            "attachment_manifest": "[Attached files]\n- id: current-id\n  name: file.pdf",
+            "content": "first",
+            "attachment_manifest": (
+                "[Attached files]\n- id: expired-id\n  name: old.pdf\n  type: application/pdf"
+            ),
+        },
+        {"role": "assistant", "content": "first response"},
+        {"role": "user", "content": "second", "attachment_manifest": None},
+        {"role": "assistant", "content": "second response"},
+        {"role": "user", "content": "third", "attachment_manifest": None},
+    ]
+
+    assert automatic_attachment_items(messages, max_items=3) == []
+
+
+def test_automatic_attachment_items_caps_before_callers_filter_types() -> None:
+    messages = [
+        {
+            "role": "user",
+            "content": "compare these",
+            "attachment_manifest": (
+                "[Attached files]\n"
+                "- id: one\n  name: one.mp3\n  type: audio/mpeg\n"
+                "- id: two\n  name: two.pdf\n  type: application/pdf\n"
+                "- id: three\n  name: three.png\n  type: image/png\n"
+                "- id: four\n  name: four.txt\n  type: text/plain"
+            ),
+        },
+    ]
+
+    assert [item.attachment_id for item in automatic_attachment_items(messages, max_items=3)] == [
+        "one",
+        "two",
+        "three",
+    ]
+
+
+def test_automatic_attachment_items_keeps_missing_type_for_safe_caller_skip() -> None:
+    messages = [
+        {
+            "role": "user",
+            "content": "old manifest",
+            "attachment_manifest": "[Attached files]\n- id: legacy-id\n  name: file.pdf",
         }
     ]
 
-    assert pending_attachment_ids_for_followup(messages) == []
+    items = automatic_attachment_items(messages, max_items=3)
+    assert len(items) == 1
+    assert items[0].attachment_id == "legacy-id"
+    assert items[0].mimetype == ""
+
+
+def test_truncate_to_token_budget_counts_model_tokens(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "src.agents.attachment_grounding.count_text_tokens",
+        lambda text, _model_id: len(text),
+    )
+
+    content, truncated, used = truncate_to_token_budget("abcdefgh", 5, "model")
+
+    assert content == "abcde"
+    assert truncated is True
+    assert used == 5

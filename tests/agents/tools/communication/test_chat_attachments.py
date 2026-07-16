@@ -8,7 +8,6 @@ from uuid import uuid4
 import pytest
 from agno.tools.function import ToolResult as AgnoToolResult
 from src.agents.tools.communication.chat_attachments import (
-    _truncate_text,
     list_chat_attachments,
     read_chat_attachment,
 )
@@ -78,7 +77,7 @@ def _patch_storage(monkeypatch, content: bytes = b"fake-content"):
             self._content = content
 
     monkeypatch.setattr(
-        "src.agents.tools.communication.chat_attachments.AzureOrganisationBlobStorage",
+        "src.service.chat.chat_attachment_reader.AzureOrganisationBlobStorage",
         Storage,
     )
 
@@ -102,29 +101,6 @@ def _make_attachment(
         source_provider=source_provider,
         created_at=datetime.now(UTC),
     )
-
-
-# ---------------------------------------------------------------------------
-# _truncate_text
-# ---------------------------------------------------------------------------
-
-
-def test_truncate_text_within_limit() -> None:
-    content, truncated = _truncate_text("hello", 100)
-    assert content == "hello"
-    assert truncated is False
-
-
-def test_truncate_text_at_exact_limit() -> None:
-    content, truncated = _truncate_text("ab", 2)
-    assert content == "ab"
-    assert truncated is False
-
-
-def test_truncate_text_over_limit() -> None:
-    content, truncated = _truncate_text("abcdef", 3)
-    assert content == "abc"
-    assert truncated is True
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +225,7 @@ async def test_read_chat_attachment_returns_unavailable_for_binary(
 
     _patch_storage(monkeypatch, b"\x00\x01\x02")
     monkeypatch.setattr(
-        "src.agents.tools.communication.chat_attachments.extract_text_from_bytes",
+        "src.service.chat.chat_attachment_reader.extract_text_from_bytes",
         lambda *_args, **_kwargs: "",
     )
 
@@ -334,8 +310,8 @@ async def test_read_chat_attachment_extracts_text_from_pdf(
 
     _patch_storage(monkeypatch, b"pdf-bytes")
     monkeypatch.setattr(
-        "src.agents.tools.communication.chat_attachments.extract_text_from_bytes",
-        lambda content, mimetype, filename: "Extracted PDF content here",
+        "src.service.chat.chat_attachment_reader.extract_text_from_bytes",
+        lambda content, mimetype, filename, **_kwargs: "Extracted PDF content here",
     )
 
     result = await read_chat_attachment(str(attachment_id), context=context)
@@ -373,7 +349,7 @@ async def test_read_chat_attachment_transcribes_audio(
 
     _patch_storage(monkeypatch, b"audio-bytes")
     monkeypatch.setattr(
-        "src.agents.tools.communication.chat_attachments.transcribe_audio",
+        "src.service.chat.chat_attachment_reader.transcribe_audio",
         lambda *_args, **_kwargs: "transcribed audio text",
     )
     # Make transcribe_audio an async function
@@ -382,7 +358,7 @@ async def test_read_chat_attachment_transcribes_audio(
         return "transcribed audio text"
 
     monkeypatch.setattr(
-        "src.agents.tools.communication.chat_attachments.transcribe_audio",
+        "src.service.chat.chat_attachment_reader.transcribe_audio",
         fake_transcribe,
     )
 
@@ -421,8 +397,8 @@ async def test_read_chat_attachment_truncates_long_content(
 
     _patch_storage(monkeypatch, b"x" * 50000)
     monkeypatch.setattr(
-        "src.agents.tools.communication.chat_attachments.extract_text_from_bytes",
-        lambda content, mimetype, filename: "x" * 50000,
+        "src.service.chat.chat_attachment_reader.extract_text_from_bytes",
+        lambda content, mimetype, filename, **_kwargs: "x" * 50000,
     )
 
     result = await read_chat_attachment(str(attachment_id), context=context, max_chars=100)
@@ -529,8 +505,8 @@ async def test_read_chat_attachment_via_allowed_ids(
 
     _patch_storage(monkeypatch, b"allowed content")
     monkeypatch.setattr(
-        "src.agents.tools.communication.chat_attachments.extract_text_from_bytes",
-        lambda content, mimetype, filename: "allowed content",
+        "src.service.chat.chat_attachment_reader.extract_text_from_bytes",
+        lambda content, mimetype, filename, **_kwargs: "allowed content",
     )
 
     result = await read_chat_attachment(str(attachment_id), context=context)

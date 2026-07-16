@@ -53,6 +53,8 @@ from src.service.crm.internal.internal_crm_setup_service import (
     AUTOMATED_PIPELINE_USER_ID,
     InternalCRMSetupService,
 )
+from src.service.crm.notes.contracts import NotesServiceError, NoteWriteContext
+from src.service.crm.notes.write_service import NotesWriteService
 from src.service.crm.schema.deal_schema_service import DealSchemaService
 from src.service.crm.utils.account import (
     ACCOUNT_LINKEDIN_URL_ERROR,
@@ -112,6 +114,7 @@ _STANDARD_TARGETS: tuple[tuple[str, str, str, str], ...] = (
     ("deal.source_created_at", "Deal created date", "deal", "datetime"),
     ("deal.expected_close_date", "Expected close date", "deal", "date"),
     ("deal.description", "Deal description", "deal", "text"),
+    ("deal.note", "Deal note", "deal", "text"),
     ("deal.deal_type", "Deal type", "deal", "text"),
     ("deal.priority", "Deal priority", "deal", "text"),
     ("deal.lead_source", "Deal lead source", "deal", "text"),
@@ -669,6 +672,7 @@ class CRMImportService:
                 AccountWriteServiceError,
                 ContactWriteServiceError,
                 DealWriteServiceError,
+                NotesServiceError,
             ) as exc:
                 row.status = CRMImportRowStatus.FAILED
                 row.error_code = _row_error_code(exc)
@@ -914,6 +918,19 @@ class CRMImportService:
                 source_label="crm_import",
             ),
         )
+        # The row savepoint is the atomic boundary: a note failure must roll back
+        # its newly created deal instead of leaving a partial migration.
+        if note_content := values.get("note"):
+            await NotesWriteService(self.org_session, self.organisation_id).create_user_note(
+                deal.deal_id,
+                note_content,
+                None,
+                NoteWriteContext(
+                    source="crm_import",
+                    actor_user_id=self._current_actor_user_id,
+                    created_via="crm_import",
+                ),
+            )
         return deal.deal_id, True
 
     async def _load_job(self, import_id: UUID) -> DealJobs:
@@ -1421,7 +1438,7 @@ def _deal_payload_from_values(
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {}
     for field_name, value in values.items():
-        if field_name.startswith("custom.") or field_name in {"owner", "stage"}:
+        if field_name.startswith("custom.") or field_name in {"note", "owner", "stage"}:
             continue
         if field_name == "amount":
             try:
@@ -1632,6 +1649,7 @@ def _row_error_field(exc: Exception) -> str | None:
         ("contact", "contact.identity"),
         ("stage", "deal.stage"),
         ("owner", "deal.owner"),
+        ("note", "deal.note"),
         ("probability", "deal.probability"),
         ("amount", "deal.amount"),
         ("currency", "deal.currency"),

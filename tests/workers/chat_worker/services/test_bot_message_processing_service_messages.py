@@ -497,6 +497,7 @@ async def test_provider_sets_agent_channel_without_reply_context_shape(
 
     async def fake_run_agent_for_chat(**kwargs):
         captured["channel"] = kwargs["context"].channel
+        captured["images"] = kwargs["images"]
         if False:
             yield None
 
@@ -514,10 +515,19 @@ async def test_provider_sets_agent_channel_without_reply_context_shape(
         user_id=uuid4(),
         message_text="hello",
         provider="whatsapp",
+        bot_context={
+            "current_attachments": [
+                {
+                    "attachment_id": str(uuid4()),
+                    "mimetype": "image/png",
+                }
+            ]
+        },
         reply_context={},
     )
 
     assert captured["channel"] == "whatsapp"
+    assert captured["images"] is None
 
 
 @pytest.mark.asyncio

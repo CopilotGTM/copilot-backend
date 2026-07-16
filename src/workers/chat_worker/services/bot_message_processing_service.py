@@ -1352,8 +1352,6 @@ class BotMessageProcessingService:
             metadata=metadata,
         )
 
-        images = await self._resolve_ingested_attachment_images(current_attachments)
-
         # For live status updates on the thinking indicator
         last_status_time = 0.0
         status_ctx = self._build_status_context(channel, reply_context or {})
@@ -1363,7 +1361,7 @@ class BotMessageProcessingService:
                 chat_type="GENERAL_CHAT",
                 messages=messages,
                 context=context,
-                images=images or None,
+                images=None,
                 attachment_text=None,
             ):
                 result.frames.append(frame)

@@ -177,6 +177,29 @@ def test_extract_text_from_pdf_skips_empty_pages(monkeypatch: pytest.MonkeyPatch
     assert result == "Content"
 
 
+def test_extract_text_from_pdf_stops_at_max_chars(monkeypatch: pytest.MonkeyPatch) -> None:
+    extracted_pages: list[int] = []
+
+    class _FakePage:
+        def __init__(self, number: int):
+            self.number = number
+
+        def extract_text(self):
+            extracted_pages.append(self.number)
+            return f"page-{self.number}-" + ("x" * 20)
+
+    class _FakeReader:
+        def __init__(self, _stream):
+            self.pages = [_FakePage(1), _FakePage(2), _FakePage(3)]
+
+    monkeypatch.setattr("pypdf.PdfReader", _FakeReader)
+
+    result = extract_text_from_bytes(b"%PDF-fake", "application/pdf", "large.pdf", max_chars=25)
+
+    assert len(result) == 25
+    assert extracted_pages == [1]
+
+
 # ---------------------------------------------------------------------------
 # extract_text_from_bytes — DOCX
 # ---------------------------------------------------------------------------
