@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.service.crm.contacts.read_service import ContactReadService
@@ -17,6 +19,9 @@ class _FakeScalarResult:
 
     def all(self):
         return self._rows
+
+    def first(self):
+        return self._rows[0] if self._rows else None
 
 
 class _FakeAgentSearchResult:
@@ -63,6 +68,118 @@ class _FakeAgentSearchSession(_FakeSession):
     async def execute(self, statement: object):
         self.statements.append(statement)
         return _FakeAgentSearchResult(self._results.pop(0))
+
+
+@pytest.mark.asyncio
+async def test_contact_research_status_exposes_active_job_for_polling() -> None:
+    """Contact detail polling must see the latest active contact-owned research job."""
+    org_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="buyer@acme.com",
+    )
+    job = DealJobs(
+        organisation_id=org_id,
+        user_id=uuid4(),
+        job_type=DealJobType.CONTACT_RESEARCH,
+        status=JobStatus.IN_PROGRESS,
+        job_metadata={
+            "contact_id": str(contact.contact_id),
+            "normalized_email": "buyer@acme.com",
+            "linkedin_url": None,
+        },
+    )
+    service = ContactReadService(_FakeSession([[job]]), org_id)  # type: ignore[arg-type]
+
+    status = await service._contact_research_status(contact, {})
+
+    assert status == "in_progress"
+    sql = str(service.org_session.statements[0])  # type: ignore[attr-defined]
+    assert "deal_jobs.job_metadata" in sql
+    assert "LIMIT" in sql
+
+
+@pytest.mark.asyncio
+async def test_contact_research_status_restarts_when_job_used_an_older_identity() -> None:
+    """A LinkedIn URL added after an email miss should make the contact researchable again."""
+    org_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="buyer@acme.com",
+        linkedin_url="https://linkedin.com/in/buyer",
+    )
+    job = DealJobs(
+        organisation_id=org_id,
+        user_id=uuid4(),
+        job_type=DealJobType.CONTACT_RESEARCH,
+        status=JobStatus.COMPLETED,
+        job_metadata={
+            "contact_id": str(contact.contact_id),
+            "normalized_email": "buyer@acme.com",
+            "linkedin_url": None,
+        },
+        result_data={"provider_status": "not_found", "summary_status": "skipped"},
+    )
+    service = ContactReadService(_FakeSession([[job]]), org_id)  # type: ignore[arg-type]
+
+    status = await service._contact_research_status(contact, {"status": "not_found"})
+
+    assert status == "not_started"
+
+
+@pytest.mark.asyncio
+async def test_contact_research_status_recovers_a_stale_active_job() -> None:
+    """An abandoned pending row should become dispatchable instead of polling forever."""
+    org_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="buyer@acme.com",
+    )
+    stale_at = datetime.now(UTC) - timedelta(minutes=10)
+    job = DealJobs(
+        organisation_id=org_id,
+        user_id=uuid4(),
+        job_type=DealJobType.CONTACT_RESEARCH,
+        status=JobStatus.PENDING,
+        job_metadata={
+            "contact_id": str(contact.contact_id),
+            "normalized_email": "buyer@acme.com",
+            "linkedin_url": None,
+        },
+        created_at=stale_at,
+        updated_at=stale_at,
+    )
+    service = ContactReadService(_FakeSession([[job]]), org_id)  # type: ignore[arg-type]
+
+    status = await service._contact_research_status(contact, {})
+
+    assert status == "not_started"
+
+
+@pytest.mark.asyncio
+async def test_contact_research_status_stops_polling_after_provider_miss() -> None:
+    """A stored Apollo miss is terminal and must not leave the overview loader spinning."""
+    org_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="buyer@acme.com",
+    )
+    service = ContactReadService(_FakeSession([[]]), org_id)  # type: ignore[arg-type]
+
+    status = await service._contact_research_status(
+        contact,
+        {"provider": "apollo", "status": "not_found"},
+    )
+
+    assert status == "not_found"
 
 
 @pytest.mark.asyncio

@@ -19,6 +19,7 @@ from src.infra.database.sessions import acquire_org_async_session
 from src.service.crm.accounts.domain_resolution_service import AccountDomainResolutionService
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.contacts.research_service import (
+    CONTACT_RESEARCH_JOB_STALE_AFTER,
     CONTACT_RESEARCH_PROMPT_VERSION,
     PROFILE_METADATA_KEY,
     profile_payload_hash,
@@ -86,12 +87,13 @@ async def dispatch_contact_research_async(
             return None
 
         email = (contact.email or "").strip().lower()
+        linkedin_url = (contact.linkedin_url or "").strip() or None
         has_safe_email = bool(AccountDomainResolutionService.derive_safe_domain_from_email(email))
         profile_enrichment = contact.profile_enrichment or {}
         has_cached_provider_data = bool(profile_enrichment) and (
             profile_enrichment.get("status") != "not_found"
         )
-        if not has_safe_email and not has_cached_provider_data:
+        if not linkedin_url and not has_safe_email and not has_cached_provider_data:
             return None
 
         if (
@@ -107,10 +109,23 @@ async def dispatch_contact_research_async(
                 col(DealJobs.organisation_id) == organisation_id,
                 col(DealJobs.job_type) == DealJobType.CONTACT_RESEARCH,
                 col(DealJobs.status).in_(ACTIVE_JOB_STATUSES),
+                col(DealJobs.updated_at) >= datetime.now(UTC) - CONTACT_RESEARCH_JOB_STALE_AFTER,
+                DealJobs.job_metadata["contact_id"].as_string() == str(contact_id),
             )
         )
         for job in existing.scalars().all():
-            if (job.job_metadata or {}).get("contact_id") == str(contact_id):
+            metadata = job.job_metadata or {}
+            job_updated_at = getattr(job, "updated_at", None) or getattr(job, "created_at", None)
+            if job_updated_at and job_updated_at < datetime.now(UTC) - (
+                CONTACT_RESEARCH_JOB_STALE_AFTER
+            ):
+                continue
+            # A newly added identity must get a follow-up lookup even if an older job is
+            # still active. Reuse only jobs that already carry the same provider inputs.
+            identities_match = metadata.get("normalized_email") == (
+                email or None
+            ) and metadata.get("linkedin_url") == linkedin_url
+            if identities_match and (not force_refresh or metadata.get("force_refresh")):
                 return str(job.job_id)
 
         job = DealJobs(
@@ -121,6 +136,7 @@ async def dispatch_contact_research_async(
             job_metadata={
                 "contact_id": str(contact_id),
                 "normalized_email": email or None,
+                "linkedin_url": linkedin_url,
                 "trigger": trigger,
                 "force_refresh": force_refresh,
                 "source": "api" if user_id else "automated_pipeline",
@@ -138,11 +154,23 @@ async def dispatch_contact_research_async(
         await session.commit()
         job_id = str(job.job_id)
 
-    await send_deal_task_async(
-        "contact_research.process_job",
-        kwargs={"organisation_id": str(organisation_id), "job_id": job_id},
-        queue="deal_jobs",
-    )
+    try:
+        await send_deal_task_async(
+            "contact_research.process_job",
+            kwargs={"organisation_id": str(organisation_id), "job_id": job_id},
+            queue="deal_jobs",
+        )
+    except Exception:
+        # The job row is already visible to polling clients. Mark publication failures
+        # terminal so the contact page does not show a pending loader indefinitely.
+        async for session in acquire_org_async_session(organisation_id):
+            job = await session.get(DealJobs, UUID(job_id))
+            if job:
+                job.status = JobStatus.FAILED
+                job.error_message = "Failed to enqueue contact research"
+                await session.commit()
+            break
+        raise
     return job_id
 
 

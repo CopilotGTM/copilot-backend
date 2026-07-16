@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from src.domain.models.organisation_tables.job_models import DealJobType, JobStatus
+from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.workers.deal_worker.config import DealWorkerConfig
 from src.workers.deal_worker.scheduled_jobs import SCHEDULED_JOBS
@@ -37,8 +37,10 @@ class _Session:
         self.added = []
         self.commits = 0
 
-    async def get(self, _model, _item_id, **_kwargs):  # noqa: ANN001
-        """Return the configured contact for dispatcher load checks."""
+    async def get(self, model, item_id, **_kwargs):  # noqa: ANN001
+        """Return the configured contact or a job persisted earlier in the test."""
+        if model is DealJobs:
+            return next((job for job in self.added if job.job_id == item_id), None)
         return self.contact
 
     async def execute(self, _stmt):  # noqa: ANN001
@@ -172,15 +174,241 @@ async def test_dispatch_skips_free_provider_subdomain(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_dispatch_reuses_active_contact_job(monkeypatch) -> None:
-    """Active jobs keyed by contact_id are the idempotency boundary."""
+async def test_dispatch_accepts_linkedin_after_email_miss(monkeypatch) -> None:
+    """A LinkedIn URL should make a prior personal-email miss researchable."""
+    import src.workers.deal_worker.utils.contact_research_dispatch as dispatch_module
+
+    organisation_id = uuid4()
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="buyer@gmail.com",
+        linkedin_url="https://linkedin.com/in/buyer",
+        profile_enrichment={"provider": "apollo", "status": "not_found"},
+    )
+    session = _Session(contact)
+
+    async def fake_send(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        dispatch_module,
+        "acquire_org_async_session",
+        lambda _organisation_id: _SessionSource(session),
+    )
+    monkeypatch.setattr(dispatch_module, "send_deal_task_async", fake_send)
+    PROJECTIONS.clear()
+    monkeypatch.setattr(dispatch_module, "ActivityFeedProjectionService", _Projection)
+
+    job_id = await dispatch_module.dispatch_contact_research_async(
+        organisation_id=organisation_id,
+        contact_id=contact.contact_id,
+        force_refresh=True,
+    )
+
+    assert job_id is not None
+    assert session.added[0].job_metadata["normalized_email"] == "buyer@gmail.com"
+    assert session.added[0].job_metadata["linkedin_url"] == contact.linkedin_url
+
+
+@pytest.mark.asyncio
+async def test_force_refresh_does_not_reuse_job_with_older_identity(monkeypatch) -> None:
+    """An active email-only job must not swallow a retry after LinkedIn is added."""
     import src.workers.deal_worker.utils.contact_research_dispatch as dispatch_module
 
     organisation_id = uuid4()
     contact_id = uuid4()
     existing_job = SimpleNamespace(
         job_id=uuid4(),
-        job_metadata={"contact_id": str(contact_id)},
+        job_metadata={
+            "contact_id": str(contact_id),
+            "normalized_email": "buyer@acme.com",
+            "linkedin_url": None,
+        },
+        status=JobStatus.IN_PROGRESS,
+    )
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=contact_id,
+        email="buyer@acme.com",
+        linkedin_url="https://linkedin.com/in/buyer",
+    )
+    session = _Session(contact, active_jobs=[existing_job])
+
+    async def fake_send(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        dispatch_module,
+        "acquire_org_async_session",
+        lambda _organisation_id: _SessionSource(session),
+    )
+    monkeypatch.setattr(dispatch_module, "send_deal_task_async", fake_send)
+    PROJECTIONS.clear()
+    monkeypatch.setattr(dispatch_module, "ActivityFeedProjectionService", _Projection)
+
+    job_id = await dispatch_module.dispatch_contact_research_async(
+        organisation_id=organisation_id,
+        contact_id=contact_id,
+        force_refresh=True,
+    )
+
+    assert job_id != str(existing_job.job_id)
+    assert len(session.added) == 1
+
+
+@pytest.mark.asyncio
+async def test_force_refresh_does_not_reuse_a_non_refresh_job(monkeypatch) -> None:
+    """Manual refresh must not inherit a cache-using job created by a detail-page race."""
+    import src.workers.deal_worker.utils.contact_research_dispatch as dispatch_module
+
+    organisation_id = uuid4()
+    contact_id = uuid4()
+    existing_job = SimpleNamespace(
+        job_id=uuid4(),
+        job_metadata={
+            "contact_id": str(contact_id),
+            "normalized_email": "buyer@acme.com",
+            "linkedin_url": "https://linkedin.com/in/buyer",
+            "force_refresh": False,
+        },
+        status=JobStatus.PENDING,
+    )
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=contact_id,
+        email="buyer@acme.com",
+        linkedin_url="https://linkedin.com/in/buyer",
+    )
+    session = _Session(contact, active_jobs=[existing_job])
+
+    async def fake_send(*_args, **_kwargs):
+        """Accept the forced replacement without contacting the broker."""
+        return None
+
+    monkeypatch.setattr(
+        dispatch_module,
+        "acquire_org_async_session",
+        lambda _organisation_id: _SessionSource(session),
+    )
+    monkeypatch.setattr(dispatch_module, "send_deal_task_async", fake_send)
+    PROJECTIONS.clear()
+    monkeypatch.setattr(dispatch_module, "ActivityFeedProjectionService", _Projection)
+
+    job_id = await dispatch_module.dispatch_contact_research_async(
+        organisation_id=organisation_id,
+        contact_id=contact_id,
+        force_refresh=True,
+    )
+
+    assert job_id != str(existing_job.job_id)
+    assert session.added[0].job_metadata["force_refresh"] is True
+
+
+@pytest.mark.asyncio
+async def test_dispatch_replaces_an_abandoned_active_job(monkeypatch) -> None:
+    """A stale pending row must not prevent recovery after queue publication was interrupted."""
+    import src.workers.deal_worker.utils.contact_research_dispatch as dispatch_module
+
+    organisation_id = uuid4()
+    contact_id = uuid4()
+    stale_at = datetime.now(UTC) - timedelta(minutes=10)
+    existing_job = SimpleNamespace(
+        job_id=uuid4(),
+        job_metadata={
+            "contact_id": str(contact_id),
+            "normalized_email": "buyer@acme.com",
+            "linkedin_url": None,
+        },
+        status=JobStatus.PENDING,
+        created_at=stale_at,
+        updated_at=stale_at,
+    )
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=contact_id,
+        email="buyer@acme.com",
+    )
+    session = _Session(contact, active_jobs=[existing_job])
+
+    async def fake_send(*_args, **_kwargs):
+        """Accept the replacement job without contacting the broker."""
+        return None
+
+    monkeypatch.setattr(
+        dispatch_module,
+        "acquire_org_async_session",
+        lambda _organisation_id: _SessionSource(session),
+    )
+    monkeypatch.setattr(dispatch_module, "send_deal_task_async", fake_send)
+    PROJECTIONS.clear()
+    monkeypatch.setattr(dispatch_module, "ActivityFeedProjectionService", _Projection)
+
+    job_id = await dispatch_module.dispatch_contact_research_async(
+        organisation_id=organisation_id,
+        contact_id=contact_id,
+        force_refresh=True,
+    )
+
+    assert job_id != str(existing_job.job_id)
+    assert len(session.added) == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_marks_job_failed_when_queue_publication_fails(monkeypatch) -> None:
+    """A broker failure must be terminal so detail polling does not spin forever."""
+    import src.workers.deal_worker.utils.contact_research_dispatch as dispatch_module
+
+    organisation_id = uuid4()
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="buyer@acme.com",
+    )
+    session = _Session(contact)
+
+    async def fail_send(*_args, **_kwargs):
+        """Simulate the broker rejecting the newly persisted job."""
+        raise RuntimeError("broker unavailable")
+
+    monkeypatch.setattr(
+        dispatch_module,
+        "acquire_org_async_session",
+        lambda _organisation_id: _SessionSource(session),
+    )
+    monkeypatch.setattr(dispatch_module, "send_deal_task_async", fail_send)
+    PROJECTIONS.clear()
+    monkeypatch.setattr(dispatch_module, "ActivityFeedProjectionService", _Projection)
+
+    with pytest.raises(RuntimeError, match="broker unavailable"):
+        await dispatch_module.dispatch_contact_research_async(
+            organisation_id=organisation_id,
+            contact_id=contact.contact_id,
+        )
+
+    assert session.added[0].status == JobStatus.FAILED
+    assert session.added[0].error_message == "Failed to enqueue contact research"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_reuses_active_contact_job(monkeypatch) -> None:
+    """An active job with the current identities is the idempotency boundary."""
+    import src.workers.deal_worker.utils.contact_research_dispatch as dispatch_module
+
+    organisation_id = uuid4()
+    contact_id = uuid4()
+    existing_job = SimpleNamespace(
+        job_id=uuid4(),
+        job_metadata={
+            "contact_id": str(contact_id),
+            "normalized_email": "buyer@acme.com",
+            "linkedin_url": None,
+        },
         status=JobStatus.PENDING,
     )
     contact = CRMContact(
