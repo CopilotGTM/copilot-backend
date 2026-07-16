@@ -695,6 +695,8 @@ async def create_deal_direct(
     priority: str | None = None,
     account_name: str | None = None,
     account_domain: str | None = None,
+    pipeline_id: UUID | None = None,
+    stage_id: UUID | None = None,
     custom_columns: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a deal directly through the internal CRM write service."""
@@ -731,6 +733,10 @@ async def create_deal_direct(
     custom_payload = custom_columns if isinstance(custom_columns, dict) else {}
     if custom_payload:
         payload["custom_properties"] = custom_payload
+    if pipeline_id is not None:
+        payload["pipeline_id"] = pipeline_id
+    if stage_id is not None:
+        payload["stage_id"] = stage_id
 
     if amount is not None:
         payload["amount"] = amount
@@ -815,14 +821,18 @@ def create_create_deal(
         priority: str | None = None,
         account_name: str | None = None,
         account_domain: str | None = None,
+        pipeline_id: UUID | None = None,
+        stage_id: UUID | None = None,
         custom_columns: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Create a new deal directly once the deal name is known.
 
         Use this tool when the user wants to create a new deal. Extract deal
-        details from the conversation and pass them as values. If only the deal
-        name is known, still call this tool immediately. Do not ask follow-up
-        questions for optional fields like account/company before creating it.
+        details from the conversation and pass them as values. If the user names
+        a pipeline or stage, use the pipeline tools to obtain its UUID and pass
+        it here. If only the deal name is known, still call this tool immediately.
+        Do not ask follow-up questions for optional fields like account/company
+        before creating it.
         If the result status is "needs_input", ask for the returned
         required_custom_fields and call the tool again with custom_columns.
 
@@ -838,6 +848,8 @@ def create_create_deal(
             priority: Priority level to pre-fill ("low", "medium", "high")
             account_name: Account/company name to pre-fill
             account_domain: Account website domain to pre-fill (e.g. "acme.com")
+            pipeline_id: Pipeline UUID from the pipeline tools; omit to use the default
+            stage_id: Stage UUID from the pipeline tools; omit to use the first stage
             custom_columns: Custom field values keyed by schema field key
 
         Returns:
@@ -868,6 +880,8 @@ def create_create_deal(
                 "priority": priority,
                 "account_name": account_name,
                 "account_domain": account_domain,
+                "pipeline_id": pipeline_id,
+                "stage_id": stage_id,
                 "custom_columns": custom_columns,
             },
             description="Creating deal",
