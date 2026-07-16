@@ -91,15 +91,19 @@ async def update_reminder(
             logger.exception("update_reminder: unexpected error")
             return {"status": "error", "message": "Could not update the reminder."}
 
-    return {
+    result = {
         "status": "updated",
         "reminder_id": str(detail.reminder_id),
         "title": detail.title,
         "reminder_type": detail.reminder_type.value,
         "trigger_time": detail.next_trigger_at.isoformat(),
         "recurrence": detail.recurrence.value,
-        "message": f"Updated reminder **{detail.title}**.",
+        "message": f"Updated reminder **{detail.title}**. Reminder ID: {detail.reminder_id}.",
     }
+    if getattr(detail, "deal_id", None):
+        result["deal_id"] = str(detail.deal_id)
+        result["message"] += f" Deal ID: {detail.deal_id}."
+    return result
 
 
 def create_update_reminder(

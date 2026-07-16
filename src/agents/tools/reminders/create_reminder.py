@@ -397,32 +397,41 @@ def _reminder_type_label(reminder_type: ReminderType) -> str:
 
 def _reminder_created_text(
     *,
+    reminder_id: str,
     title: str,
     reminder_type: ReminderType,
     trigger_time: datetime,
     timezone_name: str,
     recurrence: ReminderRecurrence,
+    deal_id: str | None,
 ) -> str:
     type_label = _reminder_type_label(reminder_type)
     recurrence_display = recurrence.value if recurrence != ReminderRecurrence.NONE else "One-time"
-    return (
+    text = (
         f"{type_label} created: {title}\n"
+        f"Reminder ID: {reminder_id}\n"
         f"When: {_format_trigger_time(trigger_time, timezone_name)}\n"
         f"Repeats: {recurrence_display}"
     )
+    if deal_id:
+        text += f"\nDeal ID: {deal_id}"
+    return text
 
 
 def _reminder_success_facts(
     *,
+    reminder_id: str,
     title: str,
     reminder_type: ReminderType,
     trigger_time: datetime,
     timezone_name: str,
     recurrence: ReminderRecurrence,
     delivery_channel: str,
+    deal_id: str | None,
 ) -> list[dict[str, str]]:
-    return [
+    facts = [
         {"title": "Title", "value": title},
+        {"title": "Reminder ID", "value": reminder_id},
         {"title": "When", "value": _format_trigger_time(trigger_time, timezone_name)},
         {
             "title": "Repeats",
@@ -431,16 +440,21 @@ def _reminder_success_facts(
         {"title": "Type", "value": _reminder_type_label(reminder_type)},
         {"title": "Delivery", "value": delivery_channel.title()},
     ]
+    if deal_id:
+        facts.append({"title": "Deal ID", "value": deal_id})
+    return facts
 
 
 def _build_teams_success_payload(
     *,
+    reminder_id: str,
     title: str,
     reminder_type: ReminderType,
     trigger_time: datetime,
     timezone_name: str,
     recurrence: ReminderRecurrence,
     delivery_channel: str,
+    deal_id: str | None,
 ) -> dict[str, Any]:
     card = {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
@@ -457,22 +471,26 @@ def _build_teams_success_payload(
             {
                 "type": "FactSet",
                 "facts": _reminder_success_facts(
+                    reminder_id=reminder_id,
                     title=title,
                     reminder_type=reminder_type,
                     trigger_time=trigger_time,
                     timezone_name=timezone_name,
                     recurrence=recurrence,
                     delivery_channel=delivery_channel,
+                    deal_id=deal_id,
                 ),
             },
         ],
     }
     text_fallback = _reminder_created_text(
+        reminder_id=reminder_id,
         title=title,
         reminder_type=reminder_type,
         trigger_time=trigger_time,
         timezone_name=timezone_name,
         recurrence=recurrence,
+        deal_id=deal_id,
     )
     return {
         "type": "message",
@@ -493,30 +511,36 @@ def _build_teams_success_payload(
 
 def _build_slack_success_payload(
     *,
+    reminder_id: str,
     title: str,
     reminder_type: ReminderType,
     trigger_time: datetime,
     timezone_name: str,
     recurrence: ReminderRecurrence,
     delivery_channel: str,
+    deal_id: str | None,
 ) -> dict[str, Any]:
     fields = [
         {"type": "mrkdwn", "text": f"*{fact['title']}*\n{_escape_slack_mrkdwn(fact['value'])}"}
         for fact in _reminder_success_facts(
+            reminder_id=reminder_id,
             title=title,
             reminder_type=reminder_type,
             trigger_time=trigger_time,
             timezone_name=timezone_name,
             recurrence=recurrence,
             delivery_channel=delivery_channel,
+            deal_id=deal_id,
         )
     ]
     text_fallback = _reminder_created_text(
+        reminder_id=reminder_id,
         title=title,
         reminder_type=reminder_type,
         trigger_time=trigger_time,
         timezone_name=timezone_name,
         recurrence=recurrence,
+        deal_id=deal_id,
     )
     return {
         "type": "message",
@@ -535,23 +559,27 @@ def _build_slack_success_payload(
 
 def _build_whatsapp_success_payload(
     *,
+    reminder_id: str,
     title: str,
     reminder_type: ReminderType,
     trigger_time: datetime,
     timezone_name: str,
     recurrence: ReminderRecurrence,
     delivery_channel: str,
+    deal_id: str | None,
 ) -> dict[str, Any]:
     lines = ["Reminder created"]
     lines.extend(
         f"{fact['title']}: {fact['value']}"
         for fact in _reminder_success_facts(
+            reminder_id=reminder_id,
             title=title,
             reminder_type=reminder_type,
             trigger_time=trigger_time,
             timezone_name=timezone_name,
             recurrence=recurrence,
             delivery_channel=delivery_channel,
+            deal_id=deal_id,
         )
     )
     text = "\n".join(lines)
@@ -573,6 +601,7 @@ def _build_ui_card_success_payload(
     timezone_name: str,
     recurrence: ReminderRecurrence,
     delivery_channel: str,
+    deal_id: str | None,
 ) -> dict[str, Any]:
     card = {
         "kind": "reminder_created_confirmation",
@@ -584,12 +613,16 @@ def _build_ui_card_success_payload(
         "recurrence": recurrence.value,
         "delivery_channel": delivery_channel,
     }
+    if deal_id:
+        card["deal_id"] = deal_id
     text_fallback = _reminder_created_text(
+        reminder_id=reminder_id,
         title=title,
         reminder_type=reminder_type,
         trigger_time=trigger_time,
         timezone_name=timezone_name,
         recurrence=recurrence,
+        deal_id=deal_id,
     )
     return {
         "type": "ui_card",
@@ -610,15 +643,18 @@ def _build_reminder_created_channel_payload(
     timezone_name: str,
     recurrence: ReminderRecurrence,
     delivery_channel: str,
+    deal_id: str | None,
 ) -> dict[str, Any] | None:
     channel = (context.channel or "").lower()
     kwargs = {
+        "reminder_id": reminder_id,
         "title": title,
         "reminder_type": reminder_type,
         "trigger_time": trigger_time,
         "timezone_name": timezone_name,
         "recurrence": recurrence,
         "delivery_channel": delivery_channel,
+        "deal_id": deal_id,
     }
     if channel == "teams":
         return _build_teams_success_payload(**kwargs)
@@ -627,7 +663,7 @@ def _build_reminder_created_channel_payload(
     if channel == "whatsapp":
         return _build_whatsapp_success_payload(**kwargs)
     if channel in {"web", "voice"}:
-        return _build_ui_card_success_payload(reminder_id=reminder_id, **kwargs)
+        return _build_ui_card_success_payload(**kwargs)
     return None
 
 
@@ -772,8 +808,11 @@ async def create_reminder(
         "trigger_time": detail.next_trigger_at.isoformat(),
         "recurrence": detail.recurrence.value,
         "delivery_channel": detail.delivery_channel,
-        "message": f"Created reminder **{detail.title}**.",
+        "message": f"Created reminder **{detail.title}**. Reminder ID: {detail.reminder_id}.",
     }
+    if getattr(detail, "deal_id", None):
+        result["deal_id"] = str(detail.deal_id)
+        result["message"] += f" Deal ID: {detail.deal_id}."
     channel_payload = _build_reminder_created_channel_payload(
         context=context,
         reminder_id=str(detail.reminder_id),
@@ -783,6 +822,7 @@ async def create_reminder(
         timezone_name=detail.timezone,
         recurrence=detail.recurrence,
         delivery_channel=detail.delivery_channel,
+        deal_id=str(detail.deal_id) if getattr(detail, "deal_id", None) else None,
     )
     if channel_payload:
         if channel_payload.get("type") == "ui_card":

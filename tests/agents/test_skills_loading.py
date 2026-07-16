@@ -421,6 +421,8 @@ def test_reminders_skill_preserves_user_local_time_contract() -> None:
     assert "Do NOT convert to UTC" in skill.instructions
     assert "stored user timezone and current datetime" in skill.instructions
     assert "Saturday 10 PM" in skill.instructions
+    assert "show the Reminder ID" in skill.instructions
+    assert "show the Deal ID" in skill.instructions
 
 
 def test_crm_change_workflow_skill_loads() -> None:
@@ -448,6 +450,19 @@ def test_crm_change_workflow_skill_has_instructions() -> None:
     assert "CRM Change Workflow" in skill.instructions
     assert "pending action" in skill.instructions
     assert "CRM change" in skill.instructions
+
+
+def test_crm_change_workflow_skill_requires_visible_mutation_ids() -> None:
+    """Successful mutations must leave stable IDs in the user-visible history."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "crm-change-workflow")
+    instructions = skill.instructions.lower()
+
+    assert "always show the primary record id" in instructions
+    assert "deal-scoped" in instructions
+    assert "deal id" in instructions
+    assert "that deal" in instructions
 
 
 def test_crm_change_workflow_skill_biases_toward_confirmation_when_uncertain() -> None:

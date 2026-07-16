@@ -129,6 +129,7 @@ async def update_risk_blocker_impl(
         return {
             "status": "updated",
             "risk_blocker_id": risk_blocker_id,
+            "deal_id": str(context.deal_id),
             "changes": changes,
         }
 
@@ -177,6 +178,7 @@ async def dismiss_risk_blocker_impl(
         return {
             "status": "dismissed",
             "risk_blocker_id": risk_blocker_id,
+            "deal_id": str(context.deal_id),
             "previous_status": previous_status,
             "new_status": RiskBlockerStatus.DISMISSED.value,
             "reason": reason,
@@ -227,6 +229,7 @@ async def resolve_risk_blocker_impl(
         return {
             "status": "resolved",
             "risk_blocker_id": risk_blocker_id,
+            "deal_id": str(context.deal_id),
             "previous_status": previous_status,
             "resolution_notes": resolution_notes,
         }

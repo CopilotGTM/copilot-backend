@@ -122,7 +122,10 @@ class UpdateDealStageFormHandler(BaseFormHandler):
 
                         return FormHandlerResult(
                             success=True,
-                            message=(f"Deal **{deal_name}** moved to stage **{deal.stage_name}**!"),
+                            message=(
+                                f"Deal **{deal_name}** moved to stage **{deal.stage_name}**! "
+                                f"Deal ID: {deal.deal_id}."
+                            ),
                         )
 
                     except DealWriteServiceError as e:

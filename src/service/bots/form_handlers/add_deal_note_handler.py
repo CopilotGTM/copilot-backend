@@ -136,7 +136,10 @@ class AddDealNoteFormHandler(BaseFormHandler):
                         )
                         return FormHandlerResult(
                             success=True,
-                            message=f"Note added to deal **{deal_name}**!",
+                            message=(
+                                f"Note added to deal **{deal_name}**! "
+                                f"Note ID: {create_result.note.activity_id}. Deal ID: {deal_id}."
+                            ),
                         )
 
                     logger.info(

@@ -90,5 +90,6 @@ All data access remains through existing tools using `AgentContext`.
 - Evidence-first scoring
 - Explicit `Unknown` when evidence is insufficient
 - Output language should follow user language
-- Do not expose UUID/internal IDs unless user explicitly asks
+- Do not expose UUID/internal IDs unless the user asks or a mutation skill requires the
+  created/updated record ID for follow-up continuity
 - Diagrams only when they add decision clarity

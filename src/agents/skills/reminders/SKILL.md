@@ -96,7 +96,8 @@ After creating: tell the user the reminder was created and summarize when it wil
 After listing: present a clean table or list of reminders.
 After cancelling: confirm which reminder was cancelled.
 
-Do not expose reminder UUIDs unless the user explicitly asks.
+After a successful create or update, show the Reminder ID. If the reminder is deal-scoped,
+also show the Deal ID so later references can reuse the same record without another search.
 
 ## Reference loading guide
 

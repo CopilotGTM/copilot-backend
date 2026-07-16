@@ -78,9 +78,12 @@ async def update_deal_note(
     return {
         "status": "updated",
         "note_id": str(note.note_id),
+        "deal_id": str(parsed_deal_id),
         "title": note.title,
         "body": note.body,
-        "message": f"Updated note **{label}**.",
+        "message": (
+            f"Updated note **{label}**. Note ID: {note.note_id}. Deal ID: {parsed_deal_id}."
+        ),
     }
 
 

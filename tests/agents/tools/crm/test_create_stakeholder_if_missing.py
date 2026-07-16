@@ -87,6 +87,7 @@ async def test_create_stakeholder_if_missing_without_contact_skips_research() ->
     assert result is not None
     assert result["action"] == "created"
     assert result["participant_id"] == str(participant_id)
+    assert result["deal_id"] == str(deal_id)
     assert "stakeholder_id" not in result
 
 

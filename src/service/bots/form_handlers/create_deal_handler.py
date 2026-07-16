@@ -191,13 +191,20 @@ class CreateDealFormHandler(BaseFormHandler):
                             user.user_id,
                         )
 
-                        return FormHandlerResult(
-                            success=True,
-                            message=(
-                                f"Deal **{deal.name}** created successfully!"
-                                + (f" Amount: {currency} {amount:,.2f}" if amount else "")
-                            ),
+                        message = (
+                            f"Deal **{deal.name}** created successfully! Deal ID: {deal.deal_id}."
+                            + (f" Amount: {currency} {amount:,.2f}." if amount else "")
                         )
+                        for label, value in (
+                            ("Owner", getattr(deal, "owner_name", None)),
+                            ("Status", getattr(deal, "deal_status", None)),
+                            ("Pipeline", getattr(deal, "pipeline_name", None)),
+                            ("Stage", getattr(deal, "stage_name", None)),
+                        ):
+                            if value:
+                                message += f" {label}: {getattr(value, 'value', value)}."
+
+                        return FormHandlerResult(success=True, message=message)
 
                     except DealWriteServiceError as e:
                         logger.warning("create_deal_handler: DealWriteServiceError: %s", e.message)

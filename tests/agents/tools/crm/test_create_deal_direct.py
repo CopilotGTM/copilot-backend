@@ -103,6 +103,8 @@ async def test_create_deal_direct_creates_name_only_with_defaults_and_context_ow
         stage_id=stage_id,
         stage_name="Discovery",
         owner_id=owner_id,
+        owner_name="Nikhil",
+        deal_status="OPEN",
         company_id=company_id,
     )
 
@@ -143,8 +145,13 @@ async def test_create_deal_direct_creates_name_only_with_defaults_and_context_ow
         "stage_id": str(stage_id),
         "stage_name": "Discovery",
         "owner_user_id": str(owner_id),
+        "owner_name": "Nikhil",
+        "deal_status": "OPEN",
         "company_id": str(company_id),
-        "message": "Created deal **Acme Expansion** in Sales Pipeline > Discovery.",
+        "message": (
+            f"Created deal **Acme Expansion** (Deal ID: {deal_id}) in "
+            "Sales Pipeline > Discovery. Owner: Nikhil. Status: OPEN."
+        ),
         "_bot_channel_payload": {
             "type": "message",
             "content": {
@@ -169,6 +176,9 @@ async def test_create_deal_direct_creates_name_only_with_defaults_and_context_ow
                                     "type": "FactSet",
                                     "facts": [
                                         {"title": "Name", "value": "Acme Expansion"},
+                                        {"title": "Deal ID", "value": str(deal_id)},
+                                        {"title": "Owner", "value": "Nikhil"},
+                                        {"title": "Status", "value": "OPEN"},
                                         {"title": "Pipeline", "value": "Sales Pipeline"},
                                         {"title": "Stage", "value": "Discovery"},
                                     ],
@@ -186,7 +196,10 @@ async def test_create_deal_direct_creates_name_only_with_defaults_and_context_ow
                     }
                 ],
             },
-            "text_fallback": "Created deal Acme Expansion in Sales Pipeline > Discovery.",
+            "text_fallback": (
+                f"Created deal Acme Expansion (Deal ID: {deal_id}) in "
+                "Sales Pipeline > Discovery. Owner: Nikhil. Status: OPEN."
+            ),
             "attachments": None,
             "source_text": None,
         },
@@ -566,14 +579,20 @@ async def test_create_deal_direct_builds_slack_success_card() -> None:
 
     channel_payload = result["_bot_channel_payload"]
     assert channel_payload["type"] == "message"
-    assert (
-        channel_payload["text_fallback"] == "Created deal Slack Deal in Sales Pipeline > Proposal."
+    assert channel_payload["text_fallback"] == (
+        f"Created deal Slack Deal (Deal ID: {deal.deal_id}) in Sales Pipeline > Proposal."
     )
     blocks = channel_payload["content"]["blocks"]
     assert blocks[0]["type"] == "header"
     assert blocks[0]["text"]["text"] == "Deal created"
     assert any(
         field["text"] == "*Amount*\nUSD 50,000.00"
+        for block in blocks
+        if block.get("type") == "section" and "fields" in block
+        for field in block["fields"]
+    )
+    assert any(
+        field["text"] == f"*Deal ID*\n{deal.deal_id}"
         for block in blocks
         if block.get("type") == "section" and "fields" in block
         for field in block["fields"]
@@ -623,13 +642,16 @@ async def test_create_deal_direct_builds_whatsapp_text_payload() -> None:
             "text": (
                 "Deal created\n"
                 "Name: WhatsApp Deal\n"
+                f"Deal ID: {deal.deal_id}\n"
                 "Amount: USD 7,500.00\n"
                 "Pipeline: Sales Pipeline\n"
                 "Stage: Discovery\n"
                 "Account: Acme"
             )
         },
-        "text_fallback": "Created deal WhatsApp Deal in Sales Pipeline > Discovery.",
+        "text_fallback": (
+            f"Created deal WhatsApp Deal (Deal ID: {deal.deal_id}) in Sales Pipeline > Discovery."
+        ),
         "attachments": None,
         "source_text": None,
     }
@@ -672,7 +694,9 @@ async def test_create_deal_direct_web_includes_ui_card_payload() -> None:
         "version": "1.0",
         "tone": "success",
         "title": "Deal created",
-        "message": "Created deal Web Deal in Sales Pipeline > Discovery.",
+        "message": (
+            f"Created deal Web Deal (Deal ID: {deal.deal_id}) in Sales Pipeline > Discovery."
+        ),
         "entity": {
             "type": "deal",
             "id": str(deal.deal_id),
@@ -680,6 +704,7 @@ async def test_create_deal_direct_web_includes_ui_card_payload() -> None:
         },
         "facts": [
             {"label": "Name", "value": "Web Deal"},
+            {"label": "Deal ID", "value": str(deal.deal_id)},
             {"label": "Pipeline", "value": "Sales Pipeline"},
             {"label": "Stage", "value": "Discovery"},
         ],
@@ -688,7 +713,9 @@ async def test_create_deal_direct_web_includes_ui_card_payload() -> None:
     assert result["_bot_channel_payload"] == {
         "type": "ui_card",
         "content": {"card": result["ui_card"]},
-        "text_fallback": "Created deal Web Deal in Sales Pipeline > Discovery.",
+        "text_fallback": (
+            f"Created deal Web Deal (Deal ID: {deal.deal_id}) in Sales Pipeline > Discovery."
+        ),
         "attachments": None,
         "source_text": None,
     }
@@ -733,7 +760,9 @@ async def test_create_deal_direct_voice_includes_ui_card_payload() -> None:
     assert result["_bot_channel_payload"] == {
         "type": "ui_card",
         "content": {"card": result["ui_card"]},
-        "text_fallback": "Created deal Voice Deal in Sales Pipeline > Discovery.",
+        "text_fallback": (
+            f"Created deal Voice Deal (Deal ID: {deal.deal_id}) in Sales Pipeline > Discovery."
+        ),
         "attachments": None,
         "source_text": None,
     }

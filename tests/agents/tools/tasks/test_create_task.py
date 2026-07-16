@@ -194,6 +194,7 @@ async def test_create_task_title_only_creates_with_context_owner_and_defaults() 
     with patch("src.agents.tools.tasks.create_task._load_tasks_write_service") as loader:
         service = MagicMock()
         service.create_task = AsyncMock(return_value=task)
+        service.send_pending_assignment_notifications = AsyncMock()
         service_cls = MagicMock(return_value=service)
         loader.return_value = (service_cls, _FakeTasksWriteServiceError)
 
@@ -231,6 +232,7 @@ async def test_create_task_persists_explicit_due_date() -> None:
     with patch("src.agents.tools.tasks.create_task._load_tasks_write_service") as loader:
         service = MagicMock()
         service.create_task = AsyncMock(return_value=task)
+        service.send_pending_assignment_notifications = AsyncMock()
         service_cls = MagicMock(return_value=service)
         loader.return_value = (service_cls, _FakeTasksWriteServiceError)
 
@@ -253,6 +255,7 @@ async def test_create_task_omitted_optional_fields_do_not_block_creation() -> No
     with patch("src.agents.tools.tasks.create_task._load_tasks_write_service") as loader:
         service = MagicMock()
         service.create_task = AsyncMock(return_value=task)
+        service.send_pending_assignment_notifications = AsyncMock()
         service_cls = MagicMock(return_value=service)
         loader.return_value = (service_cls, _FakeTasksWriteServiceError)
 
@@ -273,7 +276,7 @@ async def test_create_task_omitted_optional_fields_do_not_block_creation() -> No
 async def test_create_task_deal_name_association_remains_org_scoped() -> None:
     context = _direct_context()
     deal_id = UUID("44444444-4444-4444-4444-444444444444")
-    task = _created_task(related_name="Acme")
+    task = _created_task(deal_id=deal_id, related_name="Acme")
 
     with (
         patch(
@@ -284,6 +287,7 @@ async def test_create_task_deal_name_association_remains_org_scoped() -> None:
     ):
         service = MagicMock()
         service.create_task = AsyncMock(return_value=task)
+        service.send_pending_assignment_notifications = AsyncMock()
         service_cls = MagicMock(return_value=service)
         loader.return_value = (service_cls, _FakeTasksWriteServiceError)
 
@@ -291,7 +295,10 @@ async def test_create_task_deal_name_association_remains_org_scoped() -> None:
 
     resolve_deal.assert_awaited_once_with(context, "Acme")
     assert service.create_task.await_args.kwargs["deal_id"] == deal_id
+    assert result["deal_id"] == str(deal_id)
     assert result["deal_name"] == "Acme"
+    assert str(task.activity_id) in result["message"]
+    assert str(deal_id) in result["message"]
 
 
 @pytest.mark.asyncio
@@ -309,6 +316,7 @@ async def test_create_task_assignee_resolution_uses_org_scoped_lookup() -> None:
     ):
         service = MagicMock()
         service.create_task = AsyncMock(return_value=task)
+        service.send_pending_assignment_notifications = AsyncMock()
         service_cls = MagicMock(return_value=service)
         loader.return_value = (service_cls, _FakeTasksWriteServiceError)
 
@@ -330,6 +338,7 @@ async def test_create_task_creates_reminder_only_when_requested_with_due_date() 
     with patch("src.agents.tools.tasks.create_task._load_tasks_write_service") as loader:
         service = MagicMock()
         service.create_task = AsyncMock(return_value=task)
+        service.send_pending_assignment_notifications = AsyncMock()
         service_cls = MagicMock(return_value=service)
         loader.return_value = (service_cls, _FakeTasksWriteServiceError)
 
@@ -358,6 +367,7 @@ async def test_create_task_due_date_uses_anchored_user_local_weekday_for_reminde
     with patch("src.agents.tools.tasks.create_task._load_tasks_write_service") as loader:
         service = MagicMock()
         service.create_task = AsyncMock(return_value=task)
+        service.send_pending_assignment_notifications = AsyncMock()
         service_cls = MagicMock(return_value=service)
         loader.return_value = (service_cls, _FakeTasksWriteServiceError)
 
@@ -384,6 +394,7 @@ async def test_create_task_preserves_whatsapp_channel_for_reminder_delivery() ->
     with patch("src.agents.tools.tasks.create_task._load_tasks_write_service") as loader:
         service = MagicMock()
         service.create_task = AsyncMock(return_value=task)
+        service.send_pending_assignment_notifications = AsyncMock()
         service_cls = MagicMock(return_value=service)
         loader.return_value = (service_cls, _FakeTasksWriteServiceError)
 
@@ -438,6 +449,7 @@ async def test_create_task_builds_slack_success_payload() -> None:
     with patch("src.agents.tools.tasks.create_task._load_tasks_write_service") as loader:
         service = MagicMock()
         service.create_task = AsyncMock(return_value=task)
+        service.send_pending_assignment_notifications = AsyncMock()
         service_cls = MagicMock(return_value=service)
         loader.return_value = (service_cls, _FakeTasksWriteServiceError)
 
@@ -457,6 +469,7 @@ async def test_create_task_builds_teams_success_payload() -> None:
     with patch("src.agents.tools.tasks.create_task._load_tasks_write_service") as loader:
         service = MagicMock()
         service.create_task = AsyncMock(return_value=task)
+        service.send_pending_assignment_notifications = AsyncMock()
         service_cls = MagicMock(return_value=service)
         loader.return_value = (service_cls, _FakeTasksWriteServiceError)
 
@@ -472,11 +485,13 @@ async def test_create_task_builds_teams_success_payload() -> None:
 @pytest.mark.asyncio
 async def test_create_task_builds_whatsapp_text_payload() -> None:
     context = _direct_context(channel="whatsapp")
-    task = _created_task(related_name="Acme")
+    deal_id = UUID("44444444-4444-4444-4444-444444444444")
+    task = _created_task(related_name="Acme", deal_id=deal_id)
 
     with patch("src.agents.tools.tasks.create_task._load_tasks_write_service") as loader:
         service = MagicMock()
         service.create_task = AsyncMock(return_value=task)
+        service.send_pending_assignment_notifications = AsyncMock()
         service_cls = MagicMock(return_value=service)
         loader.return_value = (service_cls, _FakeTasksWriteServiceError)
 
@@ -485,10 +500,13 @@ async def test_create_task_builds_whatsapp_text_payload() -> None:
     assert result["_bot_channel_payload"]["content"]["text"] == (
         "Task created\n"
         "Title: Follow up with Acme\n"
+        "Task ID: 33333333-3333-3333-3333-333333333333\n"
         "Priority: Medium\n"
         "Status: Not started\n"
-        "Deal: Acme"
+        "Deal: Acme\n"
+        f"Deal ID: {deal_id}"
     )
+    assert str(deal_id) in result["_bot_channel_payload"]["text_fallback"]
 
 
 @pytest.mark.asyncio
@@ -500,6 +518,7 @@ async def test_create_task_web_and_voice_include_ui_card_payload() -> None:
         with patch("src.agents.tools.tasks.create_task._load_tasks_write_service") as loader:
             service = MagicMock()
             service.create_task = AsyncMock(return_value=task)
+            service.send_pending_assignment_notifications = AsyncMock()
             service_cls = MagicMock(return_value=service)
             loader.return_value = (service_cls, _FakeTasksWriteServiceError)
 
@@ -509,7 +528,9 @@ async def test_create_task_web_and_voice_include_ui_card_payload() -> None:
         assert result["_bot_channel_payload"] == {
             "type": "ui_card",
             "content": {"card": result["ui_card"]},
-            "text_fallback": "Created task Follow up with Acme.",
+            "text_fallback": (
+                "Created task Follow up with Acme. Task ID: 33333333-3333-3333-3333-333333333333."
+            ),
             "attachments": None,
             "source_text": None,
         }

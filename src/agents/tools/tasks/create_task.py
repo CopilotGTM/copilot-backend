@@ -593,7 +593,10 @@ def _build_teams_preview(
 
 
 def _task_created_text_fallback(task: Any) -> str:
-    return f"Created task {task.subject or 'Untitled task'}."
+    message = f"Created task {task.subject or 'Untitled task'}. Task ID: {task.activity_id}."
+    if getattr(task, "deal_id", None):
+        message += f" Deal ID: {task.deal_id}."
+    return message
 
 
 def _format_status(value: str | None) -> str:
@@ -603,6 +606,7 @@ def _format_status(value: str | None) -> str:
 def _task_success_facts(task: Any) -> list[dict[str, str]]:
     facts = [
         {"title": "Title", "value": str(task.subject or "Untitled task")},
+        {"title": "Task ID", "value": str(task.activity_id)},
         {"title": "Priority", "value": _PRIORITY_LABELS.get(str(task.priority), "Medium")},
         {"title": "Status", "value": _format_status(getattr(task, "status", None))},
     ]
@@ -610,6 +614,8 @@ def _task_success_facts(task: Any) -> list[dict[str, str]]:
         facts.append({"title": "Due", "value": task.due_date.isoformat()})
     if getattr(task, "related_name", None):
         facts.append({"title": "Deal", "value": str(task.related_name)})
+    if getattr(task, "deal_id", None):
+        facts.append({"title": "Deal ID", "value": str(task.deal_id)})
     return facts
 
 
@@ -730,17 +736,22 @@ def _build_task_created_channel_payload(context: AgentContext, task: Any) -> dic
 
 
 def _created_task_result(task: Any, *, assignee_name: str | None = None) -> dict[str, Any]:
+    task_id = str(task.activity_id)
+    deal_id = getattr(task, "deal_id", None)
     result: dict[str, Any] = {
         "status": "created",
-        "task_id": str(task.activity_id),
+        "task_id": task_id,
         "title": task.subject,
         "priority": task.priority,
-        "message": f"Created task **{task.subject}**.",
+        "message": f"Created task **{task.subject}**. Task ID: {task_id}.",
     }
     if getattr(task, "due_date", None):
         result["due_date"] = task.due_date.isoformat()
     if getattr(task, "related_name", None):
         result["deal_name"] = task.related_name
+    if deal_id:
+        result["deal_id"] = str(deal_id)
+        result["message"] += f" Deal ID: {deal_id}."
     if assignee_name:
         result["assignee_name"] = assignee_name
     return result
