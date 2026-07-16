@@ -1,18 +1,23 @@
+"""Token-usage serialization and model-cost calculation contracts."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from src.agents.common.token_tracking import TokenUsageData, extract_token_usage
 from src.infra.config.model_pricing import calculate_cost
 
 
 def test_to_dict_minimal():
+    """Only required token counts are emitted when optional metrics are absent."""
     usage = TokenUsageData(input_tokens=100, output_tokens=50, total_tokens=150)
     d = usage.to_dict()
     assert d == {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150}
 
 
 def test_to_dict_full():
+    """All populated metrics remain visible to downstream usage reporting."""
     usage = TokenUsageData(
         input_tokens=100,
         output_tokens=50,
@@ -78,6 +83,42 @@ def test_calculate_cost_gpt_5_mini():
     assert cost is not None
     expected = (10_000 * 0.25 + 500 * 2.00) / 1_000_000
     assert abs(cost - expected) < 0.000001
+
+
+@pytest.mark.parametrize(
+    ("model_name", "expected_cost"),
+    [
+        ("gpt-5.6-sol", 30.5),
+        ("gpt-5.6-terra", 15.25),
+        ("gpt-5.6-luna", 6.1),
+    ],
+)
+def test_calculate_cost_gpt_5_6_models_with_cached_input(
+    model_name: str, expected_cost: float
+) -> None:
+    """Model switches must retain cost tracking when Azure omits usage cost."""
+    assert (
+        calculate_cost(
+            model_name=model_name,
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            cache_read_tokens=1_000_000,
+        )
+        == expected_cost
+    )
+
+
+def test_calculate_cost_gpt_realtime_2_1_text_tokens() -> None:
+    """Realtime text tokens use the published text input, cache, and output rates."""
+    assert (
+        calculate_cost(
+            model_name="gpt-realtime-2.1",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            cache_read_tokens=1_000_000,
+        )
+        == 24.4
+    )
 
 
 def test_calculate_cost_unknown_model():
@@ -188,5 +229,6 @@ def test_extract_token_usage_no_details_fallback():
 
 
 def test_extract_token_usage_no_metrics():
+    """Responses without metrics must not create a misleading usage record."""
     response = SimpleNamespace(metrics=None)
     assert extract_token_usage(response) is None

@@ -21,6 +21,11 @@ from src.infra.utils.logger import get_logger
 logger = get_logger(__name__)
 
 _DEFAULT_PRICING: dict[str, dict[str, float]] = {
+    "gpt-5.6-sol": {"input": 5.00, "cache_read": 0.50, "output": 30.00},
+    "gpt-5.6-terra": {"input": 2.50, "cache_read": 0.25, "output": 15.00},
+    "gpt-5.6-luna": {"input": 1.00, "cache_read": 0.10, "output": 6.00},
+    # Realtime audio tokens need modality-specific accounting; these are text-token rates.
+    "gpt-realtime-2.1": {"input": 4.00, "cache_read": 0.40, "output": 24.00},
     "gpt-5.4": {"input": 2.50, "cache_read": 0.25, "output": 15.00},
     "gpt-5.2": {"input": 1.75, "cache_read": 0.175, "output": 14.00},
     "gpt-5": {"input": 1.25, "cache_read": 0.125, "output": 10.00},

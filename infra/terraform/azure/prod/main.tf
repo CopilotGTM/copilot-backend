@@ -519,12 +519,33 @@ module "azure_openai" {
       capacity        = 5500
       version         = "2026-03-05"
     }
-    gpt_realtime_1_5 = {
-      deployment_name = "gpt-realtime-1.5"
-      model_name      = "gpt-realtime-1.5"
+    gpt5_6_sol = {
+      deployment_name = "gpt-5.6-sol"
+      model_name      = "gpt-5.6-sol"
+      sku             = "GlobalStandard"
+      capacity        = 5500
+      version         = "2026-07-09"
+    }
+    gpt5_6_terra = {
+      deployment_name = "gpt-5.6-terra"
+      model_name      = "gpt-5.6-terra"
+      sku             = "GlobalStandard"
+      capacity        = 5500
+      version         = "2026-07-09"
+    }
+    gpt5_6_luna = {
+      deployment_name = "gpt-5.6-luna"
+      model_name      = "gpt-5.6-luna"
+      sku             = "GlobalStandard"
+      capacity        = 5500
+      version         = "2026-07-09"
+    }
+    gpt_realtime_2_1 = {
+      deployment_name = "gpt-realtime-2.1"
+      model_name      = "gpt-realtime-2.1"
       sku             = "GlobalStandard"
       capacity        = 7
-      version         = "2026-02-23"
+      version         = "2026-07-07"
     }
     gpt4o_transcribe = {
       deployment_name = "gpt-4o-transcribe"
