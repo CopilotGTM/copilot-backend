@@ -2263,6 +2263,7 @@ class DealWriteService:
             .where(
                 col(CRMPipeline.organisation_id) == self.organisation_id,
                 col(CRMPipeline.integration_id) == integration_id,
+                col(CRMPipeline.is_default).is_(True),
                 col(CRMPipeline.is_deleted).is_not(True),
             )
             .order_by(col(CRMPipeline.display_order).asc(), col(CRMPipeline.created_at).asc())
