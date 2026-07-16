@@ -48,6 +48,26 @@ def _usable_stage_shape() -> list[SimpleNamespace]:
     ]
 
 
+@pytest.mark.asyncio
+async def test_default_pipeline_lookup_filters_on_default_flag() -> None:
+    """Implicit deal placement must use the pipeline explicitly marked default."""
+    pipeline = SimpleNamespace(pipeline_id=uuid4(), is_default=True)
+    org_session = AsyncMock()
+    org_session.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: pipeline)
+    service = DealWriteService(
+        org_session=org_session,
+        master_session=AsyncMock(),
+        organisation_id=uuid4(),
+        actor_user_id=uuid4(),
+    )
+
+    returned = await service._get_default_pipeline(uuid4())  # noqa: SLF001
+
+    statement = org_session.execute.await_args.args[0]
+    assert returned is pipeline
+    assert "crm_pipelines.is_default IS true" in str(statement)
+
+
 @pytest.mark.parametrize(
     ("stage_state", "expected_status", "won_is_set", "lost_is_set"),
     [

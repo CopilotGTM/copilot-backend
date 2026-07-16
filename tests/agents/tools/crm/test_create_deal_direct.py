@@ -459,6 +459,8 @@ async def test_create_deal_direct_returns_structured_failure_for_write_service_e
 async def test_create_deal_tool_uses_direct_create_path() -> None:
     context = _context()
     tool = create_create_deal(context, lambda: None)
+    pipeline_id = uuid4()
+    stage_id = uuid4()
 
     with patch("src.agents.tools.crm.create_deal.create_deal_direct") as direct_create:
         direct_create.return_value = {
@@ -467,11 +469,63 @@ async def test_create_deal_tool_uses_direct_create_path() -> None:
             "_bot_channel_payload": {"type": "message", "content": {"text": "card"}},
         }
 
-        result = await tool(name="Acme", custom_columns={"procurement_stage": "legal"})
+        result = await tool(
+            name="Acme",
+            pipeline_id=pipeline_id,
+            stage_id=stage_id,
+            custom_columns={"procurement_stage": "legal"},
+        )
 
     assert result == {"status": "created", "name": "Acme"}
     direct_create.assert_awaited_once()
+    assert direct_create.await_args.kwargs["pipeline_id"] == pipeline_id
+    assert direct_create.await_args.kwargs["stage_id"] == stage_id
     assert direct_create.await_args.kwargs["custom_columns"] == {"procurement_stage": "legal"}
+
+
+@pytest.mark.asyncio
+async def test_create_deal_direct_passes_pipeline_and_stage_ids_to_writer() -> None:
+    context = _context()
+    org_session = MagicMock()
+    org_session.commit = AsyncMock()
+    org_session.rollback = AsyncMock()
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
+    pipeline_id = uuid4()
+    stage_id = uuid4()
+    deal = SimpleNamespace(
+        deal_id=uuid4(),
+        name="Pipeline-specific Deal",
+        amount=None,
+        currency=None,
+        pipeline_id=pipeline_id,
+        pipeline_name="Enterprise Sales",
+        stage_id=stage_id,
+        stage_name="Proposal",
+    )
+
+    with (
+        patch(
+            "src.agents.tools.crm.create_deal.acquire_master_async_session",
+            return_value=_single_session(MagicMock()),
+        ),
+        patch("src.agents.tools.crm.create_deal.DealWriteService") as service_cls,
+    ):
+        service = MagicMock()
+        service.create_deal = AsyncMock(return_value=deal)
+        service_cls.return_value = service
+
+        result = await create_deal_direct(
+            context=context,
+            name="Pipeline-specific Deal",
+            pipeline_id=pipeline_id,
+            stage_id=stage_id,
+        )
+
+    payload = service.create_deal.await_args.args[0]
+    assert payload["pipeline_id"] == pipeline_id
+    assert payload["stage_id"] == stage_id
+    assert result["pipeline_id"] == str(pipeline_id)
+    assert result["stage_id"] == str(stage_id)
 
 
 @pytest.mark.asyncio

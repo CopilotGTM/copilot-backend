@@ -21,6 +21,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlencode
 from uuid import UUID
 
 import aiohttp
@@ -326,7 +327,7 @@ class WhatsAppBotService:
 
     @staticmethod
     def _format_location(location: dict[str, Any]) -> str:
-        """Format WhatsApp location payload into compact, plain-text context."""
+        """Format WhatsApp location as readable text with a clickable map target."""
         latitude = location.get("latitude")
         longitude = location.get("longitude")
         if latitude is None or longitude is None:
@@ -343,6 +344,10 @@ class WhatsAppBotService:
         address = str(location.get("address") or "").strip()
         if address:
             lines.append(f"Address: {address}")
+        # Meta sends coordinates rather than a share URL. Supplying a canonical
+        # link lets CRM notes retain a location people can recognize and reopen.
+        maps_query = urlencode({"api": "1", "query": f"{latitude},{longitude}"})
+        lines.append(f"Google Maps: https://www.google.com/maps/search/?{maps_query}")
         return "\n".join(lines)
 
     async def _route_message(self, message: WhatsAppInboundMessage) -> None:

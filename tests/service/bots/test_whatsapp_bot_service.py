@@ -550,6 +550,9 @@ def test_extract_inbound_location_as_text_context() -> None:
     assert "77.5946" in messages[0].text
     assert "Bengaluru Office" in messages[0].text
     assert "MG Road" in messages[0].text
+    assert (
+        "Google Maps: https://www.google.com/maps/search/?api=1&query=12.9716%2C77.5946"
+    ) in messages[0].text
 
 
 def test_extract_inbound_unsupported_message_has_reason() -> None:

@@ -1,8 +1,9 @@
-"""Agent tool for lifecycle transitions on a scoped deal.
+"""Agent tool for lifecycle transitions on an explicitly resolved deal.
 
 This tool handles safe lifecycle actions (stage move and close/reopen flows) and
 forces policy checks before any mutating write, so inferred changes can be held
-for approval instead of silently changing deal state.
+for approval instead of silently changing deal state. Organization context is
+the tenant boundary; callers pass the deal ID returned by search or creation.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from src.agents.tools.crm.update_deal_fields import _deal_context_fields
+from src.agents.tools.crm.update_deal_fields import _deal_context_fields, _resolve_deal_id
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.service.crm.deals.contracts import DealWriteServiceError
 from src.service.crm.deals.write_service import DealWriteService
@@ -52,14 +53,14 @@ def create_update_deal_lifecycle(
     context: AgentContext,
     capabilities_getter: Callable[[], AgentCapabilities | None],
 ) -> Callable[..., Any]:
-    """Build the `update_deal_lifecycle` tool for the currently scoped deal.
+    """Build the organization-scoped `update_deal_lifecycle` tool.
 
-    The returned callable validates action requirements up front, applies the
-    deal-update policy, and routes through DealWriteService for authoritative state
-    transitions.
+    Callers resolve the deal first. The returned callable validates the ID and
+    action, then routes through DealWriteService for authoritative transitions.
     """
 
     async def update_deal_lifecycle_tool(
+        deal_id: str,
         action: str,
         stage_id: str | None = None,
         closed_reason: str | None = None,
@@ -68,11 +69,20 @@ def create_update_deal_lifecycle(
         directly_requested: bool = False,
         source: str = "agent",
     ) -> dict[str, Any]:
-        """Apply lifecycle actions with explicit validation and rollback safety."""
+        """Apply a lifecycle action to one resolved deal.
+
+        In general chat, first use ``search_deals`` and disambiguate multiple
+        results. Deal-scoped workflows pass their assigned deal ID. Approval
+        payloads retain that ID for safe replay. Lifecycle transitions remain
+        approval-gated even when the user directly requests them.
+        """
         _ = capabilities_getter
-        # Org/deal context is the tenant boundary; both must be present.
-        if not context.organisation_id or not context.deal_id:
-            return _result("failed", "Deal context is required.")
+        if not context.organisation_id:
+            return _result("failed", "Organisation context is required.")
+        try:
+            resolved_deal_id = _resolve_deal_id(context, deal_id)
+        except ValueError as exc:
+            return _result("failed", str(exc))
         if not action:
             return _result("failed", "Lifecycle action is required.")
         if action not in SUPPORTED_ACTIONS:
@@ -112,6 +122,7 @@ def create_update_deal_lifecycle(
                 "approval_required",
                 decision.reason,
                 approval_payload={
+                    "deal_id": str(resolved_deal_id),
                     "action": action,
                     "stage_id": stage_id,
                     "closed_reason": closed_reason,
@@ -134,10 +145,10 @@ def create_update_deal_lifecycle(
                 )
                 try:
                     if action == "move_stage":
-                        deal = await service.move_stage(context.deal_id, parsed_stage_id)
+                        deal = await service.move_stage(resolved_deal_id, parsed_stage_id)
                     elif action == "close_won":
                         deal = await service.close_deal(
-                            context.deal_id,
+                            resolved_deal_id,
                             outcome="won",
                             closed_reason=closed_reason,
                             close_date=parsed_close_date,
@@ -145,7 +156,7 @@ def create_update_deal_lifecycle(
                         )
                     elif action == "close_lost":
                         deal = await service.close_deal(
-                            context.deal_id,
+                            resolved_deal_id,
                             outcome="lost",
                             closed_reason=closed_reason,
                             close_date=parsed_close_date,
@@ -153,7 +164,7 @@ def create_update_deal_lifecycle(
                         )
                     else:
                         deal = await service.reopen_deal(
-                            context.deal_id,
+                            resolved_deal_id,
                             stage_id=parsed_stage_id,
                             clear_closed_reason=clear_closed_reason,
                         )

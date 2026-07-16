@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from agno.tools.function import Function
 from src.agents.context import AgentContext
 from src.agents.tools.crm.update_deal_account import (
     ALLOWED_ACCOUNT_FIELDS,
@@ -22,17 +23,39 @@ from src.service.crm.internal.deal_update_policy import ACCOUNT_FIELDS, SAFE_DIR
 
 
 @pytest.mark.asyncio
-async def test_update_deal_fields_requires_deal_context():
+async def test_update_deal_fields_rejects_invalid_explicit_deal_id():
     org_id = uuid4()
 
-    """Require org/deal context before any deal-field mutation tool call."""
+    """Reject malformed resolved IDs before any deal-field mutation starts."""
     context = AgentContext(organisation_id=org_id, deal_id=None)
     tool = create_update_deal_fields(context, lambda: None)
 
-    result = await tool(fields={"amount": 12000}, directly_requested=True, source="chat")
+    result = await tool(
+        deal_id="not-a-uuid",
+        fields={"amount": 12000},
+        directly_requested=True,
+        source="chat",
+    )
 
     assert result["status"] == "failed"
-    assert "Deal context is required" in result["reason"]
+    assert "Invalid deal_id" in result["reason"]
+
+
+@pytest.mark.asyncio
+async def test_update_deal_fields_rejects_scoped_deal_id_mismatch():
+    """Prevent a deal-scoped workflow from mutating another deal in the same org."""
+    context = AgentContext(organisation_id=uuid4(), deal_id=uuid4())
+    tool = create_update_deal_fields(context, lambda: None)
+
+    result = await tool(
+        deal_id=str(uuid4()),
+        fields={"name": "Wrong target"},
+        directly_requested=False,
+        source="agent",
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "deal_id does not match the scoped deal context."
 
 
 @pytest.mark.asyncio
@@ -43,7 +66,12 @@ async def test_update_deal_fields_rejects_unsupported_field():
     context = AgentContext(organisation_id=org_id, deal_id=uuid4())
     tool = create_update_deal_fields(context, lambda: None)
 
-    result = await tool(fields={"owner_id": str(uuid4())}, directly_requested=True, source="chat")
+    result = await tool(
+        deal_id=str(context.deal_id),
+        fields={"owner_id": str(uuid4())},
+        directly_requested=True,
+        source="chat",
+    )
 
     assert result["status"] == "skipped"
     assert result["action"] == "update_deal_fields"
@@ -58,7 +86,9 @@ async def test_lifecycle_tool_requires_action():
     context = AgentContext(organisation_id=org_id, deal_id=uuid4())
     tool = create_update_deal_lifecycle(context, lambda: None)
 
-    result = await tool(action="", directly_requested=True, source="chat")
+    result = await tool(
+        deal_id=str(context.deal_id), action="", directly_requested=True, source="chat"
+    )
 
     assert result["status"] == "failed"
     assert "action is required" in result["reason"]
@@ -73,6 +103,7 @@ async def test_lifecycle_close_lost_without_reason_is_skipped():
     tool = create_update_deal_lifecycle(context, lambda: None)
 
     result = await tool(
+        deal_id=str(context.deal_id),
         action="close_lost",
         closed_reason=None,
         directly_requested=True,
@@ -92,6 +123,7 @@ async def test_lifecycle_close_lost_rejects_blank_reason_before_approval():
     tool = create_update_deal_lifecycle(context, lambda: None)
 
     result = await tool(
+        deal_id=str(context.deal_id),
         action="close_lost",
         closed_reason="   ",
         directly_requested=False,
@@ -111,7 +143,12 @@ async def test_lifecycle_move_stage_requires_stage_id_before_approval():
     context = AgentContext(organisation_id=org_id, deal_id=uuid4())
     tool = create_update_deal_lifecycle(context, lambda: None)
 
-    result = await tool(action="move_stage", directly_requested=False, source="agent")
+    result = await tool(
+        deal_id=str(context.deal_id),
+        action="move_stage",
+        directly_requested=False,
+        source="agent",
+    )
 
     assert result["status"] == "failed"
     assert "stage_id is required" in result["reason"]
@@ -127,6 +164,7 @@ async def test_lifecycle_move_stage_rejects_invalid_stage_id_before_approval():
     tool = create_update_deal_lifecycle(context, lambda: None)
 
     result = await tool(
+        deal_id=str(context.deal_id),
         action="move_stage",
         stage_id="not-a-uuid",
         directly_requested=False,
@@ -147,6 +185,7 @@ async def test_lifecycle_close_rejects_invalid_close_date_before_approval():
     tool = create_update_deal_lifecycle(context, lambda: None)
 
     result = await tool(
+        deal_id=str(context.deal_id),
         action="close_won",
         close_date="not-a-date",
         directly_requested=False,
@@ -167,6 +206,7 @@ async def test_lifecycle_close_won_approval_payload_clears_closed_reason():
     tool = create_update_deal_lifecycle(context, lambda: None)
 
     result = await tool(
+        deal_id=str(context.deal_id),
         action="close_won",
         closed_reason="Contract signed",
         directly_requested=True,
@@ -174,6 +214,7 @@ async def test_lifecycle_close_won_approval_payload_clears_closed_reason():
     )
 
     assert result["status"] == "approval_required"
+    assert result["approval_payload"]["deal_id"] == str(context.deal_id)
     assert result["approval_payload"]["closed_reason"] is None
 
 
@@ -184,7 +225,7 @@ async def test_lifecycle_move_stage_returns_refreshed_deal_context():
     target_stage_id = uuid4()
 
     """Applied lifecycle updates should return enough context to refresh the deal row."""
-    context = AgentContext(organisation_id=org_id, deal_id=deal_id, user_id=uuid4())
+    context = AgentContext(organisation_id=org_id, deal_id=None, user_id=uuid4())
     tool = create_update_deal_lifecycle(context, lambda: None)
     org_session = MagicMock()
     org_session.commit = AsyncMock()
@@ -224,6 +265,7 @@ async def test_lifecycle_move_stage_returns_refreshed_deal_context():
         service_cls.return_value = service
 
         result = await tool(
+            deal_id=str(deal_id),
             action="move_stage",
             stage_id=str(target_stage_id),
             directly_requested=True,
@@ -250,7 +292,9 @@ async def test_account_tool_rejects_empty_payload():
     context = AgentContext(organisation_id=org_id, deal_id=uuid4())
     tool = create_update_deal_account(context, lambda: None)
 
-    result = await tool(account={}, directly_requested=True, source="chat")
+    result = await tool(
+        deal_id=str(context.deal_id), account={}, directly_requested=True, source="chat"
+    )
 
     assert result["status"] == "failed"
     assert "At least one account field" in result["reason"]
@@ -264,7 +308,12 @@ async def test_account_tool_rejects_invalid_payload_before_approval():
     context = AgentContext(organisation_id=org_id, deal_id=uuid4())
     tool = create_update_deal_account(context, lambda: None)
 
-    result = await tool(account={"website": 123}, directly_requested=False, source="agent")
+    result = await tool(
+        deal_id=str(context.deal_id),
+        account={"website": 123},
+        directly_requested=False,
+        source="agent",
+    )
 
     assert result["status"] == "failed"
     assert "Input should be a valid string" in result["reason"]
@@ -280,12 +329,14 @@ async def test_account_tool_ignores_inferred_nulls_when_other_fields_need_approv
     tool = create_update_deal_account(context, lambda: None)
 
     result = await tool(
+        deal_id=str(context.deal_id),
         account={"website": None, "name": "Acme Corp"},
         directly_requested=False,
         source="agent",
     )
 
     assert result["status"] == "approval_required"
+    assert result["approval_payload"]["deal_id"] == str(context.deal_id)
     assert result["approval_payload"]["account"] == {"name": "Acme Corp"}
     assert result["requires_approval"] is True
 
@@ -296,7 +347,7 @@ async def test_account_tool_applies_normalized_payload():
     deal_id = uuid4()
 
     """Apply account updates using the same normalized payload as the public API."""
-    context = AgentContext(organisation_id=org_id, deal_id=deal_id, user_id=uuid4())
+    context = AgentContext(organisation_id=org_id, deal_id=None, user_id=uuid4())
     tool = create_update_deal_account(context, lambda: None)
     org_session = MagicMock()
     org_session.commit = AsyncMock()
@@ -332,6 +383,7 @@ async def test_account_tool_applies_normalized_payload():
         service_cls.return_value = service
 
         result = await tool(
+            deal_id=str(deal_id),
             account={"name": "  Acme Corp  ", "website": None},
             directly_requested=True,
             source="chat",
@@ -359,7 +411,7 @@ async def test_update_deal_fields_applies_direct_clear_payload():
     deal_id = uuid4()
 
     """Directly requested scalar clears should follow the public PATCH contract."""
-    context = AgentContext(organisation_id=org_id, deal_id=deal_id, user_id=uuid4())
+    context = AgentContext(organisation_id=org_id, deal_id=None, user_id=uuid4())
     tool = create_update_deal_fields(context, lambda: None)
     org_session = MagicMock()
     org_session.commit = AsyncMock()
@@ -395,6 +447,7 @@ async def test_update_deal_fields_applies_direct_clear_payload():
         service_cls.return_value = service
 
         result = await tool(
+            deal_id=str(deal_id),
             fields={"description": None},
             directly_requested=True,
             source="chat",
@@ -422,12 +475,14 @@ async def test_update_deal_fields_ignores_inferred_nulls_when_other_fields_need_
     tool = create_update_deal_fields(context, lambda: None)
 
     result = await tool(
+        deal_id=str(context.deal_id),
         fields={"description": None, "amount": 12000},
         directly_requested=False,
         source="agent",
     )
 
     assert result["status"] == "approval_required"
+    assert result["approval_payload"]["deal_id"] == str(context.deal_id)
     assert result["approval_payload"]["fields"] == {"amount": 12000.0}
     assert result["requires_approval"] is True
 
@@ -473,7 +528,38 @@ async def test_update_deal_fields_rejects_actual_close_date():
     context = AgentContext(organisation_id=org_id, deal_id=uuid4())
     tool = create_update_deal_fields(context, lambda: None)
 
-    result = await tool(fields={"close_date": "2026-05-01"}, directly_requested=True, source="chat")
+    result = await tool(
+        deal_id=str(context.deal_id),
+        fields={"close_date": "2026-05-01"},
+        directly_requested=True,
+        source="chat",
+    )
 
     assert result["status"] == "skipped"
     assert "not supported" in result["reason"]
+
+
+def test_field_update_tool_schema_advertises_scalar_field_types():
+    """Expose deal name and value types so the LLM can construct valid updates."""
+    context = AgentContext(organisation_id=uuid4())
+    tool = create_update_deal_fields(context, lambda: None)
+
+    schema = Function.from_callable(tool).parameters
+
+    assert schema["required"] == ["deal_id", "fields"]
+    assert set(schema["properties"]["fields"]["properties"]) == ALLOWED_DEAL_FIELDS
+    assert schema["properties"]["fields"]["properties"]["name"]["anyOf"][0]["type"] == "string"
+    assert schema["properties"]["fields"]["properties"]["amount"]["anyOf"][0]["type"] == "number"
+
+
+def test_account_update_tool_schema_advertises_account_field_types():
+    """Expose account name and website types instead of an untyped value map."""
+    context = AgentContext(organisation_id=uuid4())
+    tool = create_update_deal_account(context, lambda: None)
+
+    schema = Function.from_callable(tool).parameters
+
+    assert schema["required"] == ["deal_id", "account"]
+    assert set(schema["properties"]["account"]["properties"]) == ALLOWED_ACCOUNT_FIELDS
+    assert schema["properties"]["account"]["properties"]["name"]["anyOf"][0]["type"] == "string"
+    assert schema["properties"]["account"]["properties"]["website"]["anyOf"][0]["type"] == "string"

@@ -110,8 +110,9 @@ class InternalCRMSetupService:
         """Ensure internal CRM integration and default pipeline exist.
 
         Called during org creation (organization_management) and by the
-        ensure_internal_crm_setup maintenance script. Creates missing
-        integration, pipeline, and default stages if they don't exist.
+        ensure_internal_crm_setup maintenance script. Creates the integration
+        and seeds a default pipeline when one does not exist. Existing pipeline
+        stages are user-owned configuration and are never repaired by name.
         """
         integration = await self._ensure_internal_integration()
         pipeline, stages = await self._ensure_default_pipeline(integration.integration_id)
@@ -196,6 +197,7 @@ class InternalCRMSetupService:
         pipeline = result.scalars().first()
 
         now = utcnow()
+        pipeline_was_created = False
         if not pipeline and create_missing:
             pipeline_id = uuid4()
             pipeline = CRMPipeline(
@@ -217,6 +219,7 @@ class InternalCRMSetupService:
             self.session.add(pipeline)
             await self.session.flush()
             await self.session.refresh(pipeline)
+            pipeline_was_created = True
 
         if not pipeline:
             raise ValueError("Internal CRM pipeline not found")
@@ -226,34 +229,30 @@ class InternalCRMSetupService:
             stages = await self._load_pipeline_stages(pipeline.pipeline_id)
             return pipeline, stages
 
-        existing_stages = await self._load_pipeline_stages(pipeline.pipeline_id)
-        stage_by_key = {stage.stage_key or stage.name: stage for stage in existing_stages}
-
-        for stage_def in DEFAULT_STAGES:
-            key = stage_def["stage_key"]
-            if key in stage_by_key:
-                stages.append(stage_by_key[key])
-                continue
-
-            stage_id = uuid4()
-            stage = CRMDealStage(
-                stage_id=stage_id,
-                organisation_id=self.organisation_id,
-                integration_id=integration_id,
-                name=stage_def["name"],
-                label=stage_def["label"],
-                stage_key=stage_def["stage_key"],
-                stage_state=stage_def["stage_state"],
-                probability=stage_def["probability"],
-                forecast_category=None,
-                is_closed=stage_def["is_closed"],
-                display_order=stage_def["display_order"],
-                pipeline_id=pipeline.pipeline_id,
-                synced_at=now,
-                last_seen_at=now,
-            )
-            self.session.add(stage)
-            stages.append(stage)
+        if pipeline_was_created:
+            for stage_def in DEFAULT_STAGES:
+                stage = CRMDealStage(
+                    stage_id=uuid4(),
+                    organisation_id=self.organisation_id,
+                    integration_id=integration_id,
+                    name=stage_def["name"],
+                    label=stage_def["label"],
+                    stage_key=stage_def["stage_key"],
+                    stage_state=stage_def["stage_state"],
+                    probability=stage_def["probability"],
+                    forecast_category=None,
+                    is_closed=stage_def["is_closed"],
+                    display_order=stage_def["display_order"],
+                    pipeline_id=pipeline.pipeline_id,
+                    synced_at=now,
+                    last_seen_at=now,
+                )
+                self.session.add(stage)
+                stages.append(stage)
+        else:
+            # A default flag selects where implicit deal writes go; it does not
+            # transfer ownership of that pipeline's stage configuration to setup.
+            stages = await self._load_pipeline_stages(pipeline.pipeline_id)
 
         if stages:
             await self.session.flush()

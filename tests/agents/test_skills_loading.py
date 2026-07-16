@@ -488,6 +488,19 @@ def test_crm_change_workflow_skill_routes_contact_and_account_updates() -> None:
     assert "existing deal update tools" in instructions
 
 
+def test_crm_change_workflow_skill_preserves_map_links_in_notes() -> None:
+    """Deal notes should retain a useful clickable location instead of raw coordinates."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "crm-change-workflow")
+    instructions = skill.instructions
+
+    assert "Map Locations in Deal Notes" in instructions
+    assert "Google Maps URL" in instructions
+    assert "location name and address" in instructions
+    assert "coordinates alone" in instructions
+
+
 def test_crm_deal_analysis_workflow_skill_loads() -> None:
     """The crm-deal-analysis-workflow skill must load without validation errors."""
     loader = LocalSkills(str(SKILLS_DIR))
