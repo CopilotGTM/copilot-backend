@@ -42,8 +42,9 @@ class AgentConfig:
     """Configuration for AI agents.
 
     Model Guidelines:
-    - gpt-5: Full capability model for complex analysis (deal summary, briefing, risk extraction)
-    - gpt-5-mini: Faster/cheaper model for simpler tasks (meeting summary, stakeholder analysis)
+    - gpt-5.6-sol: Complex multi-step reasoning or CRM-write workflows.
+    - gpt-5.6-terra: Default balance for structured analysis and meeting preparation.
+    - gpt-5.6-luna: High-volume, tool-free summarization and routing.
 
     All settings can be overridden via environment variables:
     - AGENT_<NAME>_MODEL: Model ID (e.g., AGENT_SUMMARY_MODEL=gpt-5)
@@ -59,12 +60,12 @@ class AgentConfig:
     # ==========================================================================
 
     # Summary Agent - generates meeting summaries from transcripts
-    SUMMARY_MODEL: str = os.getenv("AGENT_SUMMARY_MODEL", "gpt-5.2")
+    SUMMARY_MODEL: str = os.getenv("AGENT_SUMMARY_MODEL", "gpt-5.6-terra")
     SUMMARY_DEBUG: bool = os.getenv("AGENT_SUMMARY_DEBUG", "false").lower() == "true"
     SUMMARY_TIMEOUT: int = int(os.getenv("AGENT_SUMMARY_TIMEOUT", "600"))
 
     # Briefing Agent - generates meeting preparation briefings
-    BRIEFING_MODEL: str = os.getenv("AGENT_BRIEFING_MODEL", "gpt-5.2")
+    BRIEFING_MODEL: str = os.getenv("AGENT_BRIEFING_MODEL", "gpt-5.6-terra")
     BRIEFING_DEBUG: bool = os.getenv("AGENT_BRIEFING_DEBUG", "false").lower() == "true"
     BRIEFING_TIMEOUT: int = int(os.getenv("AGENT_BRIEFING_TIMEOUT", "600"))
 
@@ -73,32 +74,32 @@ class AgentConfig:
     # ==========================================================================
 
     # Deal Summary Agent - generates comprehensive deal summaries
-    DEAL_SUMMARY_MODEL: str = os.getenv("AGENT_DEAL_SUMMARY_MODEL", "gpt-5.2")
+    DEAL_SUMMARY_MODEL: str = os.getenv("AGENT_DEAL_SUMMARY_MODEL", "gpt-5.6-sol")
     DEAL_SUMMARY_DEBUG: bool = os.getenv("AGENT_DEAL_SUMMARY_DEBUG", "false").lower() == "true"
     DEAL_SUMMARY_TIMEOUT: int = int(os.getenv("AGENT_DEAL_SUMMARY_TIMEOUT", "600"))
 
     # Risk Blocker Extraction Agent - extracts risks and blockers from deal communications
-    RISK_BLOCKER_MODEL: str = os.getenv("AGENT_RISK_BLOCKER_MODEL", "gpt-5.2")
+    RISK_BLOCKER_MODEL: str = os.getenv("AGENT_RISK_BLOCKER_MODEL", "gpt-5.6-terra")
     RISK_BLOCKER_DEBUG: bool = os.getenv("AGENT_RISK_BLOCKER_DEBUG", "false").lower() == "true"
     RISK_BLOCKER_TIMEOUT: int = int(os.getenv("AGENT_RISK_BLOCKER_TIMEOUT", "600"))
 
     # Stakeholder Analysis Agent - analyzes stakeholder insights from transcripts
-    STAKEHOLDER_MODEL: str = os.getenv("AGENT_STAKEHOLDER_MODEL", "gpt-5.4")
+    STAKEHOLDER_MODEL: str = os.getenv("AGENT_STAKEHOLDER_MODEL", "gpt-5.6-terra")
     STAKEHOLDER_DEBUG: bool = os.getenv("AGENT_STAKEHOLDER_DEBUG", "false").lower() == "true"
     STAKEHOLDER_TIMEOUT: int = int(os.getenv("AGENT_STAKEHOLDER_TIMEOUT", "600"))
 
     # Deal Memory Agent - builds/updates persistent deal memory documents
-    DEAL_MEMORY_MODEL: str = os.getenv("AGENT_DEAL_MEMORY_MODEL", "gpt-5.4")
+    DEAL_MEMORY_MODEL: str = os.getenv("AGENT_DEAL_MEMORY_MODEL", "gpt-5.6-terra")
     DEAL_MEMORY_DEBUG: bool = os.getenv("AGENT_DEAL_MEMORY_DEBUG", "false").lower() == "true"
     DEAL_MEMORY_TIMEOUT: int = int(os.getenv("AGENT_DEAL_MEMORY_TIMEOUT", "600"))
 
     # Deal Task Agent - creates/completes deal tasks from meeting summaries
-    DEAL_TASK_MODEL: str = os.getenv("AGENT_DEAL_TASK_MODEL", "gpt-5.4")
+    DEAL_TASK_MODEL: str = os.getenv("AGENT_DEAL_TASK_MODEL", "gpt-5.6-sol")
     DEAL_TASK_DEBUG: bool = os.getenv("AGENT_DEAL_TASK_DEBUG", "false").lower() == "true"
     DEAL_TASK_TIMEOUT: int = int(os.getenv("AGENT_DEAL_TASK_TIMEOUT", "600"))
 
     # Deal Update Agent - updates internal CRM deal state through scoped tools
-    DEAL_UPDATE_MODEL: str = os.getenv("AGENT_DEAL_UPDATE_MODEL", "gpt-5.2")
+    DEAL_UPDATE_MODEL: str = os.getenv("AGENT_DEAL_UPDATE_MODEL", "gpt-5.6-sol")
     DEAL_UPDATE_DEBUG: bool = os.getenv("AGENT_DEAL_UPDATE_DEBUG", "false").lower() == "true"
     DEAL_UPDATE_TIMEOUT: int = int(os.getenv("AGENT_DEAL_UPDATE_TIMEOUT", "600"))
 
@@ -132,7 +133,7 @@ class AgentConfig:
 
     # Transcript Compression Sub-Agent - condenses transcripts for deal memory
     TRANSCRIPT_COMPRESSION_MODEL: str = os.getenv(
-        "AGENT_TRANSCRIPT_COMPRESSION_MODEL", "gpt-5-mini"
+        "AGENT_TRANSCRIPT_COMPRESSION_MODEL", "gpt-5.6-luna"
     )
     TRANSCRIPT_COMPRESSION_DEBUG: bool = (
         os.getenv("AGENT_TRANSCRIPT_COMPRESSION_DEBUG", "false").lower() == "true"
@@ -146,17 +147,17 @@ class AgentConfig:
     # ==========================================================================
 
     # General Agent - handles user queries with search and deal context tools
-    GENERAL_MODEL: str = os.getenv("AGENT_GENERAL_MODEL", "gpt-5.4")
+    GENERAL_MODEL: str = os.getenv("AGENT_GENERAL_MODEL", "gpt-5.6-terra")
     GENERAL_DEBUG: bool = os.getenv("AGENT_GENERAL_DEBUG", "false").lower() == "true"
     GENERAL_TIMEOUT: int = int(os.getenv("AGENT_GENERAL_TIMEOUT", "600"))
 
     # Router Agent - routes queries to appropriate agents
-    ROUTER_MODEL: str = os.getenv("AGENT_ROUTER_MODEL", "gpt-5.2")
+    ROUTER_MODEL: str = os.getenv("AGENT_ROUTER_MODEL", "gpt-5.6-luna")
     ROUTER_DEBUG: bool = os.getenv("AGENT_ROUTER_DEBUG", "false").lower() == "true"
     ROUTER_TIMEOUT: int = int(os.getenv("AGENT_ROUTER_TIMEOUT", "30"))
 
-    # Voice Realtime Agent - tool-free conversational agent for live voice sessions
-    VOICE_REALTIME_MODEL: str = os.getenv("AGENT_VOICE_REALTIME_MODEL", "gpt-realtime-1.5")
+    # Voice Realtime Agent - tool-enabled conversational agent for live voice sessions
+    VOICE_REALTIME_MODEL: str = os.getenv("AGENT_VOICE_REALTIME_MODEL", "gpt-realtime-2.1")
     VOICE_REALTIME_VOICE: str = os.getenv("AGENT_VOICE_REALTIME_VOICE", "alloy")
     VOICE_REALTIME_DEBUG: bool = os.getenv("AGENT_VOICE_REALTIME_DEBUG", "false").lower() == "true"
     VOICE_REALTIME_TIMEOUT: int = int(os.getenv("AGENT_VOICE_REALTIME_TIMEOUT", "120"))
