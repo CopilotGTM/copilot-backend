@@ -9,9 +9,7 @@ def test_contact_research_list_sections_require_markdown_bullets() -> None:
     """Career facts stay separately renderable while the overview remains prose."""
     prompt = get_contact_research_summary_system_prompt("Example Seller")
     sections = {
-        heading: " ".join(
-            prompt.split(f"## {heading}", 1)[1].split("## ", 1)[0].split()
-        )
+        heading: " ".join(prompt.split(f"## {heading}", 1)[1].split("## ", 1)[0].split())
         for heading in (
             "Professional Overview",
             "Experience",
