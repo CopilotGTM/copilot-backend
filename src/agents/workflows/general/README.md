@@ -163,10 +163,14 @@ async def search_internal_knowledge(query: str, limit: int = 5) -> list[dict]
 
 ### `search_internet`
 
-Searches the public web via DuckDuckGo.
+Searches the public web via Exa, with optional people and company indexes.
 
 ```python
-async def search_internet(query: str, max_results: int = 5) -> list[dict]
+async def search_internet(
+    query: str,
+    max_results: int = 5,
+    category: Literal["people", "company"] | None = None,
+) -> list[dict]
 ```
 
 - Uses `InternetSearch` tool

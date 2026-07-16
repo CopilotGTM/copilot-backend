@@ -2,7 +2,7 @@
 
 This package contains tools for searching various data sources:
 - internal_knowledge_base: Search organisation documents
-- internet_search: Web search via DuckDuckGo
+- internet_search: Web search via Exa
 """
 
 from __future__ import annotations

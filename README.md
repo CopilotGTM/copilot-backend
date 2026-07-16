@@ -64,6 +64,8 @@ SUPABASE_JWT_SECRET=your-jwt-secret
 RESEND_API_KEY=your-resend-api-key
 FROM_EMAIL=noreply@yourdomain.com
 
+EXA_API_KEY=your-exa-api-key
+
 APP_NAME=CopilotGTM
 APP_URL=https://your-app-domain.com
 

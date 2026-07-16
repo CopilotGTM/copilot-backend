@@ -137,7 +137,7 @@ knowledge = [
 # =============================================================================
 # LIGHT WORKERS DEPENDENCIES (Chat, Deal, Organization, Content)
 # =============================================================================
-# Chat/Deal workers use src/agents/ which requires agno + duckduckgo
+# Chat/Deal workers use src/agents/ which requires agno
 # Organization worker needs supabase + azure-storage-blob
 workers-light = [
     # AI/ML for agents (GeneralAgent, DealSummaryAgent, etc.)
@@ -145,10 +145,7 @@ workers-light = [
     "agno==2.5.9",
     "GitPython>=3.1.47",
 
-    # Search tools used by GeneralAgent
-    "duckduckgo-search~=8.1.1",
-
-    # Research tools (free, no API keys required)
+    # Research tools
     "yfinance~=0.2.50",
     "wikipedia~=1.4.0",
     "crawl4ai>=0.9.0,<1.0.0",
@@ -236,7 +233,6 @@ full = [
     "defusedxml>=0.7.1",
     
     # === Light Workers Dependencies ===
-    "duckduckgo-search~=8.1.1",
     "yfinance~=0.2.50",
     "wikipedia~=1.4.0",
     "crawl4ai>=0.9.0,<1.0.0",
