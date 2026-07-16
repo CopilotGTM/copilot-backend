@@ -24,6 +24,8 @@ if TYPE_CHECKING:
     from src.agents.context import AgentContext
     from src.agents.tools.transparent_tools import AgentCapabilities
 
+MAX_TASK_COMPLETIONS_PER_RUN = 20
+
 
 async def complete_deal_task(
     *,
@@ -40,6 +42,13 @@ async def complete_deal_task(
     # service instantiation so malformed tool calls fail fast and never touch DB.
     if not context.organisation_id or not context.deal_id:
         return {"status": "error", "message": "Deal context is required."}
+    if not context.metadata.get("deal_task_list_checked"):
+        return {"status": "error", "message": "ListDealTasks must be called before task writes."}
+    if context.metadata.get("deal_task_list_truncated"):
+        return {
+            "status": "error",
+            "message": "Task list is too large for safe completion reconciliation.",
+        }
 
     cleaned_reason = reason.strip()
     if not cleaned_reason:
@@ -62,6 +71,9 @@ async def complete_deal_task(
                 deal_id=context.deal_id,
                 completion_reason=cleaned_reason,
             )
+            # The tool owns the transaction; completion also cancels linked
+            # reminders before this commit so they cannot diverge on retry.
+            await session.commit()
     except DealTaskAutomationError as exc:
         # Convert domain exceptions into stable tool output so callers can map
         # "not found / read-only / permission" cases without catching backend
@@ -81,6 +93,7 @@ def create_complete_deal_task(
     capabilities_getter: Callable[[], AgentCapabilities | None],
 ) -> Callable[..., Any]:
     """Build a context-bound tool entry that can execute in a capability-gated agent."""
+    completion_attempts = 0
 
     async def complete_deal_task_tool(task_id: str, reason: str) -> dict[str, Any]:
         """Complete an existing internal task for the current immutable deal context.
@@ -88,6 +101,14 @@ def create_complete_deal_task(
         Use this only when the meeting summary explicitly says the task was
         finished. Do not call this for CRM-synced read-only tasks.
         """
+        nonlocal completion_attempts
+        if completion_attempts >= MAX_TASK_COMPLETIONS_PER_RUN:
+            return {
+                "status": "error",
+                "message": f"Maximum {MAX_TASK_COMPLETIONS_PER_RUN} completions per meeting.",
+            }
+        completion_attempts += 1
+
         # Keep user intent local to one tool execution and rely on capability
         # gating to prevent action on unsupported channel capabilities.
         result = await execute_with_capabilities(

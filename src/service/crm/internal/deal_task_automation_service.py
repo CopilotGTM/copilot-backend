@@ -14,14 +14,16 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
-from src.domain.models.master_tables import User
+from src.domain.models.master_tables import SupabaseUserStatus, User
+from src.domain.models.organisation_tables.sync.calendar import CalendarAttendee, CalendarEvent
 from src.domain.models.organisation_tables.sync.crm import (
     CRMActivityPriority,
     CRMActivitySource,
@@ -31,8 +33,14 @@ from src.domain.models.organisation_tables.sync.crm import (
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.infra.database.sessions import master_async_session_scope
+from src.infra.utils.timezone import DEFAULT_TIMEZONE, resolve_timezone_name
 from src.service.crm.access.crm_user_service import build_user_display_name
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
+from src.service.crm.tasks.reminder_service import TaskReminderService
+from src.service.crm.utils.crm_user_identity import (
+    CRMUserIdentityResolutionError,
+    ensure_app_user_crm_identity,
+)
 
 _TASK_ACTIVITY_TYPES = {CRMActivityType.TASK.value, CRMActivityType.TODO.value}
 _ALLOWED_PRIORITIES = {priority.value for priority in CRMActivityPriority}
@@ -54,6 +62,9 @@ class TaskWriteResult:
     task: CRMTask
     created: bool
     reason: str | None = None
+    assignee_public_user_id: UUID | None = None
+    assignee_timezone: str = DEFAULT_TIMEZONE
+    reminder_at: datetime | None = None
 
 
 class DealTaskAutomationService:
@@ -67,6 +78,7 @@ class DealTaskAutomationService:
         self.session = session
         self.organisation_id = organisation_id
         self._projection = ActivityFeedProjectionService(session, organisation_id)
+        self._reminders = TaskReminderService(session, organisation_id, actor_user_id=None)
 
     async def list_deal_tasks(self, deal_id: UUID) -> list[CRMTask]:
         """List non-deleted task-style rows for one deal in the current org.
@@ -84,6 +96,12 @@ class DealTaskAutomationService:
                 c.organisation_id == self.organisation_id,
                 c.deal_id == deal_id,
                 c.task_metadata["task_type"].as_string().in_(list(_TASK_ACTIVITY_TYPES)),
+                c.status.in_(
+                    [
+                        CRMActivityStatus.NOT_STARTED.value,
+                        CRMActivityStatus.IN_PROGRESS.value,
+                    ]
+                ),
                 or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
             )
             .order_by(c.created_at.desc(), c.task_id.desc())
@@ -98,6 +116,7 @@ class DealTaskAutomationService:
         subject: str,
         body: str | None,
         assignee_name_or_email: str | None,
+        fallback_assignee_name_or_emails: list[str] | None = None,
         source_event_id: UUID | None,
         source_association_id: UUID | None,
         source_summary_job_id: UUID | None,
@@ -129,17 +148,45 @@ class DealTaskAutomationService:
             subject=cleaned_subject,
         )
 
+        # Serialize identical writes across Celery retries. Read-before-write is
+        # not sufficient when two workers start before either transaction commits.
+        await self.session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:idempotency_key))"),
+            {"idempotency_key": idempotency_key},
+        )
+
         # Idempotency key is the contract for replay safety. Automation can
         # re-run after a transient crash; returning the first write prevents
         # duplicate internal tasks while keeping user-visible task IDs stable.
         existing = await self._find_existing_task(idempotency_key)
         if existing:
-            return TaskWriteResult(existing, False, "duplicate")
+            public_user_id = self._metadata_public_user_id(existing)
+            timezone_name = await self._user_timezone(public_user_id)
+            return TaskWriteResult(
+                existing,
+                False,
+                "duplicate",
+                assignee_public_user_id=public_user_id,
+                assignee_timezone=timezone_name,
+                reminder_at=self._reminder_time(existing.due_at, timezone_name),
+            )
 
         # --- Step 4: resolve assignee locally to avoid hard dependency on caller IDs ---
-        owner_user_id, owner_name, owner_email, assignee_resolution = await self._resolve_assignee(
-            assignee_name_or_email
+        allowed_assignee_emails = await self._allowed_assignee_emails(deal, source_event_id)
+        (
+            owner_user_id,
+            public_user_id,
+            owner_name,
+            owner_email,
+            assignee_timezone,
+            assignee_resolution,
+        ) = await self._resolve_assignee(
+            assignee_name_or_email,
+            fallback_assignee_name_or_emails or [],
+            allowed_assignee_emails,
         )
+        normalized_due_date = self._normalize_due_date(due_date, assignee_timezone)
+        local_due_date = normalized_due_date.astimezone(ZoneInfo(assignee_timezone)).date()
         now = datetime.now(UTC)
         activity_id = uuid4()
 
@@ -154,8 +201,8 @@ class DealTaskAutomationService:
             "description": body.strip() if body and body.strip() else None,
             "status": CRMActivityStatus.NOT_STARTED.value,
             "priority": priority,
-            "due_date": due_date.date() if due_date else None,
-            "due_at": due_date,
+            "due_date": local_due_date,
+            "due_at": normalized_due_date,
             "is_all_day": False,
             "deal_id": deal.deal_id,
             "assigned_to_user_id": owner_user_id,
@@ -183,6 +230,11 @@ class DealTaskAutomationService:
                 else None,
                 "idempotency_key": idempotency_key,
                 "assignee_resolution": assignee_resolution,
+                "assigned_to_public_user_id": str(public_user_id)
+                if public_user_id
+                else None,
+                "due_timezone": assignee_timezone,
+                "due_local_date": local_due_date.isoformat(),
             },
         }
         task = CRMTask.model_validate(task_data)
@@ -190,7 +242,13 @@ class DealTaskAutomationService:
         await self.session.flush()
         await self.session.refresh(task)
         await self._projection.upsert_task(task)
-        return TaskWriteResult(task, True)
+        return TaskWriteResult(
+            task,
+            True,
+            assignee_public_user_id=public_user_id,
+            assignee_timezone=assignee_timezone,
+            reminder_at=self._reminder_time(normalized_due_date, assignee_timezone),
+        )
 
     async def complete_task(
         self,
@@ -235,6 +293,9 @@ class DealTaskAutomationService:
         await self.session.flush()
         await self.session.refresh(task)
         await self._projection.upsert_task(task)
+        # Completion and reminder cancellation are one transaction so a retry
+        # cannot leave a completed task with an active user notification.
+        await self._reminders.cancel_task_reminders(task.task_id)
         return task
 
     async def _load_deal(self, deal_id: UUID) -> CRMDeal:
@@ -261,37 +322,96 @@ class DealTaskAutomationService:
         return result.scalar_one_or_none()
 
     async def _resolve_assignee(
-        self, value: str | None
-    ) -> tuple[UUID | None, str | None, str | None, dict[str, Any]]:
-        """Resolve a user-provided name/email to an org user when possible."""
-        # Empty or whitespace input is an explicit no-op for automation callers;
-        # this avoids accidental blocking when summaries do not name an owner.
-        if not value or not value.strip():
-            return None, None, None, {"status": "not_provided"}
+        self,
+        value: str | None,
+        fallbacks: list[str],
+        allowed_emails: set[str],
+    ) -> tuple[UUID | None, UUID | None, str | None, str | None, str, dict[str, Any]]:
+        """Resolve ordered owner hints to the first active internal app user."""
+        candidates = [candidate.strip() for candidate in [value, *fallbacks] if candidate and candidate.strip()]
+        if not candidates:
+            return None, None, None, None, DEFAULT_TIMEZONE, {"status": "not_provided"}
 
-        lookup = value.strip()
-
-        # User lookup is done against public users, so the master session is required.
-        # Keep this method narrow: only user identity metadata is enriched here, all
-        # task write decisions remain in the org session.
+        # Public app IDs and tenant CRM user IDs are different namespaces. Resolve
+        # both in one boundary so task foreign keys always receive the CRM identity.
         async with master_async_session_scope() as master_session:
-            user = await self._resolve_user(master_session, lookup)
+            for lookup in candidates:
+                user = await self._resolve_user(master_session, lookup)
+                if not user:
+                    continue
+                if str(user.email).lower() not in allowed_emails:
+                    continue
+                try:
+                    crm_user = await ensure_app_user_crm_identity(
+                        org_session=self.session,
+                        master_session=master_session,
+                        organisation_id=self.organisation_id,
+                        app_user_id=user.user_id,
+                        actor_user_id=user.user_id,
+                    )
+                except CRMUserIdentityResolutionError as exc:
+                    raise DealTaskAutomationError(exc.message, exc.status_code) from exc
 
-        if not user:
-            return None, None, None, {"status": "unresolved", "input": lookup}
+                display_name = build_user_display_name(user) or str(user.email)
+                timezone_name = (
+                    resolve_timezone_name(user.timezone, default=DEFAULT_TIMEZONE)
+                    or DEFAULT_TIMEZONE
+                )
+                return (
+                    crm_user.user_id,
+                    user.user_id,
+                    display_name,
+                    str(user.email),
+                    timezone_name,
+                    {"status": "resolved", "input": lookup, "candidates": candidates},
+                )
 
-        display_name = build_user_display_name(user) or str(user.email)
         return (
-            user.user_id,
-            display_name,
-            str(user.email),
-            {"status": "resolved", "input": lookup},
+            None,
+            None,
+            None,
+            None,
+            DEFAULT_TIMEZONE,
+            {"status": "unresolved", "candidates": candidates},
         )
+
+    async def _allowed_assignee_emails(
+        self,
+        deal: CRMDeal,
+        source_event_id: UUID | None,
+    ) -> set[str]:
+        """Return deal-owner and exact-meeting participant emails eligible for assignment."""
+        allowed = {deal.owner_email.lower()} if deal.owner_email else set()
+        if not source_event_id:
+            return allowed
+
+        event_c = cast(Any, CalendarEvent).__table__.c
+        event_stmt = select(CalendarEvent).where(
+            event_c.organisation_id == self.organisation_id,
+            event_c.event_id == source_event_id,
+        )
+        event = (await self.session.execute(event_stmt)).scalar_one_or_none()
+        if not event:
+            return allowed
+        if event.organiser_email:
+            allowed.add(event.organiser_email.lower())
+
+        # Calendar attendees have no organisation column, so the org-scoped
+        # event lookup above is the trust boundary before following its ID.
+        attendee_stmt = select(col(CalendarAttendee.email)).where(
+            col(CalendarAttendee.event_id) == source_event_id
+        )
+        attendee_emails = (await self.session.execute(attendee_stmt)).scalars().all()
+        allowed.update(email.lower() for email in attendee_emails if email)
+        return allowed
 
     async def _resolve_user(self, master_session: AsyncSession, lookup: str) -> User | None:
         """Find a user by exact email or normalized display-name match."""
         normalized_lookup = lookup.lower().strip()
-        stmt = select(User).where(col(User.organisation_id) == self.organisation_id)
+        stmt = select(User).where(
+            col(User.organisation_id) == self.organisation_id,
+            col(User.status) == SupabaseUserStatus.ACTIVE,
+        )
         if "@" in normalized_lookup:
             # Email is treated as the highest-fidelity key; case-insensitive exact
             # match keeps false positives low and avoids broad scans.
@@ -324,6 +444,58 @@ class DealTaskAutomationService:
         source_id = source_association_id or source_event_id or "deal"
         normalized_subject = self._normalize_subject(subject)
         return f"{self.organisation_id}:{deal_id}:{source_id}:{normalized_subject}"
+
+    def _normalize_due_date(self, due_date: datetime | None, timezone_name: str) -> datetime:
+        """Return an aware UTC due time, defaulting to next weekday at 5 PM local."""
+        timezone = ZoneInfo(timezone_name)
+        if due_date:
+            localized = due_date if due_date.tzinfo else due_date.replace(tzinfo=timezone)
+            return localized.astimezone(UTC)
+
+        local_due = datetime.now(timezone) + timedelta(days=1)
+        # copilotgtm: v1 skips weekends, not regional holidays; add a holiday
+        # calendar only when organisations can configure one.
+        while local_due.weekday() >= 5:
+            local_due += timedelta(days=1)
+        return datetime.combine(local_due.date(), time(hour=17), timezone).astimezone(UTC)
+
+    @staticmethod
+    def _reminder_time(due_at: datetime | None, timezone_name: str) -> datetime | None:
+        """Schedule the single task reminder at 10 AM local on the due date."""
+        if due_at is None:
+            return None
+        timezone = ZoneInfo(timezone_name)
+        due_local = due_at.astimezone(timezone)
+        trigger = datetime.combine(due_local.date(), time(hour=10), timezone).astimezone(UTC)
+        now = datetime.now(UTC)
+        if trigger > now:
+            return trigger
+        if due_at > now + timedelta(minutes=5):
+            return min(due_at - timedelta(hours=1), now + timedelta(minutes=5))
+        return None
+
+    @staticmethod
+    def _metadata_public_user_id(task: CRMTask) -> UUID | None:
+        value = (task.task_metadata or {}).get("assigned_to_public_user_id")
+        try:
+            return UUID(str(value)) if value else None
+        except ValueError:
+            return None
+
+    async def _user_timezone(self, user_id: UUID | None) -> str:
+        if not user_id:
+            return DEFAULT_TIMEZONE
+        async with master_async_session_scope() as master_session:
+            user = await master_session.get(User, user_id)
+        if user and user.organisation_id != self.organisation_id:
+            user = None
+        return (
+            resolve_timezone_name(
+                user.timezone if user else None,
+                default=DEFAULT_TIMEZONE,
+            )
+            or DEFAULT_TIMEZONE
+        )
 
     @staticmethod
     def _normalize_subject(subject: str) -> str:

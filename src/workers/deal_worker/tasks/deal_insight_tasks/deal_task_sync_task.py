@@ -58,10 +58,28 @@ def sync_deal_tasks_from_summary(
                 raise RuntimeError(f"Deal task sync job {job_id} not found")
             if job.deal_id != deal_uuid:
                 raise RuntimeError(f"Deal task sync job {job_id} is not for deal {deal_id}")
+            if not job.event_id:
+                raise RuntimeError(f"Deal task sync job {job_id} has no source meeting")
+            source_event_id = job.event_id
+            job_metadata = job.job_metadata or {}
             job.status = JobStatus.IN_PROGRESS
             await session.commit()
 
-        agent = DealTaskAgent(organisation_id=org_uuid, deal_id=deal_uuid)
+        def _metadata_uuid(key: str) -> UUID | None:
+            value = job_metadata.get(key)
+            try:
+                return UUID(str(value)) if value else None
+            except ValueError:
+                logger.warning("Ignoring invalid %s on deal task job %s", key, job_uuid)
+                return None
+
+        agent = DealTaskAgent(
+            organisation_id=org_uuid,
+            deal_id=deal_uuid,
+            source_event_id=source_event_id,
+            source_association_id=_metadata_uuid("source_association_id"),
+            source_summary_job_id=_metadata_uuid("source_summary_job_id"),
+        )
         try:
             result = await agent.sync_from_summary()
         except Exception as exc:

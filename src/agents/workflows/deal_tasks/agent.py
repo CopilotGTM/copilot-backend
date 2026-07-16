@@ -39,6 +39,9 @@ class DealTaskAgent:
         self,
         organisation_id: UUID,
         deal_id: UUID,
+        source_event_id: UUID,
+        source_association_id: UUID | None = None,
+        source_summary_job_id: UUID | None = None,
         publisher: DealJobRedisPublisher | None = None,
         org_name: str | None = None,
     ):
@@ -54,7 +57,17 @@ class DealTaskAgent:
             organisation_id=organisation_id,
             deal_id=deal_id,
             org_name=self.org_name,
+            metadata={
+                "source_event_id": str(source_event_id),
+                "source_association_id": (
+                    str(source_association_id) if source_association_id else None
+                ),
+                "source_summary_job_id": (
+                    str(source_summary_job_id) if source_summary_job_id else None
+                ),
+            },
         )
+        self.source_event_id = source_event_id
 
         config = agent_config.get_config("deal_task_agent")
 
@@ -65,7 +78,9 @@ class DealTaskAgent:
                 retries=config.retries,
                 delay_between_retries=1,
                 exponential_backoff=True,
-                request_params={"parallel_tool_calls": True},
+                # Reconciliation is order-sensitive: ListDealTasks must finish
+                # before any create/complete tool can pass its read-before-write guard.
+                request_params={"parallel_tool_calls": False},
             ),
             output_schema=DealTaskSyncResult,
             description="Deal Task Agent for post-meeting task synchronization",
@@ -96,10 +111,12 @@ class DealTaskAgent:
         self._publish_progress("Analyzing meeting actions for deal tasks...", "analysis", 0.2)
 
         user_prompt = (
-            f"Reconcile CRM tasks for deal {self.deal_id}. "
-            "Use the latest meeting summary, deal memory, and existing deal tasks. "
+            f"Reconcile CRM tasks for deal {self.deal_id} from meeting "
+            f"{self.source_event_id}. First read that exact meeting summary and meeting "
+            "details, then the deal details, deal memory, and existing deal tasks. "
             "Create concrete missing follow-ups, complete only explicitly finished internal tasks, "
-            "and skip vague, duplicate, or read-only items."
+            "match semantic duplicates to their existing task IDs, and skip vague, buyer-owned, "
+            "or read-only items. Do not use a different meeting as the source."
         )
 
         response = await self.agent.arun(user_prompt)

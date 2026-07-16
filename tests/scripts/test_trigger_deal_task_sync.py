@@ -27,11 +27,17 @@ def test_build_deal_task_sync_job_creates_pending_manual_job() -> None:
     script = _load_script()
     org_id = uuid4()
     deal_id = uuid4()
+    event_id = uuid4()
 
-    job = script.build_deal_task_sync_job(organisation_id=org_id, deal_id=deal_id)
+    job = script.build_deal_task_sync_job(
+        organisation_id=org_id,
+        deal_id=deal_id,
+        event_id=event_id,
+    )
 
     assert job.organisation_id == org_id
     assert job.deal_id == deal_id
+    assert job.event_id == event_id
     assert job.job_type == DealJobType.DEAL_TASK_SYNC
     assert job.status == JobStatus.PENDING
     assert job.user_id == UUID("00000000-0000-0000-0000-000000000001")
@@ -80,9 +86,12 @@ def test_parser_requires_org_and_deal_ids() -> None:
             str(uuid4()),
             "--deal-id",
             str(uuid4()),
+            "--event-id",
+            str(uuid4()),
         ]
     )
 
     assert args.organisation_id
     assert args.deal_id
+    assert args.event_id
     assert args.job_id is None

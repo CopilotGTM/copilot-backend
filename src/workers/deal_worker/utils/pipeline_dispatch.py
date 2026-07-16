@@ -131,7 +131,11 @@ async def get_or_create_deal_memory_job(
 def _create_pipeline_jobs(
     organisation_id: str,
     deal_id: str,
-) -> tuple[str, str, str, str | None]:
+    *,
+    source_event_id: str | None = None,
+    source_association_id: str | None = None,
+    source_summary_job_id: str | None = None,
+) -> tuple[str, str, str | None, str | None]:
     """Create DealJobs records for downstream deal insight pipeline tasks.
 
     Jobs are created BEFORE Celery dispatch so the UI can show PENDING status
@@ -160,20 +164,26 @@ def _create_pipeline_jobs(
             status=JobStatus.PENDING,
             job_metadata={"source": "automated_pipeline"},
         )
-        task_job = DealJobs(
-            organisation_id=org_uuid,
-            user_id=AUTOMATED_PIPELINE_USER_ID,
-            job_type=DealJobType.DEAL_TASK_SYNC,
-            deal_id=deal_uuid,
-            status=JobStatus.PENDING,
-            job_metadata={
-                "source": "automated_pipeline",
-                "chained_from": "deal_insights",
-            },
-        )
+        task_job = None
+        if source_event_id:
+            task_job = DealJobs(
+                organisation_id=org_uuid,
+                user_id=AUTOMATED_PIPELINE_USER_ID,
+                job_type=DealJobType.DEAL_TASK_SYNC,
+                deal_id=deal_uuid,
+                event_id=UUID(source_event_id),
+                status=JobStatus.PENDING,
+                job_metadata={
+                    "source": "meeting_summary_completed",
+                    "chained_from": "deal_insights",
+                    "source_association_id": source_association_id,
+                    "source_summary_job_id": source_summary_job_id,
+                },
+            )
         session.add(risk_job)
         session.add(stakeholder_job)
-        session.add(task_job)
+        if task_job:
+            session.add(task_job)
 
         deal_update_job = None
         if _deal_update_pipeline_enabled():
@@ -199,9 +209,8 @@ def _create_pipeline_jobs(
 
         risk_job_id = str(risk_job.job_id)
         stakeholder_job_id = str(stakeholder_job.job_id)
-        task_job_id = str(task_job.job_id)
+        task_job_id = str(task_job.job_id) if task_job else None
         deal_update_job_id = str(deal_update_job.job_id) if deal_update_job else None
-
         session.commit()
 
     logger.info(
@@ -228,7 +237,11 @@ def _create_pipeline_jobs(
 async def _create_pipeline_jobs_async(
     organisation_id: str,
     deal_id: str,
-) -> tuple[str, str, str, str | None]:
+    *,
+    source_event_id: str | None = None,
+    source_association_id: str | None = None,
+    source_summary_job_id: str | None = None,
+) -> tuple[str, str, str | None, str | None]:
     """Async equivalent of pipeline job creation for async worker call sites."""
     org_uuid = UUID(organisation_id)
     deal_uuid = UUID(deal_id)
@@ -250,20 +263,26 @@ async def _create_pipeline_jobs_async(
             status=JobStatus.PENDING,
             job_metadata={"source": "automated_pipeline"},
         )
-        task_job = DealJobs(
-            organisation_id=org_uuid,
-            user_id=AUTOMATED_PIPELINE_USER_ID,
-            job_type=DealJobType.DEAL_TASK_SYNC,
-            deal_id=deal_uuid,
-            status=JobStatus.PENDING,
-            job_metadata={
-                "source": "automated_pipeline",
-                "chained_from": "deal_insights",
-            },
-        )
+        task_job = None
+        if source_event_id:
+            task_job = DealJobs(
+                organisation_id=org_uuid,
+                user_id=AUTOMATED_PIPELINE_USER_ID,
+                job_type=DealJobType.DEAL_TASK_SYNC,
+                deal_id=deal_uuid,
+                event_id=UUID(source_event_id),
+                status=JobStatus.PENDING,
+                job_metadata={
+                    "source": "meeting_summary_completed",
+                    "chained_from": "deal_insights",
+                    "source_association_id": source_association_id,
+                    "source_summary_job_id": source_summary_job_id,
+                },
+            )
         session.add(risk_job)
         session.add(stakeholder_job)
-        session.add(task_job)
+        if task_job:
+            session.add(task_job)
 
         deal_update_job = None
         if _deal_update_pipeline_enabled():
@@ -288,14 +307,18 @@ async def _create_pipeline_jobs_async(
         await session.flush()
         await session.refresh(risk_job)
         await session.refresh(stakeholder_job)
-        await session.refresh(task_job)
+        if task_job:
+            await session.refresh(task_job)
         if deal_update_job:
             await session.refresh(deal_update_job)
 
         risk_job_id = str(risk_job.job_id)
         stakeholder_job_id = str(stakeholder_job.job_id)
-        task_job_id = str(task_job.job_id)
+        task_job_id = str(task_job.job_id) if task_job else None
         deal_update_job_id = str(deal_update_job.job_id) if deal_update_job else None
+        # The async provider does not auto-commit on context exit. Persist jobs
+        # before returning IDs that the Celery canvas will immediately consume.
+        await session.commit()
 
     logger.info(
         "Created async pipeline jobs for deal %s: risk=%s, stakeholder=%s, task=%s, update=%s",
@@ -329,7 +352,7 @@ def _build_deal_insight_canvas(
     job_id: str,
     risk_job_id: str,
     stakeholder_job_id: str,
-    task_job_id: str,
+    task_job_id: str | None,
     deal_update_job_id: str | None = None,
 ):
     """Build the deal memory -> parallel insights -> task sync pipeline.
@@ -385,17 +408,19 @@ def _build_deal_insight_canvas(
         immutable=True,
         headers=correlation_headers(),
     )
-    deal_task_sig = celery_app.signature(
-        "deal_tasks.sync_from_summary",
-        kwargs={
-            "organisation_id": organisation_id,
-            "deal_id": deal_id,
-            "job_id": task_job_id,
-        },
-        queue="deal_jobs",
-        immutable=True,
-        headers=correlation_headers(),
-    )
+    deal_task_sig = None
+    if task_job_id:
+        deal_task_sig = celery_app.signature(
+            "deal_tasks.sync_from_summary",
+            kwargs={
+                "organisation_id": organisation_id,
+                "deal_id": deal_id,
+                "job_id": task_job_id,
+            },
+            queue="deal_jobs",
+            immutable=True,
+            headers=correlation_headers(),
+        )
 
     insight_group = group(risk_blocker_sig, stakeholder_sig)
     if deal_update_job_id:
@@ -406,19 +431,31 @@ def _build_deal_insight_canvas(
             immutable=True,
             headers=correlation_headers(),
         )
-        return chain(deal_memory_sig, insight_group, deal_task_sig, deal_update_sig)
+        stages = [deal_memory_sig, insight_group]
+        if deal_task_sig:
+            stages.append(deal_task_sig)
+        stages.append(deal_update_sig)
+        return chain(*stages)
 
-    return chain(deal_memory_sig, insight_group, deal_task_sig)
+    return chain(deal_memory_sig, insight_group, *([deal_task_sig] if deal_task_sig else []))
 
 
 def build_deal_insight_pipeline(
     organisation_id: str,
     deal_id: str,
     job_id: str,
+    *,
+    source_event_id: str | None = None,
+    source_association_id: str | None = None,
+    source_summary_job_id: str | None = None,
 ):
     """Build the deal memory -> parallel risk+stakeholder pipeline."""
     risk_job_id, stakeholder_job_id, task_job_id, deal_update_job_id = _create_pipeline_jobs(
-        organisation_id, deal_id
+        organisation_id,
+        deal_id,
+        source_event_id=source_event_id,
+        source_association_id=source_association_id,
+        source_summary_job_id=source_summary_job_id,
     )
     return _build_deal_insight_canvas(
         organisation_id,
@@ -437,6 +474,9 @@ def dispatch_deal_insight_pipeline(
     job_id: str,
     *,
     prefix_signatures: Sequence | None = None,
+    source_event_id: str | None = None,
+    source_association_id: str | None = None,
+    source_summary_job_id: str | None = None,
 ) -> None:
     """Dispatch the deal insight pipeline.
 
@@ -452,7 +492,14 @@ def dispatch_deal_insight_pipeline(
         prefix_signatures: Optional sequential Celery signatures to run before
             the deal insight pipeline (e.g. meeting summary tasks).
     """
-    pipeline = build_deal_insight_pipeline(organisation_id, deal_id, job_id)
+    pipeline = build_deal_insight_pipeline(
+        organisation_id,
+        deal_id,
+        job_id,
+        source_event_id=source_event_id,
+        source_association_id=source_association_id,
+        source_summary_job_id=source_summary_job_id,
+    )
     if prefix_signatures:
         pipeline = chain(*prefix_signatures, pipeline)
 
@@ -466,6 +513,9 @@ async def dispatch_deal_insight_pipeline_async(
     job_id: str,
     *,
     prefix_signatures: Sequence | None = None,
+    source_event_id: str | None = None,
+    source_association_id: str | None = None,
+    source_summary_job_id: str | None = None,
 ) -> None:
     """Async-safe dispatch variant for code paths already running inside an event loop."""
     (
@@ -473,7 +523,13 @@ async def dispatch_deal_insight_pipeline_async(
         stakeholder_job_id,
         task_job_id,
         deal_update_job_id,
-    ) = await _create_pipeline_jobs_async(organisation_id, deal_id)
+    ) = await _create_pipeline_jobs_async(
+        organisation_id,
+        deal_id,
+        source_event_id=source_event_id,
+        source_association_id=source_association_id,
+        source_summary_job_id=source_summary_job_id,
+    )
     pipeline = _build_deal_insight_canvas(
         organisation_id,
         deal_id,
@@ -487,4 +543,26 @@ async def dispatch_deal_insight_pipeline_async(
         pipeline = chain(*prefix_signatures, pipeline)
 
     # Headers are already attached to the individual signatures that need them.
-    pipeline.apply_async()
+    try:
+        pipeline.apply_async()
+    except Exception as exc:
+        # Job rows are committed before broker publish. Mark this undispatched
+        # attempt failed so retries do not leave misleading PENDING jobs behind.
+        failed_job_ids = [
+            UUID(job_id_value)
+            for job_id_value in (
+                risk_job_id,
+                stakeholder_job_id,
+                task_job_id,
+                deal_update_job_id,
+            )
+            if job_id_value
+        ]
+        async with org_async_session_scope(organisation_id) as session:
+            for failed_job_id in failed_job_ids:
+                job = await session.get(DealJobs, failed_job_id)
+                if job and job.status == JobStatus.PENDING:
+                    job.status = JobStatus.FAILED
+                    job.error_message = f"Pipeline broker dispatch failed: {exc}"[:500]
+            await session.commit()
+        raise

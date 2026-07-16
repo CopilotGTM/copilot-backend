@@ -23,19 +23,26 @@ from src.service.crm.tasks.contracts import TaskWriteServiceError
 
 logger = get_logger("task_reminder_service")
 
-_TASK_REMINDER_CHANNELS = ("teams", "slack")
+_TASK_REMINDER_CHANNELS = ("teams", "slack", "whatsapp")
 
 
 class TaskReminderService:
     """Create, update, cancel, and schedule reminders linked to CRM tasks."""
 
-    def __init__(self, session: AsyncSession, organisation_id: UUID, actor_user_id: UUID):
+    def __init__(
+        self,
+        session: AsyncSession,
+        organisation_id: UUID,
+        actor_user_id: UUID | None,
+    ):
         self.session = session
         self.organisation_id = organisation_id
         self.actor_user_id = actor_user_id
 
     async def create_task_reminder(self, task: CRMTask, cfg: dict[str, Any]) -> UserReminder:
         """Create a static reminder linked to a task via task_id."""
+        if self.actor_user_id is None:
+            raise TaskWriteServiceError("Task reminder owner is required", 400)
         trigger_time = cfg["trigger_time"]
         recurrence_str = cfg.get("recurrence", "NONE").lower()
         recurrence = ReminderRecurrence(recurrence_str)
@@ -101,8 +108,12 @@ class TaskReminderService:
         self.safe_schedule(reminder.reminder_id, reminder.next_trigger_at.timestamp())
 
     async def cancel_task_reminders(self, activity_id: UUID) -> None:
-        """Cancel all active/paused reminders linked to a task."""
-        cancellable = {ReminderStatus.ACTIVE, ReminderStatus.PAUSED}
+        """Cancel all pending reminders linked to a task."""
+        cancellable = {
+            ReminderStatus.ACTIVE,
+            ReminderStatus.PAUSED,
+            ReminderStatus.TRIGGERED,
+        }
         stmt = select(UserReminder).where(
             col(UserReminder.activity_id) == activity_id,
             col(UserReminder.organisation_id) == self.organisation_id,
@@ -138,6 +149,7 @@ class TaskReminderService:
     async def resolve_task_reminder_target(
         self, requested_channel: str | None
     ) -> tuple[str, dict[str, Any]]:
+        """Resolve an explicit channel or the Teams/Slack/WhatsApp fallback order."""
         if requested_channel:
             resolved = await self.resolve_delivery_target_for_channel(requested_channel)
             if not resolved:
@@ -147,19 +159,20 @@ class TaskReminderService:
                 )
             return resolved
 
-        for fallback_channel in ("teams", "slack"):
+        for fallback_channel in _TASK_REMINDER_CHANNELS:
             resolved = await self.resolve_delivery_target_for_channel(fallback_channel)
             if resolved:
                 return resolved
 
         raise TaskWriteServiceError(
-            "No delivery channels available. Please connect Teams or Slack before enabling task reminders.",
+            "No delivery channels available. Please connect Teams, Slack, or WhatsApp before enabling task reminders.",
             400,
         )
 
     async def resolve_delivery_target_for_channel(
         self, delivery_channel: str
     ) -> tuple[str, dict[str, Any]] | None:
+        """Return one ready owner-linked target for a supported reminder channel."""
         if delivery_channel not in _TASK_REMINDER_CHANNELS:
             raise TaskWriteServiceError("Invalid reminder delivery channel", 400)
 
@@ -180,6 +193,7 @@ class TaskReminderService:
         conversation_context: dict[str, Any] | None,
         external_tenant_id: str | None = None,
     ) -> dict[str, Any]:
+        """Normalize provider context through the shared outbound-channel contract."""
         return OutboundChannelService.normalize_delivery_context(
             delivery_channel,
             conversation_context,
@@ -191,18 +205,21 @@ class TaskReminderService:
         delivery_channel: str,
         delivery_context: dict[str, Any] | None,
     ) -> bool:
+        """Return whether a channel context has every provider-required identifier."""
         return OutboundChannelService.delivery_context_is_ready(
             delivery_channel,
             delivery_context,
         )
 
     def safe_schedule(self, reminder_id: UUID, trigger_epoch: float) -> None:
+        """Best-effort schedule a durable reminder row in Redis."""
         try:
             schedule_reminder(self.organisation_id, reminder_id, trigger_epoch)
         except Exception:
             logger.warning("Failed to schedule reminder %s in Redis", reminder_id, exc_info=True)
 
     def safe_unschedule(self, reminder_id: UUID) -> None:
+        """Best-effort remove a cancelled reminder from the Redis schedule."""
         try:
             unschedule_reminder(self.organisation_id, reminder_id)
         except Exception:
