@@ -116,6 +116,7 @@ async def test_update_risk_blocker_uses_write_service(monkeypatch: pytest.Monkey
     )
 
     assert result["status"] == "updated"
+    assert result["deal_id"] == str(context.deal_id)
     assert result["changes"]["severity"]["new"] == "CRITICAL"
     assert context.session.committed is True
 
@@ -140,3 +141,47 @@ async def test_resolve_risk_blocker_skips_closed_items(monkeypatch: pytest.Monke
 
     assert result["status"] == "skipped"
     assert context.session.committed is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "expected_status"), [("dismiss", "dismissed"), ("resolve", "resolved")]
+)
+async def test_risk_blocker_lifecycle_results_include_deal_id(
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+    expected_status: str,
+) -> None:
+    item_id = uuid4()
+
+    class _LifecycleService:
+        def __init__(self, session: _Session, organisation_id: Any) -> None:
+            pass
+
+        async def get_status(self, risk_blocker_id: Any) -> RiskBlockerStatus:
+            return RiskBlockerStatus.OPEN
+
+        async def dismiss(self, risk_blocker_id: Any, **kwargs: Any) -> None:
+            return None
+
+        async def resolve(self, risk_blocker_id: Any, *args: Any, **kwargs: Any) -> None:
+            return None
+
+    monkeypatch.setattr(manage_risks_blockers, "RiskBlockerLifecycleService", _LifecycleService)
+    context = _Context(organisation_id=uuid4(), deal_id=uuid4(), session=_Session())
+
+    if action == "dismiss":
+        result = await manage_risks_blockers.dismiss_risk_blocker_impl(
+            context=context,
+            risk_blocker_id=str(item_id),
+            reason="No longer relevant",
+        )
+    else:
+        result = await manage_risks_blockers.resolve_risk_blocker_impl(
+            context=context,
+            risk_blocker_id=str(item_id),
+            resolution_notes="Issue resolved",
+        )
+
+    assert result["status"] == expected_status
+    assert result["deal_id"] == str(context.deal_id)

@@ -84,6 +84,9 @@ def _patch_task_service(monkeypatch, created_payloads, created_deal_ids=None):
                 created_deal_ids.append(deal_id)
             return FakeTask(subject=payload.get("subject", ""))
 
+        async def send_pending_assignment_notifications(self) -> None:
+            return None
+
     monkeypatch.setattr(
         "src.service.bots.form_handlers.confirm_task_handler.TaskWriteService",
         FakeWriteService,
@@ -228,6 +231,8 @@ async def test_confirm_task_creates_task_via_service(monkeypatch: pytest.MonkeyP
 
     assert result.success
     assert "Follow up" in result.message
+    assert "Task ID:" in result.message
+    assert str(deal_id) in result.message
 
     assert len(created_payloads) == 1
     p = created_payloads[0]

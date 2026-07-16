@@ -108,15 +108,23 @@ async def update_task(
             logger.exception("update_task: unexpected error")
             return {"status": "error", "message": "Could not update the task."}
 
-    return {
+    task_id_value = str(task.activity_id)
+    deal_id_value = getattr(task, "deal_id", None)
+    result = {
         "status": "updated",
-        "task_id": str(task.activity_id),
+        "task_id": task_id_value,
         "title": task.subject,
         "priority": task.priority,
         "task_status": task.status,
         "due_date": task.due_date.isoformat() if task.due_date else None,
-        "message": f"Updated task **{task.subject}**.",
+        "message": f"Updated task **{task.subject}**. Task ID: {task_id_value}.",
     }
+    if deal_id_value:
+        result["deal_id"] = str(deal_id_value)
+        result["message"] += f" Deal ID: {deal_id_value}."
+    if getattr(task, "related_name", None):
+        result["deal_name"] = task.related_name
+    return result
 
 
 def create_update_task(

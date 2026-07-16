@@ -207,7 +207,8 @@ class ConfirmTaskFormHandler(BaseFormHandler):
         assign_to_name = task_data.get("assign_to_name")
         assigned_suffix = f" (assigned to {assign_to_name})" if assign_to_name else ""
 
-        return FormHandlerResult(
-            success=True,
-            message=f"Task **{task_title}** created{assigned_suffix}!",
-        )
+        message = f"Task **{task_title}** created{assigned_suffix}! Task ID: {task.activity_id}."
+        if deal_id:
+            message += f" Deal ID: {deal_id}."
+
+        return FormHandlerResult(success=True, message=message)

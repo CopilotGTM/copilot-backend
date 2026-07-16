@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
 import pytest
+from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
 from src.service.bots.form_handlers.create_deal_handler import CreateDealFormHandler
 from src.service.orgnisation.organisation_policy_service import OrganisationPolicyDeniedError
 
@@ -131,7 +132,14 @@ class TestCreateDealHandlerNonce:
         org_session = MagicMock()
         org_session.commit = AsyncMock()
         org_session.rollback = AsyncMock()
-        deal = SimpleNamespace(deal_id=UUID("33333333-3333-3333-3333-333333333333"), name="Acme")
+        deal = SimpleNamespace(
+            deal_id=UUID("33333333-3333-3333-3333-333333333333"),
+            name="Acme",
+            owner_name="Nikhil",
+            deal_status=CRMDealStatus.OPEN,
+            pipeline_name="Sales",
+            stage_name="Discovery",
+        )
 
         with (
             patch(
@@ -167,6 +175,11 @@ class TestCreateDealHandlerNonce:
             )
 
         assert result.success is True
+        assert str(deal.deal_id) in result.message
+        assert "Owner: Nikhil" in result.message
+        assert "Status: open" in result.message
+        assert "Pipeline: Sales" in result.message
+        assert "Stage: Discovery" in result.message
         payload = service.create_deal.await_args.args[0]
         assert payload["expected_close_date"] == datetime(2026, 6, 15)
         assert "close_date" not in payload

@@ -54,7 +54,7 @@ def test_web_chat_creates_then_updates_one_deal_note() -> None:
 
     try:
         with httpx.Client(timeout=30) as client:
-            _send_and_wait(
+            create_job = _send_and_wait(
                 client,
                 f"Add a note titled '{marker}' to deal '{deal_name()}'. "
                 f"The note body must be exactly: {original_body}",
@@ -65,8 +65,11 @@ def test_web_chat_creates_then_updates_one_deal_note() -> None:
                 lambda notes: len(notes) == 1 and notes[0]["body"] == original_body,
                 expected_state="one newly created note",
             )[0]
+            create_text = create_job["assistant_content"]["text"]
+            assert str(created_note["note_id"]) in create_text
+            assert str(created_note["deal_id"]) in create_text
 
-            _send_and_wait(
+            update_job = _send_and_wait(
                 client,
                 f"On deal '{deal_name()}', update the note titled '{marker}'. "
                 f"Change only its body to exactly: {updated_body}",
@@ -77,6 +80,9 @@ def test_web_chat_creates_then_updates_one_deal_note() -> None:
                 lambda notes: len(notes) == 1 and notes[0]["body"] == updated_body,
                 expected_state="the same note with its updated body",
             )
+            update_text = update_job["assistant_content"]["text"]
+            assert str(updated_notes[0]["note_id"]) in update_text
+            assert str(updated_notes[0]["deal_id"]) in update_text
 
         assert updated_notes[0]["note_id"] == created_note["note_id"]
         assert updated_notes[0]["title"] == marker

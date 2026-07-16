@@ -68,9 +68,10 @@ def _parse_expected_close_date(value: str | None) -> datetime | None:
 
 
 def _created_deal_result(deal: Any) -> dict[str, Any]:
+    deal_id = str(deal.deal_id)
     result: dict[str, Any] = {
         "status": "created",
-        "deal_id": str(deal.deal_id),
+        "deal_id": deal_id,
         "name": deal.name,
         "pipeline_name": deal.pipeline_name,
         "stage_name": deal.stage_name,
@@ -82,10 +83,15 @@ def _created_deal_result(deal: Any) -> dict[str, Any]:
         result["stage_id"] = str(deal.stage_id)
     if getattr(deal, "owner_id", None):
         result["owner_user_id"] = str(deal.owner_id)
+    owner_name = getattr(deal, "owner_name", None)
+    if owner_name:
+        result["owner_name"] = str(owner_name)
+    deal_status = getattr(deal, "deal_status", None)
+    if deal_status:
+        result["deal_status"] = str(getattr(deal_status, "value", deal_status))
     if getattr(deal, "company_id", None):
         result["company_id"] = str(deal.company_id)
-
-    message = f"Created deal **{deal.name}**"
+    message = f"Created deal **{deal.name}** (Deal ID: {deal_id})"
     if deal.pipeline_name and deal.stage_name:
         message += f" in {deal.pipeline_name} > {deal.stage_name}"
     elif deal.pipeline_name:
@@ -99,6 +105,10 @@ def _created_deal_result(deal: Any) -> dict[str, Any]:
         currency = deal.currency or "USD"
         message += f". Amount: {currency} {deal.amount:,.2f}"
 
+    if owner_name:
+        message += f". Owner: {owner_name}"
+    if deal_status:
+        message += f". Status: {getattr(deal_status, 'value', deal_status)}"
     result["message"] = f"{message}."
     return result
 
@@ -202,18 +212,31 @@ def _slack_quote(value: str) -> str:
 
 
 def _deal_created_text_fallback(deal: Any) -> str:
-    message = f"Created deal {deal.name}"
+    message = f"Created deal {deal.name} (Deal ID: {deal.deal_id})"
     if deal.pipeline_name and deal.stage_name:
         message += f" in {deal.pipeline_name} > {deal.stage_name}"
     elif deal.pipeline_name:
         message += f" in {deal.pipeline_name}"
     elif deal.stage_name:
         message += f" at stage {deal.stage_name}"
+    if getattr(deal, "owner_name", None):
+        message += f". Owner: {deal.owner_name}"
+    if getattr(deal, "deal_status", None):
+        status = getattr(deal.deal_status, "value", deal.deal_status)
+        message += f". Status: {status}"
     return f"{message}."
 
 
 def _success_card_facts(deal: Any) -> list[dict[str, str]]:
-    facts = [{"title": "Name", "value": str(deal.name)}]
+    facts = [
+        {"title": "Name", "value": str(deal.name)},
+        {"title": "Deal ID", "value": str(deal.deal_id)},
+    ]
+    if getattr(deal, "owner_name", None):
+        facts.append({"title": "Owner", "value": str(deal.owner_name)})
+    if getattr(deal, "deal_status", None):
+        status = getattr(deal.deal_status, "value", deal.deal_status)
+        facts.append({"title": "Status", "value": str(status)})
     if getattr(deal, "amount", None) is not None:
         currency = getattr(deal, "currency", None) or "USD"
         facts.append({"title": "Amount", "value": f"{currency} {deal.amount:,.2f}"})

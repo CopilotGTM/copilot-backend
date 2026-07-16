@@ -56,7 +56,7 @@ def test_whatsapp_creates_then_updates_one_deal_note() -> None:
     created_note: dict | None = None
 
     try:
-        _send_and_wait(
+        create_job = _send_and_wait(
             f"Add a note titled '{marker}' to deal '{deal_name()}'. "
             f"The note body must be exactly: {original_body}"
         )
@@ -66,8 +66,13 @@ def test_whatsapp_creates_then_updates_one_deal_note() -> None:
             lambda notes: len(notes) == 1 and notes[0]["body"] == original_body,
             expected_state="one newly created note",
         )[0]
+        create_text = "\n".join(
+            chunk["text"] for chunk in create_job["job_metadata"]["outbound_chunks"]
+        )
+        assert str(created_note["note_id"]) in create_text
+        assert str(created_note["deal_id"]) in create_text
 
-        _send_and_wait(
+        update_job = _send_and_wait(
             f"On deal '{deal_name()}', update the note titled '{marker}'. "
             f"Change only its body to exactly: {updated_body}"
         )
@@ -77,6 +82,11 @@ def test_whatsapp_creates_then_updates_one_deal_note() -> None:
             lambda notes: len(notes) == 1 and notes[0]["body"] == updated_body,
             expected_state="the same note with its updated body",
         )
+        update_text = "\n".join(
+            chunk["text"] for chunk in update_job["job_metadata"]["outbound_chunks"]
+        )
+        assert str(updated_notes[0]["note_id"]) in update_text
+        assert str(updated_notes[0]["deal_id"]) in update_text
 
         assert updated_notes[0]["note_id"] == created_note["note_id"]
         assert updated_notes[0]["title"] == marker

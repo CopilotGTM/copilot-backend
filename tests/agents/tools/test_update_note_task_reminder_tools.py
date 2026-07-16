@@ -73,9 +73,10 @@ async def test_update_deal_note_commits_only_supplied_fields() -> None:
     assert result == {
         "status": "updated",
         "note_id": str(note_id),
+        "deal_id": str(deal_id),
         "title": "New title",
         "body": "Existing body",
-        "message": "Updated note **New title**.",
+        "message": f"Updated note **New title**. Note ID: {note_id}. Deal ID: {deal_id}.",
     }
 
 
@@ -84,9 +85,12 @@ async def test_update_task_resolves_assignee_and_due_date_before_committing() ->
     """Task updates reuse org-scoped assignee and user-timezone date resolution."""
     context, session = _context()
     task_id = uuid4()
+    deal_id = uuid4()
     assignee_id = uuid4()
     task = SimpleNamespace(
         activity_id=task_id,
+        deal_id=deal_id,
+        related_name="Acme Expansion",
         subject="Send proposal",
         description=None,
         priority="HIGH",
@@ -128,6 +132,10 @@ async def test_update_task_resolves_assignee_and_due_date_before_committing() ->
     service.send_pending_assignment_notifications.assert_awaited_once()
     assert result["status"] == "updated"
     assert result["task_id"] == str(task_id)
+    assert result["deal_id"] == str(deal_id)
+    assert result["deal_name"] == "Acme Expansion"
+    assert str(task_id) in result["message"]
+    assert str(deal_id) in result["message"]
 
 
 @pytest.mark.asyncio
@@ -135,11 +143,13 @@ async def test_update_reminder_detects_type_and_maps_agent_prompt() -> None:
     """Reminder updates map content only after reading the owned reminder type."""
     context, _session = _context()
     reminder_id = uuid4()
+    deal_id = uuid4()
     existing = SimpleNamespace(reminder_type=ReminderType.AGENTIC)
     detail = SimpleNamespace(
         reminder_id=reminder_id,
         title="Pipeline review",
         reminder_type=ReminderType.AGENTIC,
+        deal_id=deal_id,
         next_trigger_at=datetime(2026, 7, 13, 4, 30, tzinfo=UTC),
         recurrence=ReminderRecurrence.DAILY,
     )
@@ -172,6 +182,9 @@ async def test_update_reminder_detects_type_and_maps_agent_prompt() -> None:
         reminder_type=ReminderType.AGENTIC,
     )
     assert result["status"] == "updated"
+    assert result["deal_id"] == str(deal_id)
+    assert str(reminder_id) in result["message"]
+    assert str(deal_id) in result["message"]
 
 
 def test_update_tools_are_registered_for_general_chat_channels() -> None:

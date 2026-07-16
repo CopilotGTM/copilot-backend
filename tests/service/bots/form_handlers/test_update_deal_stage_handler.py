@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 from src.service.bots.form_handlers.update_deal_stage_handler import (
@@ -88,3 +91,49 @@ class TestUpdateDealStageHandler:
         result = await handler.handle(activity, data)
 
         assert result.success is False
+
+    @pytest.mark.asyncio
+    async def test_success_includes_deal_id(
+        self, handler: UpdateDealStageFormHandler, activity: dict
+    ) -> None:
+        organisation_id = UUID(VALID_DATA["organisation_id"])
+        deal_id = UUID(VALID_DATA["deal_id"])
+        user = SimpleNamespace(
+            organisation_id=organisation_id,
+            user_id=UUID("55555555-5555-5555-5555-555555555555"),
+        )
+        master_session = MagicMock()
+        org_session = MagicMock(commit=AsyncMock(), rollback=AsyncMock())
+        write_service = MagicMock()
+        write_service.move_stage = AsyncMock(
+            return_value=SimpleNamespace(deal_id=deal_id, stage_name="Negotiation")
+        )
+
+        async def acquire_master_session():
+            yield master_session
+
+        async def acquire_org_session(_organisation_id: UUID):
+            yield org_session
+
+        with (
+            patch(
+                "src.service.bots.form_handlers.update_deal_stage_handler.resolve_user_from_activity",
+                new=AsyncMock(return_value=(user, None)),
+            ),
+            patch(
+                "src.infra.database.sessions.acquire_master_async_session",
+                new=acquire_master_session,
+            ),
+            patch(
+                "src.infra.database.sessions.acquire_org_async_session",
+                new=acquire_org_session,
+            ),
+            patch(
+                "src.service.crm.deals.write_service.DealWriteService",
+                return_value=write_service,
+            ),
+        ):
+            result = await handler.handle(activity, VALID_DATA)
+
+        assert result.success is True
+        assert str(deal_id) in result.message

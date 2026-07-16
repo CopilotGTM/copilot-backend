@@ -216,7 +216,8 @@ Add hard rules at the end:
 
 ```markdown
 Never omit evidence. Never claim certainty when evidence is thin.
-Do not expose internal IDs or UUIDs unless the user explicitly asks.
+Do not expose internal IDs or UUIDs unless the user explicitly asks or a mutation outcome
+contract requires the created/updated record ID for follow-up continuity.
 ```
 
 ### 3.6 The Reference Loading Guide
@@ -359,7 +360,7 @@ Before merging a new skill, verify each item:
 - [ ] Rating scale is defined with evidence requirements
 - [ ] Output contract specifies exact sections
 - [ ] Reference loading guide maps each file to its purpose
-- [ ] No internal IDs/UUIDs exposed in output by default
+- [ ] No internal IDs/UUIDs exposed by default except IDs required by mutation outcomes
 
 ### Quality
 
@@ -441,7 +442,8 @@ Use this structure:
 4. Next actions (3-5)
 
 Never omit evidence. Never claim certainty when evidence is thin.
-Do not expose internal IDs or UUIDs unless the user explicitly asks.
+Do not expose internal IDs or UUIDs unless the user explicitly asks or a mutation outcome
+contract requires the created/updated record ID for follow-up continuity.
 
 ## Reference loading guide
 

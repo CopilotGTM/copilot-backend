@@ -221,6 +221,7 @@ async def create_stakeholder_if_missing(
                     stakeholder,
                     action="already_exists",
                 )
+                result["deal_id"] = str(actual_deal_id)
                 result["action"] = "already_exists"
                 result["message"] = "Stakeholder already exists; no changes applied"
                 return result
@@ -271,6 +272,7 @@ async def create_stakeholder_if_missing(
                 new_stakeholder,
                 action="created",
             )
+            result["deal_id"] = str(actual_deal_id)
             result["action"] = "created"
             return result
         except Exception:

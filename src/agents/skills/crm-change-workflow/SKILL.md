@@ -298,8 +298,14 @@ After every CRM write tool call, inspect the returned status before answering:
 | partial success | Separate completed actions from blocked or follow-up actions |
 | unknown, timeout, or empty result | Do not retry blindly; check current state or tell the user the result is uncertain |
 
-Do not expose raw internal IDs in user-facing text unless the user asks or the UI/runtime
-requires them. Use human-readable names, email addresses, dates, amounts, and statuses.
+For every successful create or update, always show the primary record ID in the
+user-facing outcome. For a deal-scoped mutation, also show the Deal ID and readable deal
+name when available. Keep the readable name and material persisted values beside the ID;
+do not expose unrelated pipeline, stage, owner, integration, or audit IDs.
+
+Treat a recently confirmed visible Deal ID as authoritative conversation context. When the
+user says "that deal", "this deal", or otherwise refers unambiguously to that recent record,
+reuse the Deal ID instead of searching again. Search when no unambiguous recent ID exists.
 
 ## Markdown Outcome Contract
 
@@ -361,12 +367,12 @@ Include fields that are known from the user request or tool result:
 
 | Record | Useful markdown details |
 | --- | --- |
-| Deal | Name, amount/currency, account, pipeline/stage, expected close date, priority |
-| Task | Title, assignee, due date, priority, reminder, related deal |
-| Stakeholder | Name, email, deal, job title, stance, decision power, whether enrichment/research started if returned |
-| Account | Name, domain, website, industry |
-| Contact | Name, email, LinkedIn, account, job title, linked deal |
-| Note | Deal, subject, note preview, whether an identical note already existed |
+| Deal | Deal ID, name, owner, status, amount/currency, account, pipeline/stage, expected close date, priority |
+| Task | Task ID, title, assignee, due date, priority, reminder, related deal and Deal ID when linked |
+| Stakeholder | Participant ID, Deal ID, name, email, deal, job title, stance, decision power, whether enrichment/research started if returned |
+| Account | Account ID, name, domain, website, industry |
+| Contact | Contact ID, name, email, LinkedIn, account, job title, linked Deal ID when returned |
+| Note | Note ID, Deal ID, deal, subject, note preview, whether an identical note already existed |
 
 Keep responses compact for voice and messaging channels. Use a short paragraph plus bullets.
 

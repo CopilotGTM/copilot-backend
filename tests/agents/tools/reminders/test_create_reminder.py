@@ -167,6 +167,7 @@ async def test_create_reminder_creates_active_slack_reminder_and_success_payload
     assert result["title"] == "Follow up with Acme"
     assert result["delivery_channel"] == "slack"
     assert result["_bot_channel_payload"]["content"]["blocks"][0]["type"] == "header"
+    assert result["reminder_id"] in result["_bot_channel_payload"]["text_fallback"]
 
     reminder = context.session.added[0]
     assert reminder.reminder_type == ReminderType.STATIC
@@ -344,19 +345,26 @@ async def test_create_reminder_creates_active_agentic_whatsapp_reminder(
         metadata={"phone_number_id": "phone-123", "recipient_wa_id": "15551234567"},
     )
 
+    deal_id = uuid4()
     result = await create_reminder(
         context=context,
         title="Acme health check",
         trigger_time=_future_iso(),
         reminder_type="agentic",
         agent_prompt="Review the Acme deal and identify blockers.",
+        deal_id=str(deal_id),
         recurrence="none",
         timezone_name="UTC",
     )
 
     assert result["status"] == "created"
+    assert result["deal_id"] == str(deal_id)
+    assert str(result["reminder_id"]) in result["message"]
+    assert str(deal_id) in result["message"]
     assert result["delivery_channel"] == "whatsapp"
     assert result["_bot_channel_payload"]["content"]["text"].startswith("Reminder created")
+    assert result["reminder_id"] in result["_bot_channel_payload"]["content"]["text"]
+    assert str(deal_id) in result["_bot_channel_payload"]["content"]["text"]
 
     reminder = context.session.added[0]
     assert reminder.reminder_type == ReminderType.AGENTIC
@@ -364,6 +372,7 @@ async def test_create_reminder_creates_active_agentic_whatsapp_reminder(
     assert reminder.agent_config == {
         "agent_type": "general",
         "prompt": "Review the Acme deal and identify blockers.",
+        "deal_id": str(deal_id),
     }
     assert reminder.delivery_context == {
         "phone_number_id": "phone-123",
