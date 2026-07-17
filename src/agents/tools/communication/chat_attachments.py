@@ -9,7 +9,7 @@ from uuid import UUID
 
 from agno.media import Image as AgnoImage
 from agno.tools.function import ToolResult as AgnoToolResult
-from sqlmodel import select
+from sqlmodel import col, select
 
 from src.agents.tools.base import ToolResult, execute_with_capabilities
 from src.domain.models.organisation_tables.chat_message_models import (
@@ -87,7 +87,7 @@ async def list_chat_attachments(
             message_stmt = (
                 select(ChatMessage)
                 .where(ChatMessage.session_id == session_id)
-                .order_by(ChatMessage.created_at.desc())
+                .order_by(col(ChatMessage.created_at).desc())
             )
             if normalized_scope == "current_message" and current_message_id:
                 message_stmt = message_stmt.where(ChatMessage.message_id == current_message_id)
@@ -99,20 +99,21 @@ async def list_chat_attachments(
                     select(ChatMessageAttachmentLink, Attachment)
                     .join(
                         Attachment,
-                        ChatMessageAttachmentLink.attachment_id == Attachment.attachment_id,
+                        col(ChatMessageAttachmentLink.attachment_id)
+                        == col(Attachment.attachment_id),
                     )
                     .where(
-                        ChatMessageAttachmentLink.message_id.in_(list(message_map.keys())),
+                        col(ChatMessageAttachmentLink.message_id).in_(list(message_map.keys())),
                         Attachment.organisation_id == context.organisation_id,
-                        Attachment.is_deleted.is_(False),
-                        Attachment.status.notin_(
+                        col(Attachment.is_deleted).is_(False),
+                        col(Attachment.status).notin_(
                             [
                                 AttachmentStatus.PENDING_UPLOAD.value,
                                 AttachmentStatus.FAILED.value,
                             ]
                         ),
                     )
-                    .order_by(ChatMessageAttachmentLink.attachment_order)
+                    .order_by(col(ChatMessageAttachmentLink.attachment_order))
                 )
                 if context.user_id:
                     attachment_stmt = attachment_stmt.where(Attachment.user_id == context.user_id)
@@ -159,10 +160,10 @@ async def list_chat_attachments(
             # Current-turn bot attachments may not belong to persisted session history yet,
             # so allow explicit transient IDs for this run only.
             transient_stmt = select(Attachment).where(
-                Attachment.attachment_id.in_(list(allowed_ids)),
+                col(Attachment.attachment_id).in_(list(allowed_ids)),
                 Attachment.organisation_id == context.organisation_id,
-                Attachment.is_deleted.is_(False),
-                Attachment.status.notin_(
+                col(Attachment.is_deleted).is_(False),
+                col(Attachment.status).notin_(
                     [AttachmentStatus.PENDING_UPLOAD.value, AttachmentStatus.FAILED.value]
                 ),
             )

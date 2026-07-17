@@ -1,10 +1,11 @@
-from __future__ import annotations
-
 """SSE service for chat message job updates using Redis Streams.
 
 Streams structured frames for a specific chat job over Server-Sent Events with
 consume-once support using Redis consumer groups to prevent duplicate message delivery.
 """
+
+from __future__ import annotations
+
 import asyncio
 import json
 from collections.abc import AsyncGenerator
@@ -23,6 +24,8 @@ logger = get_logger("chat_message_sse_service")
 
 
 class ChatMessageSSEService:
+    """Stream transient events only for the authenticated owner of a chat job."""
+
     def __init__(self, organisation_id: UUID, job_id: UUID, user_id: UUID) -> None:
         self.organisation_id = str(organisation_id)
         self.job_id = str(job_id)
@@ -33,6 +36,7 @@ class ChatMessageSSEService:
         self._streams: AsyncRedisStreams | None = None
 
     async def close(self) -> None:
+        """Release the lazily created Redis stream client."""
         try:
             if self._streams:
                 await self._streams.close()
@@ -242,22 +246,21 @@ class ChatMessageSSEService:
         except Exception as e:
             logger.warning("Failed to cleanup stream %s: %s", self.stream_key, e)
 
+    async def _owned_job_status(self) -> JobStatus | None:
+        """Return the job status only when the authenticated user owns the job."""
+        async for session in acquire_org_async_session(UUID(self.organisation_id)):
+            job = await session.get(ChatMessageJob, UUID(self.job_id))
+            # Missing and unowned jobs share one response so callers cannot probe
+            # another user's transient chat activity by guessing job IDs.
+            if job is None or str(job.user_id) != self.user_id:
+                return None
+            return job.status
+        return None
+
+    async def can_stream(self) -> bool:
+        """Return whether this user may consume transient events for the job."""
+        return await self._owned_job_status() is not None
+
     async def _is_job_completed(self) -> bool:
-        """Check the job's status from the organisation DB and return True if completed."""
-        try:
-            # Use async org-scoped session to query job status
-            completed = False
-            async for session in acquire_org_async_session(UUID(self.organisation_id)):
-                job = await session.get(ChatMessageJob, UUID(self.job_id))
-                if not job:
-                    # If job not found, allow streaming (could be transient)
-                    logger.debug("Chat SSE: job %s not found; proceeding to stream", self.job_id)
-                    completed = False
-                else:
-                    completed = job.status == JobStatus.COMPLETED
-                break
-            return completed
-        except Exception:
-            # On any failure to check, default to streaming to avoid false negatives
-            logger.debug("Chat SSE: failed to check job completion status", exc_info=True)
-            return False
+        """Return whether this user's job has already completed."""
+        return await self._owned_job_status() == JobStatus.COMPLETED

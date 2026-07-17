@@ -34,7 +34,7 @@ def _not_found_result():
     return mock_result
 
 
-def _make_capturing_db():
+def _make_capturing_db(*, results=None):
     """Create an AsyncMock db that captures SQL statement strings.
 
     Returns (db, captured_statements) where captured_statements is a list
@@ -42,6 +42,7 @@ def _make_capturing_db():
     SQLAlchemy statement passed to db.execute().
     """
     captured: list[str] = []
+    queued_results = iter(results or [])
 
     async def _capturing_execute(stmt, *args, **kwargs):
         try:
@@ -49,7 +50,10 @@ def _make_capturing_db():
             captured.append(str(compiled))
         except Exception:
             captured.append(repr(stmt))
-        return _not_found_result()
+        try:
+            return next(queued_results)
+        except StopIteration:
+            return _not_found_result()
 
     db = AsyncMock()
     db.execute = AsyncMock(side_effect=_capturing_execute)
@@ -147,13 +151,16 @@ class TestChatSessionServiceOwnership:
         assert_filters_in_where_clause(captured, "organisation_id", "user_id", "is_deleted")
 
     @pytest.mark.asyncio
-    async def test_list_sessions_query_filters_by_org_and_user(self, org_id, user_id):
-        """LIST query must include organisation_id AND user_id filters."""
+    async def test_list_sessions_query_filters_by_org_and_owner_or_grant(self, org_id, user_id):
+        """LIST must enforce tenant scope and either ownership or an explicit grant."""
         db, captured = _make_capturing_db()
         service = ChatSessionService(db=db, organisation_id=org_id, user_id=user_id)
         await service.list_sessions()
 
-        assert_filters_in_where_clause(captured, "organisation_id", "user_id", "is_deleted")
+        assert_filters_in_where_clause(captured, "organisation_id", "is_deleted")
+        sql = str(captured[0]).lower()
+        assert "chat_sessions.user_id" in sql
+        assert "chat_session_access.viewer_user_id" in sql
 
     @pytest.mark.asyncio
     async def test_list_sessions_excludes_teams_chat(self, org_id, user_id):
@@ -205,8 +212,8 @@ class TestChatMessageServiceOwnership:
         assert_filters_in_where_clause(captured, "organisation_id", "user_id", "is_deleted")
 
     @pytest.mark.asyncio
-    async def test_list_messages_query_filters_by_org_and_user(self, org_id, user_id):
-        """LIST MESSAGES session lookup must filter by organisation_id AND user_id."""
+    async def test_list_messages_query_allows_only_owner_or_grantee(self, org_id, user_id):
+        """LIST MESSAGES requires same-org ownership or an explicit viewer grant."""
         db, captured = _make_capturing_db()
         service = ChatMessageService(db=db, organisation_id=org_id, user_id=user_id)
 
@@ -214,6 +221,7 @@ class TestChatMessageServiceOwnership:
             await service.list_messages(session_id=uuid4())
 
         assert_filters_in_where_clause(captured, "organisation_id", "user_id", "is_deleted")
+        assert "chat_session_access" in captured[0].lower()
 
     @pytest.mark.asyncio
     async def test_resolve_attachments_filters_by_org_and_user(self, org_id, user_id):
@@ -225,16 +233,26 @@ class TestChatMessageServiceOwnership:
         assert_filters_in_where_clause(captured, "organisation_id", "user_id", "is_deleted")
 
     @pytest.mark.asyncio
-    async def test_get_message_attachments_filters_by_org_and_user(self, org_id, user_id):
-        """GET ATTACHMENTS query must filter by organisation_id AND user_id."""
-        db, captured = _make_capturing_db()
+    async def test_get_message_attachments_scopes_session_message_and_link(self, org_id, user_id):
+        """Attachment reads use the readable session and its linked messages."""
+        readable_result = MagicMock()
+        readable_result.scalar_one_or_none.return_value = MagicMock()
+        db, captured = _make_capturing_db(results=[readable_result])
         msg = MagicMock()
         msg.message_id = uuid4()
+        session_id = uuid4()
 
         service = ChatMessageService(db=db, organisation_id=org_id, user_id=user_id)
-        await service.get_message_attachments([msg])
+        await service.get_message_attachments(session_id=session_id, messages=[msg])
 
-        assert_filters_in_where_clause(captured, "organisation_id", "user_id", "is_deleted")
+        assert "chat_session_access" in captured[0].lower()
+        attachment_sql = captured[1].lower()
+        where_clause = attachment_sql[attachment_sql.index("where") :]
+        assert "chat_messages.session_id" in where_clause
+        assert "chat_message_attachment_link.message_id" in where_clause
+        assert "attachments.organisation_id" in where_clause
+        assert "attachments.is_deleted" in where_clause
+        assert "attachments.user_id" not in where_clause
 
     @pytest.mark.asyncio
     async def test_feedback_query_filters_by_org_and_user(self, org_id, user_id):

@@ -3,9 +3,48 @@
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from src.api.routers.chat import messages_handler
 from src.domain.models.organisation_tables.job_models import JobStatus
 
 from tests.api.routers.chat.conftest import FakeChatMessageService
+
+
+def test_message_events_rejects_job_not_owned_by_user(
+    client: TestClient, messages_dependency_overrides, monkeypatch
+) -> None:
+    """Reject an unowned job before opening a transient event stream."""
+    closed = False
+
+    class FakeSSEService:
+        """Expose a denied stream while recording resource cleanup."""
+
+        def __init__(self, *_args):
+            pass
+
+        async def can_stream(self):
+            """Model a job that is not owned by the authenticated user."""
+            return False
+
+        async def close(self):
+            """Record that rejection closes the service before responding."""
+            nonlocal closed
+            closed = True
+
+        async def stream_events(self, **_kwargs):
+            """Keep the fake valid if a regression reaches stream creation."""
+            yield {"event": "complete", "data": "{}"}
+
+    monkeypatch.setattr(messages_handler, "ChatMessageSSEService", FakeSSEService)
+
+    response = client.get(
+        "/users/chats/message_events",
+        params={"job_id": str(uuid4())},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Chat job not found"
+    assert closed is True
+
 
 # =============================================================================
 # POST /send_message Tests
@@ -232,6 +271,10 @@ def test_list_messages_with_messages(
         create_resp = client.post("/users/chats/send_message", json=payload)
         assert create_resp.status_code == 200
 
+    # A direct load of a shared chat must carry viewer capabilities even when
+    # the sidebar metadata was not used to navigate here.
+    messages_dependency_overrides.sessions[session_id]["user_id"] = str(uuid4())
+
     # List messages
     resp = client.get("/users/chats/messages/list", params={"session_id": session_id})
     assert resp.status_code == 200, resp.text
@@ -240,6 +283,15 @@ def test_list_messages_with_messages(
     data = body["data"]
     # We created 3 user messages + 3 assistant placeholders = 6 messages
     assert len(data["items"]) == 6
+    assert data["session"]["session_id"] == session_id
+    assert data["session"]["access"] == "viewer"
+    assert data["session"]["capabilities"] == {
+        "read": True,
+        "send": False,
+        "rename": False,
+        "delete": False,
+        "manage_shares": False,
+    }
 
 
 def test_list_messages_pagination(

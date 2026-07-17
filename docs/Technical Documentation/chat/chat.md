@@ -100,6 +100,7 @@ class ChatMessageListItem(BaseModel):
     suggestions: Optional[List[str]] = None
 
 class ChatMessagesPage(BaseModel):
+    session: ChatSessionOut
     items: List[ChatMessageListItem]
     cursor: Optional[str] = None
 ```

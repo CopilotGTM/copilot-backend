@@ -356,7 +356,7 @@ class TestListMessages:
             ]
         )
 
-        items, cursor = await service.list_messages(session_id=session_row.session_id, limit=2)
+        _, items, cursor = await service.list_messages(session_id=session_row.session_id, limit=2)
         assert len(items) == 2
         assert cursor is not None
 
@@ -372,9 +372,50 @@ class TestListMessages:
             ]
         )
 
-        items, cursor = await service.list_messages(session_id=session_row.session_id, limit=20)
+        _, items, cursor = await service.list_messages(session_id=session_row.session_id, limit=20)
         assert len(items) == 1
         assert cursor is None
+
+    @pytest.mark.asyncio
+    async def test_selected_viewer_reads_owner_messages(self, service, mock_db, org_id):
+        """A readable session may belong to another user without copying messages."""
+        session_row = _make_session_row(user_id=uuid4(), organisation_id=org_id)
+        message = _make_message_row(session_id=session_row.session_id)
+        mock_db.execute = AsyncMock(
+            side_effect=[
+                _mock_scalar_one_or_none(session_row),
+                _mock_scalars_all([message]),
+            ]
+        )
+
+        _, items, _ = await service.list_messages(session_id=session_row.session_id)
+
+        assert items == [message]
+        assert items[0].session_id == session_row.session_id
+
+    @pytest.mark.asyncio
+    async def test_refresh_reads_new_owner_message_from_same_session(
+        self, service, mock_db, org_id
+    ):
+        """A viewer refresh sees newly persisted owner messages in the original chat."""
+        session_row = _make_session_row(user_id=uuid4(), organisation_id=org_id)
+        old = _make_message_row(session_id=session_row.session_id)
+        new = _make_message_row(session_id=session_row.session_id, created_at=datetime(2024, 1, 2))
+        mock_db.execute = AsyncMock(
+            side_effect=[
+                _mock_scalar_one_or_none(session_row),
+                _mock_scalars_all([old]),
+                _mock_scalar_one_or_none(session_row),
+                _mock_scalars_all([new, old]),
+            ]
+        )
+
+        _, first, _ = await service.list_messages(session_id=session_row.session_id)
+        _, refreshed, _ = await service.list_messages(session_id=session_row.session_id)
+
+        assert first == [old]
+        assert refreshed == [new, old]
+        assert {message.session_id for message in refreshed} == {session_row.session_id}
 
 
 # =============================================================================
@@ -384,10 +425,17 @@ class TestListMessages:
 
 class TestGetMessageAttachments:
     @pytest.mark.asyncio
-    async def test_empty_messages_returns_empty_dict(self, service):
-        """No messages → empty dict, no DB call."""
-        result = await service.get_message_attachments([])
+    async def test_empty_messages_still_authorizes_session(self, service, mock_db, org_id, user_id):
+        """Revoked viewers cannot bypass session authorization with an empty page."""
+        session_row = _make_session_row(user_id=user_id, organisation_id=org_id)
+        mock_db.execute = AsyncMock(return_value=_mock_scalar_one_or_none(session_row))
+
+        result = await service.get_message_attachments(
+            session_id=session_row.session_id, messages=[]
+        )
+
         assert result == {}
+        mock_db.execute.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_returns_attachments_keyed_by_message_id(self, service, mock_db):
@@ -398,11 +446,25 @@ class TestGetMessageAttachments:
         # Mock the join query result: (message_id, Attachment, order)
         mock_result = MagicMock()
         mock_result.all.return_value = [(msg.message_id, att, 0)]
-        mock_db.execute = AsyncMock(return_value=mock_result)
+        session_row = _make_session_row(session_id=msg.session_id)
+        mock_db.execute = AsyncMock(
+            side_effect=[_mock_scalar_one_or_none(session_row), mock_result]
+        )
 
-        result = await service.get_message_attachments([msg])
+        result = await service.get_message_attachments(session_id=msg.session_id, messages=[msg])
         assert msg.message_id in result
         assert len(result[msg.message_id]) == 1
+
+    @pytest.mark.asyncio
+    async def test_revocation_blocks_new_attachment_lookup(self, service, mock_db):
+        """Attachment URLs cannot be prepared after the viewer grant disappears."""
+        msg = _make_message_row()
+        mock_db.execute = AsyncMock(return_value=_mock_scalar_one_or_none(None))
+
+        with pytest.raises(ValueError, match="Chat session not found"):
+            await service.get_message_attachments(session_id=msg.session_id, messages=[msg])
+
+        mock_db.execute.assert_awaited_once()
 
 
 class TestBuildAttachmentUrls:

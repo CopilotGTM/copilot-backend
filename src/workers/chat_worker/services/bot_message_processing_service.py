@@ -462,6 +462,7 @@ class BotMessageProcessingService:
     def _mark_job_in_progress(self, job_id: UUID) -> bool:
         """Atomically claim a pending bot job for processing."""
         from sqlalchemy import update
+        from sqlmodel import col
 
         from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
         from src.infra.database.sessions import org_session_scope
@@ -470,8 +471,8 @@ class BotMessageProcessingService:
             claim_stmt = (
                 update(ChatMessageJob)
                 .where(
-                    ChatMessageJob.job_id == job_id,
-                    ChatMessageJob.status == JobStatus.PENDING.value,
+                    col(ChatMessageJob.job_id) == job_id,
+                    col(ChatMessageJob.status) == JobStatus.PENDING.value,
                 )
                 .values(
                     status=JobStatus.IN_PROGRESS.value,

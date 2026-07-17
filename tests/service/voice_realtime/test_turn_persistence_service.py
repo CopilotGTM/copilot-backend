@@ -1,3 +1,5 @@
+"""Persistence and owner-boundary contracts for completed realtime voice turns."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -257,3 +259,21 @@ async def test_persist_turns_rejects_missing_or_wrong_session(service, mock_db) 
         )
 
     mock_db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_voice_session_lookup_requires_owner_and_voice_invariants(service, mock_db) -> None:
+    """A shared viewer cannot use the owner-only voice persistence path."""
+    mock_db.execute = AsyncMock(return_value=_mock_session_result(None))
+
+    with pytest.raises(VoiceTurnPersistenceServiceError, match="Voice chat session not found."):
+        await service._get_owned_voice_session(uuid4())
+
+    statement = mock_db.execute.await_args.args[0]
+    where_sql = str(statement.whereclause.compile(compile_kwargs={"literal_binds": True}))
+    assert "chat_sessions.session_id" in where_sql
+    assert "chat_sessions.user_id" in where_sql
+    assert "chat_sessions.organisation_id" in where_sql
+    assert "chat_sessions.chat_type" in where_sql
+    assert "VOICE_CHAT" in where_sql
+    assert "chat_sessions.is_deleted" in where_sql
