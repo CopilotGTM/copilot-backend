@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from urllib.parse import urlparse
+from urllib.parse import ParseResult, urlparse
 
 _DOMAIN_PROTOCOL_RE = re.compile(r"^https?://", re.IGNORECASE)
 _DOMAIN_WWW_RE = re.compile(r"^www\.", re.IGNORECASE)
@@ -62,10 +62,9 @@ def is_person_linkedin_url(value: str | None) -> bool:
 
 def normalize_linkedin_url(value: str | None) -> str | None:
     """Return a scheme-insensitive LinkedIn host/path identity key."""
-    cleaned = clean_optional_string(value)
-    if not cleaned:
+    parsed = _parse_candidate_url(value)
+    if parsed is None:
         return None
-    parsed = urlparse(cleaned if "://" in cleaned else f"https://{cleaned}")
     host = (parsed.netloc or "").lower().removeprefix("www.")
     if host != "linkedin.com" and not host.endswith(".linkedin.com"):
         return None
@@ -74,11 +73,23 @@ def normalize_linkedin_url(value: str | None) -> str | None:
 
 
 def _linkedin_path(value: str | None) -> str | None:
-    cleaned = clean_optional_string(value)
-    if not cleaned:
+    parsed = _parse_candidate_url(value)
+    if parsed is None:
         return None
-    parsed = urlparse(cleaned if "://" in cleaned else f"https://{cleaned}")
     host = (parsed.netloc or "").lower()
     if host != "linkedin.com" and not host.endswith(".linkedin.com"):
         return None
     return (parsed.path or "").lower()
+
+
+def _parse_candidate_url(value: str | None) -> ParseResult | None:
+    """Parse untrusted CRM text as a URL without leaking parser errors to callers."""
+    cleaned = clean_optional_string(value)
+    if not cleaned:
+        return None
+    try:
+        return urlparse(cleaned if "://" in cleaned else f"https://{cleaned}")
+    except ValueError:
+        # Bracketed notes resemble IPv6 hosts to urllib; they are ordinary
+        # non-URL input during CSV mapping and should simply fail detection.
+        return None

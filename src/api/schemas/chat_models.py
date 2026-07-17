@@ -20,6 +20,16 @@ class ChatSessionCreate(BaseModel):
     tags: list[str] | None = None
 
 
+class ChatSessionCapabilities(BaseModel):
+    """Operations the current caller may perform on one chat session."""
+
+    read: bool
+    send: bool
+    rename: bool
+    delete: bool
+    manage_shares: bool
+
+
 class ChatSessionOut(BaseModel):
     """Response model mirroring ChatSession domain model."""
 
@@ -30,9 +40,42 @@ class ChatSessionOut(BaseModel):
     tags: list[str] = []
     created_at: datetime
     updated_at: datetime
+    access: Literal["owner", "viewer"] = "owner"
+    capabilities: ChatSessionCapabilities
 
     # Pydantic v2 config
     model_config = {"from_attributes": True}
+
+
+class ChatSessionShareOut(BaseModel):
+    """One explicit read-only viewer grant for a chat session."""
+
+    session_id: UUID
+    viewer_user_id: UUID
+    granted_by_user_id: UUID
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ChatSharedByOut(BaseModel):
+    """User who granted the current caller access to a chat."""
+
+    user_id: UUID
+    name: str | None = None
+    email: str | None = None
+
+
+class ChatSharedWithMeOut(ChatSessionOut):
+    """Shared chat metadata enriched for the settings screen."""
+
+    shared_at: datetime
+    shared_by: ChatSharedByOut
+
+
+class SharedChatsPage(BaseModel):
+    items: list[ChatSharedWithMeOut]
+    cursor: str | None = None
 
 
 class DeleteChat(BaseModel):
@@ -140,6 +183,9 @@ class ChatMessageListItem(BaseModel):
 
 
 class ChatMessagesPage(BaseModel):
+    """Authorized session metadata with one cursor page of committed messages."""
+
+    session: ChatSessionOut
     items: list[ChatMessageListItem]
     cursor: str | None = None
 

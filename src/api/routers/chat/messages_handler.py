@@ -7,7 +7,7 @@ to Celery so a broker timeout cannot silently discard an accepted request.
 import asyncio
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
@@ -16,6 +16,7 @@ from src.api.dependencies.organisation_dependencies import (
     get_org_async_session,
 )
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
+from src.api.routers.chat.sessions_handler import _to_out
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.chat_models import (
     ChatMessageListItem,
@@ -195,6 +196,9 @@ async def message_events(
 ):
     """Stream one user's job events with consume-once reconnect semantics."""
     service = ChatMessageSSEService(user_ids.organisation_id, job_id, user_ids.user_id)
+    if not await service.can_stream():
+        await service.close()
+        raise HTTPException(status_code=404, detail="Chat job not found")
     logger.info(
         f"Client connected to chat SSE for org={user_ids.organisation_id} job={job_id} user={user_ids.user_id}"
     )
@@ -240,9 +244,9 @@ async def list_messages(
     service: ChatMessageService = Depends(get_chat_message_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[ChatMessagesPage]:
-    """List an authenticated user's session messages using an opaque cursor."""
+    """List readable messages and current session capabilities using an opaque cursor."""
     try:
-        msgs, next_cursor = await service.list_messages(
+        session, msgs, next_cursor = await service.list_messages(
             session_id=session_id,
             limit=limit,
             cursor=cursor,
@@ -251,13 +255,20 @@ async def list_messages(
         )
 
         # Enrich with attachments + thumbnail URLs
-        atts_by_msg = await service.get_message_attachments(msgs)
+        atts_by_msg = await service.get_message_attachments(session_id=session_id, messages=msgs)
         atts_urls = await service.build_attachment_urls(attachments_by_msg=atts_by_msg)
 
         # Build enriched items using service method
         item_dicts = service.build_message_list_items(msgs, atts_urls)
         items: list[ChatMessageListItem] = [ChatMessageListItem(**item) for item in item_dicts]
-        page = ChatMessagesPage(items=items, cursor=next_cursor)
+        page = ChatMessagesPage(
+            session=_to_out(
+                session,
+                access="owner" if str(session.user_id) == str(service.user_id) else "viewer",
+            ),
+            items=items,
+            cursor=next_cursor,
+        )
         return Response.success_response("Messages listed", page)
     except ValueError as e:
         return Response.bad_request_error_response(str(e), response=response)

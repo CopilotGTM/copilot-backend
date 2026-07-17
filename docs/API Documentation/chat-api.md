@@ -42,6 +42,7 @@ All endpoints return a consistent envelope:
 ## Integration Overview
 
 - For a unified flow with uploads and SSE, see: `docs/API Documentation/chat-apis-integration-diagram.md`
+- For owner-managed read-only sharing and frontend integration, see: `docs/API Documentation/chat-sharing-api.md`
 - For the dedicated voice realtime API contract, see: `docs/API Documentation/voice-realtime-api.md`
 
 ### Agent Execution Notes
@@ -190,6 +191,16 @@ All endpoints return a consistent envelope:
 ```ts
 type UUID = string;
 
+export type ChatAccess = "owner" | "viewer";
+
+export interface ChatSessionCapabilities {
+  read: boolean;
+  send: boolean;
+  rename: boolean;
+  delete: boolean;
+  manage_shares: boolean;
+}
+
 // Chat Session
 export interface ChatSessionCreate {
   title: string;
@@ -301,6 +312,15 @@ export interface ChatSessionOut {
   tags: string[];
   created_at: string; // ISO8601
   updated_at: string; // ISO8601
+  access: ChatAccess;
+  capabilities: ChatSessionCapabilities;
+}
+
+export interface ChatSessionShareOut {
+  session_id: UUID;
+  viewer_user_id: UUID;
+  granted_by_user_id: UUID;
+  created_at: string; // ISO8601
 }
 
 export interface ChatSessionsPage {
@@ -346,6 +366,7 @@ export interface ChatMessageListItem {
 }
 
 export interface ChatMessagesPage {
+  session: ChatSessionOut;
   items: ChatMessageListItem[];
   cursor?: string | null;
 }
@@ -517,7 +538,15 @@ Creates a new chat session owned by the current user in their organisation.
     "is_favorite": false,
     "tags": ["alpha", "demo"],
     "created_at": "2025-10-06T08:12:00Z",
-    "updated_at": "2025-10-06T08:12:00Z"
+    "updated_at": "2025-10-06T08:12:00Z",
+    "access": "owner",
+    "capabilities": {
+      "read": true,
+      "send": true,
+      "rename": true,
+      "delete": true,
+      "manage_shares": true
+    }
   }
 }
 ```
@@ -569,7 +598,15 @@ Soft-deletes a chat session owned by the current user.
     "is_favorite": false,
     "tags": [],
     "created_at": "2025-10-06T08:12:00Z",
-    "updated_at": "2025-10-06T08:15:00Z"
+    "updated_at": "2025-10-06T08:15:00Z",
+    "access": "owner",
+    "capabilities": {
+      "read": true,
+      "send": true,
+      "rename": true,
+      "delete": true,
+      "manage_shares": true
+    }
   }
 }
 ```
@@ -608,7 +645,15 @@ PATCH /users/chats/rename_chat
     "is_favorite": false,
     "tags": [],
     "created_at": "2025-10-06T08:12:00Z",
-    "updated_at": "2025-10-06T08:16:00Z"
+    "updated_at": "2025-10-06T08:16:00Z",
+    "access": "owner",
+    "capabilities": {
+      "read": true,
+      "send": true,
+      "rename": true,
+      "delete": true,
+      "manage_shares": true
+    }
   }
 }
 ```
@@ -626,7 +671,7 @@ PATCH /users/chats/rename_chat
 ### Endpoint
 
 ```http
-GET /users/chats/list_chats?limit=20&cursor=<opaque>&chat_type=<CHAT_TYPE>
+GET /users/chats/list_chats?limit=20&cursor=<opaque>&chat_type=<CHAT_TYPE>&scope=all
 ```
 
 ### Description
@@ -641,6 +686,9 @@ Query params:
 - `limit` — page size, `1..100`
 - `cursor` — opaque pagination cursor from the previous response
 - `chat_type` — optional exact filter, for example `VOICE_CHAT` to return only voice sessions
+- `scope` — `all` (default), `owned`, or `shared`; reset the cursor when this changes
+
+Authorization is applied before ordering, so owned and shared chats share one stable cursor.
 
 ### Success Response (200)
 
@@ -657,7 +705,15 @@ Query params:
         "is_favorite": false,
         "tags": [],
         "created_at": "2025-10-06T08:12:00Z",
-        "updated_at": "2025-10-06T08:12:00Z"
+        "updated_at": "2025-10-06T08:12:00Z",
+        "access": "owner",
+        "capabilities": {
+          "read": true,
+          "send": true,
+          "rename": true,
+          "delete": true,
+          "manage_shares": true
+        }
       }
     ],
     "cursor": "<opaque-cursor-or-null>"
@@ -720,7 +776,15 @@ PATCH /users/chats/favorite_chat
     "is_favorite": true,
     "tags": [],
     "created_at": "2025-10-06T08:12:00Z",
-    "updated_at": "2025-10-06T08:18:00Z"
+    "updated_at": "2025-10-06T08:18:00Z",
+    "access": "owner",
+    "capabilities": {
+      "read": true,
+      "send": true,
+      "rename": true,
+      "delete": true,
+      "manage_shares": true
+    }
   }
 }
 ```
@@ -730,6 +794,27 @@ PATCH /users/chats/favorite_chat
 - 404 Not Found — "Chat session not found"
 - 400 Bad Request — validation issues
 - 500 Internal Server Error — "Unable to update favorite state"
+
+---
+
+## Read-Only Chat Sharing
+
+The implemented sharing surface adds:
+
+```text
+GET    /users/chats/list_chats?scope=all|owned|shared
+GET    /users/chats/shared
+PUT    /users/chats/{session_id}/shares/{viewer_user_id}
+GET    /users/chats/{session_id}/shares
+DELETE /users/chats/{session_id}/shares/{viewer_user_id}
+```
+
+`GET /users/chats/shared` is the paginated settings projection. It returns the normal
+read-only chat fields plus `shared_at` and `shared_by { user_id, name, email }`. See
+[chat-sharing-api.md](chat-sharing-api.md#list-chats-shared-with-me) for the full contract.
+
+For complete request/response examples, capability handling, owner/viewer flows, polling,
+revocation, and error behavior, see [Read-Only Chat Sharing API](chat-sharing-api.md).
 
 ---
 
@@ -1107,7 +1192,10 @@ GET /users/chats/message_events?job_id=<UUID>
 
 ### Description
 
-Streams Server-Sent Events for a specific message job. Includes reconnection support via `Last-Event-ID`.
+Streams Server-Sent Events for a specific message job owned by the authenticated user. Includes
+reconnection support via `Last-Event-ID`. Shared viewers must not connect to this endpoint; an
+unowned or unknown job returns `404` with `{ "detail": "Chat job not found" }`. Viewers refresh
+the durable message list instead.
 
 ### Event Types
 
@@ -1301,7 +1389,14 @@ GET /users/chats/messages/list?session_id=<UUID>&limit=20&cursor=<opaque>&role=<
 
 ### Description
 
-Returns chat messages for a session with lightweight enrichment (attachments, sources, suggestions, confidence, and feedback).
+Returns chat messages for a session owned by the caller or explicitly shared with the caller,
+with lightweight enrichment (attachments, sources, suggestions, confidence, and feedback).
+Shared viewers read the original committed rows and authorized attachments, but cannot send,
+mutate feedback, or consume the owner's message-job SSE stream.
+
+The top-level `session` is the authoritative metadata for direct and reloaded chat URLs. Use its
+`access` and `capabilities` fields to decide which controls to render; do not rely only on metadata
+passed from the sidebar.
 
 Notes:
 
@@ -1316,6 +1411,23 @@ Notes:
   "status": "SUCCESS",
   "message": "Messages listed",
   "data": {
+    "session": {
+      "session_id": "<UUID>",
+      "title": "Quarterly planning",
+      "chat_type": "GENERAL_CHAT",
+      "is_favorite": false,
+      "tags": [],
+      "created_at": "2025-10-06T08:00:00Z",
+      "updated_at": "2025-10-06T08:12:00Z",
+      "access": "viewer",
+      "capabilities": {
+        "read": true,
+        "send": false,
+        "rename": false,
+        "delete": false,
+        "manage_shares": false
+      }
+    },
     "items": [
       {
         "message_id": "<UUID>",

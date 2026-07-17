@@ -34,6 +34,10 @@ from src.domain.models.organisation_tables.job_models import (
 )
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.cursor import decode_cursor, encode_cursor
+from src.service.chat.chat_access import (
+    resolve_owned_chat_session,
+    resolve_readable_chat_session,
+)
 
 
 def _to_confidence(val) -> str | None:
@@ -118,17 +122,12 @@ class ChatMessageService:
             tuple: (user_message, job, assistant_message_id_str)
         """
 
-        # Guard: Ensure session belongs to caller's org/user
-        sess_stmt = select(ChatSession).where(
-            _col_bool(ChatSession.session_id == session_id),
-            _col_bool(ChatSession.organisation_id == self.organisation_id),
-            _col_bool(ChatSession.user_id == self.user_id),
-            _col_bool(ChatSession.is_deleted).is_(False),
+        session = await resolve_owned_chat_session(
+            self.db,
+            organisation_id=self.organisation_id,
+            user_id=self.user_id,
+            session_id=session_id,
         )
-        result = await self.db.execute(sess_stmt)
-        session = result.scalar_one_or_none()
-        if not session:
-            raise ValueError("Chat session not found")
 
         # Shape content as JSON (allows future rich content)
         content_payload = {"text": content}
@@ -194,23 +193,20 @@ class ChatMessageService:
         cursor: str | None = None,
         role: ChatMessageRole | None = None,
         message_type: ChatMessageType | None = None,
-    ) -> tuple[list[ChatMessage], str | None]:
+    ) -> tuple[ChatSession, list[ChatMessage], str | None]:
         """List messages for a session with stable cursor-based pagination.
 
         Orders by created_at desc, message_id desc to ensure a consistent keyset.
-        Cursor encodes (created_at, message_id).
+        Cursor encodes (created_at, message_id). Returns the authorized session
+        with the page so direct chat loads can derive current capabilities from
+        the same access check that protects the messages.
         """
-        # Ensure session belongs to caller
-        sess_stmt = select(ChatSession).where(
-            _col_bool(ChatSession.session_id == session_id),
-            _col_bool(ChatSession.organisation_id == self.organisation_id),
-            _col_bool(ChatSession.user_id == self.user_id),
-            _col_bool(ChatSession.is_deleted).is_(False),
+        session = await resolve_readable_chat_session(
+            self.db,
+            organisation_id=self.organisation_id,
+            user_id=self.user_id,
+            session_id=session_id,
         )
-        session_res = await self.db.execute(sess_stmt)
-        session = session_res.scalar_one_or_none()
-        if not session:
-            raise ValueError("Chat session not found")
 
         filters: list[ColumnElement[bool]] = [
             _col_bool(ChatMessage.session_id == session_id),
@@ -245,12 +241,21 @@ class ChatMessageService:
         next_cursor = (
             encode_cursor(items[-1].created_at, items[-1].message_id) if has_more else None
         )
-        return items, next_cursor
+        return session, items, next_cursor
 
     async def get_message_attachments(
-        self, messages: list[ChatMessage]
+        self,
+        *,
+        session_id: UUID,
+        messages: list[ChatMessage],
     ) -> dict[UUID, list[Attachment]]:
-        """Return attachments for messages keyed by message_id in attachment_order."""
+        """Return linked attachments after re-authorizing the readable session."""
+        await resolve_readable_chat_session(
+            self.db,
+            organisation_id=self.organisation_id,
+            user_id=self.user_id,
+            session_id=session_id,
+        )
         if not messages:
             return {}
         msg_ids = [m.message_id for m in messages]
@@ -262,14 +267,19 @@ class ChatMessageService:
                 Attachment,
                 ChatMessageAttachmentLink.attachment_order,
             )
+            .select_from(ChatMessageAttachmentLink)
+            .join(
+                ChatMessage,
+                _col_bool(message_id_col == ChatMessage.message_id),
+            )
             .join(
                 Attachment,
                 _col_bool(attachment_id_col == Attachment.attachment_id),
             )
             .where(
+                _col_bool(ChatMessage.session_id == session_id),
                 _col_bool(message_id_col.in_(msg_ids)),
                 _col_bool(Attachment.organisation_id == self.organisation_id),
-                _col_bool(Attachment.user_id == self.user_id),
                 _col_bool(Attachment.is_deleted).is_(False),
             )
             .order_by(

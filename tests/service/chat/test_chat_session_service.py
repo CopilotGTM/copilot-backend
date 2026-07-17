@@ -49,11 +49,12 @@ def _make_session_row(
 
 
 def _mock_execute_returning(row):
-    """Create a mock Result whose .scalars().one_or_none() returns `row`."""
+    """Create a mock Result supporting single-row and scalar-list access."""
     mock_scalars = MagicMock()
     mock_scalars.one_or_none.return_value = row
     mock_scalars.all.return_value = [row] if row else []
     mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = row
     mock_result.scalars.return_value = mock_scalars
     return mock_result
 
