@@ -136,9 +136,14 @@ class StreamingAnswerBuffer:
         if not content:
             return False
 
+        chunk_event = _get_chunk_attr(chunk, "event")
+        # RunCompleted may repeat the provider's full answer. It is captured
+        # separately above for token metrics and must never re-enter the text stream.
+        if chunk_event == "RunCompleted":
+            return False
+
         # Filter out Agno tool completion events - they inject tool execution text into content
         # These events have content like "search_internal_knowledge(query=...) completed in 12.1234s."
-        chunk_event = _get_chunk_attr(chunk, "event")
         if chunk_event and chunk_event in TOOL_COMPLETION_EVENTS:
             self.logger.debug(f"Filtering tool event: {chunk_event} - {content[:50]}...")
             return False
