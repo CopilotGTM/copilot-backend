@@ -11,11 +11,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select
-from sqlalchemy.orm import aliased, selectinload
+from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy.orm import selectinload
 
 from src.agents.tools.base import execute_with_capabilities
 from src.domain.models.organisation_tables.sync.calendar import (
@@ -46,6 +47,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MeetingTimeDirection = Literal["past", "future", "present"]
+MAX_MEETING_QUERY_CHARS = 200
+
+
+def _escape_like(value: str) -> str:
+    """Escape PostgreSQL LIKE metacharacters so identity text stays literal."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def normalize_meeting_limit(limit: int | None) -> int:
@@ -98,6 +105,150 @@ def _normalize_time_direction(value: str | None) -> MeetingTimeDirection | None:
     return None
 
 
+def _meeting_search_expressions(event_c: Any, query: str) -> tuple[Any, Any, Any, Any]:
+    """Build deterministic and trigram fallback expressions for meeting identity.
+
+    This mirrors agent deal search: direct identity matches remain authoritative,
+    while PostgreSQL trigram similarity recovers speech transcription and spelling
+    variations only when the direct query returns no meetings.
+    """
+    attendee_c = cast(Any, CalendarAttendee).__table__.c
+    lowered_query = query.lower()
+    like_query = _escape_like(lowered_query)
+
+    title = func.lower(func.coalesce(event_c.title, ""))
+    organiser_name = func.lower(func.coalesce(event_c.organiser_name, ""))
+    organiser_email = func.lower(func.coalesce(event_c.organiser_email, ""))
+
+    def attendee_exists(condition: Any) -> Any:
+        """Correlate one attendee identity condition to the candidate event."""
+        return (
+            select(1)
+            .where(attendee_c.event_id == event_c.event_id, condition)
+            .correlate(CalendarEvent)
+            .exists()
+        )
+
+    attendee_name = func.lower(func.coalesce(attendee_c.display_name, ""))
+    attendee_email = func.lower(func.coalesce(attendee_c.email, ""))
+    exact_attendee = attendee_exists(
+        or_(attendee_name == lowered_query, attendee_email == lowered_query)
+    )
+    prefix_attendee = attendee_exists(
+        or_(
+            attendee_name.like(f"{like_query}%", escape="\\"),
+            attendee_email.like(f"{like_query}%", escape="\\"),
+        )
+    )
+    contains_attendee = attendee_exists(
+        or_(
+            attendee_name.like(f"%{like_query}%", escape="\\"),
+            attendee_email.like(f"%{like_query}%", escape="\\"),
+        )
+    )
+
+    deterministic_checks = (
+        (title == lowered_query, 6.0),
+        (organiser_name == lowered_query, 5.5),
+        (organiser_email == lowered_query, 5.0),
+        (exact_attendee, 4.5),
+        (title.like(f"{like_query}%", escape="\\"), 4.0),
+        (organiser_name.like(f"{like_query}%", escape="\\"), 3.8),
+        (organiser_email.like(f"{like_query}%", escape="\\"), 3.6),
+        (prefix_attendee, 3.4),
+        (title.like(f"%{like_query}%", escape="\\"), 3.0),
+        (organiser_name.like(f"%{like_query}%", escape="\\"), 2.8),
+        (organiser_email.like(f"%{like_query}%", escape="\\"), 2.6),
+        (contains_attendee, 2.4),
+    )
+    deterministic_filter = or_(*(condition for condition, _score in deterministic_checks))
+    deterministic_score = case(*deterministic_checks, else_=0.0)
+
+    attendee_fuzzy_filter = attendee_exists(
+        or_(attendee_c.display_name.op("%")(query), attendee_c.email.op("%")(query))
+    )
+    attendee_fuzzy_score = (
+        select(
+            func.max(
+                func.greatest(
+                    func.similarity(func.coalesce(attendee_c.display_name, ""), query),
+                    func.similarity(func.coalesce(attendee_c.email, ""), query),
+                )
+            )
+        )
+        .where(attendee_c.event_id == event_c.event_id)
+        .correlate(CalendarEvent)
+        .scalar_subquery()
+    )
+    fuzzy_filter = or_(
+        event_c.title.op("%")(query),
+        event_c.organiser_name.op("%")(query),
+        event_c.organiser_email.op("%")(query),
+        attendee_fuzzy_filter,
+    )
+    fuzzy_score = func.greatest(
+        func.similarity(func.coalesce(event_c.title, ""), query),
+        func.similarity(func.coalesce(event_c.organiser_name, ""), query),
+        func.similarity(func.coalesce(event_c.organiser_email, ""), query),
+        func.coalesce(attendee_fuzzy_score, 0.0),
+    )
+    return deterministic_filter, deterministic_score, fuzzy_filter, fuzzy_score
+
+
+def _resolve_meeting_match(
+    event: CalendarEvent,
+    query: str,
+    score: float | None,
+    *,
+    fuzzy: bool,
+) -> dict[str, Any]:
+    """Describe which meeting identity best explains a search result."""
+    candidates: list[tuple[str, str]] = []
+    for field, value in (
+        ("title", event.title),
+        ("organiser_name", event.organiser_name),
+        ("organiser_email", event.organiser_email),
+    ):
+        if isinstance(value, str) and value.strip():
+            candidates.append((field, value))
+    for attendee in event.attendees or []:
+        if attendee.display_name and attendee.display_name.strip():
+            candidates.append(("attendee_name", attendee.display_name))
+        if attendee.email and attendee.email.strip():
+            candidates.append(("attendee_email", attendee.email))
+
+    normalized_query = query.strip().casefold()
+    if fuzzy:
+        field, value = max(
+            candidates,
+            key=lambda candidate: SequenceMatcher(
+                None, normalized_query, candidate[1].casefold()
+            ).ratio(),
+        )
+        match_type = "fuzzy"
+    else:
+        field, value, match_type = next(
+            (
+                (field, value, match_type)
+                for match_type, predicate in (
+                    ("exact", lambda text: text == normalized_query),
+                    ("prefix", lambda text: text.startswith(normalized_query)),
+                    ("substring", lambda text: normalized_query in text),
+                )
+                for field, value in candidates
+                if predicate(value.casefold())
+            ),
+            ("title", event.title or "", "substring"),
+        )
+
+    return {
+        "field": field,
+        "value": value,
+        "type": match_type,
+        "score": float(score or 0.0),
+    }
+
+
 async def list_meetings(
     *,
     context: AgentContext,
@@ -107,6 +258,7 @@ async def list_meetings(
     deal_id: str | None = None,
     attendee_email: str | None = None,
     attendee_name: str | None = None,
+    query: str | None = None,
     has_transcript: bool | None = None,
     has_summary: bool | None = None,
     time_direction: MeetingTimeDirection | None = None,
@@ -146,6 +298,19 @@ async def list_meetings(
     effective_limit = normalize_meeting_limit(limit)
     if limit == 10 and isinstance(metadata_limit, int):
         effective_limit = normalize_meeting_limit(metadata_limit)
+    if query is not None and not query.strip():
+        logger.warning("list_meetings: query cannot be blank")
+        return []
+    search_query = query.strip() if query else None
+    if search_query and len(search_query) > MAX_MEETING_QUERY_CHARS:
+        logger.warning("list_meetings: query exceeds %d characters", MAX_MEETING_QUERY_CHARS)
+        return []
+    for label, value in (("attendee_email", attendee_email), ("attendee_name", attendee_name)):
+        if value is not None and (not value.strip() or len(value.strip()) > MAX_MEETING_QUERY_CHARS):
+            logger.warning("list_meetings: invalid %s length", label)
+            return []
+    attendee_email = attendee_email.strip() if attendee_email else None
+    attendee_name = attendee_name.strip() if attendee_name else None
 
     explicit_start = start_datetime is not None
     explicit_end = end_datetime is not None
@@ -235,15 +400,23 @@ async def list_meetings(
         stmt = stmt.where(assoc_c.deal_id == parsed_deal_id)
 
     if attendee_email or attendee_name:
-        # Attendee filters are search refinements only. They are intentionally
-        # applied after the user-calendar ownership join above.
-        attendee_filter = aliased(CalendarAttendee)
-        filter_c = cast(Any, attendee_filter).__table__.c
-        stmt = stmt.join(attendee_filter, filter_c.event_id == event_c.event_id)
+        # Use an attendee subquery rather than a join so a meeting with several
+        # matching invitees still occupies only one result slot.
+        filter_c = cast(Any, CalendarAttendee).__table__.c
+        attendee_stmt = select(filter_c.event_id).where(filter_c.event_id == event_c.event_id)
         if attendee_email:
-            stmt = stmt.where(func.lower(filter_c.email) == attendee_email.lower())
+            attendee_stmt = attendee_stmt.where(
+                func.lower(filter_c.email) == attendee_email.lower()
+            )
         if attendee_name:
-            stmt = stmt.where(filter_c.display_name.ilike(f"%{attendee_name}%"))
+            escaped_attendee_name = _escape_like(attendee_name.strip())
+            attendee_stmt = attendee_stmt.where(
+                filter_c.display_name.ilike(
+                    f"%{escaped_attendee_name}%",
+                    escape="\\",
+                )
+            )
+        stmt = stmt.where(attendee_stmt.correlate(CalendarEvent).exists())
 
     if has_transcript is True:
         stmt = stmt.where(meeting_c.status == MeetingStatus.READY)
@@ -262,27 +435,66 @@ async def list_meetings(
             )
         )
 
-    stmt = stmt.order_by(event_c.start_at.desc() if use_past_window else event_c.start_at.asc())
-    stmt = stmt.limit(effective_limit)
+    time_order = event_c.start_at.desc() if use_past_window else event_c.start_at.asc()
 
     async with context.acquire_session() as session:
         try:
-            result = await session.execute(stmt)
-            rows = list(result.all())
+            fuzzy_match = False
+            if search_query:
+                (
+                    deterministic_filter,
+                    deterministic_score,
+                    fuzzy_filter,
+                    fuzzy_score,
+                ) = _meeting_search_expressions(event_c, search_query)
+                deterministic_stmt = (
+                    stmt.where(deterministic_filter)
+                    .add_columns(deterministic_score.label("search_score"))
+                    .order_by(deterministic_score.desc(), time_order)
+                    .limit(effective_limit)
+                )
+                result = await session.execute(deterministic_stmt)
+                rows = list(result.all())
+
+                # Fuzzy matches are recovery candidates only. Running this query
+                # after an empty direct result keeps a named meeting authoritative.
+                if not rows:
+                    fuzzy_match = True
+                    fuzzy_stmt = (
+                        stmt.where(fuzzy_filter)
+                        .add_columns(fuzzy_score.label("search_score"))
+                        .order_by(fuzzy_score.desc(), time_order)
+                        .limit(effective_limit)
+                    )
+                    result = await session.execute(fuzzy_stmt)
+                    rows = list(result.all())
+            else:
+                result = await session.execute(stmt.order_by(time_order).limit(effective_limit))
+                rows = list(result.all())
         except Exception as exc:
             logger.exception("list_meetings: database error: %s", exc)
             return []
 
-    return _format_meeting_rows(rows)
+    return _format_meeting_rows(
+        rows,
+        query=search_query,
+        fuzzy_match=fuzzy_match if search_query else False,
+    )
 
 
-def _format_meeting_rows(rows: list[Any]) -> list[dict[str, Any]]:
+def _format_meeting_rows(
+    rows: list[Any],
+    *,
+    query: str | None = None,
+    fuzzy_match: bool = False,
+) -> list[dict[str, Any]]:
     """Convert joined meeting rows into the compact structure agents consume."""
     output: list[dict[str, Any]] = []
     seen_event_ids: set[UUID] = set()
 
     for row in rows:
-        event, assoc, deal, meeting = row
+        event, assoc, deal, meeting = row[:4]
+        search_score = row[4] if query and len(row) > 4 else None
         # A calendar event can have multiple active deal associations. Keep one
         # result per calendar event so "next 10 meetings" means meetings, not
         # meeting-deal association rows.
@@ -300,35 +512,41 @@ def _format_meeting_rows(rows: list[Any]) -> list[dict[str, Any]]:
             for attendee in (event.attendees or [])[:10]
         ]
 
-        output.append(
-            {
-                "event_id": str(event.event_id),
-                "title": event.title,
-                "start_at": event.start_at.isoformat() if event.start_at else None,
-                "end_at": event.end_at.isoformat() if event.end_at else None,
-                "duration_minutes": (
-                    int((event.end_at - event.start_at).total_seconds() / 60)
-                    if event.start_at and event.end_at
-                    else None
-                ),
-                "status": event.status,
-                "location": event.location,
-                "conference_link": event.conference_link,
-                "online_meeting_provider": event.online_meeting_provider,
-                "organiser_name": resolve_attendee_display_name(
-                    event.organiser_name, event.organiser_email
-                ),
-                "organiser_email": event.organiser_email,
-                "attendee_count": event.attendee_count or 0,
-                "attendees": attendees,
-                "deal": _format_deal(deal) if deal else None,
-                "has_transcript": meeting is not None and meeting.status == MeetingStatus.READY,
-                "has_summary": assoc is not None
-                and assoc.meeting_summary_status == GenerationStatus.COMPLETED,
-                "has_prep": assoc is not None
-                and assoc.meeting_prep_status == GenerationStatus.COMPLETED,
-            }
-        )
+        formatted = {
+            "event_id": str(event.event_id),
+            "title": event.title,
+            "start_at": event.start_at.isoformat() if event.start_at else None,
+            "end_at": event.end_at.isoformat() if event.end_at else None,
+            "duration_minutes": (
+                int((event.end_at - event.start_at).total_seconds() / 60)
+                if event.start_at and event.end_at
+                else None
+            ),
+            "status": event.status,
+            "location": event.location,
+            "conference_link": event.conference_link,
+            "online_meeting_provider": event.online_meeting_provider,
+            "organiser_name": resolve_attendee_display_name(
+                event.organiser_name, event.organiser_email
+            ),
+            "organiser_email": event.organiser_email,
+            "attendee_count": event.attendee_count or 0,
+            "attendees": attendees,
+            "deal": _format_deal(deal) if deal else None,
+            "has_transcript": meeting is not None and meeting.status == MeetingStatus.READY,
+            "has_summary": assoc is not None
+            and assoc.meeting_summary_status == GenerationStatus.COMPLETED,
+            "has_prep": assoc is not None
+            and assoc.meeting_prep_status == GenerationStatus.COMPLETED,
+        }
+        if query:
+            formatted["match"] = _resolve_meeting_match(
+                event,
+                query,
+                search_score,
+                fuzzy=fuzzy_match,
+            )
+        output.append(formatted)
 
     return output
 
@@ -361,6 +579,7 @@ def create_list_meetings(
         deal_id: str | None = None,
         attendee_email: str | None = None,
         attendee_name: str | None = None,
+        query: str | None = None,
         has_transcript: bool | None = None,
         has_summary: bool | None = None,
         time_direction: str | None = None,
@@ -373,6 +592,10 @@ def create_list_meetings(
         Use `time_direction="past"` for prior/history/recent-past requests and
         `time_direction="future"` for upcoming/next/scheduled requests when no
         explicit datetime range is supplied.
+
+        Pass only the identifying title, person, company, or email in `query`;
+        do not pass the user's full request. Combine it with date filters when
+        the user supplies both, such as Monday plus a participant name.
         """
         result = await execute_with_capabilities(
             capabilities_getter(),
@@ -386,6 +609,7 @@ def create_list_meetings(
                 "deal_id": deal_id,
                 "attendee_email": attendee_email,
                 "attendee_name": attendee_name,
+                "query": query,
                 "has_transcript": has_transcript,
                 "has_summary": has_summary,
                 "time_direction": _normalize_time_direction(time_direction),

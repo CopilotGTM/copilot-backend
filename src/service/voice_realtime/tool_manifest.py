@@ -101,6 +101,17 @@ def _build_search_accounts_factory(context: AgentContext) -> Callable[[], Callab
     return partial(create_search_accounts, context, _build_empty_capabilities)
 
 
+def _build_research_linkedin_profile_factory(
+    context: AgentContext,
+) -> Callable[[], Callable[..., Any]]:
+    """Expose tenant-bound, external-only person research to realtime voice."""
+    from src.agents.tools.research.research_linkedin_profile import (
+        create_research_linkedin_profile,
+    )
+
+    return partial(create_research_linkedin_profile, context, _build_empty_capabilities)
+
+
 def _build_list_meetings_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
     from src.agents.tools.intelligence.list_meetings_unified import create_list_meetings
 
@@ -715,8 +726,8 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
         parameters={
             "type": "object",
             "properties": {
-                "query": {"type": "string"},
-                "company_name": {"type": "string"},
+                "query": {"type": "string", "minLength": 1, "maxLength": 200},
+                "company_name": {"type": "string", "minLength": 1, "maxLength": 200},
                 "limit": {"type": "integer"},
             },
             "required": [],
@@ -739,19 +750,75 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
         factory_builder=_build_search_accounts_factory,
     ),
     VoiceRealtimeToolDefinition(
-        tool_name=ToolName.LIST_MEETINGS,
-        description="List meetings from the current user's connected calendar.",
+        tool_name=ToolName.RESEARCH_LINKEDIN_PROFILE,
+        description=(
+            "Research an external person's professional background. For meeting attendees, "
+            "use the exact invitation email; do not search by display name."
+        ),
         parameters={
             "type": "object",
             "properties": {
-                "start_datetime": {"type": "string"},
-                "end_datetime": {"type": "string"},
+                "query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "A LinkedIn profile URL for an explicit general lookup.",
+                },
+                "email": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 320,
+                    "description": "Exact external attendee email from the calendar invitation.",
+                },
+                "company": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "Reliable company name, when known from the invitation.",
+                },
+                "refresh": {"type": "boolean"},
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+        factory_builder=_build_research_linkedin_profile_factory,
+    ),
+    VoiceRealtimeToolDefinition(
+        tool_name=ToolName.LIST_MEETINGS,
+        description=(
+            "List or find meetings from the current user's connected calendar. Combine date "
+            "filters with a short identifying query when the user provides both."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "start_datetime": {
+                    "type": "string",
+                    "description": "User-local range start, such as Monday or tomorrow.",
+                },
+                "end_datetime": {
+                    "type": "string",
+                    "description": "User-local exclusive range end, such as Tuesday.",
+                },
                 "limit": {"type": "integer"},
                 "deal_id": {"type": "string"},
-                "attendee_email": {"type": "string"},
-                "attendee_name": {"type": "string"},
+                "attendee_email": {"type": "string", "minLength": 1, "maxLength": 200},
+                "attendee_name": {"type": "string", "minLength": 1, "maxLength": 200},
+                "query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": (
+                        "Only the identifying title, person, company, or email; never the full "
+                        "spoken request."
+                    ),
+                },
                 "has_transcript": {"type": "boolean"},
                 "has_summary": {"type": "boolean"},
+                "time_direction": {
+                    "type": "string",
+                    "enum": ["past", "present", "future"],
+                },
             },
             "required": [],
             "additionalProperties": False,

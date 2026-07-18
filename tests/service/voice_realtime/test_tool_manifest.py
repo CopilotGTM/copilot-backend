@@ -1,3 +1,5 @@
+"""Regression tests for the realtime voice tool allowlist and public schemas."""
+
 from uuid import uuid4
 
 from src.agents.context import AgentContext
@@ -11,6 +13,7 @@ from src.service.voice_realtime.tool_manifest import (
 
 
 def test_voice_allowed_tools_exclude_backend_write_tools() -> None:
+    """Voice may expose reviewed direct writes without leaking unsupported mutations."""
     allowed_tool_names = set(build_voice_allowed_tools())
 
     # Direct voice-safe write paths are allowed; remaining write tools stay excluded.
@@ -44,6 +47,7 @@ def test_voice_allowed_tools_exclude_backend_write_tools() -> None:
 
 
 def test_every_voice_schema_name_is_in_allowed_tools() -> None:
+    """The provider schema and backend allowlist must describe the same tools."""
     allowed_tool_names = set(build_voice_allowed_tools())
     schema_names = {schema["name"] for schema in build_voice_tool_schemas()}
 
@@ -51,12 +55,14 @@ def test_every_voice_schema_name_is_in_allowed_tools() -> None:
 
 
 def test_every_supported_voice_tool_has_an_executor_factory() -> None:
+    """Every advertised voice tool must have a backend callable factory."""
     factories = build_voice_tool_factories(AgentContext(organisation_id=uuid4()))
 
     assert set(factories) == set(VOICE_REALTIME_SUPPORTED_TOOLS)
 
 
 def test_create_deal_voice_schema_is_available_for_direct_write() -> None:
+    """Voice deal creation keeps the minimal direct-write contract."""
     schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
 
     schema = schemas[ToolName.CREATE_DEAL.value]
@@ -76,6 +82,7 @@ def test_create_deal_voice_schema_is_available_for_direct_write() -> None:
 
 
 def test_create_account_voice_schema_accepts_url_only_identity() -> None:
+    """Voice account creation may start from a domain or LinkedIn identity."""
     schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
 
     schema = schemas[ToolName.CREATE_ACCOUNT.value]
@@ -89,6 +96,7 @@ def test_create_account_voice_schema_accepts_url_only_identity() -> None:
 
 
 def test_create_contact_voice_schema_accepts_name_email_or_linkedin() -> None:
+    """Voice contact creation accepts any supported person identity."""
     schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
 
     schema = schemas[ToolName.CREATE_CONTACT.value]
@@ -102,6 +110,7 @@ def test_create_contact_voice_schema_accepts_name_email_or_linkedin() -> None:
 
 
 def test_list_deals_voice_schema_supports_expected_close_date_sort() -> None:
+    """Voice deal listing exposes both actual and expected close-date filters."""
     schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
 
     schema = schemas[ToolName.LIST_DEALS.value]
@@ -116,6 +125,7 @@ def test_list_deals_voice_schema_supports_expected_close_date_sort() -> None:
 
 
 def test_create_task_voice_schema_is_available_for_direct_write() -> None:
+    """Voice task creation keeps its required title and optional scheduling fields."""
     schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
 
     schema = schemas[ToolName.CREATE_TASK.value]
@@ -126,6 +136,7 @@ def test_create_task_voice_schema_is_available_for_direct_write() -> None:
 
 
 def test_add_deal_note_voice_schema_is_available_for_direct_write() -> None:
+    """Voice deal notes require a resolved deal and note body."""
     schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
 
     schema = schemas[ToolName.ADD_DEAL_NOTE.value]
@@ -137,6 +148,7 @@ def test_add_deal_note_voice_schema_is_available_for_direct_write() -> None:
 
 
 def test_add_stakeholder_voice_schema_is_available_for_direct_write() -> None:
+    """Voice stakeholder creation exposes the supported identity and role fields."""
     schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
 
     schema = schemas[ToolName.ADD_STAKEHOLDER.value]
@@ -148,6 +160,7 @@ def test_add_stakeholder_voice_schema_is_available_for_direct_write() -> None:
 
 
 def test_create_reminder_voice_schema_is_available_for_direct_write() -> None:
+    """Voice reminders require a title and user-local trigger expression."""
     schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
 
     schema = schemas[ToolName.CREATE_REMINDER.value]
@@ -158,6 +171,7 @@ def test_create_reminder_voice_schema_is_available_for_direct_write() -> None:
 
 
 def test_create_reminder_voice_schema_requires_raw_local_trigger_expression() -> None:
+    """Voice must preserve spoken reminder times for backend timezone parsing."""
     schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
 
     trigger_time_schema = schemas[ToolName.CREATE_REMINDER.value]["parameters"]["properties"][
@@ -171,6 +185,7 @@ def test_create_reminder_voice_schema_requires_raw_local_trigger_expression() ->
 
 
 def test_send_email_voice_schema_is_available_for_direct_write() -> None:
+    """Voice email sending requires the exact recipient, subject, and body."""
     schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
 
     schema = schemas[ToolName.SEND_EMAIL.value]
@@ -181,6 +196,7 @@ def test_send_email_voice_schema_is_available_for_direct_write() -> None:
 
 
 def test_send_calendar_invite_voice_schema_is_available_for_direct_write() -> None:
+    """Voice calendar creation exposes all required invite payload fields."""
     schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
 
     schema = schemas[ToolName.SEND_CALENDAR_INVITE.value]
@@ -191,6 +207,7 @@ def test_send_calendar_invite_voice_schema_is_available_for_direct_write() -> No
 
 
 def test_send_calendar_invite_voice_schema_discourages_timezone_override() -> None:
+    """Captured app timezone remains authoritative unless the user names another."""
     schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
 
     schema = schemas[ToolName.SEND_CALENDAR_INVITE.value]
@@ -201,6 +218,7 @@ def test_send_calendar_invite_voice_schema_discourages_timezone_override() -> No
 
 
 def test_send_calendar_invite_voice_schema_guides_bundled_clarifications() -> None:
+    """Voice invite resolution should ask for all missing fields together."""
     schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
 
     schema = schemas[ToolName.SEND_CALENDAR_INVITE.value]
@@ -210,3 +228,31 @@ def test_send_calendar_invite_voice_schema_guides_bundled_clarifications() -> No
     assert "raw attendee names" in attendees_schema["description"]
     assert "ask together" in sender_schema["description"]
     assert "available_sender_accounts" in sender_schema["description"]
+
+
+def test_list_meetings_voice_schema_combines_identity_and_time_clues() -> None:
+    """Realtime voice must expose the existing meeting search and direction arguments."""
+    schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
+
+    schema = schemas[ToolName.LIST_MEETINGS.value]
+    properties = schema["parameters"]["properties"]
+
+    assert "query" in properties
+    assert "full spoken request" in properties["query"]["description"]
+    assert properties["query"]["minLength"] == 1
+    assert properties["query"]["maxLength"] == 200
+    assert properties["time_direction"]["enum"] == ["past", "present", "future"]
+    assert "Monday" in properties["start_datetime"]["description"]
+
+
+def test_voice_exposes_existing_read_only_profile_research() -> None:
+    """Voice research accepts exact attendee email without requiring a CRM record."""
+    schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
+
+    schema = schemas[ToolName.RESEARCH_LINKEDIN_PROFILE.value]
+
+    properties = schema["parameters"]["properties"]
+    assert schema["parameters"]["required"] == []
+    assert "exact invitation email" in schema["description"]
+    assert properties["email"]["maxLength"] == 320
+    assert properties["company"]["maxLength"] == 200

@@ -8,13 +8,15 @@ calendar rows or another user's events.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from src.agents.context import AgentContext
 from src.agents.tools.intelligence.list_meetings_unified import (
+    _escape_like,
     list_meetings,
     normalize_meeting_limit,
 )
@@ -31,20 +33,50 @@ class _AsyncSessionContext:
         return None
 
 
-class _EmptyResult:
+class _RowsResult:
+    def __init__(self, rows: list[Any] | None = None) -> None:
+        self.rows = rows or []
+
     def all(self) -> list[Any]:
-        """Mimic SQLAlchemy's row-result API for an empty query response."""
-        return []
+        """Mimic SQLAlchemy's row-result API for a captured query response."""
+        return self.rows
 
 
 class _CaptureSession:
-    def __init__(self) -> None:
+    def __init__(self, responses: list[list[Any]] | None = None) -> None:
         self.statements: list[Any] = []
+        self.responses = list(responses or [])
 
-    async def execute(self, stmt: Any) -> _EmptyResult:
+    async def execute(self, stmt: Any) -> _RowsResult:
         """Capture the generated statement so tests can inspect query boundaries."""
         self.statements.append(stmt)
-        return _EmptyResult()
+        return _RowsResult(self.responses.pop(0) if self.responses else [])
+
+
+def _meeting_row(title: str, *, score: float = 6.0) -> tuple[Any, ...]:
+    """Build the compact ORM-shaped row returned by a searched meeting query."""
+    event = SimpleNamespace(
+        event_id=uuid4(),
+        title=title,
+        start_at=datetime(2026, 7, 16, 9, 30, tzinfo=UTC),
+        end_at=datetime(2026, 7, 16, 10, 30, tzinfo=UTC),
+        status="confirmed",
+        location=None,
+        conference_link=None,
+        online_meeting_provider="google_meet",
+        organiser_name="Mayank Saxena",
+        organiser_email="mayank@example.com",
+        attendee_count=1,
+        attendees=[
+            SimpleNamespace(
+                display_name="Greeshma P",
+                email="greeshma@customer.example",
+                response_status="accepted",
+                is_organiser=False,
+            )
+        ],
+    )
+    return event, None, None, None, score
 
 
 def test_normalize_meeting_limit_defaults_and_caps() -> None:
@@ -106,6 +138,7 @@ async def test_list_meetings_query_is_scoped_to_current_users_calendar_integrati
 
 @pytest.mark.asyncio
 async def test_list_meetings_interprets_naive_bounds_in_user_timezone() -> None:
+    """Naive date bounds must use the seller's timezone rather than worker UTC."""
     session = _CaptureSession()
     context = AgentContext(
         organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
@@ -132,6 +165,7 @@ async def test_list_meetings_interprets_naive_bounds_in_user_timezone() -> None:
 
 @pytest.mark.asyncio
 async def test_list_meetings_uses_past_temporal_metadata() -> None:
+    """Past intent metadata must reverse the default future calendar window."""
     # Past wording from the latest user turn must not silently default to the
     # upcoming-meeting query shape when the model omits explicit bounds.
     session = _CaptureSession()
@@ -157,6 +191,7 @@ async def test_list_meetings_uses_past_temporal_metadata() -> None:
 
 @pytest.mark.asyncio
 async def test_list_meetings_past_direction_caps_explicit_start_at_anchor() -> None:
+    """An explicit past start must remain bounded above by the current anchor."""
     session = _CaptureSession()
     context = AgentContext(
         organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
@@ -180,6 +215,7 @@ async def test_list_meetings_past_direction_caps_explicit_start_at_anchor() -> N
 
 @pytest.mark.asyncio
 async def test_list_meetings_explicit_bounds_override_temporal_metadata() -> None:
+    """Explicit date bounds must win over coarse temporal intent metadata."""
     session = _CaptureSession()
     context = AgentContext(
         organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
@@ -202,3 +238,106 @@ async def test_list_meetings_explicit_bounds_override_temporal_metadata() -> Non
     assert "calendar_events.start_at < '2026-05-14 11:00:00+00:00'" in sql
     assert "calendar_events.end_at > '2026-05-14 10:00:00+00:00'" in sql
     assert "ORDER BY calendar_events.start_at ASC" in sql
+
+
+@pytest.mark.asyncio
+async def test_list_meetings_uses_trigram_only_after_direct_search_is_empty() -> None:
+    """Speech-friendly fuzzy matching must remain a fallback to authoritative text matches."""
+    session = _CaptureSession(
+        responses=[[], [_meeting_row("CQA || Solution Discussion", score=0.81)]]
+    )
+    context = AgentContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={"current_datetime": "2026-07-16T00:00:00+00:00"},
+    )
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))  # type: ignore[method-assign]
+
+    result = await list_meetings(
+        context=context,
+        start_datetime="2026-07-16T00:00:00+00:00",
+        end_datetime="2026-07-17T00:00:00+00:00",
+        query="CQA solution discussion",
+    )
+
+    assert len(session.statements) == 2
+    direct_sql = str(session.statements[0])
+    fuzzy_sql = str(session.statements[1])
+    assert "calendar_events.start_at" in direct_sql
+    assert "calendar_event_attendees" in direct_sql
+    assert "similarity" not in direct_sql
+    assert "similarity" in fuzzy_sql
+    assert result[0]["deal"] is None
+    assert result[0]["match"] == {
+        "field": "title",
+        "value": "CQA || Solution Discussion",
+        "type": "fuzzy",
+        "score": 0.81,
+    }
+
+
+@pytest.mark.asyncio
+async def test_list_meetings_does_not_add_fuzzy_candidates_after_direct_match() -> None:
+    """A directly named meeting must stop lookup before broader fuzzy candidates run."""
+    session = _CaptureSession(responses=[[_meeting_row("CQA solution discussion")]])
+    context = AgentContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={"current_datetime": "2026-07-16T00:00:00+00:00"},
+    )
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))  # type: ignore[method-assign]
+
+    result = await list_meetings(context=context, query="CQA solution discussion")
+
+    assert len(session.statements) == 1
+    assert result[0]["match"]["type"] == "exact"
+
+
+@pytest.mark.asyncio
+async def test_list_meetings_escapes_like_wildcards() -> None:
+    """Percent and underscore in a spoken identity must remain literal text."""
+    session = _CaptureSession()
+    context = AgentContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={"current_datetime": "2026-07-16T00:00:00+00:00"},
+    )
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))  # type: ignore[method-assign]
+
+    await list_meetings(context=context, query="CQA_%")
+
+    assert _escape_like("CQA_%\\") == "CQA\\_\\%\\\\"
+    compiled = session.statements[0].compile(compile_kwargs={"literal_binds": True})
+    assert " ESCAPE " in str(compiled)
+
+
+@pytest.mark.asyncio
+async def test_list_meetings_rejects_oversized_query_before_database() -> None:
+    """An oversized identity query must not reach PostgreSQL or trigram matching."""
+    context = AgentContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={"current_datetime": "2026-07-16T00:00:00+00:00"},
+    )
+    context.acquire_session = MagicMock()  # type: ignore[method-assign]
+
+    result = await list_meetings(context=context, query="x" * 201)
+
+    assert result == []
+    context.acquire_session.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_list_meetings_rejects_explicit_blank_query() -> None:
+    """A blank identity filter must not silently broaden into all calendar events."""
+    context = AgentContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={"current_datetime": "2026-07-16T00:00:00+00:00"},
+    )
+    context.acquire_session = MagicMock()  # type: ignore[method-assign]
+
+    result = await list_meetings(context=context, query="   ")
+
+    assert result == []
+    context.acquire_session.assert_not_called()

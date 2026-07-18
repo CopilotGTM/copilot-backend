@@ -34,7 +34,7 @@ After the target event is known, gather this baseline in parallel:
 
 Then deepen only where it changes the brief:
 1. Compare current attendees with historical attendees. Match by email first; use another identity only when unambiguous. Give new attendees more detail and summarize returning attendees by their known focus.
-2. Prefer cached `stakeholder_research`. Use `research_linkedin_profile` only for a new or important attendee whose background is missing and whose identity is sufficiently clear.
+2. Prefer cached `stakeholder_research`. For a new or important external attendee whose background is missing, use `research_linkedin_profile` with the exact calendar email, never a display name. Do not enrich attendees whose internal classification is true or unknown.
 3. Read the most recent relevant past meeting summaries with `get_meeting_summary`. Use `get_meeting_transcript` only when a summary is unavailable or a material factual gap remains.
 4. Ignore routine calendar invitations. Use `get_email_details` only for substantive threads, commitments, objections, referrals, or updates.
 5. Understand the prospect account from CRM/deal details and deal memory first. Resolve its official website in this order:

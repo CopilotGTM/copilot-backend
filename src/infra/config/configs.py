@@ -1757,6 +1757,15 @@ class RateLimitConfig:
     READ_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_READ_PER_MINUTE", "120"))
     READ_PER_HOUR: int = int(os.getenv("RATE_LIMIT_READ_PER_HOUR", "2000"))
 
+    # Contact research reaches a paid external provider, so it needs a much
+    # smaller budget than ordinary read-only API traffic.
+    CONTACT_RESEARCH_PER_MINUTE: int = int(
+        os.getenv("RATE_LIMIT_CONTACT_RESEARCH_PER_MINUTE", "10")
+    )
+    CONTACT_RESEARCH_PER_HOUR: int = int(
+        os.getenv("RATE_LIMIT_CONTACT_RESEARCH_PER_HOUR", "100")
+    )
+
     # Public lead forms need more headroom because anonymous website traffic is
     # scoped per form and client IP, not per authenticated user.
     PUBLIC_FORM_READ_PER_MINUTE: int = int(

@@ -40,6 +40,12 @@ logger = get_logger("contact_read_service")
 _CURSOR_RANK_KEY = "rank"
 _CURSOR_NAME_KEY = "name"
 _CURSOR_ID_KEY = "contact_id"
+MAX_AGENT_CONTACT_QUERY_CHARS = 200
+
+
+def _escape_like(value: str) -> str:
+    """Escape PostgreSQL LIKE metacharacters in agent-supplied identity text."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _encode_contact_search_cursor(rank: int, name_key: str | None, contact_id: UUID) -> str:
@@ -307,6 +313,14 @@ class ContactReadService:
         )
         if not query and not company_query:
             return []
+        if any(
+            value is not None and len(value) > MAX_AGENT_CONTACT_QUERY_CHARS
+            for value in (query, company_query)
+        ):
+            return []
+
+        escaped_query = _escape_like(query) if query else None
+        escaped_company_query = _escape_like(company_query) if company_query else None
 
         effective_limit = max(1, min(limit, 50))
         c = cast(Any, CRMContact).__table__.c
@@ -324,7 +338,8 @@ class ContactReadService:
         exact_email = func.lower(func.coalesce(c.email, "")) == (query or "")
         exact_name = func.lower(func.coalesce(c.full_name, "")) == (query or "")
         exact_additional_email = func.lower(func.coalesce(additional_emails_text, "")).like(
-            f'%"{query}"%' if query else "__never_match__"
+            f'%"{escaped_query}"%' if escaped_query else "__never_match__",
+            escape="\\",
         )
         exact_company = func.lower(func.coalesce(c.company_name, "")) == (company_query or query)
         total_score = (
@@ -372,10 +387,10 @@ class ContactReadService:
         if query:
             filters.append(
                 or_(
-                    c.full_name.ilike(f"%{query}%"),
-                    c.email.ilike(f"%{query}%"),
-                    additional_emails_text.ilike(f"%{query}%"),
-                    c.company_name.ilike(f"%{query}%"),
+                    c.full_name.ilike(f"%{escaped_query}%", escape="\\"),
+                    c.email.ilike(f"%{escaped_query}%", escape="\\"),
+                    additional_emails_text.ilike(f"%{escaped_query}%", escape="\\"),
+                    c.company_name.ilike(f"%{escaped_query}%", escape="\\"),
                     c.full_name.op("%")(query),
                     c.email.op("%")(query),
                     additional_emails_text.op("%")(query),
@@ -385,7 +400,7 @@ class ContactReadService:
         if company_query:
             filters.append(
                 or_(
-                    c.company_name.ilike(f"%{company_query}%"),
+                    c.company_name.ilike(f"%{escaped_company_query}%", escape="\\"),
                     c.company_name.op("%")(company_query),
                 )
             )

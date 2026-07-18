@@ -942,7 +942,7 @@ class ToolRegistry:
             self.capabilities_getter
         )
         self._tool_factories[ToolName.RESEARCH_LINKEDIN_PROFILE] = (
-            lambda: create_research_linkedin_profile(self.capabilities_getter)
+            lambda: create_research_linkedin_profile(self.context, self.capabilities_getter)
         )
         # Task tools
         self._tool_factories[ToolName.CREATE_TASK] = lambda: create_create_task(

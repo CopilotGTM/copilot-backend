@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from src.agents.tools.transparent_tools import AgentCapabilities
 
 logger = logging.getLogger(__name__)
+MAX_CONTACT_QUERY_CHARS = 200
 
 
 async def search_contacts(
@@ -71,6 +72,12 @@ async def search_contacts(
     if not query and not company_name:
         logger.warning("search_contacts: at least query or company_name required")
         return []
+    if any(
+        value is not None and (not value.strip() or len(value.strip()) > MAX_CONTACT_QUERY_CHARS)
+        for value in (query, company_name)
+    ):
+        logger.warning("search_contacts: identifying query must be 1-%d characters", MAX_CONTACT_QUERY_CHARS)
+        return []
 
     effective_limit = max(1, min(limit, 50))
 
@@ -101,7 +108,8 @@ async def search_contacts(
             logger.info("search_contacts: no contacts found for query=%s", query)
             return []
 
-        # Get deal associations for these contacts
+        # Deal rows are separately access-filtered; finding an org contact does
+        # not grant visibility into every deal that references that person.
         contact_ids = [c.contact_id for c in contacts]
         email_to_contact_id = {
             c.email.strip().lower(): c.contact_id for c in contacts if c.email and c.email.strip()
@@ -238,6 +246,17 @@ def create_search_contacts(
 
         if not query and not company_name:
             logger.warning("search_contacts: at least query or company_name required")
+            return []
+
+        if any(
+            value is not None
+            and (not value.strip() or len(value.strip()) > MAX_CONTACT_QUERY_CHARS)
+            for value in (query, company_name)
+        ):
+            logger.warning(
+                "search_contacts: identifying query must be 1-%d characters",
+                MAX_CONTACT_QUERY_CHARS,
+            )
             return []
 
         result = await execute_with_capabilities(

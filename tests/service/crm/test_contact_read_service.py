@@ -1,3 +1,5 @@
+"""Regression tests for tenant-scoped CRM contact read contracts."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -15,12 +17,15 @@ class _FakeScalarResult:
         self._rows = rows
 
     def scalars(self):
+        """Mirror SQLAlchemy scalar chaining for contact list reads."""
         return self
 
     def all(self):
+        """Return all configured ORM rows."""
         return self._rows
 
     def first(self):
+        """Return the first configured ORM row when present."""
         return self._rows[0] if self._rows else None
 
 
@@ -29,6 +34,7 @@ class _FakeAgentSearchResult:
         self._rows = rows
 
     def all(self):
+        """Return agent-search rows with match metadata."""
         return self._rows
 
 
@@ -60,12 +66,14 @@ class _FakeSession:
         self.statements: list[object] = []
 
     async def execute(self, statement: object):
+        """Capture each statement and return its queued scalar rows."""
         self.statements.append(statement)
         return _FakeScalarResult(self._results.pop(0))
 
 
 class _FakeAgentSearchSession(_FakeSession):
     async def execute(self, statement: object):
+        """Capture agent search SQL and return match-metadata rows."""
         self.statements.append(statement)
         return _FakeAgentSearchResult(self._results.pop(0))
 
@@ -184,6 +192,7 @@ async def test_contact_research_status_stops_polling_after_provider_miss() -> No
 
 @pytest.mark.asyncio
 async def test_search_contacts_returns_lightweight_cursor_page_and_searches_extra_emails() -> None:
+    """Picker search includes alternate emails without expanding its row contract."""
     org_id = uuid4()
     company_id = uuid4()
     first = CRMContact(
@@ -236,6 +245,7 @@ async def test_search_contacts_returns_lightweight_cursor_page_and_searches_extr
 
 @pytest.mark.asyncio
 async def test_search_contacts_for_create_does_not_search_company_name() -> None:
+    """Duplicate checks must not treat a shared company as a person identity."""
     org_id = uuid4()
     session = _FakeSession([[], []])
 
@@ -249,6 +259,7 @@ async def test_search_contacts_for_create_does_not_search_company_name() -> None
 
 
 def test_create_contact_match_type_does_not_match_company_name() -> None:
+    """Create-flow matching excludes company-only matches from person identity."""
     contact = CRMContact(
         organisation_id=uuid4(),
         integration_id=uuid4(),
@@ -264,6 +275,7 @@ def test_create_contact_match_type_does_not_match_company_name() -> None:
 
 @pytest.mark.asyncio
 async def test_search_contacts_for_agent_uses_identity_fields_and_match_metadata() -> None:
+    """Agent search ranks supported identity fields and explains the winning match."""
     org_id = uuid4()
     contact = CRMContact(
         organisation_id=org_id,
@@ -307,3 +319,34 @@ async def test_search_contacts_for_agent_uses_identity_fields_and_match_metadata
     assert "crm_contacts.is_deleted" in statement_sql
     assert "job_title ilike" not in statement_sql
     assert "job_title %" not in statement_sql
+
+
+@pytest.mark.asyncio
+async def test_agent_contact_search_treats_like_metacharacters_literally() -> None:
+    """Agent identity text must not broaden contact lookup through SQL wildcards."""
+    org_id = uuid4()
+    session = _FakeAgentSearchSession([[]])
+
+    rows = await ContactReadService(  # type: ignore[arg-type]
+        session,
+        org_id,
+    ).search_contacts_for_agent(q="buyer_%", limit=5)
+
+    assert rows == []
+    sql = str(session.statements[0].compile(compile_kwargs={"literal_binds": True}))
+    assert " ESCAPE " in sql
+
+
+@pytest.mark.asyncio
+async def test_agent_contact_search_rejects_oversized_identity() -> None:
+    """Oversized identity input must be rejected before PostgreSQL work."""
+    org_id = uuid4()
+    session = _FakeAgentSearchSession([])
+
+    rows = await ContactReadService(  # type: ignore[arg-type]
+        session,
+        org_id,
+    ).search_contacts_for_agent(q="x" * 201, limit=5)
+
+    assert rows == []
+    assert session.statements == []
