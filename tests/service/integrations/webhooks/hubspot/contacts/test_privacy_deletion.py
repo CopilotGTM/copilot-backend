@@ -75,18 +75,13 @@ def test_scrub_records_for_contact_privacy_deletion_removes_contact_pii() -> Non
         integration_id=integration_id,
         activity_id=task.task_id,
         subject="Call Ada",
-        body="Ask about budget",
         title="Call Ada",
         summary="Ask Ada about budget",
         preview="Ask Ada",
         actor_name="Ada Lovelace",
         actor_email="ada@example.com",
         related_name="Ada Lovelace",
-        owner_email="owner@example.com",
-        external_assignee_email="ada@example.com",
-        attendees=[{"email": "ada@example.com", "name": "Ada"}],
-        properties={"hs_body_preview": "Ask Ada"},
-        metrics={"count": 1},
+        display_payload={"participants_preview": [{"email": "ada@example.com", "name": "Ada"}]},
     )
     participant = CRMDealParticipant(
         organisation_id=organisation_id,
@@ -150,16 +145,16 @@ def test_scrub_records_for_contact_privacy_deletion_removes_contact_pii() -> Non
     assert activity_projection.is_deleted is True
     assert not hasattr(activity_projection, "contact_external_id")
     assert activity_projection.subject is None
-    assert activity_projection.body is None
     assert activity_projection.title is None
     assert activity_projection.summary is None
     assert activity_projection.preview is None
     assert activity_projection.actor_name is None
     assert activity_projection.actor_email is None
-    assert activity_projection.attendees == []
     assert activity_projection.display_payload == {"privacy_deleted": True}
-    assert activity_projection.properties == {"privacy_deleted": True}
-    assert activity_projection.metrics == {"privacy_deleted": True}
+    assert not hasattr(activity_projection, "body")
+    assert not hasattr(activity_projection, "attendees")
+    assert not hasattr(activity_projection, "properties")
+    assert not hasattr(activity_projection, "metrics")
     assert not hasattr(activity_projection, "data_payload")
 
     assert participant.is_deleted is True

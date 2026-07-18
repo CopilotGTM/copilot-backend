@@ -184,26 +184,21 @@ def validate_crm_activity_display_payload(
 
 
 class CRMActivity(FlexibleSyncedRecordMixin, table=True):
-    """Canonical activity record across CRMs.
+    """Compact activity-feed projection across CRM and communication sources.
 
-    Supports activities from CRM providers (tasks, calls, meetings, emails, notes)
-    and can be linked to any CRM object type via polymorphic relationships.
+    Full task and note content lives in ``crm_tasks`` and ``crm_notes``. This
+    table keeps only fields needed to render and navigate timeline cards, with
+    object membership stored in ``crm_activity_links``.
 
     Key features:
-    - Generic activity types covering all major CRM activity concepts
-    - Polymorphic relationships via `related_object_type` + `related_local_id`
-    - Backwards-compatible `deal_id` for deal-specific queries
-    - Attendee/participant storage in `attendees` JSONB
-    - Rich metadata in `properties` and `metrics`
+    - Generic activity types covering CRM and communication events
+    - Small display snapshots for list views
+    - Source pointers for drill-down hydration
+    - Polymorphic object links for deal, account, and contact feeds
 
     Migration note: This replaces the former `crm_deal_tasks` table, with the
-    table renamed to `crm_activities` and new polymorphic columns added.
-
-    Legacy-retirement note: task/note/detail and direct object-link columns are
-    kept only for existing readers/writers during migration. New code should
-    write full task/note data to `crm_tasks`/`crm_notes` and object visibility
-    to `crm_activity_links`. Remove the legacy columns after backfill, dual-read
-    validation, and one safe release cycle prove no production code depends on them.
+    table renamed to `crm_activities` and the legacy detail columns retired by
+    organisation migration 066.
     """
 
     __tablename__: ClassVar[str] = "crm_activities"
@@ -213,15 +208,8 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
             "activity_id",
             name="uq_crm_activity_org_activity",
         ),
-        # Legacy deal-focused indexes (renamed from deal_tasks)
         Index("ix_crm_activity_deal", "deal_id"),
-        Index("ix_crm_activity_org_status", "organisation_id", "status"),
         Index("ix_crm_activity_org_type", "organisation_id", "activity_type"),
-        Index("ix_crm_activity_org_priority", "organisation_id", "priority"),
-        Index("ix_crm_activity_due_date", "due_date"),
-        Index("ix_crm_activity_org_due", "organisation_id", "due_date"),
-        Index("ix_crm_activity_status_due", "status", "due_date"),
-        Index("ix_crm_activity_synced", "organisation_id", "synced_at"),
         Index("ix_crm_activity_org_occurred", "organisation_id", "occurred_at"),
         # New polymorphic relationship indexes
         Index(
@@ -234,36 +222,6 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
         # Contact/company specific lookups
         Index("ix_crm_activity_contact", "contact_id"),
         Index("ix_crm_activity_company", "company_id"),
-        # Source and creator tracking
-        Index("ix_crm_activity_source", "organisation_id", "source"),
-        Index("ix_crm_activity_created_by", "organisation_id", "created_by_user_id"),
-        Index(
-            "ix_crm_activity_task_owner_due",
-            "organisation_id",
-            "owner_id",
-            "due_date",
-            postgresql_where=text(
-                "is_deleted IS NOT TRUE AND activity_type IN ('TASK', 'TODO') "
-                "AND external_assignee_email IS NULL AND external_assignee_name IS NULL"
-            ),
-        ),
-        Index(
-            "ix_crm_activity_task_created_by_due",
-            "organisation_id",
-            "created_by_user_id",
-            "due_date",
-            postgresql_where=text("is_deleted IS NOT TRUE AND activity_type IN ('TASK', 'TODO')"),
-        ),
-        Index(
-            "ix_crm_activity_task_external_email_due",
-            "organisation_id",
-            "external_assignee_email",
-            "due_date",
-            postgresql_where=text(
-                "is_deleted IS NOT TRUE AND activity_type IN ('TASK', 'TODO') "
-                "AND external_assignee_email IS NOT NULL"
-            ),
-        ),
     )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -395,201 +353,10 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
             "source-table joins. Known shapes are validated with Pydantic before writing."
         ),
     )
-    body: str | None = Field(
-        default=None,
-        description="Activity description, notes, or content body.",
-    )
-    status: str | None = Field(
-        default=None,
-        sa_column=Column(String(32), nullable=True),
-        description="Activity status (NOT_STARTED, IN_PROGRESS, COMPLETED, etc.).",
-    )
     activity_type: str | None = Field(
         default=None,
         sa_column=Column(String(32), nullable=True),
         description="Activity type (TASK, CALL, MEETING, EMAIL, NOTE, etc.).",
-    )
-    priority: str | None = Field(
-        default=None,
-        sa_column=Column(String(32), nullable=True),
-        description="Activity priority (LOW, MEDIUM, HIGH, URGENT, NONE).",
-    )
-
-    # Provider-specific activity subtype (e.g., Pipedrive activity type name)
-    activity_subtype: str | None = Field(
-        default=None,
-        sa_column=Column(String(100), nullable=True),
-        description="Provider-specific activity subtype or category.",
-    )
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Assignment / Ownership
-    # ─────────────────────────────────────────────────────────────────────────
-    owner_name: str | None = Field(
-        default=None,
-        sa_column=Column(String(255)),
-        description="Display name of the activity owner.",
-    )
-    owner_email: str | None = Field(
-        default=None,
-        sa_column=Column(String(255)),
-        description="Email address of the activity owner.",
-    )
-    owner_id: UUID | None = Field(
-        default=None,
-        foreign_key="crm_users.user_id",
-        description="Resolved internal user ID for the activity owner (FK to crm_users).",
-    )
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # External assignment (non-app users)
-    # ─────────────────────────────────────────────────────────────────────────
-    external_assignee_email: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Email of an external (non-app) person this task is assigned to.",
-    )
-    external_assignee_name: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Display name of the external assignee.",
-    )
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Source tracking
-    # ─────────────────────────────────────────────────────────────────────────
-    source: str | None = Field(
-        default=None,
-        sa_column=Column(
-            String(50),
-            nullable=True,
-            comment="Origin of the task: MANUAL, CRM_SYNC, AI_MEETING, AI_INSIGHT",
-        ),
-        description="How this task was created.",
-    )
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Creator tracking (distinct from owner/assignee)
-    # ─────────────────────────────────────────────────────────────────────────
-    created_by_user_id: UUID | None = Field(
-        default=None,
-        description="The public.users ID of who created this task. Immutable after creation.",
-    )
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Timing / Scheduling
-    # ─────────────────────────────────────────────────────────────────────────
-    due_date: datetime | None = Field(
-        default=None,
-        sa_column=Column(DateTime(timezone=True), nullable=True),
-        description="Activity due date/time (for tasks) or start time (for events).",
-    )
-    end_date: datetime | None = Field(
-        default=None,
-        sa_column=Column(DateTime(timezone=True), nullable=True),
-        description="Activity end time (for meetings/events with duration).",
-    )
-    completed_date: datetime | None = Field(
-        default=None,
-        sa_column=Column(DateTime(timezone=True), nullable=True),
-        description="Date/time when the activity was completed.",
-    )
-    reminder_date: datetime | None = Field(
-        default=None,
-        sa_column=Column(DateTime(timezone=True), nullable=True),
-        description="Reminder date/time for the activity.",
-    )
-
-    # Duration (for calls, meetings)
-    duration_minutes: int | None = Field(
-        default=None,
-        description="Duration of the activity in minutes (calls, meetings).",
-    )
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Attendees / Participants (meetings, calls)
-    # ─────────────────────────────────────────────────────────────────────────
-    attendees: list[dict[str, Any]] = Field(
-        default_factory=list,
-        sa_column=Column(
-            JSONB,
-            nullable=False,
-            server_default=text("'[]'::jsonb"),
-        ),
-        description="List of attendees/participants [{email, name, response_status}].",
-    )
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Communication-specific fields (emails, calls)
-    # ─────────────────────────────────────────────────────────────────────────
-    direction: str | None = Field(
-        default=None,
-        sa_column=Column(String(32), nullable=True),
-        description="Direction of communication: INBOUND, OUTBOUND, or null.",
-    )
-    call_outcome: str | None = Field(
-        default=None,
-        sa_column=Column(String(100), nullable=True),
-        description="Outcome of a call (e.g., CONNECTED, LEFT_VOICEMAIL, NO_ANSWER).",
-    )
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Provider metadata
-    # ─────────────────────────────────────────────────────────────────────────
-    source_created_at: datetime | None = Field(
-        default=None,
-        sa_column=Column(DateTime(timezone=True), nullable=True),
-        description="Original creation timestamp recorded in the provider.",
-    )
-    source_modified_at: datetime | None = Field(
-        default=None,
-        sa_column=Column(DateTime(timezone=True), nullable=True),
-        description="Last modified timestamp reported by the provider.",
-    )
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Sync metadata
-    # ─────────────────────────────────────────────────────────────────────────
-    synced_at: datetime = Field(
-        default_factory=utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="Timestamp when this activity row was last synced.",
-    )
-    last_seen_at: datetime | None = Field(
-        default_factory=utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=True),
-        description="Most recent time this activity was observed during sync.",
-    )
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Flags
-    # ─────────────────────────────────────────────────────────────────────────
-    is_all_day: bool = Field(
-        default=False,
-        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
-        description="Whether this is an all-day event (meetings/events).",
-    )
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Payloads
-    # ─────────────────────────────────────────────────────────────────────────
-    properties: dict[str, Any] = Field(
-        default_factory=dict,
-        sa_column=Column(
-            JSONB,
-            nullable=False,
-            server_default=text(EMPTY_JSONB_SQL),
-        ),
-        description="Flattened provider-specific activity properties.",
-    )
-    metrics: dict[str, Any] = Field(
-        default_factory=dict,
-        sa_column=Column(
-            JSONB,
-            nullable=False,
-            server_default=text(EMPTY_JSONB_SQL),
-        ),
-        description="Derived metrics for analytics (e.g., response time, overdue status).",
     )
 
     # ─────────────────────────────────────────────────────────────────────────

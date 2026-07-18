@@ -103,6 +103,56 @@ def test_ai_native_activity_feed_fields_are_separate_from_full_task_and_note_sto
     assert {"body", "body_format", "author_user_id", "visibility"}.issubset(note_columns)
 
 
+def test_activity_feed_orm_does_not_map_columns_retired_by_migration_066() -> None:
+    """Prevent ORM reads from selecting activity columns that no longer exist."""
+    # Migration 066 removed task/note detail from the feed projection. Mapping any
+    # retired name makes every select(CRMActivity) fail before rows can be returned.
+    retired_columns = {
+        "body",
+        "status",
+        "priority",
+        "activity_subtype",
+        "owner_name",
+        "owner_email",
+        "owner_id",
+        "external_assignee_email",
+        "external_assignee_name",
+        "source",
+        "created_by_user_id",
+        "due_date",
+        "end_date",
+        "completed_date",
+        "reminder_date",
+        "duration_minutes",
+        "attendees",
+        "direction",
+        "call_outcome",
+        "source_created_at",
+        "source_modified_at",
+        "synced_at",
+        "last_seen_at",
+        "is_all_day",
+        "properties",
+        "metrics",
+    }
+    retired_indexes = {
+        "ix_crm_activity_org_status",
+        "ix_crm_activity_org_priority",
+        "ix_crm_activity_due_date",
+        "ix_crm_activity_org_due",
+        "ix_crm_activity_status_due",
+        "ix_crm_activity_synced",
+        "ix_crm_activity_source",
+        "ix_crm_activity_created_by",
+        "ix_crm_activity_task_owner_due",
+        "ix_crm_activity_task_created_by_due",
+        "ix_crm_activity_task_external_email_due",
+    }
+
+    assert retired_columns.isdisjoint(CRMActivity.__table__.columns.keys())
+    assert retired_indexes.isdisjoint(_index_names(CRMActivity))
+
+
 def test_task_state_fields_have_database_guards() -> None:
     assert {"ck_crm_task_status", "ck_crm_task_priority"}.issubset(_check_constraint_names(CRMTask))
     assert CRMTask.__table__.c.status.nullable is False
