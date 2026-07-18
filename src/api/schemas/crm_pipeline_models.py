@@ -19,6 +19,7 @@ class PipelineStageItem(BaseModel):
     probability: float | None = None
     is_closed: bool
     display_order: int | None = None
+    updated_at: datetime
     deal_count: int | None = None
     last_changed: CRMSettingsLastChanged | None = None
 

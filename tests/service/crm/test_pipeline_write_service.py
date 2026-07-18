@@ -235,12 +235,14 @@ def test_pipeline_stage_response_includes_last_changed_metadata() -> None:
         probability=25,
         is_closed=False,
         display_order=1,
+        updated_at=datetime(2026, 7, 5, 9, 0, tzinfo=UTC),
     )
 
     item = _build_stage_item(stage, last_changed_event=event)
 
     assert item.last_changed is not None
     assert item.last_changed.event_type == "crm.settings.stage.updated"
+    assert item.updated_at == stage.updated_at
 
 
 @pytest.mark.asyncio
