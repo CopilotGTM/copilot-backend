@@ -168,12 +168,12 @@ class TestSearchDeals:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_limit_clamped_to_max_20(self, mock_context: MagicMock) -> None:
-        """Limits above 20 should be clamped."""
+    async def test_limit_clamped_to_max_10(self, mock_context: MagicMock) -> None:
+        """Agent deal search must return at most ten candidates."""
         result = await search_deals(context=mock_context, query="test", limit=999)
 
         assert result == []
-        assert _FakeSearchService.calls[0]["limit"] == 20
+        assert _FakeSearchService.calls[0]["limit"] == 10
 
     @pytest.mark.asyncio
     async def test_limit_clamped_to_min_1(self, mock_context: MagicMock) -> None:

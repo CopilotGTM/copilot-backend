@@ -1,11 +1,12 @@
-"""Search Deals Tool - Quick lookup by name or company name.
+"""Search open deals by deal, company, or primary-contact identity.
 
 This tool provides fast deal search functionality for agents. It returns compact
 deal rows with identity, value, stage, pipeline, and company context.
 
 USE CASE:
 When a user mentions a deal by name (e.g., "Tell me about the Acme deal"),
-use this tool first to find the deal_id, then use get_deal_details for full info.
+use this tool first with only the identifying text (e.g., "Acme") to find the
+deal_id, then use get_deal_details for full info.
 
 RETURNS:
 - deal_id: UUID of the deal
@@ -44,7 +45,7 @@ async def search_deals(
     query: str,
     limit: int = 10,
 ) -> list[dict[str, Any]]:
-    """Quick search for deals by name or company name.
+    """Search open deals by identifying text.
 
     Returns compact data for fast lookup and disambiguation.
     Use this to find deal IDs, then use get_deal_details for full info.
@@ -54,8 +55,9 @@ async def search_deals(
 
     Args:
         context: AgentContext containing organisation metadata
-        query: Search term - fuzzy matches deal name or company name
-        limit: Maximum results (default: 10, max: 20)
+        query: Identifying deal, company, or primary-contact text only. Do not
+            pass the full user request or instruction words.
+        limit: Maximum results; defaults to and is capped at 10.
 
     Returns:
         List of deal dictionaries with identity, value, stage, pipeline, and company context.
@@ -70,7 +72,7 @@ async def search_deals(
         logger.warning("search_deals: empty query provided")
         return []
 
-    effective_limit = max(1, min(limit, 20))
+    effective_limit = max(1, min(limit, 10))
 
     async with context.acquire_session() as session:
         try:
@@ -131,15 +133,16 @@ def create_search_deals(
         query: str,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        """Quick search for deals by name or company name.
+        """Search open deals by identifying text.
 
         Use this tool first when the user mentions a deal by name.
         Returns deal identity, value, stage, pipeline, and company context for matching deals.
         Then use get_deal_details to get full information.
 
         Args:
-            query: Search term - matches deal name or company name
-            limit: Maximum results (default: 10, max: 20)
+            query: Identifying deal, company, or primary-contact text only.
+                Extract this from the user's request; do not pass the full request.
+            limit: Maximum results; defaults to and is capped at 10.
 
         Example: User says "Tell me about the Acme deal"
         → Call search_deals(query="Acme") to find the deal_id

@@ -9,7 +9,6 @@ from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDea
 from src.service.crm.deals.read_service import (
     DealReadService,
     _decode_deal_search_cursor,
-    _normalize_agent_deal_search_query,
 )
 
 
@@ -359,18 +358,46 @@ async def test_list_deal_owners_ignores_blank_search_query() -> None:
     assert "owner_email" not in where_sql
 
 
-def test_normalize_agent_deal_search_defaults_to_open_and_removes_filler() -> None:
-    query, statuses = _normalize_agent_deal_search_query("please find the Acme renewal deal")
+@pytest.mark.asyncio
+async def test_search_deals_for_agent_preserves_identifying_words() -> None:
+    """Tool-provided deal text must reach ILIKE without semantic word removal."""
+    organisation_id = uuid4()
+    now = datetime.now(UTC)
+    deal = CRMDeal(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        deal_id=uuid4(),
+        name="The Open Deal",
+        deal_status=CRMDealStatus.OPEN,
+        created_at=now,
+        updated_at=now,
+    )
+    session = _FakeAgentSearchSession(
+        [
+            [
+                _FakeAgentSearchRow(
+                    deal,
+                    score=6.0,
+                    name_score=0.0,
+                    company_score=0.0,
+                    primary_contact_score=0.0,
+                    match_field="name",
+                    match_value=deal.name,
+                    match_type="exact",
+                )
+            ]
+        ]
+    )
 
-    assert query == "acme renewal"
-    assert statuses == [CRMDealStatus.OPEN.value]
+    rows = await DealReadService(  # type: ignore[arg-type]
+        session,
+        organisation_id,
+    ).search_deals_for_agent(q="  The Open Deal  ")
 
-
-def test_normalize_agent_deal_search_treats_status_as_filter_not_search() -> None:
-    query, statuses = _normalize_agent_deal_search_query("find won Acme deal")
-
-    assert query == "acme"
-    assert statuses == [CRMDealStatus.WON.value]
+    assert rows[0]["deal"] == deal
+    compiled = session.statements[0].compile()
+    assert "%the open deal%" in compiled.params.values()
+    assert CRMDealStatus.OPEN.value in compiled.params.values()
 
 
 @pytest.mark.asyncio
@@ -393,12 +420,13 @@ async def test_search_deals_for_agent_uses_status_filter_and_primary_contact() -
             [
                 _FakeAgentSearchRow(
                     deal,
-                    score=0.5,
+                    score=5.0,
                     name_score=0.2,
                     company_score=0.1,
                     primary_contact_score=0.7,
                     match_field="primary_contact_name",
                     match_value="Jane Buyer",
+                    match_type="exact",
                 )
             ]
         ]
@@ -407,13 +435,98 @@ async def test_search_deals_for_agent_uses_status_filter_and_primary_contact() -
     rows = await DealReadService(  # type: ignore[arg-type]
         session,
         organisation_id,
-    ).search_deals_for_agent(q="find jane buyer", limit=5)
+    ).search_deals_for_agent(q="jane buyer", limit=5)
 
     assert rows[0]["deal"] == deal
     assert rows[0]["match"]["field"] == "primary_contact_name"
     assert rows[0]["match"]["value"] == "Jane Buyer"
-    assert rows[0]["match"]["type"] == "fuzzy"
-    assert rows[0]["match"]["score"] == 0.5
+    assert rows[0]["match"]["type"] == "exact"
+    assert rows[0]["match"]["score"] == 5.0
     statement_sql = str(session.statements[0]).lower()
     assert "crm_deals.deal_status" in statement_sql
     assert "crm_deals.primary_contact_name" in statement_sql
+
+
+@pytest.mark.asyncio
+async def test_search_deals_for_agent_prefers_deterministic_partial_matches() -> None:
+    """A direct substring match must not be mixed with noisier fuzzy candidates."""
+    organisation_id = uuid4()
+    now = datetime.now(UTC)
+    deal = CRMDeal(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        deal_id=uuid4(),
+        name="SATHI MOTORS ELECTRIC VEHICLE PRIVATE LIMITED",
+        deal_status=CRMDealStatus.OPEN,
+        created_at=now,
+        updated_at=now,
+    )
+    session = _FakeAgentSearchSession(
+        [
+            [
+                _FakeAgentSearchRow(
+                    deal,
+                    score=3.0,
+                    name_score=0.0,
+                    company_score=0.0,
+                    primary_contact_score=0.0,
+                    match_field="name",
+                    match_value=deal.name,
+                )
+            ]
+        ]
+    )
+
+    rows = await DealReadService(  # type: ignore[arg-type]
+        session,
+        organisation_id,
+    ).search_deals_for_agent(q="Sathi Motors", limit=999)
+
+    assert rows[0]["deal"] == deal
+    assert len(session.statements) == 1
+    assert session.statements[0]._limit_clause.value == 10  # type: ignore[attr-defined]
+    statement_sql = str(session.statements[0]).lower()
+    assert "lower(crm_deals.name) like lower" in statement_sql
+    assert "similarity(" not in statement_sql
+
+
+@pytest.mark.asyncio
+async def test_search_deals_for_agent_falls_back_to_fuzzy_search() -> None:
+    """A typo gets one fuzzy attempt only after deterministic search returns nothing."""
+    organisation_id = uuid4()
+    now = datetime.now(UTC)
+    deal = CRMDeal(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        deal_id=uuid4(),
+        name="BRIGHT AUTOZONE P.V.T L.T.D (CITY CAB)",
+        deal_status=CRMDealStatus.OPEN,
+        created_at=now,
+        updated_at=now,
+    )
+    session = _FakeAgentSearchSession(
+        [
+            [],
+            [
+                _FakeAgentSearchRow(
+                    deal,
+                    score=0.5,
+                    name_score=0.5,
+                    company_score=0.0,
+                    primary_contact_score=0.0,
+                    match_field="name",
+                    match_value=deal.name,
+                )
+            ],
+        ]
+    )
+
+    rows = await DealReadService(  # type: ignore[arg-type]
+        session,
+        organisation_id,
+    ).search_deals_for_agent(q="Brght Autozone", limit=10)
+
+    assert rows[0]["deal"] == deal
+    assert len(session.statements) == 2
+    assert "similarity(" not in str(session.statements[0]).lower()
+    assert "similarity(" in str(session.statements[1]).lower()
