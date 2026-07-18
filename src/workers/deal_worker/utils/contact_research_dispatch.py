@@ -122,9 +122,10 @@ async def dispatch_contact_research_async(
                 continue
             # A newly added identity must get a follow-up lookup even if an older job is
             # still active. Reuse only jobs that already carry the same provider inputs.
-            identities_match = metadata.get("normalized_email") == (
-                email or None
-            ) and metadata.get("linkedin_url") == linkedin_url
+            identities_match = (
+                metadata.get("normalized_email") == (email or None)
+                and metadata.get("linkedin_url") == linkedin_url
+            )
             if identities_match and (not force_refresh or metadata.get("force_refresh")):
                 return str(job.job_id)
 

@@ -402,7 +402,9 @@ class TestMeetingSummaryService:
 
         dispatch = AsyncMock()
         monkeypatch.setattr(module, "acquire_org_async_session", fake_org_session)
-        monkeypatch.setattr(module, "get_or_create_deal_memory_job", AsyncMock(return_value=(uuid4(), True)))
+        monkeypatch.setattr(
+            module, "get_or_create_deal_memory_job", AsyncMock(return_value=(uuid4(), True))
+        )
         monkeypatch.setattr(module, "signature", fake_signature)
         monkeypatch.setattr(module, "dispatch_deal_insight_pipeline_async", dispatch)
 

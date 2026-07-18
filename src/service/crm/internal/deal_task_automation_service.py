@@ -230,9 +230,7 @@ class DealTaskAutomationService:
                 else None,
                 "idempotency_key": idempotency_key,
                 "assignee_resolution": assignee_resolution,
-                "assigned_to_public_user_id": str(public_user_id)
-                if public_user_id
-                else None,
+                "assigned_to_public_user_id": str(public_user_id) if public_user_id else None,
                 "due_timezone": assignee_timezone,
                 "due_local_date": local_due_date.isoformat(),
             },
@@ -328,7 +326,11 @@ class DealTaskAutomationService:
         allowed_emails: set[str],
     ) -> tuple[UUID | None, UUID | None, str | None, str | None, str, dict[str, Any]]:
         """Resolve ordered owner hints to the first active internal app user."""
-        candidates = [candidate.strip() for candidate in [value, *fallbacks] if candidate and candidate.strip()]
+        candidates = [
+            candidate.strip()
+            for candidate in [value, *fallbacks]
+            if candidate and candidate.strip()
+        ]
         if not candidates:
             return None, None, None, None, DEFAULT_TIMEZONE, {"status": "not_provided"}
 

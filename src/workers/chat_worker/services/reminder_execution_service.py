@@ -534,10 +534,7 @@ class ReminderExecutionService:
                         recurrence,
                         data["user_timezone"],
                     )
-                    if (
-                        data.get("recurrence_end_at")
-                        and next_trigger > data["recurrence_end_at"]
-                    ):
+                    if data.get("recurrence_end_at") and next_trigger > data["recurrence_end_at"]:
                         reminder.status = ReminderStatus.COMPLETED
                     else:
                         reminder.next_trigger_at = next_trigger
