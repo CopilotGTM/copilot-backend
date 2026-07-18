@@ -19,6 +19,9 @@ from src.service.crm.contacts.read_service import ContactReadService
 from src.service.crm.contacts.write_service import ContactWriteService
 from src.workers.deal_worker.client import send_deal_task_async
 from src.workers.deal_worker.services.deal_change_detector import StakeholderChangeType
+from src.workers.deal_worker.utils.contact_communication_hydration_dispatch import (
+    dispatch_contact_communication_hydration_async,
+)
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -241,6 +244,7 @@ async def create_contact_direct(
                 else None
             )
             status = "exists" if contact else "created"
+            stakeholder_sync_needed = False
 
             if not contact:
                 contact_result = await contact_writer.create_contact(
@@ -259,7 +263,6 @@ async def create_contact_direct(
                     ),
                 )
                 contact = contact_result.contact
-                await org_session.commit()
 
             result = _contact_result(contact, status=status)
 
@@ -270,23 +273,38 @@ async def create_contact_direct(
                     relationship_role=_clean_optional(relationship_role),
                     actor_user_id=context.user_id,
                 )
-                await org_session.commit()
                 link = {
                     "created": link_result.created,
                     "skipped": link_result.skipped,
                     "contact_participant_changed": link_result.contact_participant_changed,
                 }
                 if link["created"]:
-                    try:
-                        await _dispatch_stakeholder_sync(organisation_id, parsed_deal_id)
-                    except Exception:
-                        logger.exception("create_contact_direct: stakeholder sync dispatch failed")
+                    stakeholder_sync_needed = True
                     result["deal_link_status"] = "linked"
                 else:
                     result["deal_link_status"] = "already_linked"
                 result["deal_id"] = str(parsed_deal_id)
                 if _clean_optional(deal_name):
                     result["deal_name"] = _clean_optional(deal_name)
+
+            if status == "created" or parsed_deal_id:
+                # Contact creation and its optional deal link are one transaction. Workers
+                # receive IDs only after both writes are durable.
+                await org_session.commit()
+            if status == "created":
+                try:
+                    await dispatch_contact_communication_hydration_async(
+                        organisation_id=organisation_id,
+                        contact_ids=[contact.contact_id],
+                        trigger="agent_contact_create",
+                    )
+                except Exception:
+                    logger.exception("create_contact_direct: activity backfill dispatch failed")
+            if stakeholder_sync_needed and parsed_deal_id:
+                try:
+                    await _dispatch_stakeholder_sync(organisation_id, parsed_deal_id)
+                except Exception:
+                    logger.exception("create_contact_direct: stakeholder sync dispatch failed")
         except (ContactWriteServiceError, ContactDealLinkServiceError) as exc:
             await _rollback_if_available(org_session)
             return {"status": "error", "message": f"Could not create contact: {exc.message}"}

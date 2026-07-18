@@ -28,7 +28,7 @@ def test_email_integration_sync_uses_communication_deal_mapping_trigger_service(
     assert "CommunicationDealMappingTriggerService" in source
     assert "trigger_for_changed_communications" in source
     assert 'changed_record_ids=result.get("changed_email_ids", [])' in source
-    assert "dispatch_communication_contact_materialization_async" in source
+    assert "dispatch_contact_communication_hydration_async" in source
     assert 'changed_email_ids=result.get("changed_email_ids", [])' in source
 
 
@@ -38,5 +38,5 @@ def test_calendar_integration_sync_uses_communication_deal_mapping_trigger_servi
     assert "CommunicationDealMappingTriggerService" in source
     assert "trigger_for_changed_communications" in source
     assert 'changed_record_ids=sync_result.get("changed_event_ids", [])' in source
-    assert "dispatch_communication_contact_materialization_async" in source
+    assert "dispatch_contact_communication_hydration_async" in source
     assert 'changed_event_ids=sync_result.get("changed_event_ids", [])' in source

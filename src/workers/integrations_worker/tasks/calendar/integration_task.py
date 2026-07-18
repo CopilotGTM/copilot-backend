@@ -50,6 +50,9 @@ from src.service.integrations.sync_health import record_sync_failure
 from src.workers.deal_worker.services.deal_mapper_services.communication_deal_mapping_trigger_service import (
     CommunicationDealMappingTriggerService,
 )
+from src.workers.deal_worker.utils.contact_communication_hydration_dispatch import (
+    dispatch_contact_communication_hydration_async,
+)
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.config import TASK_LIMITS
 from src.workers.integrations_worker.providers.calendar.google_calendar import (
@@ -428,6 +431,17 @@ def sync_calendar_integration_task(
 
             communication_deal_mapping = None
             if records_synced > 0 or sync_result.get("changed_event_ids"):
+                # Both follow-ups read committed calendar rows in independent worker sessions.
+                # Enqueue hydration after the commit above, before deal mapping may replace a
+                # direct activity card with its association-backed version.
+                sync_result[
+                    "contact_communication_hydration_task_ids"
+                ] = await dispatch_contact_communication_hydration_async(
+                    organisation_id=org_id,
+                    integration_id=int_id,
+                    changed_event_ids=sync_result.get("changed_event_ids", []),
+                    trigger="calendar_sync",
+                )
                 communication_deal_mapping = (
                     await CommunicationDealMappingTriggerService(
                         org_id

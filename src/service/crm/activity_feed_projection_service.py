@@ -11,11 +11,12 @@ from datetime import UTC, datetime, time
 from typing import Any, cast
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from sqlalchemy import delete, func, update
+from sqlalchemy import delete, func, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 from src.domain.models.organisation_tables.sync.calendar import (
+    AssociationStatus,
     CalendarEvent,
     CalendarEventDealAssociation,
 )
@@ -110,6 +111,18 @@ def _participant_preview(
     if email:
         preview["email"] = email
     return preview
+
+
+def communication_source_activity_id(
+    organisation_id: UUID,
+    source_kind: str,
+    source_id: object,
+) -> UUID:
+    """Return the stable direct-card ID shared by hydration and association cleanup."""
+    return uuid5(
+        NAMESPACE_URL,
+        f"crm-communication:{organisation_id}:{source_kind}:{source_id}",
+    )
 
 
 class ActivityFeedProjectionService:
@@ -233,6 +246,16 @@ class ActivityFeedProjectionService:
         The association ID is the activity identity so each deal/email link has a
         replay-safe card without making `crm_activities` the email source table.
         """
+        await self._lock_communication("email", email.internet_message_id or email.email_id)
+        # Once deal matching creates an association-backed card, retire the earlier direct
+        # communication card so the same email is not shown twice in contact/company feeds.
+        await self.soft_delete_activity_projection(
+            communication_source_activity_id(
+                self.organisation_id,
+                "email",
+                email.internet_message_id or email.email_id,
+            )
+        )
         occurred_at = association.email_date or email.received_at or email.sent_at or _now_utc()
         matched_emails = {
             normalized
@@ -288,16 +311,100 @@ class ActivityFeedProjectionService:
             occurred_at=occurred_at,
         )
 
+    async def upsert_direct_email(
+        self,
+        email: Email,
+        *,
+        contact_ids: set[UUID],
+        company_ids: set[UUID],
+        replace_links: bool = True,
+    ) -> bool:
+        """Project an unassociated email directly into contact and company feeds.
+
+        The communication lock and association recheck close the race with deal
+        matching: an association card always wins, regardless of worker order.
+        """
+        source_id = email.internet_message_id or email.email_id
+        await self._lock_communication("email", source_id)
+        if email.internet_message_id:
+            association = await self.session.execute(
+                select(col(DealEmailAssociation.association_id)).where(
+                    col(DealEmailAssociation.organisation_id) == self.organisation_id,
+                    col(DealEmailAssociation.internet_message_id) == email.internet_message_id,
+                    col(DealEmailAssociation.status) == AssociationStatus.ACTIVE.value,
+                )
+            )
+            if association.scalar_one_or_none() is not None:
+                return False
+
+        occurred_at = email.received_at or email.sent_at or _now_utc()
+        metadata = email.email_metadata or {}
+        provider = metadata.get("provider") if isinstance(metadata.get("provider"), str) else None
+        activity_id = communication_source_activity_id(
+            self.organisation_id,
+            "email",
+            source_id,
+        )
+        await self._upsert_activity(
+            activity_id=activity_id,
+            integration_id=email.integration_id,
+            activity_type=CRMActivityType.EMAIL.value,
+            title=email.subject,
+            summary=email.snippet or email.body_text,
+            preview=_compact_preview(email.snippet or email.body_text or email.subject),
+            occurred_at=occurred_at,
+            source_type="EMAIL",
+            source_record_id=str(email.email_id),
+            source_provider=provider,
+            actor_name=email.from_name,
+            actor_email=email.from_email,
+            display_payload={
+                "direction": _enum_value(email.direction),
+                "participants_preview": self._email_participants_preview(email),
+                "participant_count": len(self._email_participant_emails(email)),
+                "has_attachments": bool(email.has_attachments),
+            },
+        )
+        await self._sync_object_links(
+            activity_id=activity_id,
+            object_type=CRMActivityObjectType.CONTACT.value,
+            object_ids=contact_ids,
+            link_role="RELATED",
+            occurred_at=occurred_at,
+            replace_existing=replace_links,
+        )
+        await self._sync_object_links(
+            activity_id=activity_id,
+            object_type=CRMActivityObjectType.COMPANY.value,
+            object_ids=company_ids,
+            link_role="RELATED",
+            occurred_at=occurred_at,
+            replace_existing=replace_links,
+        )
+        return True
+
     async def upsert_meeting_association(
         self,
         association: CalendarEventDealAssociation,
         event: CalendarEvent,
+        *,
+        integration_id: UUID | None = None,
     ) -> None:
         """Project one calendar-event deal association into one meeting activity card.
 
         Meeting association rows own the deal context. Calendar events remain the
         source for timing, organizer, and attendee display details.
         """
+        await self._lock_communication("calendar", event.event_id)
+        # The deal association becomes the canonical visible card. Soft-delete the stable
+        # direct card first so replaying either projection cannot leave duplicate meetings.
+        await self.soft_delete_activity_projection(
+            communication_source_activity_id(
+                self.organisation_id,
+                "calendar",
+                event.event_id,
+            )
+        )
         now = _now_utc()
         occurred_at = event.start_at if event.start_at and event.start_at <= now else None
         occurred_at = occurred_at or association.updated_at or association.created_at or now
@@ -314,7 +421,7 @@ class ActivityFeedProjectionService:
 
         await self._upsert_activity(
             activity_id=association.association_id,
-            integration_id=getattr(event, "integration_id", None),
+            integration_id=integration_id or getattr(event, "integration_id", None),
             activity_type=CRMActivityType.MEETING.value,
             title=event.title,
             summary=event.description,
@@ -351,6 +458,96 @@ class ActivityFeedProjectionService:
             link_role="RELATED",
             occurred_at=occurred_at,
         )
+
+    async def upsert_direct_meeting(
+        self,
+        event: CalendarEvent,
+        *,
+        integration_id: UUID | None,
+        contact_ids: set[UUID],
+        company_ids: set[UUID],
+        replace_links: bool = True,
+    ) -> bool:
+        """Project an unassociated meeting directly into contact and company feeds."""
+        await self._lock_communication("calendar", event.event_id)
+        association = await self.session.execute(
+            select(col(CalendarEventDealAssociation.association_id)).where(
+                col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
+                col(CalendarEventDealAssociation.event_id) == event.event_id,
+                col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE.value,
+            )
+        )
+        if association.scalar_one_or_none() is not None:
+            return False
+
+        now = _now_utc()
+        occurred_at = event.start_at if event.start_at and event.start_at <= now else None
+        occurred_at = occurred_at or event.updated_at or event.created_at or now
+        activity_id = communication_source_activity_id(
+            self.organisation_id,
+            "calendar",
+            event.event_id,
+        )
+        await self._upsert_activity(
+            activity_id=activity_id,
+            integration_id=integration_id,
+            activity_type=CRMActivityType.MEETING.value,
+            title=event.title,
+            summary=event.description,
+            preview=_compact_preview(event.description or event.title),
+            occurred_at=occurred_at,
+            source_type="MEETING",
+            source_record_id=str(event.event_id),
+            source_provider=event.provider,
+            actor_name=event.organiser_name,
+            actor_email=event.organiser_email,
+            display_payload={
+                "participants_preview": self._meeting_participants_preview(event),
+                "participant_count": event.attendee_count or len(event.attendees or []),
+                "duration_minutes": self._meeting_duration_minutes(event),
+                "meeting_status": event.status,
+            },
+        )
+        await self._sync_object_links(
+            activity_id=activity_id,
+            object_type=CRMActivityObjectType.CONTACT.value,
+            object_ids=contact_ids,
+            link_role="ATTENDEE",
+            occurred_at=occurred_at,
+            replace_existing=replace_links,
+        )
+        await self._sync_object_links(
+            activity_id=activity_id,
+            object_type=CRMActivityObjectType.COMPANY.value,
+            object_ids=company_ids,
+            link_role="RELATED",
+            occurred_at=occurred_at,
+            replace_existing=replace_links,
+        )
+        return True
+
+    async def sync_communication_participant_links(
+        self,
+        *,
+        activity_id: UUID,
+        contact_ids: set[UUID],
+        company_ids: set[UUID],
+        occurred_at: datetime,
+        replace_existing: bool,
+    ) -> None:
+        """Sync hydration-owned links without overwriting deal-mapper-owned links."""
+        for object_type, object_ids in (
+            (CRMActivityObjectType.CONTACT.value, contact_ids),
+            (CRMActivityObjectType.COMPANY.value, company_ids),
+        ):
+            await self._sync_object_links(
+                activity_id=activity_id,
+                object_type=object_type,
+                object_ids=object_ids,
+                link_role="PARTICIPANT",
+                occurred_at=occurred_at,
+                replace_existing=replace_existing,
+            )
 
     async def upsert_deal_created(self, deal: CRMDeal) -> None:
         """Project a created deal row into the activity feed."""
@@ -914,6 +1111,19 @@ class ActivityFeedProjectionService:
         for deal_id in deal_ids:
             await refresher.refresh_deal(deal_id)
 
+    async def _lock_communication(self, source_kind: str, source_id: object) -> None:
+        """Serialize direct and association projections for one communication source."""
+        # copilotgtm: hash collisions only serialize unrelated sources; switch to a
+        # two-key advisory lock if projection-lock contention becomes measurable.
+        await self.session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+            {
+                "lock_key": (
+                    f"crm-communication-projection:{self.organisation_id}:{source_kind}:{source_id}"
+                )
+            },
+        )
+
     async def _upsert_activity(
         self,
         *,
@@ -1193,6 +1403,7 @@ class ActivityFeedProjectionService:
         object_ids: set[UUID],
         link_role: str,
         occurred_at: datetime,
+        replace_existing: bool = True,
     ) -> None:
         link_c = cast(Any, CRMActivityLink).__table__.c
         base_where = (
@@ -1201,15 +1412,18 @@ class ActivityFeedProjectionService:
             link_c.object_type == object_type,
             link_c.link_role == link_role,
         )
-        if not object_ids:
+        if not object_ids and replace_existing:
             await self.session.execute(delete(CRMActivityLink).where(*base_where))
             return
 
         # Sync the full set for this role so replayed projections remove links
         # that are no longer resolvable while keeping other roles untouched.
-        await self.session.execute(
-            delete(CRMActivityLink).where(*base_where, link_c.object_id.not_in(object_ids))
-        )
+        # Full source replays replace stale links; targeted contact backfills only add the
+        # requested identity and must preserve links discovered by earlier batches.
+        if replace_existing:
+            await self.session.execute(
+                delete(CRMActivityLink).where(*base_where, link_c.object_id.not_in(object_ids))
+            )
         for object_id in object_ids:
             stmt = pg_insert(CRMActivityLink).values(
                 organisation_id=self.organisation_id,

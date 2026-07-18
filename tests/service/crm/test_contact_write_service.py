@@ -32,6 +32,7 @@ from src.service.crm.accounts.contracts import AccountWriteResult
 from src.service.crm.contacts.contracts import (
     ContactCreateCommand,
     ContactWriteContext,
+    ContactWriteResult,
     ContactWriteServiceError,
 )
 from src.service.crm.contacts.resolution_service import ContactIdentityResolutionResult
@@ -141,6 +142,64 @@ def _disable_contact_created_projection(service: ContactWriteService) -> None:
     service._projection.upsert_contact_created = (  # type: ignore[method-assign]
         AsyncMock()
     )
+
+
+@pytest.mark.asyncio
+async def test_find_or_create_contacts_by_email_batch_reuses_primary_and_additional_emails() -> (
+    None
+):
+    org_id = uuid4()
+    primary_contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="buyer@example.com",
+        full_name="Buyer",
+        is_deleted=False,
+    )
+    additional_contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="owner@example.com",
+        full_name="Owner",
+        additional_emails=["champion@example.com"],
+        is_deleted=False,
+    )
+    created_contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="new@example.com",
+        full_name="New Person",
+        is_deleted=False,
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(
+        return_value=_FakeResult(scalars=[primary_contact, additional_contact])
+    )
+    service = ContactWriteService(session, org_id)
+    service._create_contact_record = AsyncMock(  # type: ignore[method-assign]
+        return_value=ContactWriteResult(created_contact, True, "created", None)
+    )
+
+    result = await service.find_or_create_contacts_by_email_batch(
+        [
+            ContactCreateCommand(email=" Buyer@Example.com ", name="Ignored"),
+            ContactCreateCommand(email="champion@example.com", name="Champion"),
+            ContactCreateCommand(email="new@example.com", name="New Person"),
+        ],
+        context=ContactWriteContext(source="contact_communication_hydration"),
+    )
+
+    assert result["buyer@example.com"].contact is primary_contact
+    assert result["buyer@example.com"].created is False
+    assert result["champion@example.com"].contact is additional_contact
+    assert result["champion@example.com"].created is False
+    assert result["new@example.com"].contact is created_contact
+    service._create_contact_record.assert_awaited_once()  # type: ignore[attr-defined]
+    statement = session.execute.await_args.args[0]
+    assert str(statement).count(" ?| ") == 1
 
 
 @pytest.mark.asyncio

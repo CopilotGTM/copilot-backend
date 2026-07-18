@@ -227,7 +227,7 @@ class DealJobType(StrEnum):
     DEAL_MEMORY_BUILD = "deal_memory_build"  # Build or update deal memory document
     DEAL_TASK_SYNC = "deal_task_sync"  # Create/complete deal tasks from meeting insights
     CALENDAR_CONTACT_ACCOUNT_DISCOVERY = (
-        "calendar_contact_account_discovery"  # Internal CRM discovery after calendar sync
+        "calendar_contact_account_discovery"  # Legacy value retained for persisted job rows
     )
     CRM_CSV_IMPORT = "crm_csv_import"
 

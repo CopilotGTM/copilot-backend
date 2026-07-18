@@ -9,6 +9,7 @@ Use this folder as the concise source of truth for runtime behavior. The worker 
 | Document | Description |
 |----------|-------------|
 | [architecture-overview.md](architecture-overview.md) | High-level architecture, supported providers, directory structure |
+| [contact-communication-hydration-flow.md](contact-communication-hydration-flow.md) | Contact creation and email/calendar activity backfill for Google/Microsoft sync, manual creation, and tools; CSV integration is deferred |
 | [crm-initial-sync.md](crm-initial-sync.md) | Live HubSpot/Salesforce post-connect CRM chain, metadata, and persisted tables |
 | [oauth-and-token-management.md](oauth-and-token-management.md) | Custom OAuth flow, callback scope validation, token storage, refresh, and revocation detection |
 | [provider-admin-installation-prerequisites.md](provider-admin-installation-prerequisites.md) | Generic install/admin-approval prerequisite pattern for provider OAuth apps |

@@ -79,7 +79,7 @@ class _FakeSession:
         self._deal = deal
         self._contacts = contacts or []
 
-    async def execute(self, statement):  # noqa: ANN001
+    async def execute(self, statement, _parameters=None):  # noqa: ANN001
         """Capture writes and return scripted rows for org-scoped local lookups."""
         self.statements.append(statement)
         statement_text = str(statement)
@@ -528,7 +528,11 @@ async def test_email_association_projection_writes_email_activity_and_safe_links
         email,
     )
 
-    values = _compiled_values(session.statements[2])
+    values = next(
+        _compiled_values(statement)
+        for statement in session.statements
+        if "INSERT INTO crm_activities" in str(statement)
+    )
     assert values["activity_id"] == association_id
     assert values["activity_type"] == "EMAIL"
     assert values["title"] == "Pricing follow-up"
@@ -611,7 +615,11 @@ async def test_meeting_association_projection_writes_meeting_activity_and_attend
         event,
     )
 
-    values = _compiled_values(session.statements[2])
+    values = next(
+        _compiled_values(statement)
+        for statement in session.statements
+        if "INSERT INTO crm_activities" in str(statement)
+    )
     assert values["activity_id"] == association_id
     assert values["activity_type"] == "MEETING"
     assert values["title"] == "Renewal review"

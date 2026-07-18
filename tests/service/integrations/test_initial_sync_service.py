@@ -5,11 +5,9 @@ tests lock the ordering where provider sync is dispatched before webhook
 subscription ensure tasks.
 """
 
-from unittest.mock import MagicMock
 from uuid import UUID
 
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
-from src.service.integrations import initial_sync_service
 from src.service.integrations.initial_sync_service import InitialSyncService
 
 
@@ -41,20 +39,6 @@ def test_outlook_calendar_connect_triggers_sync_and_subscription(monkeypatch) ->
         "src.service.integrations.initial_sync_service.send_integrations_task",
         fake_send_integrations_task,
     )
-    client = MagicMock()
-    client.signature.side_effect = ["calendar-sync", "calendar-discovery"]
-    chain_signature = MagicMock()
-    monkeypatch.setattr(
-        initial_sync_service,
-        "get_integrations_celery_client",
-        lambda: client,
-    )
-    monkeypatch.setattr(
-        initial_sync_service,
-        "chain",
-        lambda *args: chain_signature,
-    )
-
     integration = KnowledgeIntegration(
         integration_id=UUID("22222222-2222-2222-2222-222222222222"),
         organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
@@ -71,31 +55,11 @@ def test_outlook_calendar_connect_triggers_sync_and_subscription(monkeypatch) ->
     )
 
     assert [task["task_name"] for task in sent_tasks] == [
+        "integrations.sync_calendar_integration",
         "integrations.ensure_microsoft_graph_subscription",
     ]
-    assert client.signature.call_count == 2
-    client.signature.assert_any_call(
-        "integrations.sync_calendar_integration",
-        kwargs={
-            "organisation_id": str(integration.organisation_id),
-            "integration_id": str(integration.integration_id),
-        },
-        immutable=True,
-    )
-    client.signature.assert_any_call(
-        "deal.discover_calendar_contacts_accounts",
-        kwargs={
-            "organisation_id": str(integration.organisation_id),
-            "source_integration_id": str(integration.integration_id),
-            "trigger": "calendar_connection",
-            "trigger_id": "conn",
-        },
-        queue="deal",
-        routing_key="deal",
-    )
-    chain_signature.apply_async.assert_called_once_with()
-    assert sent_tasks[0]["queue"] == "integrations_priority"
-    assert sent_tasks[0]["routing_key"] == "integrations_priority"
+    assert sent_tasks[1]["queue"] == "integrations_priority"
+    assert sent_tasks[1]["routing_key"] == "integrations_priority"
 
 
 def test_gmail_connect_triggers_sync_and_subscription(monkeypatch) -> None:
@@ -126,20 +90,6 @@ def test_gmail_connect_triggers_sync_and_subscription(monkeypatch) -> None:
         "src.service.integrations.initial_sync_service.send_integrations_task",
         fake_send_integrations_task,
     )
-    client = MagicMock()
-    client.signature.side_effect = ["calendar-sync", "calendar-discovery"]
-    chain_signature = MagicMock()
-    monkeypatch.setattr(
-        initial_sync_service,
-        "get_integrations_celery_client",
-        lambda: client,
-    )
-    monkeypatch.setattr(
-        initial_sync_service,
-        "chain",
-        lambda *args: chain_signature,
-    )
-
     integration = KnowledgeIntegration(
         integration_id=UUID("22222222-2222-2222-2222-222222222222"),
         organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
@@ -191,18 +141,6 @@ def test_google_calendar_connect_triggers_sync_and_subscription(monkeypatch) -> 
         "src.service.integrations.initial_sync_service.send_integrations_task",
         fake_send_integrations_task,
     )
-    client = MagicMock()
-    client.signature.side_effect = ["calendar-sync", "calendar-discovery"]
-    chain_signature = MagicMock()
-    monkeypatch.setattr(
-        "src.service.integrations.initial_sync_service.get_integrations_celery_client",
-        lambda: client,
-    )
-    monkeypatch.setattr(
-        "src.service.integrations.initial_sync_service.chain",
-        MagicMock(return_value=chain_signature),
-    )
-
     integration = KnowledgeIntegration(
         integration_id=UUID("22222222-2222-2222-2222-222222222222"),
         organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
@@ -219,28 +157,8 @@ def test_google_calendar_connect_triggers_sync_and_subscription(monkeypatch) -> 
     )
 
     assert [task["task_name"] for task in sent_tasks] == [
+        "integrations.sync_calendar_integration",
         "integrations.ensure_google_subscription",
     ]
-    assert client.signature.call_count == 2
-    client.signature.assert_any_call(
-        "integrations.sync_calendar_integration",
-        kwargs={
-            "organisation_id": str(integration.organisation_id),
-            "integration_id": str(integration.integration_id),
-        },
-        immutable=True,
-    )
-    client.signature.assert_any_call(
-        "deal.discover_calendar_contacts_accounts",
-        kwargs={
-            "organisation_id": str(integration.organisation_id),
-            "source_integration_id": str(integration.integration_id),
-            "trigger": "calendar_connection",
-            "trigger_id": "conn",
-        },
-        queue="deal",
-        routing_key="deal",
-    )
-    chain_signature.apply_async.assert_called_once_with()
-    assert sent_tasks[0]["queue"] == "integrations_priority"
-    assert sent_tasks[0]["routing_key"] == "integrations_priority"
+    assert sent_tasks[1]["queue"] == "integrations_priority"
+    assert sent_tasks[1]["routing_key"] == "integrations_priority"
