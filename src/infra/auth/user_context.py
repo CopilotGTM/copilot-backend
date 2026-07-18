@@ -9,6 +9,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from pydantic import BaseModel
+from src.domain.models.master_tables.user_models import UserAppRole
 
 
 class UserIDs(BaseModel):
@@ -19,6 +20,7 @@ class UserIDs(BaseModel):
     user_name: str | None = None
     user_email: str | None = None
     user_timezone: str | None = None
+    user_role: UserAppRole = UserAppRole.MEMBER
 
 
 __all__ = ["UserIDs"]

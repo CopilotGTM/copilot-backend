@@ -27,6 +27,7 @@ from uuid import UUID
 
 from src.adapters import ChannelPayload
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
 from src.infra.utils.agent_datetime import parse_agent_datetime
 from src.infra.utils.timezone import get_context_anchor_local, resolve_timezone_name
 from src.service.channels import OutboundChannelService, OutboundDeliveryTarget
@@ -320,8 +321,13 @@ async def _resolve_deal_by_name(
     from sqlmodel import col
 
     from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
+    from src.service.crm.access.record_access_policy import DealAccessPolicy
 
     async with context.acquire_session() as session:
+        try:
+            actor = await resolve_agent_access_actor(context)
+        except AgentCRMAccessError:
+            return None
         # Case-insensitive search, limit to 5 candidates
         stmt = (
             select(CRMDeal)
@@ -329,6 +335,11 @@ async def _resolve_deal_by_name(
                 col(CRMDeal.organisation_id) == context.organisation_id,
                 col(CRMDeal.is_deleted) == False,  # noqa: E712
                 col(CRMDeal.name).ilike(f"%{deal_name}%"),
+                DealAccessPolicy(
+                    session,
+                    context.organisation_id,
+                    actor,
+                ).visible_deal_predicate(),
             )
             .limit(5)
         )
@@ -891,7 +902,24 @@ async def create_task(
     service_cls, service_error_cls = _load_tasks_write_service()
 
     async with context.acquire_session() as session:
-        service = service_cls(session, organisation_id, user_id)
+        access_actor = None
+        if resolved_deal_id is not None:
+            try:
+                access_actor = await resolve_agent_access_actor(context)
+            except AgentCRMAccessError:
+                return {
+                    "status": "error",
+                    "message": "Could not verify access to that deal.",
+                }
+        if access_actor is None:
+            service = service_cls(session, organisation_id, user_id)
+        else:
+            service = service_cls(
+                session,
+                organisation_id,
+                user_id,
+                access_actor=access_actor,
+            )
         try:
             task = await service.create_task(write_payload, deal_id=resolved_deal_id)
             await session.commit()

@@ -13,6 +13,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
 from src.agents.tools.crm.update_deal_fields import _deal_context_fields, _resolve_deal_id
 from src.contracts.crm.deal_write import DealAccountUpdateRequest
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
@@ -161,6 +162,10 @@ def create_update_deal_account(
             )
 
         actor_user_id = context.user_id or AUTOMATED_PIPELINE_USER_ID
+        try:
+            access_actor = await resolve_agent_access_actor(context)
+        except AgentCRMAccessError as exc:
+            return _result("failed", str(exc))
         # Keep this action in the smallest possible DB transaction.
         async for master_session in acquire_master_async_session():
             async for org_session in acquire_org_async_session(context.organisation_id):
@@ -169,6 +174,7 @@ def create_update_deal_account(
                     master_session=master_session,
                     organisation_id=context.organisation_id,
                     actor_user_id=actor_user_id,
+                    access_actor=access_actor,
                 )
                 # Guard write consistency by committing only after the service
                 # mutation succeeds; rollback every failure path.

@@ -8,8 +8,10 @@ from uuid import UUID, uuid4
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.organisation_tables.deal_asset_models import DealAsset, DealAssetStatus
+from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import CRMActor, DealAccessPolicy
 
 logger = get_logger("deal_assets_service")
 
@@ -33,9 +35,15 @@ class DealAssetsService:
     Each instance is scoped to a single organisation.
     """
 
-    def __init__(self, org_session: AsyncSession, organisation_id: UUID):
+    def __init__(
+        self,
+        org_session: AsyncSession,
+        organisation_id: UUID,
+        access_actor: CRMActor | None = None,
+    ):
         self.org_session = org_session
         self.organisation_id = organisation_id
+        self._access = DealAccessPolicy(org_session, organisation_id, access_actor)
 
     async def close(self) -> None:
         """Dispose the underlying session when the service is released."""
@@ -98,13 +106,27 @@ class DealAssetsService:
                 (c.name.ilike(f"%{q}%") | c.filename.ilike(f"%{q}%")),
             )
 
-        count_stmt = select(func.count()).select_from(DealAsset).where(base_where)
+        deal_c = cast(Any, CRMDeal).__table__.c
+        # Assets inherit their parent deal's visibility; otherwise the org-wide
+        # asset page becomes a second route to private deal documents.
+        visible_join = (deal_c.deal_id == c.deal_id) & (
+            deal_c.organisation_id == self.organisation_id
+        )
+        visible_deal = self._access.visible_deal_predicate(deal_c)
+
+        count_stmt = (
+            select(func.count())
+            .select_from(DealAsset)
+            .join(CRMDeal, visible_join)
+            .where(base_where, visible_deal)
+        )
         count_result = await self.org_session.execute(count_stmt)
         total = count_result.scalar() or 0
 
         stmt = (
             select(DealAsset)
-            .where(base_where)
+            .join(CRMDeal, visible_join)
+            .where(base_where, visible_deal)
             .order_by(c.created_at.desc())
             .limit(limit)
             .offset(offset)

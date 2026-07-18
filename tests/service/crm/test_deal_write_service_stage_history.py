@@ -264,6 +264,7 @@ async def test_create_deal_sets_initial_stage_timestamps_and_history_source() ->
         actor_user_id=uuid4(),
     )
     service._projection = AsyncMock()  # type: ignore[assignment]
+    service._owners.sync_owner_participant = AsyncMock()  # type: ignore[method-assign]
 
     pipeline_id = uuid4()
     stage_id = uuid4()
@@ -324,6 +325,7 @@ async def test_create_deal_projects_deal_created_and_initial_stage_history() -> 
     service._load_pipeline_stages = AsyncMock(return_value=_usable_stage_shape())
     service._record_mutation_event = AsyncMock()  # type: ignore[method-assign]
     service._projection = projection  # type: ignore[assignment]
+    service._owners.sync_owner_participant = AsyncMock()  # type: ignore[method-assign]
 
     with patch(
         "src.service.crm.deals.write_service.InternalCRMSetupService.get_internal_integration",
@@ -359,6 +361,7 @@ async def test_create_deal_stores_preferred_currency_when_currency_provided() ->
     service._record_mutation_event = AsyncMock()  # type: ignore[method-assign]
     service._projection = AsyncMock()  # type: ignore[assignment]
     service._store_preferred_deal_currency = AsyncMock()  # type: ignore[method-assign]
+    service._owners.sync_owner_participant = AsyncMock()  # type: ignore[method-assign]
 
     with patch(
         "src.service.crm.deals.write_service.InternalCRMSetupService.get_internal_integration",
@@ -486,6 +489,7 @@ async def test_create_deal_records_initial_core_fields_without_update_semantics(
     )
     service._record_mutation_event = AsyncMock()
     service._projection = AsyncMock()  # type: ignore[assignment]
+    service._owners.sync_owner_participant = AsyncMock()  # type: ignore[method-assign]
 
     pipeline_id = uuid4()
     stage_id = uuid4()

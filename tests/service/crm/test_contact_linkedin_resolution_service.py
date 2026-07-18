@@ -38,7 +38,9 @@ class _ResolutionSession:
 
     async def execute(self, _stmt):  # noqa: ANN001
         """Return queued contact lookup results in resolver query order."""
-        result = self._search_results.pop(0)
+        # Provider persistence reloads the resolved contact after identity
+        # lookup; the fallback models that independently documented write path.
+        result = self._search_results.pop(0) if self._search_results else self.contact
         return _FakeResult(scalars=[result] if result else [])
 
     async def get(self, _model, _item_id):  # noqa: ANN001

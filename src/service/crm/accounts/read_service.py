@@ -27,6 +27,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMParticipantType,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import CRMAccessActor, DealAccessPolicy
 from src.service.crm.accounts.contracts import AccountReadServiceError
 
 logger = get_logger("account_read_service")
@@ -64,10 +65,16 @@ def _decode_account_search_cursor(cursor: str) -> tuple[str, UUID]:
 class AccountReadService:
     """Tenant-scoped account queries used by API and suggestion workflows."""
 
-    def __init__(self, org_session: AsyncSession, organisation_id: UUID):
+    def __init__(
+        self,
+        org_session: AsyncSession,
+        organisation_id: UUID,
+        access_actor: CRMAccessActor | None = None,
+    ):
         """Bind the service to one org-scoped session and immutable org boundary."""
         self.org_session = org_session
         self.organisation_id = organisation_id
+        self._deal_access = DealAccessPolicy(org_session, organisation_id, access_actor)
 
     async def close(self) -> None:
         """Close the owned org session when used as a FastAPI dependency."""
@@ -180,6 +187,7 @@ class AccountReadService:
             select(func.count(d.deal_id))
             .where(
                 d.organisation_id == self.organisation_id,
+                self._deal_access.visible_deal_predicate(d),
                 d.is_deleted.is_(False),
                 d.company_id == c.company_id,
             )
@@ -193,6 +201,7 @@ class AccountReadService:
             select(func.coalesce(func.sum(d.amount), 0))
             .where(
                 d.organisation_id == self.organisation_id,
+                self._deal_access.visible_deal_predicate(d),
                 d.is_deleted.is_(False),
                 d.company_id == c.company_id,
                 d.deal_status == CRMDealStatus.OPEN.value,
@@ -361,6 +370,7 @@ class AccountReadService:
             select(func.count(d.deal_id))
             .where(
                 d.organisation_id == self.organisation_id,
+                self._deal_access.visible_deal_predicate(d),
                 d.is_deleted.is_(False),
                 d.company_id == c.company_id,
             )
@@ -592,6 +602,7 @@ class AccountReadService:
         d = cast(Any, CRMDeal).__table__.c
         stmt = select(CRMDeal).where(
             d.organisation_id == self.organisation_id,
+            self._deal_access.visible_deal_predicate(d),
             d.is_deleted.is_(False),
             d.company_id == company.company_id,
         )

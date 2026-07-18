@@ -20,6 +20,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
     CRMParticipantType,
 )
+from src.service.crm.participants import stakeholder_write_service as stakeholder_write_module
 from src.service.crm.participants.stakeholder_read_service import StakeholderReadService
 from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 from src.workers.deal_worker.services.deal_mapper_services.stakeholder_sync_service import (
@@ -204,14 +205,14 @@ def _read_service() -> StakeholderReadService:
 
 
 @pytest.mark.asyncio
-async def test_update_stakeholder_applies_phone_number_and_tracks_override() -> None:
+async def test_update_stakeholder_applies_phone_number_and_tracks_override(monkeypatch) -> None:
     service = _write_service()
     contact_id = uuid4()
     integration_id = uuid4()
     participant = CRMDealParticipant(
         participant_id=uuid4(),
         deal_id=uuid4(),
-        organisation_id=uuid4(),
+        organisation_id=service.organisation_id,
         integration_id=integration_id,
         participant_type=CRMParticipantType.CONTACT,
         related_local_id=contact_id,
@@ -231,6 +232,12 @@ async def test_update_stakeholder_applies_phone_number_and_tracks_override() -> 
     )
     service.get_stakeholder = AsyncMock(return_value=participant)  # type: ignore[method-assign]
     service._get_participant_contact = AsyncMock(return_value=contact)  # type: ignore[method-assign]
+    projection = SimpleNamespace(upsert_stakeholder_updated=AsyncMock())
+    monkeypatch.setattr(
+        stakeholder_write_module,
+        "ActivityFeedProjectionService",
+        MagicMock(return_value=projection),
+    )
 
     request = UpdateStakeholderRequest(phone_number="+1 555-9999")
     result = await service.update_stakeholder(uuid4(), participant.participant_id, request)
@@ -239,6 +246,7 @@ async def test_update_stakeholder_applies_phone_number_and_tracks_override() -> 
     assert contact.phone == "+1 555-9999"
     assert not hasattr(participant, "phone_number")
     service.session.flush.assert_awaited()
+    projection.upsert_stakeholder_updated.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -285,6 +293,9 @@ async def test_get_stakeholder_detail_includes_phone_number() -> None:
             SimpleNamespace(scalar_one_or_none=lambda: participant),
             SimpleNamespace(scalar_one_or_none=lambda: contact),
         ]
+    )
+    service._access.require_deal = AsyncMock(  # type: ignore[method-assign]
+        return_value=(SimpleNamespace(deal_id=participant.deal_id), None)
     )
 
     result = await service.get_stakeholder_detail(participant.deal_id, participant.participant_id)

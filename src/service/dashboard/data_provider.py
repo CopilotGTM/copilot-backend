@@ -16,6 +16,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealStatus,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import CRMAccessActor, DealAccessPolicy
 from src.service.crm.analytics.stage_movement_service import (
     StageMovementAnalytics,
     StageMovementDeal,
@@ -37,9 +38,15 @@ class SalesDashboardDataProvider:
     semantics are dashboard contracts, not general CRM API behavior.
     """
 
-    def __init__(self, org_session: AsyncSession, organisation_id: UUID) -> None:
+    def __init__(
+        self,
+        org_session: AsyncSession,
+        organisation_id: UUID,
+        access_actor: CRMAccessActor | None = None,
+    ) -> None:
         self.org_session = org_session
         self.organisation_id = organisation_id
+        self._access = DealAccessPolicy(org_session, organisation_id, access_actor)
 
     def _dashboard_deal_filters(
         self,
@@ -54,6 +61,7 @@ class SalesDashboardDataProvider:
     ) -> list[Any]:
         filters = [
             c.organisation_id == self.organisation_id,
+            self._access.visible_deal_predicate(c),
             c.is_deleted.is_(False),
             c.created_at >= from_date,
             c.created_at <= to_date,
@@ -605,6 +613,7 @@ class SalesDashboardDataProvider:
             c.stage_entered_at,
         ).where(
             c.organisation_id == self.organisation_id,
+            self._access.visible_deal_predicate(c),
             c.is_deleted.is_(False),
         )
         if pipeline_id is not None:
@@ -685,6 +694,7 @@ class SalesDashboardDataProvider:
             .where(
                 h_c.organisation_id == self.organisation_id,
                 h_c.is_deleted.is_(False),
+                self._access.visible_deal_predicate(d_c),
             )
         )
         if pipeline_id is not None:
@@ -712,6 +722,7 @@ class SalesDashboardDataProvider:
                     window_h.c.organisation_id == self.organisation_id,
                     window_h.c.is_deleted.is_(False),
                     window_h.c.entered_at >= from_date,
+                    self._access.visible_deal_predicate(window_d.c),
                 )
             )
             if to_date is not None:

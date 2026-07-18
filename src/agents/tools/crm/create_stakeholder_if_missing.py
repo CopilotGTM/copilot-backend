@@ -20,6 +20,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
 from src.contracts.crm.stakeholders import CreateStakeholderRequest
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     DecisionPower,
@@ -199,10 +200,12 @@ async def create_stakeholder_if_missing(
 
     async with context.acquire_session() as session:
         try:
+            access_actor = await resolve_agent_access_actor(context)
             service = StakeholderWriteService(
                 session,
                 organisation_id,
                 user_id=context.user_id or AUTOMATED_PIPELINE_USER_ID,
+                access_actor=access_actor,
             )
 
             async def _already_checked_internal_email(email: str) -> bool:
@@ -275,6 +278,9 @@ async def create_stakeholder_if_missing(
             result["deal_id"] = str(actual_deal_id)
             result["action"] = "created"
             return result
+        except AgentCRMAccessError:
+            logger.info("create_stakeholder_if_missing: deal not visible to agent actor")
+            return None
         except Exception:
             await session.rollback()
             logger.exception("create_stakeholder_if_missing: database error")

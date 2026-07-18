@@ -9,19 +9,32 @@ from typing import Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 from src.domain.models.master_tables import User
 from src.domain.models.organisation_tables.sync.crm import (
     CRMActivityPriority,
     CRMActivityType,
     CRMTask,
 )
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDeal,
+    CRMDealParticipant,
+    CRMParticipantType,
+)
 from src.infra.database.sessions import master_async_session_scope
 from src.infra.utils.logger import get_logger
 from src.infra.utils.timezone import DEFAULT_TIMEZONE, resolve_timezone_name
 from src.service.crm.access.crm_user_service import build_user_display_name
+from src.service.crm.access.record_access_policy import (
+    CRMAccessActor,
+    CRMRecordAccessError,
+    DealAccessPolicy,
+)
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
+from src.service.crm.participants.contracts import ParticipantServiceError
+from src.service.crm.participants.participant_write_service import ParticipantWriteService
 from src.service.crm.tasks.contracts import TaskReadRecord, TaskWriteServiceError
 from src.service.crm.tasks.notification_service import TaskNotificationService
 from src.service.crm.tasks.read_service import TaskReadService
@@ -55,11 +68,16 @@ class TaskWriteService:
         actor_user_id: UUID,
         *,
         user_timezone: str | None = None,
+        access_actor: CRMAccessActor | None = None,
+        master_session: AsyncSession | None = None,
     ):
         self.session = session
         self.organisation_id = organisation_id
         self.actor_user_id = actor_user_id
         self.user_timezone = resolve_timezone_name(user_timezone)
+        self.access_actor = access_actor
+        self.master_session = master_session
+        self._access = DealAccessPolicy(session, organisation_id, access_actor)
         self._reminders = TaskReminderService(session, organisation_id, actor_user_id)
         self._notifications = TaskNotificationService(session, organisation_id, actor_user_id)
         self._projection = ActivityFeedProjectionService(session, organisation_id)
@@ -75,6 +93,11 @@ class TaskWriteService:
     async def create_task(self, payload: dict[str, Any], *, deal_id: UUID | None = None) -> CRMTask:
         """Create one user-owned task row and queue post-commit assignee notification."""
         deal = await self._load_deal(deal_id) if deal_id else None
+        if deal is not None:
+            await self._require_deal_access(deal.deal_id, "collaborate")
+
+        if payload.get("external_assignee_email") or payload.get("external_assignee_name"):
+            raise TaskWriteServiceError("Tasks can only be assigned to internal members", 400)
 
         task_type = self._normalize_enum(payload.get("task_type")) or CRMActivityType.TASK.value
         if task_type not in _ALLOWED_TASK_TYPES:
@@ -92,6 +115,8 @@ class TaskWriteService:
             payload.get("owner_user_id") if "owner_user_id" in payload else self.actor_user_id
         )
         owner_id, owner_name, owner_email = await self._resolve_owner(owner_user_id)
+        if deal is not None and owner_user_id is not None:
+            await self._ensure_deal_participant(deal.deal_id, owner_user_id)
         actor_crm_user_id, _, _ = await self._resolve_owner(self.actor_user_id)
         due_at, due_date, is_all_day, due_metadata = self._normalize_due_payload(payload)
 
@@ -104,10 +129,8 @@ class TaskWriteService:
             completed_at = completed_at or now
             completed_by_user_id, _, _ = await self._resolve_owner(self.actor_user_id)
 
-        external_assignee_email = payload.get("external_assignee_email")
-        external_assignee_name = payload.get("external_assignee_name")
-        if external_assignee_email:
-            await self._notifications.validate_external_assignee_domain(external_assignee_email)
+        external_assignee_email = None
+        external_assignee_name = None
 
         metadata = {
             "is_user_created": True,
@@ -168,6 +191,7 @@ class TaskWriteService:
             raise TaskWriteServiceError("No fields to update", 400)
 
         task = await self._load_user_task(task_id)
+        await self._require_task_update(task, payload)
         updated = False
         assignment_changed = False
 
@@ -234,6 +258,8 @@ class TaskWriteService:
             owner_id, owner_name, owner_email = await self._resolve_owner(
                 payload.get("owner_user_id")
             )
+            if task.deal_id and payload.get("owner_user_id"):
+                await self._ensure_deal_participant(task.deal_id, payload["owner_user_id"])
             task.assigned_to_user_id = owner_id
             task.assigned_to_name = owner_name
             task.assigned_to_email = owner_email
@@ -247,27 +273,8 @@ class TaskWriteService:
             updated = True
             assignment_changed = True
 
-        if "external_assignee_email" in payload:
-            new_ext_email = payload.get("external_assignee_email")
-            if new_ext_email:
-                await self._notifications.validate_external_assignee_domain(new_ext_email)
-                metadata["assignee_kind"] = "external"
-                task.assigned_to_user_id = None
-            else:
-                metadata.pop("assignee_kind", None)
-            task.assigned_to_email = new_ext_email
-            assignment_changed = True
-            updated = True
-        if "external_assignee_name" in payload:
-            task.assigned_to_name = payload.get("external_assignee_name")
-            if payload.get("external_assignee_name"):
-                metadata["assignee_kind"] = "external"
-                if "external_assignee_email" not in payload:
-                    task.assigned_to_user_id = None
-                    task.assigned_to_email = None
-                    metadata.pop("assigned_to_public_user_id", None)
-                    assignment_changed = True
-            updated = True
+        if "external_assignee_email" in payload or "external_assignee_name" in payload:
+            raise TaskWriteServiceError("Tasks can only be assigned to internal members", 400)
 
         if "deal_id" in payload:
             new_deal_id = payload.get("deal_id")
@@ -347,6 +354,12 @@ class TaskWriteService:
     async def delete_task(self, task_id: UUID) -> CRMTask:
         """Soft-delete one editable task and cancel active reminders."""
         task = await self._load_user_task(task_id)
+        if task.status in {"COMPLETED", "CANCELLED"} and not (
+            self.access_actor and self.access_actor.is_admin
+        ):
+            raise TaskWriteServiceError("Completed or cancelled tasks are immutable", 409)
+        if task.deal_id:
+            await self._require_deal_access(task.deal_id, "control")
 
         await self._reminders.cancel_task_reminders(task.task_id)
 
@@ -405,6 +418,64 @@ class TaskWriteService:
         if task.integration_id is not None:
             raise TaskWriteServiceError("External CRM tasks are read-only", 409)
         return task
+
+    async def _require_deal_access(self, deal_id: UUID, level: str) -> None:
+        try:
+            await self._access.require_deal(deal_id, level)  # type: ignore[arg-type]
+        except CRMRecordAccessError as exc:
+            raise TaskWriteServiceError(exc.message, exc.status_code) from exc
+
+    async def _require_task_update(self, task: CRMTask, payload: dict[str, Any]) -> None:
+        if task.status in {"COMPLETED", "CANCELLED"} and not (
+            self.access_actor and self.access_actor.is_admin
+        ):
+            raise TaskWriteServiceError("Completed or cancelled tasks are immutable", 409)
+        if task.deal_id is None or self.access_actor is None:
+            return
+        try:
+            _deal, decision = await self._access.require_deal(task.deal_id, "view")
+        except CRMRecordAccessError as exc:
+            raise TaskWriteServiceError(exc.message, exc.status_code) from exc
+        if decision.can_control:
+            return
+        metadata = task.task_metadata or {}
+        is_assignee = task.assigned_to_user_id == self.access_actor.user_id or metadata.get(
+            "assigned_to_public_user_id"
+        ) == str(self.access_actor.user_id)
+        if not is_assignee:
+            raise TaskWriteServiceError("Only the deal owner or task assignee may update it", 403)
+        if {"owner_user_id", "deal_id", "external_assignee_email", "external_assignee_name"} & set(
+            payload
+        ):
+            raise TaskWriteServiceError("Only the deal owner may reassign or relink a task", 403)
+
+    async def _ensure_deal_participant(self, deal_id: UUID, user_id: UUID) -> None:
+        """Add an internal task assignee to the deal when not already participating."""
+        c = CRMDealParticipant
+        stmt = select(CRMDealParticipant.participant_id).where(
+            col(c.organisation_id) == self.organisation_id,
+            col(c.deal_id) == deal_id,
+            col(c.participant_type) == CRMParticipantType.USER.value,
+            col(c.related_local_id) == user_id,
+            col(c.is_deleted).is_(False),
+        )
+        if (await self.session.execute(stmt)).scalar_one_or_none() is not None:
+            return
+        if self.master_session is None:
+            raise TaskWriteServiceError("Cannot add task assignee to deal", 500)
+        writer = ParticipantWriteService(
+            self.session,
+            self.organisation_id,
+            self.actor_user_id,
+            self.master_session,
+        )
+        try:
+            await writer.add_participants(
+                deal_id,
+                [{"participant_type": "user", "related_id": user_id}],
+            )
+        except ParticipantServiceError as exc:
+            raise TaskWriteServiceError(exc.message, exc.status_code) from exc
 
     def _normalize_due_payload(
         self, payload: dict[str, Any]

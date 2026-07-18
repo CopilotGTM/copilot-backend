@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, require_agent_deal_access
 from src.domain.models.organisation_tables.sync.risk_blocker_models import (
     RiskBlockerCategory,
     RiskBlockerSeverity,
@@ -70,6 +71,7 @@ async def get_existing_risks_blockers(
 
     async with context.acquire_session() as session:
         try:
+            await require_agent_deal_access(context, session, actual_deal_id)
             service = RiskBlockerReadService(session, organisation_id)
             statuses = None
             if not include_dismissed:
@@ -84,6 +86,9 @@ async def get_existing_risks_blockers(
                 statuses=statuses,
                 limit=100,
             )
+        except AgentCRMAccessError:
+            logger.info("get_existing_risks_blockers: deal not visible to agent actor")
+            return []
         except Exception as e:
             logger.exception(f"get_existing_risks_blockers: database error: {e}")
             return []

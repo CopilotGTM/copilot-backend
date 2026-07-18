@@ -17,7 +17,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
+from src.domain.models.organisation_tables.sync.crm.deals import CRMDealMutationEvent
 from src.domain.models.organisation_tables.sync.crm.users import CRMUser
+from src.service.crm.access.record_access_policy import CRMAccessActor
 from src.service.crm.accounts.contracts import (
     AccountCreateCommand,
     AccountWriteContext,
@@ -36,6 +38,7 @@ from src.service.crm.mutations.contracts import (
     CRMMutationRecordCommand,
 )
 from src.service.crm.mutations.event_service import CRMMutationEventService
+from src.service.crm.mutations.json_safe import changed_field
 from src.service.crm.mutations.policies import AccountMutationPolicy
 from src.service.crm.utils.account import (
     ACCOUNT_LINKEDIN_URL_ERROR,
@@ -61,11 +64,13 @@ class AccountWriteService:
         session: AsyncSession,
         organisation_id: UUID,
         master_session: AsyncSession | None = None,
+        access_actor: CRMAccessActor | None = None,
     ):
         """Bind writes to one org-scoped session without taking commit ownership."""
         self.session = session
         self.organisation_id = organisation_id
         self.master_session = master_session
+        self.access_actor = access_actor
         self._mutation_events = CRMMutationEventService(session, organisation_id)
         self._projection = ActivityFeedProjectionService(session, organisation_id)
 
@@ -509,6 +514,62 @@ class AccountWriteService:
             context=context,
         )
         return company
+
+    async def archive_account(
+        self,
+        company_id: UUID,
+        *,
+        context: AccountWriteContext | None = None,
+    ) -> CRMCompany:
+        """Soft-archive an internal account while preserving linked history."""
+        company = await self.load_org_company(company_id)
+        internal = await InternalCRMSetupService(
+            self.session,
+            self.organisation_id,
+            AUTOMATED_PIPELINE_USER_ID,
+        ).get_internal_integration()
+        if internal is None or company.integration_id != internal.integration_id:
+            raise AccountWriteServiceError("External CRM accounts are read-only", 409)
+        await self._require_archive_actor(company_id)
+
+        now = datetime.now(UTC)
+        company.is_deleted = True
+        company.source_modified_at = now
+        company.synced_at = now
+        company.last_seen_at = now
+        company.properties = {**(company.properties or {}), "deleted_via": "api"}
+        self.session.add(company)
+        await self.session.flush()
+        await self._record_mutation_event(
+            CRMMutationRecordCommand(
+                entity_type="account",
+                entity_id=company.company_id,
+                event_type="crm.account.deleted",
+                operation="archive_account",
+                changed_fields={"is_deleted": changed_field(False, True)},
+                semantic_event_types=["crm.account.deleted"],
+                context=self._mutation_context(context),
+                summary=f"Account archived: {company.name or company.domain or company.company_id}",
+                integration_id=company.integration_id,
+                idempotency_scope=f"account:archive:{company.company_id}",
+            )
+        )
+        return company
+
+    async def _require_archive_actor(self, company_id: UUID) -> None:
+        actor = self.access_actor
+        if actor is None or actor.is_admin:
+            return
+        event = CRMDealMutationEvent
+        stmt = select(event.event_id).where(
+            col(event.organisation_id) == self.organisation_id,
+            col(event.entity_type) == "account",
+            col(event.entity_id) == company_id,
+            col(event.operation) == "create_account",
+            col(event.actor_user_id) == actor.user_id,
+        )
+        if (await self.session.execute(stmt)).scalar_one_or_none() is None:
+            raise AccountWriteServiceError("Only the account creator or an admin may archive it", 403)
 
     async def upsert_company_from_account(
         self,

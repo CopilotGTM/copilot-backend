@@ -12,6 +12,7 @@ from src.contracts.dashboard.sales_dashboard import (
     SalesDashboardResponse,
 )
 from src.domain.models.organisation_tables.dashboard_models import DashboardSnapshot
+from src.service.crm.access.record_access_policy import CRMSystemActor
 from src.service.dashboard.defaults import (
     DEFAULT_SALES_DASHBOARD_DATE_RANGE,
     DEFAULT_SALES_DASHBOARD_WIDGETS,
@@ -60,6 +61,7 @@ class DashboardSnapshotService:
                 master_session=self.master_session,
                 organisation_id=self.organisation_id,
                 user_id=user_id,
+                access_actor=CRMSystemActor("dashboard_snapshot"),
             ).get_sales_dashboard(query or SalesDashboardQueryParams())
             snapshot.latest_data = response.model_dump(mode="json")
             snapshot.latest_data_generated_at = response.generated_at
@@ -145,6 +147,7 @@ class DashboardSnapshotService:
             master_session=self.master_session,
             organisation_id=self.organisation_id,
             user_id=user_id,
+            access_actor=CRMSystemActor("dashboard_snapshot"),
         ).get_sales_dashboard(query)
 
     @staticmethod

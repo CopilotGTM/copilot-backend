@@ -15,6 +15,12 @@ from src.domain.models.organisation_tables.sync.crm.leads import (
     CRMLeadStatus,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import (
+    CRMAccessActor,
+    CRMRecordAccessError,
+    LeadAccessLevel,
+    LeadAccessPolicy,
+)
 from src.service.crm.leads.contracts import LeadServiceError
 from src.service.crm.utils.crm_user_identity import (
     CRMUserIdentityResolutionError,
@@ -33,11 +39,14 @@ class LeadReadService:
         organisation_id: UUID,
         actor_user_id: UUID | None = None,
         master_session: AsyncSession | None = None,
+        access_actor: CRMAccessActor | None = None,
     ):
         self.org_session = org_session
         self.organisation_id = organisation_id
         self.actor_user_id = actor_user_id
         self.master_session = master_session
+        self.access_actor = access_actor
+        self._access = LeadAccessPolicy(org_session, organisation_id, access_actor)
 
     async def close(self) -> None:
         """Clean up any resources."""
@@ -63,6 +72,7 @@ class LeadReadService:
         base = select(CRMLead).where(
             col(CRMLead.organisation_id) == self.organisation_id,
             col(CRMLead.is_deleted).is_(False),
+            self._access.visible_lead_predicate(),
         )
 
         if q:
@@ -130,16 +140,15 @@ class LeadReadService:
             raise LeadServiceError(exc.message, exc.status_code) from exc
         return crm_user.user_id
 
-    async def _get_lead_or_404(self, lead_id: UUID) -> CRMLead:
-        stmt = select(CRMLead).where(
-            col(CRMLead.lead_id) == lead_id,
-            col(CRMLead.organisation_id) == self.organisation_id,
-            col(CRMLead.is_deleted).is_(False),
-        )
-        res = await self.org_session.execute(stmt)
-        lead = res.scalars().first()
-        if not lead:
-            raise LeadServiceError("Lead not found", status_code=404)
+    async def _get_lead_or_404(
+        self,
+        lead_id: UUID,
+        level: LeadAccessLevel = "view",
+    ) -> CRMLead:
+        try:
+            lead, _decision = await self._access.require_lead(lead_id, level)
+        except CRMRecordAccessError as exc:
+            raise LeadServiceError(exc.message, status_code=exc.status_code) from exc
         return lead
 
     @staticmethod

@@ -20,11 +20,14 @@ def test_contact_read_service_does_not_expose_writes() -> None:
     assert "CRMContact(" not in source
 
 
-def test_contact_write_service_does_not_manage_deal_participants() -> None:
+def test_contact_write_service_only_archives_existing_deal_participants() -> None:
+    """Archival may detach links, but contact writes cannot create participants."""
+
     source = Path("src/service/crm/contacts/write_service.py").read_text()
 
     assert "DealParticipantService" not in source
-    assert "CRMDealParticipant" not in source
+    assert "CRMDealParticipant(" not in source
+    assert "async def _archive_deal_participants" in source
     assert "send_deal_task_async" not in source
 
 

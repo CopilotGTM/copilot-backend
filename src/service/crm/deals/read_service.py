@@ -25,6 +25,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 )
 from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import CRMAccessActor, DealAccessPolicy
 from src.service.crm.deals.contracts import DealReadServiceError
 from src.service.crm.participants.participant_write_service import ParticipantWriteService
 
@@ -90,7 +91,12 @@ class DealReadService:
             return status.value
         return status
 
-    def __init__(self, org_session: AsyncSession, organisation_id: UUID):
+    def __init__(
+        self,
+        org_session: AsyncSession,
+        organisation_id: UUID,
+        actor: CRMAccessActor | None = None,
+    ):
         """Initialize the service with an org-scoped session.
 
         Args:
@@ -99,6 +105,8 @@ class DealReadService:
         """
         self.org_session = org_session
         self.organisation_id = organisation_id
+        self.actor = actor
+        self.access_policy = DealAccessPolicy(org_session, organisation_id, actor)
 
     @property
     def session(self) -> AsyncSession:
@@ -160,6 +168,7 @@ class DealReadService:
         stmt = select(CRMDeal).where(
             c.organisation_id == self.organisation_id,
             c.is_deleted.is_(False),
+            self.access_policy.visible_deal_predicate(c),
         )
         search_query = _normalize_deal_search_query(q)
 
@@ -205,6 +214,7 @@ class DealReadService:
         count_stmt = select(func.count(c.deal_id)).where(
             c.organisation_id == self.organisation_id,
             c.is_deleted.is_(False),
+            self.access_policy.visible_deal_predicate(c),
         )
 
         if statuses:
@@ -283,6 +293,7 @@ class DealReadService:
         filters = [
             c.organisation_id == self.organisation_id,
             c.is_deleted.is_(False),
+            self.access_policy.visible_deal_predicate(c),
         ]
         search_query = _normalize_deal_search_query(q)
         if search_query:
@@ -389,6 +400,7 @@ class DealReadService:
             c.organisation_id == self.organisation_id,
             c.is_deleted.is_(False),
             c.deal_status == CRMDealStatus.OPEN.value,
+            self.access_policy.visible_deal_predicate(c),
         )
         deterministic_stmt = (
             select(
@@ -516,6 +528,7 @@ class DealReadService:
             stmt = select(CRMDeal).where(
                 c.organisation_id == self.organisation_id,
                 c.is_deleted.is_(False),
+                self.access_policy.visible_deal_predicate(c),
             )
             search_query = _normalize_deal_search_query(q)
 
@@ -589,6 +602,7 @@ class DealReadService:
                     c.deal_id == deal_id,
                     c.organisation_id == self.organisation_id,
                     c.is_deleted.is_(False),
+                    self.access_policy.visible_deal_predicate(c),
                 )
             )
             res = await self.org_session.execute(stmt)
@@ -610,6 +624,8 @@ class DealReadService:
             DealReadServiceError: If database error occurs
         """
         try:
+            if self.access_policy.actor is not None:
+                await self.access_policy.require_deal(deal_id, "view")
             # Join stage history with stage table to get stage names/labels
             h_c = cast(Any, CRMDealStageHistory).__table__.c
             s_c = cast(Any, CRMDealStage).__table__.c
@@ -764,6 +780,7 @@ class DealReadService:
             total_stmt = select(func.count(c.deal_id)).where(
                 c.organisation_id == self.organisation_id,
                 c.is_deleted.is_(False),
+                self.access_policy.visible_deal_predicate(c),
             )
             total_res = await self.org_session.execute(total_stmt)
             total = total_res.scalar() or 0
@@ -774,6 +791,7 @@ class DealReadService:
                 .where(
                     c.organisation_id == self.organisation_id,
                     c.is_deleted.is_(False),
+                    self.access_policy.visible_deal_predicate(c),
                 )
                 .group_by(c.deal_status)
             )
@@ -787,6 +805,7 @@ class DealReadService:
                     c.organisation_id == self.organisation_id,
                     c.is_deleted.is_(False),
                     c.pipeline_name.is_not(None),
+                    self.access_policy.visible_deal_predicate(c),
                 )
                 .group_by(c.pipeline_name)
             )
@@ -801,6 +820,7 @@ class DealReadService:
                 c.organisation_id == self.organisation_id,
                 c.is_deleted.is_(False),
                 c.amount.is_not(None),
+                self.access_policy.visible_deal_predicate(c),
             )
             amount_res = await self.org_session.execute(amount_stmt)
             amount_row = amount_res.one_or_none()
@@ -851,6 +871,12 @@ class DealReadService:
 
         try:
             c = cast(Any, CRMDealParticipant).__table__.c
+            deal_c = cast(Any, CRMDeal).__table__.c
+            visible_deal_ids = select(deal_c.deal_id).where(
+                deal_c.organisation_id == self.organisation_id,
+                deal_c.is_deleted.is_(False),
+                self.access_policy.visible_deal_predicate(deal_c),
+            )
             stmt = (
                 select(
                     c.participant_id,
@@ -863,6 +889,7 @@ class DealReadService:
                 .where(
                     c.organisation_id == self.organisation_id,
                     c.deal_id.in_(deal_ids),
+                    c.deal_id.in_(visible_deal_ids),
                     c.participant_type == CRMParticipantType.USER.value,
                     # Owner rows are a roster projection and are returned from
                     # owner_details; normalize legacy casing so they do not leak.
@@ -930,6 +957,7 @@ class DealReadService:
                     c.organisation_id == self.organisation_id,
                     c.is_deleted.is_(False),
                     c.owner_id.is_not(None),
+                    self.access_policy.visible_deal_predicate(c),
                 )
                 .group_by(c.owner_id)
             )

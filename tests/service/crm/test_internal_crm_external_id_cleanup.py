@@ -13,6 +13,7 @@ from src.domain.models.organisation_tables.sync.crm import (
 )
 from src.service.crm.notes.contracts import NoteWriteContext
 from src.service.crm.notes.write_service import NotesWriteService
+from src.service.crm.tasks import write_service as task_write_module
 from src.service.crm.tasks.write_service import TaskWriteService
 
 
@@ -34,13 +35,14 @@ class _FakeSession:
         """Record refresh calls so tests can assert the write reached persistence."""
         self.refreshed.append(obj)
 
-    async def execute(self, stmt: object) -> None:
+    async def execute(self, stmt: object) -> SimpleNamespace:
         """Capture projection SQL issued by services under test."""
         self.executed.append(stmt)
+        return SimpleNamespace(scalar_one_or_none=lambda: None)
 
 
 @pytest.mark.asyncio
-async def test_user_created_task_uses_local_ids_without_fake_external_ids() -> None:
+async def test_user_created_task_uses_local_ids_without_fake_external_ids(monkeypatch) -> None:
     """User-created tasks should store local IDs and queue notifications via the service."""
     session = _FakeSession()
     organisation_id = uuid4()
@@ -50,7 +52,18 @@ async def test_user_created_task_uses_local_ids_without_fake_external_ids() -> N
         deal_id=uuid4(),
         name="Acme",
     )
-    service = TaskWriteService(session, organisation_id, actor_user_id)
+    participant_writer = SimpleNamespace(add_participants=AsyncMock())
+    monkeypatch.setattr(
+        task_write_module,
+        "ParticipantWriteService",
+        lambda *_args, **_kwargs: participant_writer,
+    )
+    service = TaskWriteService(
+        session,
+        organisation_id,
+        actor_user_id,
+        master_session=SimpleNamespace(),
+    )
     service._load_deal = AsyncMock(return_value=deal)  # type: ignore[method-assign]
     service._resolve_owner = AsyncMock(  # type: ignore[method-assign]
         return_value=(owner_crm_user_id, "Owner", "owner@example.com")
@@ -76,10 +89,14 @@ async def test_user_created_task_uses_local_ids_without_fake_external_ids() -> N
     assert task.assigned_to_user_id == owner_crm_user_id
     assert task.owner_user_id == owner_crm_user_id
     assert not hasattr(task, "owner_external_id")
+    participant_writer.add_participants.assert_awaited_once_with(
+        deal.deal_id,
+        [{"participant_type": "user", "related_id": actor_user_id}],
+    )
 
 
 @pytest.mark.asyncio
-async def test_user_created_task_notifies_internal_assignee() -> None:
+async def test_user_created_task_notifies_internal_assignee(monkeypatch) -> None:
     """Creating an assigned task should queue and then send an internal assignee email."""
     # Assignment notifications belong at the canonical write service so API,
     # bot form, and agent task creation all share the same side effect.
@@ -95,7 +112,18 @@ async def test_user_created_task_notifies_internal_assignee() -> None:
         validate_external_assignee_domain=AsyncMock(),
         send_assignment_email=AsyncMock(),
     )
-    service = TaskWriteService(session, organisation_id, actor_user_id)
+    participant_writer = SimpleNamespace(add_participants=AsyncMock())
+    monkeypatch.setattr(
+        task_write_module,
+        "ParticipantWriteService",
+        lambda *_args, **_kwargs: participant_writer,
+    )
+    service = TaskWriteService(
+        session,
+        organisation_id,
+        actor_user_id,
+        master_session=SimpleNamespace(),
+    )
     service._load_deal = AsyncMock(return_value=deal)  # type: ignore[method-assign]
     service._resolve_owner = AsyncMock(  # type: ignore[method-assign]
         return_value=(owner_crm_user_id, "Owner", "owner@example.com")
@@ -118,6 +146,7 @@ async def test_user_created_task_notifies_internal_assignee() -> None:
         deal,
         is_update=False,
     )
+    participant_writer.add_participants.assert_awaited_once()
 
 
 @pytest.mark.asyncio

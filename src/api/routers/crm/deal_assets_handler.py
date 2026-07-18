@@ -7,6 +7,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.crm_record_access import (
+    access_actor_from_user,
+    require_deal_collaborate,
+    require_deal_control,
+    require_deal_view,
+)
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
@@ -46,7 +52,11 @@ async def get_deal_assets_service(
 
     Ensures proper cleanup of database connections via try/finally pattern.
     """
-    service = DealAssetsService(org_session, user_ids.organisation_id)
+    service = DealAssetsService(
+        org_session,
+        user_ids.organisation_id,
+        access_actor_from_user(user_ids),
+    )
     try:
         yield service
     finally:
@@ -135,7 +145,7 @@ async def list_all_assets(
     response_model=GenericResponse[DealAssetsPage],
     summary="List deal assets",
     description="Retrieve all assets (files and links) for a specific deal",
-    dependencies=[Depends(rate_limit_user_read)],
+    dependencies=[Depends(rate_limit_user_read), Depends(require_deal_view)],
 )
 async def list_deal_assets(
     deal_id: UUID,
@@ -167,7 +177,7 @@ async def list_deal_assets(
     "/{deal_id}/assets/stream",
     summary="Stream deal asset status updates",
     description="SSE stream for real-time deal asset processing status updates",
-    dependencies=[Depends(rate_limit_user_read)],
+    dependencies=[Depends(rate_limit_user_read), Depends(require_deal_view)],
 )
 async def stream_deal_asset_updates(
     deal_id: UUID,
@@ -194,7 +204,7 @@ async def stream_deal_asset_updates(
     response_model=GenericResponse[DealAssetItem],
     summary="Get deal asset",
     description="Retrieve a single asset by ID",
-    dependencies=[Depends(rate_limit_user_read)],
+    dependencies=[Depends(rate_limit_user_read), Depends(require_deal_view)],
 )
 async def get_deal_asset(
     deal_id: UUID,
@@ -232,6 +242,7 @@ async def get_deal_asset(
     status_code=201,
     summary="Presign file upload",
     description="Generate a presigned URL for direct file upload to blob storage",
+    dependencies=[Depends(require_deal_collaborate)],
 )
 async def presign_file_upload(
     deal_id: UUID,
@@ -290,6 +301,7 @@ async def presign_file_upload(
     response_model=GenericResponse[DealAssetItem],
     summary="Finalize file upload",
     description="Confirm that a presigned file upload has completed successfully",
+    dependencies=[Depends(require_deal_collaborate)],
 )
 async def finalize_file_upload(
     deal_id: UUID,
@@ -351,6 +363,7 @@ async def finalize_file_upload(
     status_code=201,
     summary="Create external link",
     description="Add an external link as a deal asset",
+    dependencies=[Depends(require_deal_collaborate)],
 )
 async def create_deal_asset_link(
     deal_id: UUID,
@@ -403,6 +416,7 @@ async def create_deal_asset_link(
     response_model=GenericResponse[DealAssetItem],
     summary="Update deal asset",
     description="Partially update a deal asset's metadata",
+    dependencies=[Depends(require_deal_collaborate)],
 )
 async def update_deal_asset(
     deal_id: UUID,
@@ -448,6 +462,7 @@ async def update_deal_asset(
     response_model=GenericResponse[DealAssetItem],
     summary="Delete deal asset",
     description="Soft delete a deal asset",
+    dependencies=[Depends(require_deal_control)],
 )
 async def delete_deal_asset(
     deal_id: UUID,

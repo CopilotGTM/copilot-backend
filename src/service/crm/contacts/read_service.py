@@ -24,6 +24,7 @@ from src.domain.models.organisation_tables.sync.integration_models import (
     KnowledgeIntegration,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import CRMAccessActor, DealAccessPolicy
 from src.service.crm.contacts.contracts import ContactReadServiceError
 from src.service.crm.contacts.research_service import PROFILE_METADATA_KEY, PROFILE_RAW_KEY
 
@@ -61,10 +62,16 @@ def _decode_contact_search_cursor(cursor: str) -> tuple[int, str, UUID]:
 class ContactReadService:
     """Tenant-scoped contact queries used by API and agent workflows."""
 
-    def __init__(self, org_session: AsyncSession, organisation_id: UUID):
+    def __init__(
+        self,
+        org_session: AsyncSession,
+        organisation_id: UUID,
+        access_actor: CRMAccessActor | None = None,
+    ):
         """Bind the service to one org-scoped session and immutable org boundary."""
         self.org_session = org_session
         self.organisation_id = organisation_id
+        self._deal_access = DealAccessPolicy(org_session, organisation_id, access_actor)
 
     async def close(self) -> None:
         """Close the owned org session when used as a FastAPI dependency."""
@@ -639,6 +646,9 @@ class ContactReadService:
             .where(
                 col(CRMDeal.organisation_id) == self.organisation_id,
                 col(CRMDeal.is_deleted).is_(False),
+                self._deal_access.visible_deal_predicate(
+                    cast(Any, CRMDeal).__table__.c
+                ),
             )
         )
         deal_res = await self.org_session.execute(deal_stmt)

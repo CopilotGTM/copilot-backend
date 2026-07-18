@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -176,7 +176,15 @@ async def test_add_stakeholder_direct_creates_stakeholder_and_dispatches_jobs() 
             pain_points=["Manual reporting"],
         )
 
-    service_cls.assert_called_once_with(org_session, context.organisation_id, context.user_id)
+    service_cls.assert_called_once_with(
+        org_session,
+        context.organisation_id,
+        context.user_id,
+        access_actor=ANY,
+    )
+    access_actor = service_cls.call_args.kwargs["access_actor"]
+    assert access_actor.user_id == context.user_id
+    assert access_actor.email == context.user_email
     request = service.create_stakeholder.await_args.args[1]
     assert request.email == "BUYER@ACME.COM"
     assert request.name == "Buyer Person"

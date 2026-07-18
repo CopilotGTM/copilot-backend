@@ -20,6 +20,7 @@ from uuid import UUID
 from sqlalchemy import or_, select
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, require_agent_deal_access
 from src.domain.models.organisation_tables.sync.crm import CRMNote
 from src.service.crm.activity_feed_projection_service import note_title_or_preview
 
@@ -89,8 +90,12 @@ async def list_deal_notes(
     # Acquire fresh session for database operations
     async with context.acquire_session() as session:
         try:
+            await require_agent_deal_access(context, session, actual_deal_id)
             result = await session.execute(stmt)
             notes = result.scalars().all()
+        except AgentCRMAccessError:
+            logger.info("list_deal_notes: deal not visible to agent actor")
+            return []
         except Exception as e:
             logger.exception(f"list_deal_notes: database error: {e}")
             return []

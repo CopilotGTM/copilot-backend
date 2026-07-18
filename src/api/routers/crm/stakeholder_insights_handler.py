@@ -7,6 +7,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.crm_record_access import (
+    require_deal_collaborate,
+    require_deal_view,
+)
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
@@ -102,7 +106,7 @@ def _model_to_response(insight: DealStakeholderInsight) -> StakeholderInsightRes
     response_model=GenericResponse[StakeholderInsightListResponse],
     summary="List stakeholder insights for a deal",
     description="Get AI-generated stakeholder insights for a deal with filtering options.",
-    dependencies=[Depends(rate_limit_user_read)],
+    dependencies=[Depends(rate_limit_user_read), Depends(require_deal_view)],
 )
 async def list_stakeholder_insights(
     deal_id: UUID,
@@ -180,7 +184,7 @@ async def list_stakeholder_insights(
     response_model=GenericResponse[StakeholderInsightResponse],
     summary="Acknowledge an insight",
     description="Mark an insight as acknowledged (user saw it).",
-    dependencies=[Depends(rate_limit_user_write)],
+    dependencies=[Depends(rate_limit_user_write), Depends(require_deal_collaborate)],
 )
 async def acknowledge_insight(
     deal_id: UUID,
@@ -214,7 +218,7 @@ async def acknowledge_insight(
     response_model=GenericResponse[StakeholderInsightResponse],
     summary="Dismiss an insight",
     description="Dismiss an insight as not relevant.",
-    dependencies=[Depends(rate_limit_user_write)],
+    dependencies=[Depends(rate_limit_user_write), Depends(require_deal_collaborate)],
 )
 async def dismiss_insight(
     deal_id: UUID,
@@ -248,7 +252,7 @@ async def dismiss_insight(
     response_model=GenericResponse[StakeholderInsightResponse],
     summary="Resolve an insight",
     description="Mark an insight as resolved (action taken).",
-    dependencies=[Depends(rate_limit_user_write)],
+    dependencies=[Depends(rate_limit_user_write), Depends(require_deal_collaborate)],
 )
 async def resolve_insight(
     deal_id: UUID,

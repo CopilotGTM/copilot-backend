@@ -25,6 +25,7 @@ class LeadConversionService(LeadParticipantService):
         if self.actor_user_id is None or self.master_session is None:
             raise LeadServiceError("Lead conversion requires an authenticated user", 401)
 
+        await self._get_lead_or_404(lead_id, "control")
         lead, participants = await self.get_lead(lead_id)
         if self._enum_value(lead.status) == CRMLeadStatus.CONVERTED.value or (
             lead.converted_deal_id is not None
@@ -36,6 +37,7 @@ class LeadConversionService(LeadParticipantService):
             master_session=self.master_session,
             organisation_id=self.organisation_id,
             actor_user_id=self.actor_user_id,
+            access_actor=self.access_actor,
         )
         try:
             deal = await deal_service.create_deal(self._build_deal_payload_from_lead(lead, payload))

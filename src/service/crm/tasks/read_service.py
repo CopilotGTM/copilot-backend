@@ -16,6 +16,11 @@ from src.domain.models.organisation_tables.reminder_models import ReminderStatus
 from src.domain.models.organisation_tables.sync.crm import CRMTask, CRMUser
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import (
+    CRMAccessActor,
+    CRMRecordAccessError,
+    DealAccessPolicy,
+)
 from src.service.crm.tasks.contracts import (
     TaskReadRecord,
     TaskReadServiceError,
@@ -117,9 +122,16 @@ def _merge_assignee_rows(rows: Sequence[Any], *, limit: int) -> list[dict[str, A
 class TaskReadService:
     """Service for retrieving CRM tasks with filtering and pagination."""
 
-    def __init__(self, org_session: AsyncSession, organisation_id: UUID):
+    def __init__(
+        self,
+        org_session: AsyncSession,
+        organisation_id: UUID,
+        access_actor: CRMAccessActor | None = None,
+    ):
         self.org_session = org_session
         self.organisation_id = organisation_id
+        self.access_actor = access_actor
+        self._access = DealAccessPolicy(org_session, organisation_id, access_actor)
 
     async def close(self):
         """Dispose the underlying session when the service is released."""
@@ -144,10 +156,16 @@ class TaskReadService:
         """Return paginated source tasks for a specific deal."""
         if page < 1:
             raise TaskReadServiceError("Page must be >= 1", status_code=400)
+        if self.access_actor is not None:
+            try:
+                await self._access.require_deal(deal_id, "view")
+            except CRMRecordAccessError as exc:
+                raise TaskReadServiceError(exc.message, exc.status_code) from exc
 
         c = cast(Any, CRMTask).__table__.c
         stmt = self._select_tasks_with_deal_name().where(
             c.organisation_id == self.organisation_id,
+            self._visible_task_condition(),
             c.deal_id == deal_id,
             or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
         )
@@ -204,6 +222,7 @@ class TaskReadService:
         c = cast(Any, CRMTask).__table__.c
         stmt = self._select_tasks_with_deal_name().where(
             c.organisation_id == self.organisation_id,
+            self._visible_task_condition(),
             or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
         )
 
@@ -389,6 +408,7 @@ class TaskReadService:
         c = cast(Any, CRMTask).__table__.c
         base_conditions = [
             c.organisation_id == self.organisation_id,
+            self._visible_task_condition(),
             or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
         ]
         options: list[dict[str, Any]] = []
@@ -493,6 +513,7 @@ class TaskReadService:
         c = cast(Any, CRMTask).__table__.c
         base_conditions = [
             c.organisation_id == self.organisation_id,
+            self._visible_task_condition(),
             or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
         ]
 
@@ -529,15 +550,48 @@ class TaskReadService:
             stmt = self._select_tasks_with_deal_name().where(
                 c.task_id == task_id,
                 c.organisation_id == self.organisation_id,
+                self._visible_task_condition(),
                 or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
             )
             result = await self.org_session.execute(stmt)
             rows = self._read_records(result.all())
             records = await self._attach_reminder_summaries(rows)
-            return records[0] if records else None
+            record = records[0] if records else None
+            if record and record.task.deal_id and self.access_actor is not None:
+                try:
+                    await self._access.require_deal(record.task.deal_id, "view")
+                except CRMRecordAccessError:
+                    return None
+            return record
         except Exception as exc:
             logger.error("Failed to get task %s: %s", task_id, exc, exc_info=True)
             raise TaskReadServiceError("Failed to retrieve task") from exc
+
+    def _visible_task_condition(self):
+        """Limit deal tasks to accessible deals and standalone tasks to their user."""
+        task = cast(Any, CRMTask).__table__.c
+        actor = self.access_actor
+        if actor is None or actor.is_admin:
+            return task.organisation_id == self.organisation_id
+
+        deal = cast(Any, CRMDeal).__table__.c
+        accessible_deals = select(deal.deal_id).where(
+            deal.organisation_id == self.organisation_id,
+            deal.is_deleted.is_(False),
+            self._access.visible_deal_predicate(deal),
+        )
+        personal = [
+            task.created_by_user_id == actor.user_id,
+            task.assigned_to_user_id == actor.user_id,
+            task.task_metadata["assigned_to_public_user_id"].as_string()
+            == str(actor.user_id),
+        ]
+        if actor.normalized_email:
+            personal.append(func.lower(task.assigned_to_email) == actor.normalized_email)
+        return or_(
+            task.deal_id.in_(accessible_deals),
+            and_(task.deal_id.is_(None), or_(*personal)),
+        )
 
     def _select_tasks_with_deal_name(self):
         deal_c = cast(Any, CRMDeal).__table__.c

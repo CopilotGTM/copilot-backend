@@ -28,6 +28,7 @@ from sqlmodel import col
 
 from src.adapters.card_builders import FormDefinition, FormField, get_card_builder
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, require_agent_deal_access
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
     CRMDealStage,
@@ -106,6 +107,7 @@ async def update_deal_stage_form(
 
     async with context.acquire_session() as session:
         try:
+            await require_agent_deal_access(context, session, deal_uuid, "control")
             # Get the deal's pipeline_id, current stage_id, and integration_id
             deal_stmt = select(
                 col(CRMDeal.pipeline_id),
@@ -191,6 +193,8 @@ async def update_deal_stage_form(
             for s in stage_rows:
                 stage_choices.append({"title": s.name, "value": str(s.stage_id)})
 
+        except AgentCRMAccessError:
+            return {"status": "error", "message": "Deal not found."}
         except Exception as e:
             logger.exception("update_deal_stage_form: error querying deal/stages: %s", e)
             return {

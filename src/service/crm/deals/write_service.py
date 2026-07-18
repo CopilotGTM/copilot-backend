@@ -24,6 +24,12 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 )
 from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import (
+    CRMAccessActor,
+    CRMRecordAccessError,
+    DealAccessLevel,
+    DealAccessPolicy,
+)
 from src.service.crm.accounts.contracts import AccountWriteServiceError
 from src.service.crm.accounts.write_service import AccountWriteService
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
@@ -99,6 +105,7 @@ class DealWriteService:
         master_session: AsyncSession,
         organisation_id: UUID,
         actor_user_id: UUID,
+        access_actor: CRMAccessActor | None = None,
     ):
         """Initialize the service with both org and master sessions.
 
@@ -112,6 +119,7 @@ class DealWriteService:
         self.master_session = master_session  # For public schema reads
         self.organisation_id = organisation_id
         self.actor_user_id = actor_user_id
+        self._access = DealAccessPolicy(self.session, self.organisation_id, access_actor)
         # Account materialization is an account-domain rule. DealWriteService
         # keeps orchestration and participant side effects only.
         self._account_writer = AccountWriteService(self.session, self.organisation_id)
@@ -125,6 +133,14 @@ class DealWriteService:
         )
         self._stages = DealStageService(self.session, self.organisation_id)
         self._projection = ActivityFeedProjectionService(self.session, self.organisation_id)
+
+    async def _require_access(self, deal_id: UUID, level: DealAccessLevel) -> CRMDeal:
+        """Enforce API actor permissions while leaving trusted workers unchanged."""
+        try:
+            deal, _decision = await self._access.require_deal(deal_id, level)
+        except CRMRecordAccessError as exc:
+            raise DealWriteServiceError(exc.message, status_code=exc.status_code) from exc
+        return deal
 
     async def close(self) -> None:
         """Close the org-scoped session when this service owns dependency cleanup."""
@@ -441,9 +457,27 @@ class DealWriteService:
 
         # Handle owner assignment
         owner_user_id = payload.get("owner_user_id")
+        if "owner_user_id" not in payload and self._access.actor is not None:
+            owner_user_id = self._access.actor.user_id
         crm_user = None
+        creator_crm_user_id = None
 
-        if owner_user_id:
+        if self._access.actor is not None:
+            try:
+                creator_crm_user = await ensure_app_user_crm_identity(
+                    org_session=self.session,
+                    master_session=self.master_session,
+                    organisation_id=self.organisation_id,
+                    app_user_id=self._access.actor.user_id,
+                    actor_user_id=self.actor_user_id,
+                )
+            except CRMUserIdentityResolutionError as exc:
+                raise DealWriteServiceError(exc.message, status_code=exc.status_code) from exc
+            creator_crm_user_id = creator_crm_user.user_id
+            if owner_user_id == self._access.actor.user_id:
+                crm_user = creator_crm_user
+
+        if owner_user_id and crm_user is None:
             try:
                 crm_user = await ensure_app_user_crm_identity(
                     org_session=self.session,
@@ -454,6 +488,8 @@ class DealWriteService:
                 )
             except CRMUserIdentityResolutionError as exc:
                 raise DealWriteServiceError(exc.message, status_code=exc.status_code) from exc
+        if creator_crm_user_id is None and owner_user_id == self.actor_user_id and crm_user:
+            creator_crm_user_id = crm_user.user_id
 
         # The deal row is written before participants so downstream participant
         # services can validate a real deal_id in the same transaction.
@@ -481,6 +517,7 @@ class DealWriteService:
             deal_status=CRMDealStatus.OPEN,
             probability=payload.get("probability"),
             forecast_category=payload.get("forecast_category"),
+            created_by_user_id=creator_crm_user_id,
             owner_id=None,
             owner_name=None,
             owner_email=None,
@@ -627,6 +664,7 @@ class DealWriteService:
         if "source_created_at" in payload:
             self._validate_datetime_field("source_created_at", payload["source_created_at"])
 
+        await self._require_access(deal_id, "collaborate")
         deal = await self._load_internal_deal(deal_id)
         tracked_fields = [
             "name",
@@ -753,6 +791,7 @@ class DealWriteService:
         Raises:
             DealWriteServiceError: If deal not found or read-only
         """
+        await self._require_access(deal_id, "admin")
         deal = await self._load_internal_deal(deal_id)
         old_values = {
             "is_deleted": deal.is_deleted,
@@ -800,6 +839,7 @@ class DealWriteService:
             DealWriteServiceError: If deal or stage not found, or validation fails
         """
         self._validate_uuid_field("stage_id", stage_id)
+        await self._require_access(deal_id, "control")
         deal = await self._load_internal_deal(deal_id)
 
         # Verify the current pipeline is still usable before moving stages. A
@@ -990,6 +1030,7 @@ class DealWriteService:
                 status_code=400,
             )
 
+        await self._require_access(deal_id, "control")
         deal = await self._load_internal_deal(deal_id)
         if not deal.pipeline_id:
             raise DealWriteServiceError("Deal has no pipeline", status_code=500)
@@ -1062,6 +1103,7 @@ class DealWriteService:
     ) -> CRMDeal:
         """Reopen a closed internal deal and move it to an open stage."""
         self._validate_uuid_field("stage_id", stage_id)
+        await self._require_access(deal_id, "control")
         deal = await self._load_internal_deal(deal_id)
         if not deal.pipeline_id:
             raise DealWriteServiceError("Deal has no pipeline", status_code=500)
@@ -1180,6 +1222,7 @@ class DealWriteService:
             DealWriteServiceError: If deal or user not found, or validation fails
         """
         self._validate_uuid_field("owner_user_id", owner_user_id)
+        await self._require_access(deal_id, "control")
         deal = await self._load_internal_deal(deal_id)
 
         crm_user = None
@@ -1260,6 +1303,7 @@ class DealWriteService:
             if field_name in account_payload:
                 self._validate_string_field(field_name, account_payload[field_name])
 
+        await self._require_access(deal_id, "control")
         deal = await self._load_internal_deal(deal_id)
         now = datetime.now(UTC)
         old_values = {
@@ -1364,6 +1408,7 @@ class DealWriteService:
         ):
             raise DealWriteServiceError("No primary contact fields to update", status_code=400)
 
+        await self._require_access(deal_id, "control")
         deal = await self._load_internal_deal(deal_id)
         now = datetime.now(UTC)
         old_values = {

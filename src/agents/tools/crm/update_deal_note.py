@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
 from src.service.crm.notes.contracts import NotesServiceError
 from src.service.crm.notes.write_service import NotesWriteService
 
@@ -58,7 +59,11 @@ async def update_deal_note(
         return {"status": "error", "message": "Provide a note title or body to update."}
 
     async with context.acquire_session() as session:
-        service = NotesWriteService(session, context.organisation_id)
+        try:
+            access_actor = await resolve_agent_access_actor(context)
+        except AgentCRMAccessError as exc:
+            return {"status": "error", "message": str(exc)}
+        service = NotesWriteService(session, context.organisation_id, access_actor)
         try:
             note = await service.update_user_note(
                 deal_id=parsed_deal_id,

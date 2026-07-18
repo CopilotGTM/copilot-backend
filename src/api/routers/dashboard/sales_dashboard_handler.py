@@ -25,6 +25,7 @@ from src.api.schemas.sales_dashboard_models import (
 )
 from src.api.utils.http_response import Response
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import CRMAccessActor
 from src.service.dashboard.dashboard_snapshot_service import DashboardSnapshotService
 from src.service.dashboard.sales_dashboard_service import SalesDashboardService
 
@@ -68,13 +69,23 @@ async def get_sales_dashboard(
     master_session: AsyncSession = Depends(get_master_async_session),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[SalesDashboardResponse]:
+    access_actor = CRMAccessActor(user.user_id, user.user_role, user.user_email)
     snapshot_service = DashboardSnapshotService(
         org_session=org_session,
         master_session=master_session,
         organisation_id=user.organisation_id,
     )
     try:
-        payload = await snapshot_service.get_sales_dashboard(query, user_id=user.user_id)
+        if access_actor.is_admin:
+            payload = await snapshot_service.get_sales_dashboard(query, user_id=user.user_id)
+        else:
+            payload = await SalesDashboardService(
+                org_session=org_session,
+                master_session=master_session,
+                organisation_id=user.organisation_id,
+                user_id=user.user_id,
+                access_actor=access_actor,
+            ).get_sales_dashboard(query)
     except Exception:
         logger.exception(
             "Snapshot-backed Sales Dashboard read failed; falling back to live render",
@@ -85,6 +96,7 @@ async def get_sales_dashboard(
             master_session=master_session,
             organisation_id=user.organisation_id,
             user_id=user.user_id,
+            access_actor=access_actor,
         )
         payload = await service.get_sales_dashboard(query)
     return Response.success_response(

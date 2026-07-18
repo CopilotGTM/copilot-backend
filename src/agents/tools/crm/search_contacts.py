@@ -24,11 +24,14 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import selectinload
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
 from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDeal,
     CRMDealParticipant,
     CRMParticipantType,
 )
 from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
+from src.service.crm.access.record_access_policy import DealAccessPolicy
 from src.service.crm.contacts.read_service import ContactReadService
 
 if TYPE_CHECKING:
@@ -72,9 +75,11 @@ async def search_contacts(
     effective_limit = max(1, min(limit, 50))
 
     participant_c = cast(Any, CRMDealParticipant).__table__.c
+    deal_c = cast(Any, CRMDeal).__table__.c
 
     async with context.acquire_session() as session:
         try:
+            actor = await resolve_agent_access_actor(context)
             rows = await ContactReadService(
                 session,
                 organisation_id,
@@ -85,6 +90,9 @@ async def search_contacts(
             )
             contacts = [row["contact"] for row in rows]
             match_by_contact_id = {row["contact"].contact_id: row.get("match") for row in rows}
+        except AgentCRMAccessError:
+            logger.warning("search_contacts: authenticated CRM actor unavailable")
+            return []
         except Exception as e:
             logger.exception(f"search_contacts: database error: {e}")
             return []
@@ -109,12 +117,19 @@ async def search_contacts(
         participant_stmt = (
             select(CRMDealParticipant)
             .options(selectinload(cast(Any, CRMDealParticipant).deal))
+            .join(CRMDeal, deal_c.deal_id == participant_c.deal_id)
             .where(
                 participant_c.organisation_id == organisation_id,
+                deal_c.organisation_id == organisation_id,
                 participant_c.participant_type == CRMParticipantType.CONTACT.value,
                 participant_c.approval_status == ApprovalStatus.APPROVED.value,
                 participant_c.is_deleted.is_(False),
                 or_(*participant_match_filters),
+                DealAccessPolicy(
+                    session,
+                    organisation_id,
+                    actor,
+                ).visible_deal_predicate(deal_c),
             )
         )
 

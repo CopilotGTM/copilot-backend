@@ -46,6 +46,7 @@ from src.api.schemas.crm_contact_models import (
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.sync.crm import CRMActivityObjectType
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import CRMAccessActor
 from src.service.crm.activity_feed_read_service import (
     ActivityFeedReadService,
     ActivityFeedReadServiceError,
@@ -112,7 +113,11 @@ async def get_contact_read_service(
     The organisation id comes from auth context, not request parameters, so callers cannot
     use a contact id from another tenant to cross the schema boundary.
     """
-    service = ContactReadService(org_session, user_ids.organisation_id)
+    service = ContactReadService(
+        org_session,
+        user_ids.organisation_id,
+        CRMAccessActor(user_ids.user_id, user_ids.user_role, user_ids.user_email),
+    )
     try:
         yield service
     finally:
@@ -131,7 +136,15 @@ async def get_contact_write_service(
     Mutating routes share this dependency so create/update operations all use the same
     tenant-scoped session and rollback path.
     """
-    service = ContactWriteService(org_session, user_ids.organisation_id)
+    service = ContactWriteService(
+        org_session,
+        user_ids.organisation_id,
+        access_actor=CRMAccessActor(
+            user_ids.user_id,
+            user_ids.user_role,
+            user_ids.user_email,
+        ),
+    )
     try:
         yield service
     finally:

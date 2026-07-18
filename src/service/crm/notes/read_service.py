@@ -17,6 +17,11 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import (
+    CRMAccessActor,
+    CRMRecordAccessError,
+    DealAccessPolicy,
+)
 from src.service.crm.notes.contracts import NoteReadRecord, NotesServiceError, ParticipantInfo
 
 logger = get_logger("notes_read_service")
@@ -25,9 +30,15 @@ logger = get_logger("notes_read_service")
 class NotesReadService:
     """Read operations for deal notes and note mention participants."""
 
-    def __init__(self, org_session: AsyncSession, organisation_id: UUID):
+    def __init__(
+        self,
+        org_session: AsyncSession,
+        organisation_id: UUID,
+        access_actor: CRMAccessActor | None = None,
+    ):
         self.org_session = org_session
         self.organisation_id = organisation_id
+        self._access = DealAccessPolicy(org_session, organisation_id, access_actor)
 
     async def close(self) -> None:
         try:
@@ -124,15 +135,10 @@ class NotesReadService:
 
     async def _verify_deal_access(self, deal_id: UUID) -> CRMDeal:
         """Load the deal using organisation_id as the tenant boundary."""
-        c = cast(Any, CRMDeal).__table__.c
-        stmt = select(CRMDeal).where(
-            c.organisation_id == self.organisation_id,
-            c.deal_id == deal_id,
-        )
-        result = await self.org_session.execute(stmt)
-        deal = result.scalar_one_or_none()
-        if not deal:
-            raise NotesServiceError(f"Deal {deal_id} not found or access denied", status_code=404)
+        try:
+            deal, _decision = await self._access.require_deal(deal_id, "view")
+        except CRMRecordAccessError as exc:
+            raise NotesServiceError(exc.message, status_code=exc.status_code) from exc
         return deal
 
     def determine_note_source(self, note: NoteReadRecord | CRMNote) -> str:

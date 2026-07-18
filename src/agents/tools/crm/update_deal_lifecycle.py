@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
 from src.agents.tools.crm.update_deal_fields import _deal_context_fields, _resolve_deal_id
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.service.crm.deals.contracts import DealWriteServiceError
@@ -133,6 +134,10 @@ def create_update_deal_lifecycle(
             )
 
         actor_user_id = context.user_id or AUTOMATED_PIPELINE_USER_ID
+        try:
+            access_actor = await resolve_agent_access_actor(context)
+        except AgentCRMAccessError as exc:
+            return _result("failed", str(exc))
         # Keep lifecycle mutation atomic: mutate then commit, rollback on all
         # error paths to avoid mixed outcome state.
         async for master_session in acquire_master_async_session():
@@ -142,6 +147,7 @@ def create_update_deal_lifecycle(
                     master_session=master_session,
                     organisation_id=context.organisation_id,
                     actor_user_id=actor_user_id,
+                    access_actor=access_actor,
                 )
                 try:
                     if action == "move_stage":

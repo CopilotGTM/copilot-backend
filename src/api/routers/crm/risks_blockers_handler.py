@@ -9,6 +9,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.crm_record_access import access_actor_from_user
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
@@ -29,6 +30,11 @@ from src.domain.models.organisation_tables.sync.risk_blocker_models import (
     RiskBlockerStatus,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import (
+    CRMRecordAccessError,
+    DealAccessLevel,
+    DealAccessPolicy,
+)
 from src.service.crm.insights.risk_blocker_service import (
     InvalidStatusTransitionError,
     RiskBlockerNotFoundError,
@@ -53,6 +59,7 @@ class RiskBlockerRequestServices:
     lifecycle: RiskBlockerLifecycleService
     session: AsyncSession
     context: RiskBlockerWriteContext
+    access: DealAccessPolicy
 
     async def close(self) -> None:
         await self.session.close()
@@ -77,6 +84,11 @@ async def get_risk_blocker_service(
         lifecycle=RiskBlockerLifecycleService(session, user.organisation_id),
         session=session,
         context=context,
+        access=DealAccessPolicy(
+            session,
+            user.organisation_id,
+            access_actor_from_user(user),
+        ),
     )
     try:
         yield service
@@ -113,6 +125,36 @@ async def _rollback_if_owned(service: Any) -> None:
         await service.session.rollback()
 
 
+async def _require_risk_access(
+    service: Any,
+    risk_blocker_id: UUID,
+    level: DealAccessLevel,
+) -> Any:
+    """Authorize a risk through its parent deal before returning or mutating it."""
+    item = await _read_service(service).get_by_id(risk_blocker_id)
+    if item is None:
+        raise RiskBlockerNotFoundError("Risk/blocker not found")
+    if hasattr(service, "access"):
+        try:
+            await service.access.require_deal(item.deal_id, level)
+        except CRMRecordAccessError as exc:
+            raise RiskBlockerServiceError(exc.message, status_code=exc.status_code) from exc
+    return item
+
+
+async def _require_risk_deal_access(
+    service: Any,
+    deal_id: UUID,
+    level: DealAccessLevel,
+) -> None:
+    """Authorize deal-addressed risk operations before their child query executes."""
+    if hasattr(service, "access"):
+        try:
+            await service.access.require_deal(deal_id, level)
+        except CRMRecordAccessError as exc:
+            raise RiskBlockerServiceError(exc.message, status_code=exc.status_code) from exc
+
+
 @risks_blockers_router.get(
     "/{deal_id}/risks-blockers",
     response_model=GenericResponse[RiskBlockerListResponse],
@@ -146,6 +188,7 @@ async def list_risks_blockers(
     - sort: Sort order (desc = newest first, asc = oldest first)
     """
     try:
+        await _require_risk_deal_access(service, deal_id, "view")
         # Parse status filter
         parsed_statuses = None
         if query.status:
@@ -220,7 +263,7 @@ async def get_risk_blocker(
     - Complete audit trail of all changes
     """
     try:
-        item = await _read_service(service).get_by_id(risk_blocker_id)
+        item = await _require_risk_access(service, risk_blocker_id, "view")
 
         if not item:
             return Response.error_response(
@@ -263,6 +306,7 @@ async def create_risk_blocker(
     Items are created directly with status=OPEN.
     """
     try:
+        await _require_risk_deal_access(service, deal_id, "collaborate")
         context = _write_context(service)
         if context:
             item = await _write_service(service).create_manual(
@@ -330,6 +374,7 @@ async def update_risk_blocker(
     All changes are tracked in the audit trail with old/new values.
     """
     try:
+        await _require_risk_access(service, risk_blocker_id, "collaborate")
         updates = body.model_dump(exclude_none=True)
         context = _write_context(service)
         if context:
@@ -382,6 +427,7 @@ async def dismiss_risk_blocker(
     The item is moved to DISMISSED status.
     """
     try:
+        await _require_risk_access(service, risk_blocker_id, "collaborate")
         context = _write_context(service)
         if context:
             item = await _lifecycle_service(service).dismiss(risk_blocker_id, context=context)
@@ -433,6 +479,7 @@ async def resolve_risk_blocker(
     how the issue was addressed.
     """
     try:
+        await _require_risk_access(service, risk_blocker_id, "collaborate")
         context = _write_context(service)
         if context:
             item = await _lifecycle_service(service).resolve(
@@ -486,6 +533,7 @@ async def reopen_risk_blocker(
     Clears resolution data and moves the item back to OPEN status.
     """
     try:
+        await _require_risk_access(service, risk_blocker_id, "collaborate")
         context = _write_context(service)
         if context:
             item = await _lifecycle_service(service).reopen(risk_blocker_id, context=context)
@@ -539,6 +587,7 @@ async def delete_risk_blocker(
     instead to preserve the audit trail.
     """
     try:
+        await _require_risk_access(service, risk_blocker_id, "control")
         context = _write_context(service)
         if context:
             await _write_service(service).delete(risk_blocker_id)

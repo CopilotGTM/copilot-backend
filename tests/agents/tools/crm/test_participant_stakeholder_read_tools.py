@@ -3,18 +3,31 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 from src.agents.tools.crm.list_stakeholders import list_deal_stakeholders
 from src.agents.tools.crm.search_contacts import search_contacts
+from src.domain.models.master_tables.user_models import UserAppRole
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
     CRMDealParticipant,
     CRMParticipantType,
 )
+from src.service.crm.access.record_access_policy import CRMAccessActor
 from src.service.crm.participants.stakeholder_adapter import participant_to_stakeholder_detail_dict
+
+
+@pytest.fixture(autouse=True)
+def authenticated_deal_access(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Avoid master-database lookups while exercising stakeholder projections."""
+    actor = CRMAccessActor(uuid4(), UserAppRole.ADMIN)
+    monkeypatch.setattr(
+        "src.agents.tools.crm.list_stakeholders.require_agent_deal_access",
+        AsyncMock(return_value=actor),
+    )
 
 
 class _AsyncSessionContext:
@@ -64,10 +77,12 @@ class _SequencedSession:
     def __init__(self, results: list[_FakeResult]):
         self._results = results
         self.executed = 0
+        self.statements = []
 
-    async def execute(self, _stmt):
+    async def execute(self, statement):
         """Return the next queued result so tests can assert query order."""
         self.executed += 1
+        self.statements.append(statement)
         return self._results.pop(0)
 
 
@@ -221,7 +236,19 @@ async def test_list_deal_stakeholders_resolves_single_participant_id() -> None:
         email="buyer@example.com",
         full_name="Buyer Snapshot",
     )
-    session = _SequencedSession([_FakeResult(scalar=participant), _FakeResult(scalar=contact)])
+    deal = CRMDeal(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        deal_id=deal_id,
+        name="Expansion",
+    )
+    session = _SequencedSession(
+        [
+            _FakeResult(scalar=deal),
+            _FakeResult(scalar=participant),
+            _FakeResult(scalar=contact),
+        ]
+    )
     context = _context(org_id, deal_id, session)
 
     result = await list_deal_stakeholders(
@@ -284,7 +311,9 @@ async def test_list_deal_stakeholders_filters_by_query() -> None:
 
 
 @pytest.mark.asyncio
-async def test_search_contacts_uses_participants_for_associated_deals() -> None:
+async def test_search_contacts_uses_only_visible_deal_associations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Contact search keeps participant-backed deal associations intact."""
     org_id = uuid4()
     integration_id = uuid4()
@@ -310,6 +339,10 @@ async def test_search_contacts_uses_participants_for_associated_deals() -> None:
         [_FakeResult(scalars=[_FakeContactSearchRow(contact)]), _FakeResult(scalars=[participant])]
     )
     context = _context(org_id, None, session)
+    monkeypatch.setattr(
+        "src.agents.tools.crm.search_contacts.resolve_agent_access_actor",
+        AsyncMock(return_value=CRMAccessActor(uuid4(), UserAppRole.MEMBER)),
+    )
 
     result = await search_contacts(
         context=context,  # type: ignore[arg-type]
@@ -320,3 +353,4 @@ async def test_search_contacts_uses_participants_for_associated_deals() -> None:
     assert result[0]["deal_count"] == 1
     assert result[0]["deals"][0]["deal_id"] == str(deal_id)
     assert result[0]["deals"][0]["role"] == "DECISION_MAKER"
+    assert "created_by_user_id" in str(session.statements[1])

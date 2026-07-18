@@ -30,6 +30,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
 from src.service.crm.deals.read_service import DealReadService
 
 if TYPE_CHECKING:
@@ -76,13 +77,18 @@ async def search_deals(
 
     async with context.acquire_session() as session:
         try:
+            actor = await resolve_agent_access_actor(context)
             rows = await DealReadService(
                 session,
                 organisation_id,
+                actor=actor,
             ).search_deals_for_agent(
                 q=query,
                 limit=effective_limit,
             )
+        except AgentCRMAccessError:
+            logger.warning("search_deals: authenticated CRM actor unavailable")
+            return []
         except Exception as e:
             logger.exception(f"search_deals: database error: {e}")
             return []
