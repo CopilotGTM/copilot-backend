@@ -41,6 +41,7 @@ class UserResponse(BaseModel):
     email: EmailStr
     organisation_id: UUID
     organisation_role: str
+    user_role: UserAppRole
     job_title: str | None = None
     status: SupabaseUserStatus
     admin_status: AdminUserStatus
@@ -59,6 +60,7 @@ class UserResponse(BaseModel):
             email=user.email,
             organisation_id=user.organisation_id,
             organisation_role=user.organisation_role,
+            user_role=user.user_role,
             job_title=user.job_title,
             status=user.status,
             admin_status=user.admin_status,

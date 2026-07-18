@@ -2,6 +2,7 @@
 
 import importlib
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import fakeredis
@@ -340,6 +341,7 @@ class FakeAdminUserService:
             email=user.email,
             organisation_id=user.organisation_id,
             organisation_role=user.user_role,
+            user_role=user.user_role,
             status=SupabaseUserStatus(user.status) if isinstance(user.status, str) else user.status,
             admin_status=AdminUserStatus(user.admin_status)
             if isinstance(user.admin_status, str)
@@ -428,6 +430,8 @@ class FakeAdminUserService:
             user.first_name = user_data.first_name
         if hasattr(user_data, "last_name") and user_data.last_name:
             user.last_name = user_data.last_name
+        if user_data.user_role is not None:
+            user.user_role = user_data.user_role.value
         user.updated_at = datetime.now(UTC)
         return self._to_user_response(user)
 
@@ -615,10 +619,29 @@ def admin_user_client(mocker, admin_test_data):
         "src.infra.messaging.redis_client.get_redis_client",
         return_value=fakeredis.FakeRedis(),
     )
+    mocker.patch("src.api.fastapi_app.initialize_redis_pool", return_value=None)
+    mocker.patch("src.api.fastapi_app.close_redis_pool", return_value=None)
+    mocker.patch("src.api.fastapi_app.initialize_async_redis_pool", new=AsyncMock())
+    mocker.patch("src.api.fastapi_app.close_async_redis_pool", new=AsyncMock())
+    mocker.patch("src.api.fastapi_app.async_init_otel", new=AsyncMock())
+    mocker.patch("src.api.fastapi_app.init_sentry", return_value=None)
+    mocker.patch(
+        "src.infra.auth.supabase_admin_client.supabase_admin_client.initialize",
+        new=AsyncMock(),
+    )
+    mocker.patch(
+        "src.infra.auth.supabase_user_client.supabase_user_client.initialize",
+        new=AsyncMock(),
+    )
+    mocker.patch(
+        "src.infra.security.token_revocation.token_revocation_service.initialize",
+        new=AsyncMock(),
+    )
 
     # Build ASGI app
     asgi_app = fastapi_app.create_fastapi_app()
 
+    from src.api.dependencies.rate_limit import rate_limit_admin_read
     from src.api.routers.admin.users_handler import get_admin_user_service
     from src.domain.models.master_tables import AdminRole
     from src.infra.auth.admin_auth import admin_auth
@@ -626,6 +649,9 @@ def admin_user_client(mocker, admin_test_data):
 
     async def _override_service():
         yield fake_service
+
+    async def _override_rate_limit():
+        return None
 
     def _override_admin_auth():
         return FakeSuperAdmin(
@@ -635,6 +661,7 @@ def admin_user_client(mocker, admin_test_data):
         )
 
     _fastapp.dependency_overrides[get_admin_user_service] = _override_service
+    _fastapp.dependency_overrides[rate_limit_admin_read] = _override_rate_limit
     _fastapp.dependency_overrides[admin_auth] = _override_admin_auth
 
     with TestClient(asgi_app) as c:

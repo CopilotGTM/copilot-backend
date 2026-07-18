@@ -192,6 +192,19 @@ def test_list_users_success(admin_user_client):
     assert len(body["data"]["users"]) == 2
 
 
+def test_list_users_includes_user_role(admin_user_client):
+    """The admin list contract exposes the app role used for authorization."""
+    client = admin_user_client["client"]
+    service = admin_user_client["service"]
+
+    service.add_user(email="admin-role@example.com", user_role="admin")
+
+    resp = client.get("/admin/users/list_users")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["users"][0]["user_role"] == "admin"
+
+
 def test_list_users_filter_by_organisation(admin_user_client):
     """Test listing users filtered by organisation."""
     client = admin_user_client["client"]
@@ -329,6 +342,22 @@ def test_update_user_success(admin_user_client):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["status"] == "SUCCESS"
+
+
+def test_update_user_role(admin_user_client):
+    """The shared user update endpoint changes and returns the app role."""
+    client = admin_user_client["client"]
+    service = admin_user_client["service"]
+    user = service.add_user(email="role-update@example.com", user_role="member")
+
+    resp = client.put(
+        f"/admin/users/{user.user_id}/update",
+        json={"user_role": "admin"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["user_role"] == "admin"
+    assert service._users[user.user_id].user_role == "admin"
 
 
 def test_update_user_not_found(admin_user_client):
