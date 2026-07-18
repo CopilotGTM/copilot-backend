@@ -14,6 +14,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 
 from src.agents.tools.base import db_session_lock, execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, require_agent_deal_access
 from src.domain.models.organisation_tables.sync.calendar import AssociationStatus
 from src.domain.models.organisation_tables.sync.email_models import (
     DealEmailAssociation,
@@ -78,6 +79,11 @@ async def list_deal_emails(
 
     # Acquire session on-demand (fresh session pattern)
     async with context.acquire_session() as session:
+        try:
+            await require_agent_deal_access(context, session, parsed_deal_id)
+        except AgentCRMAccessError:
+            logger.info("list_deal_emails: deal not visible to agent actor")
+            return []
         # Type-safe column access pattern
         assoc_c = cast(Any, DealEmailAssociation).__table__.c
         email_c = cast(Any, Email).__table__.c

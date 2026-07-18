@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -11,6 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.organisation_tables.sync.crm import CRMNote
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import (
+    CRMAccessActor,
+    CRMRecordAccessError,
+    DealAccessPolicy,
+)
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.notes.contracts import (
     CreateUserNoteResult,
@@ -24,9 +29,16 @@ logger = get_logger("notes_write_service")
 class NotesWriteService:
     """Durable user-note mutations; callers own commit and rollback."""
 
-    def __init__(self, org_session: AsyncSession, organisation_id: UUID):
+    def __init__(
+        self,
+        org_session: AsyncSession,
+        organisation_id: UUID,
+        access_actor: CRMAccessActor | None = None,
+    ):
         self.org_session = org_session
         self.organisation_id = organisation_id
+        self.access_actor = access_actor
+        self._access = DealAccessPolicy(org_session, organisation_id, access_actor)
         self._projection = ActivityFeedProjectionService(org_session, organisation_id)
 
     async def close(self) -> None:
@@ -47,7 +59,7 @@ class NotesWriteService:
         context: NoteWriteContext,
     ) -> CreateUserNoteResult:
         """Create or reuse an exact active user-created note for one org-owned deal."""
-        await self._verify_deal_access(deal_id)
+        await self._verify_deal_access(deal_id, "collaborate")
 
         existing_note = await self._find_existing_user_note(
             deal_id=deal_id,
@@ -111,6 +123,7 @@ class NotesWriteService:
             raise NotesServiceError("No fields to update", status_code=400)
 
         note = await self._load_user_note(deal_id, note_id)
+        await self._require_note_mutation(deal_id, note)
 
         updated = False
         if "content" in payload:
@@ -140,6 +153,7 @@ class NotesWriteService:
     async def delete_user_note(self, deal_id: UUID, note_id: UUID) -> CRMNote:
         """Soft-delete a user-created note without touching provider-owned rows."""
         note = await self._load_user_note(deal_id, note_id)
+        await self._require_note_mutation(deal_id, note)
 
         now = datetime.now(UTC)
         note.is_deleted = True
@@ -154,17 +168,28 @@ class NotesWriteService:
 
         return note
 
-    async def _verify_deal_access(self, deal_id: UUID) -> CRMDeal:
-        c = cast(Any, CRMDeal).__table__.c
-        stmt = select(CRMDeal).where(
-            c.organisation_id == self.organisation_id,
-            c.deal_id == deal_id,
-        )
-        result = await self.org_session.execute(stmt)
-        deal = result.scalar_one_or_none()
-        if not deal:
-            raise NotesServiceError(f"Deal {deal_id} not found or access denied", status_code=404)
+    async def _verify_deal_access(self, deal_id: UUID, level: str = "view") -> CRMDeal:
+        try:
+            deal, _decision = await self._access.require_deal(deal_id, level)  # type: ignore[arg-type]
+        except CRMRecordAccessError as exc:
+            raise NotesServiceError(exc.message, status_code=exc.status_code) from exc
         return deal
+
+    async def _require_note_mutation(self, deal_id: UUID, note: CRMNote) -> None:
+        """Allow a collaborator's own typo fix for ten minutes, or an admin override."""
+        if self.access_actor is None:
+            return
+        if self.access_actor.is_admin:
+            return
+        await self._verify_deal_access(deal_id, "collaborate")
+        author_id = (note.note_metadata or {}).get("created_by_public_user_id")
+        if author_id != str(self.access_actor.user_id):
+            raise NotesServiceError("Only the note author may change this note", 403)
+        created_at = note.source_created_at or note.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+        if datetime.now(UTC) > created_at + timedelta(minutes=10):
+            raise NotesServiceError("The note correction window has ended", 409)
 
     async def _load_user_note(self, deal_id: UUID, note_id: UUID) -> CRMNote:
         note = await self.org_session.get(CRMNote, note_id)

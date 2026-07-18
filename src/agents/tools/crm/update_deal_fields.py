@@ -14,6 +14,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
 from src.contracts.crm.deal_write import DealUpdateRequest
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.service.crm.deals.contracts import DealWriteServiceError
@@ -212,6 +213,10 @@ def create_update_deal_fields(
             )
 
         actor_user_id = context.user_id or AUTOMATED_PIPELINE_USER_ID
+        try:
+            access_actor = await resolve_agent_access_actor(context)
+        except AgentCRMAccessError as exc:
+            return _result("failed", str(exc))
         # Keep the write transaction narrow and explicit: build service once then
         # commit only after the mutate call succeeds.
         async for master_session in acquire_master_async_session():
@@ -221,6 +226,7 @@ def create_update_deal_fields(
                     master_session=master_session,
                     organisation_id=context.organisation_id,
                     actor_user_id=actor_user_id,
+                    access_actor=access_actor,
                 )
                 try:
                     deal = await service.update_deal(resolved_deal_id, effective_fields)

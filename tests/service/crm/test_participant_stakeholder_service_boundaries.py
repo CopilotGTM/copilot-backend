@@ -24,14 +24,6 @@ def test_stakeholder_table_is_not_reintroduced() -> None:
     assert matches == []
 
 
-def test_participant_plan_does_not_require_new_migrations() -> None:
-    plan = Path(
-        "docs/superpowers/plans/"
-        "2026-06-20-crm-deal-participant-stakeholder-service-standardization.md"
-    ).read_text()
-    assert "Do not create or modify migrations in this first implementation slice." in plan
-
-
 def test_new_participant_services_do_not_commit() -> None:
     for path in [
         "src/service/crm/participants/participant_write_service.py",

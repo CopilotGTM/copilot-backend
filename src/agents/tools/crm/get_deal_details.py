@@ -34,6 +34,7 @@ from uuid import UUID
 from sqlalchemy import select
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, require_agent_deal_access
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
@@ -92,8 +93,12 @@ async def get_deal_details(
 
     async with context.acquire_session() as session:
         try:
+            await require_agent_deal_access(context, session, parsed_deal_id)
             result = await session.execute(stmt)
             deal = result.scalar_one_or_none()
+        except AgentCRMAccessError:
+            logger.info("get_deal_details: deal not visible to agent actor")
+            return None
         except Exception as e:
             logger.exception(f"get_deal_details: database error: {e}")
             return None

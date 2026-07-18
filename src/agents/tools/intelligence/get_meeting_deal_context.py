@@ -18,11 +18,13 @@ from uuid import UUID
 from sqlalchemy import select
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
 from src.domain.models.organisation_tables.sync.calendar import (
     AssociationStatus,
     CalendarEventDealAssociation,
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
+from src.service.crm.access.record_access_policy import DealAccessPolicy
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -64,29 +66,38 @@ async def get_meeting_deal_context(
     assoc_c = cast(Any, CalendarEventDealAssociation).__table__.c
     deal_c = cast(Any, CRMDeal).__table__.c
 
-    stmt = (
-        select(
-            assoc_c.deal_id,
-            deal_c.name,
-            deal_c.company_name,
-            deal_c.stage_label,
-            deal_c.stage_name,
-        )
-        .select_from(CalendarEventDealAssociation)
-        .join(CRMDeal, deal_c.deal_id == assoc_c.deal_id)
-        .where(
-            assoc_c.organisation_id == organisation_id,
-            assoc_c.event_id == parsed_event_id,
-            assoc_c.status == AssociationStatus.ACTIVE,
-        )
-        .limit(1)
-    )
-
     # Acquire fresh session for database operations
     async with context.acquire_session() as session:
         try:
+            actor = await resolve_agent_access_actor(context)
+            stmt = (
+                select(
+                    assoc_c.deal_id,
+                    deal_c.name,
+                    deal_c.company_name,
+                    deal_c.stage_label,
+                    deal_c.stage_name,
+                )
+                .select_from(CalendarEventDealAssociation)
+                .join(CRMDeal, deal_c.deal_id == assoc_c.deal_id)
+                .where(
+                    assoc_c.organisation_id == organisation_id,
+                    deal_c.organisation_id == organisation_id,
+                    assoc_c.event_id == parsed_event_id,
+                    assoc_c.status == AssociationStatus.ACTIVE,
+                    DealAccessPolicy(
+                        session,
+                        organisation_id,
+                        actor,
+                    ).visible_deal_predicate(deal_c),
+                )
+                .limit(1)
+            )
             result = await session.execute(stmt)
             row = result.first()
+        except AgentCRMAccessError:
+            logger.warning("get_meeting_deal_context: authenticated CRM actor unavailable")
+            return None
         except Exception:
             logger.exception("get_meeting_deal_context: error fetching deal context")
             return None

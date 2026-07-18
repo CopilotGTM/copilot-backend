@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from src.agents.tools.crm.search_deals import search_deals
+from src.domain.models.master_tables.user_models import UserAppRole
+from src.service.crm.access.record_access_policy import CRMAccessActor
 
 
 @pytest.fixture
@@ -35,9 +37,16 @@ class _FakeSearchService:
     error: Exception | None = None
     calls: list[dict[str, object]] = []
 
-    def __init__(self, session: object, organisation_id: UUID):
+    def __init__(
+        self,
+        session: object,
+        organisation_id: UUID,
+        actor: CRMAccessActor | None = None,
+    ):
         self.session = session
         self.organisation_id = organisation_id
+        self.actor = actor
+        self.__class__.calls.append({"actor": actor})
 
     async def search_deals_for_agent(
         self,
@@ -59,6 +68,10 @@ def fake_agentic_search(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "src.agents.tools.crm.search_deals.DealReadService",
         _FakeSearchService,
+    )
+    monkeypatch.setattr(
+        "src.agents.tools.crm.search_deals.resolve_agent_access_actor",
+        AsyncMock(return_value=CRMAccessActor(uuid4(), UserAppRole.MEMBER)),
     )
 
 
@@ -160,6 +173,7 @@ class TestSearchDeals:
             "type": "fuzzy",
             "score": 1.2,
         }
+        assert isinstance(_FakeSearchService.calls[0]["actor"], CRMAccessActor)
 
     @pytest.mark.asyncio
     async def test_no_matches_returns_empty_list(self, mock_context: MagicMock) -> None:
@@ -173,7 +187,7 @@ class TestSearchDeals:
         result = await search_deals(context=mock_context, query="test", limit=999)
 
         assert result == []
-        assert _FakeSearchService.calls[0]["limit"] == 10
+        assert _FakeSearchService.calls[1]["limit"] == 10
 
     @pytest.mark.asyncio
     async def test_limit_clamped_to_min_1(self, mock_context: MagicMock) -> None:
@@ -181,7 +195,7 @@ class TestSearchDeals:
         result = await search_deals(context=mock_context, query="test", limit=0)
 
         assert result == []
-        assert _FakeSearchService.calls[0]["limit"] == 1
+        assert _FakeSearchService.calls[1]["limit"] == 1
 
     @pytest.mark.asyncio
     async def test_db_error_returns_empty(self, mock_context: MagicMock) -> None:

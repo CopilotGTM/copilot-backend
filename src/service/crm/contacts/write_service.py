@@ -18,6 +18,7 @@ from src.domain.models.organisation_tables.sync.crm.activities import (
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
+    CRMDealMutationEvent,
     CRMDealParticipant,
     CRMParticipantType,
 )
@@ -29,6 +30,7 @@ from src.domain.models.organisation_tables.sync.crm.leads import (
 )
 from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.domain.models.organisation_tables.sync.participant_models import IntegrationParticipant
+from src.service.crm.access.record_access_policy import CRMAccessActor
 from src.service.crm.accounts.contracts import AccountWriteContext, AccountWriteServiceError
 from src.service.crm.accounts.write_service import AccountWriteService
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
@@ -81,11 +83,13 @@ class ContactWriteService:
         org_session: AsyncSession,
         organisation_id: UUID,
         master_session: AsyncSession | None = None,
+        access_actor: CRMAccessActor | None = None,
     ):
         """Bind writes to one org-scoped session without taking commit ownership."""
         self.org_session = org_session
         self.organisation_id = organisation_id
         self.master_session = master_session
+        self.access_actor = access_actor
         self._account_writer = AccountWriteService(org_session, organisation_id, master_session)
         self._mutation_events = CRMMutationEventService(org_session, organisation_id)
         self._projection = ActivityFeedProjectionService(org_session, organisation_id)
@@ -589,6 +593,7 @@ class ContactWriteService:
         """Archive one internal contact and detach every active CRM reference to it."""
         contact = await self._load_active_contact(contact_id)
         await self._ensure_contact_can_be_archived(contact)
+        await self._require_archive_actor(contact_id)
 
         now = datetime.now(UTC)
         changed_fields = {
@@ -649,6 +654,24 @@ class ContactWriteService:
                 ],
             },
         )
+
+    async def _require_archive_actor(self, contact_id: UUID) -> None:
+        """Restrict shared-contact archival to its creator or an administrator."""
+        actor = self.access_actor
+        if actor is None or actor.is_admin:
+            return
+        event = CRMDealMutationEvent
+        stmt = select(event.event_id).where(
+            col(event.organisation_id) == self.organisation_id,
+            col(event.entity_type) == "contact",
+            col(event.entity_id) == contact_id,
+            col(event.operation) == "create_contact",
+            col(event.actor_user_id) == actor.user_id,
+        )
+        if (await self.org_session.execute(stmt)).scalar_one_or_none() is None:
+            raise ContactWriteServiceError(
+                "Only the contact creator or an admin may archive it", 403
+            )
 
     async def _detach_contact_references(
         self, contact: CRMContact, now: datetime

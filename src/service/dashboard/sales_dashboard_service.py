@@ -19,6 +19,7 @@ from src.contracts.dashboard.sales_dashboard import (
     UpdateSalesDashboardPreferencesRequest,
 )
 from src.domain.models.master_tables.user_models import User
+from src.service.crm.access.record_access_policy import CRMAccessActor
 from src.service.dashboard.data_provider import SalesDashboardDataProvider
 from src.service.dashboard.defaults import (
     DEFAULT_SALES_DASHBOARD_DATE_RANGE,
@@ -47,11 +48,13 @@ class SalesDashboardService:
         master_session: AsyncSession,
         organisation_id,
         user_id=None,
+        access_actor: CRMAccessActor | None = None,
     ) -> None:
         self.org_session = org_session
         self.master_session = master_session
         self.organisation_id = organisation_id
         self.user_id = user_id
+        self.access_actor = access_actor
 
     @staticmethod
     def resolve_filters(
@@ -197,7 +200,11 @@ class SalesDashboardService:
             raise RuntimeError("org_session is required to build dashboard widgets")
 
         requested = set(include_widgets or [])
-        dashboard_data = SalesDashboardDataProvider(self.org_session, self.organisation_id)
+        dashboard_data = SalesDashboardDataProvider(
+            self.org_session,
+            self.organisation_id,
+            self.access_actor,
+        )
         summary_widgets = []
         if self._should_build_section(
             {"total_pipeline", "active_deals", "extended_deals", "average_deal_age"},

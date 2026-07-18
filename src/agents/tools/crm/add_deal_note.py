@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
 from src.service.bots.form_handlers.nonce import create_nonce
 from src.service.bots.teams_bot_service import TeamsBotService
 from src.service.crm.notes.contracts import NotesServiceError, NoteWriteContext
@@ -275,7 +276,11 @@ async def add_deal_note_direct(
     )
 
     async with context.acquire_session() as session:
-        notes_write = NotesWriteService(session, organisation_id)
+        try:
+            access_actor = await resolve_agent_access_actor(context)
+        except AgentCRMAccessError as exc:
+            return {"status": "error", "message": str(exc)}
+        notes_write = NotesWriteService(session, organisation_id, access_actor)
         insight_dispatch = NotesInsightDispatchService(session, organisation_id)
         try:
             create_result = await notes_write.create_user_note(

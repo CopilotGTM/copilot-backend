@@ -42,6 +42,7 @@ from sqlalchemy import func, select
 from sqlalchemy.sql import Select
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStatus
 
 if TYPE_CHECKING:
@@ -239,21 +240,26 @@ async def list_deals(
 
     c = cast(Any, CRMDeal).__table__.c
 
-    # Base query
-    stmt = select(CRMDeal).where(
-        c.organisation_id == organisation_id,
-        c.is_deleted.is_(False),
-    )
-
-    # Apply filters and sorting
-    stmt = _apply_filters(stmt, filters, c)
-    stmt = _apply_sorting(stmt, filters, c)
-    stmt = stmt.offset(effective_offset).limit(effective_limit)
-
     async with context.acquire_session() as session:
         try:
+            actor = await resolve_agent_access_actor(context)
+            from src.service.crm.access.record_access_policy import DealAccessPolicy
+
+            # The policy predicate is applied before user filters so broad agent
+            # questions never reveal records outside the caller's deal scope.
+            stmt = select(CRMDeal).where(
+                c.organisation_id == organisation_id,
+                c.is_deleted.is_(False),
+                DealAccessPolicy(session, organisation_id, actor).visible_deal_predicate(c),
+            )
+            stmt = _apply_filters(stmt, filters, c)
+            stmt = _apply_sorting(stmt, filters, c)
+            stmt = stmt.offset(effective_offset).limit(effective_limit)
             result = await session.execute(stmt)
             deals = result.scalars().all()
+        except AgentCRMAccessError:
+            logger.warning("list_deals: authenticated CRM actor unavailable")
+            return []
         except Exception as e:
             logger.exception(f"list_deals: database error: {e}")
             return []

@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.sql.functions import count
 
 from src.agents.tools.base import db_session_lock, execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, require_agent_deal_access
 from src.domain.models.organisation_tables.sync.messaging_models import (
     MessagingChannel,
     MessagingDealLink,
@@ -90,6 +91,11 @@ async def list_deal_channel_messages(
 
     # Acquire session on-demand (fresh session pattern)
     async with context.acquire_session() as session:
+        try:
+            await require_agent_deal_access(context, session, parsed_deal_id)
+        except AgentCRMAccessError:
+            logger.info("list_deal_channel_messages: deal not visible to agent actor")
+            return {"channels": [], "total_messages": 0, "total_channels": 0}
         # Type-safe column access pattern
         link_c = cast(Any, MessagingDealLink).__table__.c
         channel_c = cast(Any, MessagingChannel).__table__.c

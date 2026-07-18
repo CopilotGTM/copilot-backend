@@ -45,6 +45,7 @@ def test_pipeline_response_includes_deal_counts() -> None:
         probability=25,
         is_closed=False,
         display_order=1,
+        updated_at=datetime.now(UTC),
     )
     pipeline = SimpleNamespace(
         pipeline_id=uuid4(),

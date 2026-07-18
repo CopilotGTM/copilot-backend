@@ -10,6 +10,8 @@ from uuid import UUID, uuid4
 
 import pytest
 from src.agents.tools.tasks.create_task import create_create_task, create_task, create_task_form
+from src.domain.models.master_tables.user_models import UserAppRole
+from src.service.crm.access.record_access_policy import CRMAccessActor
 
 
 class _FakeTasksWriteServiceError(Exception):
@@ -283,6 +285,10 @@ async def test_create_task_deal_name_association_remains_org_scoped() -> None:
             "src.agents.tools.tasks.create_task._resolve_deal_by_name",
             AsyncMock(return_value=(deal_id, "Acme")),
         ) as resolve_deal,
+        patch(
+            "src.agents.tools.tasks.create_task.resolve_agent_access_actor",
+            AsyncMock(return_value=CRMAccessActor(context.user_id, UserAppRole.MEMBER)),
+        ),
         patch("src.agents.tools.tasks.create_task._load_tasks_write_service") as loader,
     ):
         service = MagicMock()
@@ -294,6 +300,7 @@ async def test_create_task_deal_name_association_remains_org_scoped() -> None:
         result = await create_task(context=context, title="Follow up", deal_name="Acme")
 
     resolve_deal.assert_awaited_once_with(context, "Acme")
+    assert isinstance(service_cls.call_args.kwargs["access_actor"], CRMAccessActor)
     assert service.create_task.await_args.kwargs["deal_id"] == deal_id
     assert result["deal_id"] == str(deal_id)
     assert result["deal_name"] == "Acme"

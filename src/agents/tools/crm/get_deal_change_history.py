@@ -33,6 +33,7 @@ from sqlalchemy import select
 from sqlmodel import col
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, require_agent_deal_access
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
     CRMDealStage,
@@ -83,6 +84,11 @@ async def get_deal_change_history(
     stage_c = cast(Any, CRMDealStage).__table__.c
 
     async with context.acquire_session() as session:
+        try:
+            await require_agent_deal_access(context, session, parsed_deal_id)
+        except AgentCRMAccessError:
+            logger.info("get_deal_change_history: deal not visible to agent actor")
+            return None
         # First, get only the required deal columns to verify access and get basic info
         deal_stmt = select(
             col(CRMDeal.deal_id),

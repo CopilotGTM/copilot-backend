@@ -5,6 +5,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.crm_record_access import (
+    require_deal_collaborate,
+    require_deal_view,
+)
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
@@ -86,6 +90,7 @@ async def get_deal_meeting_job_service(
     "/{deal_id}/meetings",
     response_model=GenericResponse[list[DealMeetingResponse]],
     summary="Get meetings for a deal",
+    dependencies=[Depends(require_deal_view)],
 )
 async def get_deal_meetings(
     deal_id: UUID,
@@ -114,6 +119,7 @@ async def get_deal_meetings(
     "/{deal_id}/meetings/{event_id}/jobs/{job_type}",
     response_model=GenericResponse[DealJobResponse],
     summary="Initiate a meeting job",
+    dependencies=[Depends(require_deal_collaborate)],
 )
 async def initiate_meeting_job(
     deal_id: UUID,
@@ -178,6 +184,7 @@ async def initiate_meeting_job(
 @meetings_router.get(
     "/{deal_id}/meetings/{event_id}/jobs/{job_id}/stream",
     summary="SSE stream for meeting job",
+    dependencies=[Depends(require_deal_view)],
 )
 async def meeting_job_stream(
     deal_id: UUID,
@@ -227,6 +234,7 @@ async def meeting_job_stream(
     "/{deal_id}/meetings/{event_id}/status",
     response_model=GenericResponse[None],
     summary="Update meeting association status",
+    dependencies=[Depends(require_deal_collaborate)],
 )
 async def update_meeting_status(
     deal_id: UUID,
@@ -267,6 +275,7 @@ async def update_meeting_status(
     response_model=GenericResponse[TranscriptPresignResponse],
     status_code=201,
     summary="Presign transcript upload",
+    dependencies=[Depends(require_deal_collaborate)],
 )
 async def presign_transcript_upload(
     deal_id: UUID,
@@ -345,6 +354,7 @@ async def presign_transcript_upload(
     "/{deal_id}/meetings/{event_id}/transcript/finalize",
     response_model=GenericResponse[DealJobResponse],
     summary="Finalize transcript upload",
+    dependencies=[Depends(require_deal_collaborate)],
 )
 async def finalize_transcript_upload(
     deal_id: UUID,

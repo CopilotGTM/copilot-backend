@@ -198,11 +198,10 @@ def test_task_assignee_options_merge_by_emitted_filter_key() -> None:
     assert external_option["task_count"] == 4
 
 
-def test_task_write_service_clears_stale_owner_for_name_only_external_assignment() -> None:
+def test_task_write_service_rejects_external_assignment() -> None:
     source = Path("src/service/crm/tasks/write_service.py").read_text()
 
-    assert 'if "external_assignee_name" in payload:' in source
-    assert 'if "external_assignee_email" not in payload:' in source
-    assert "task.assigned_to_user_id = None" in source
-    assert "task.assigned_to_email = None" in source
-    assert 'metadata.pop("assigned_to_public_user_id", None)' in source
+    assert (
+        'if "external_assignee_email" in payload or "external_assignee_name" in payload:' in source
+    )
+    assert 'TaskWriteServiceError("Tasks can only be assigned to internal members", 400)' in source

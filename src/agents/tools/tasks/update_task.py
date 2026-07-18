@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
 from src.agents.tools.tasks.create_task import _resolve_due_date, _resolve_user_by_name
 from src.infra.utils.timezone import resolve_timezone_name
 from src.service.crm.tasks.contracts import TaskWriteServiceError
@@ -94,7 +95,16 @@ async def update_task(
         return {"status": "error", "message": "Provide at least one task field to update."}
 
     async with context.acquire_session() as session:
-        service = TaskWriteService(session, context.organisation_id, context.user_id)
+        try:
+            access_actor = await resolve_agent_access_actor(context)
+        except AgentCRMAccessError as exc:
+            return {"status": "error", "message": str(exc)}
+        service = TaskWriteService(
+            session,
+            context.organisation_id,
+            context.user_id,
+            access_actor=access_actor,
+        )
         try:
             task = await service.update_task(parsed_task_id, payload)
             # Assignment notifications describe committed state, so never send before commit.

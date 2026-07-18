@@ -18,11 +18,16 @@ from sqlmodel import col
 from src.contracts.crm.stakeholders import StakeholderDetail, StakeholderListResponse
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
-    CRMDeal,
     CRMDealParticipant,
     CRMParticipantType,
 )
 from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
+from src.service.crm.access.record_access_policy import (
+    CRMAccessActor,
+    CRMRecordAccessError,
+    DealAccessPolicy,
+)
+from src.service.crm.participants.errors import StakeholdersServiceError
 from src.service.crm.participants.stakeholder_adapter import (
     participant_to_stakeholder_detail_dict,
 )
@@ -36,10 +41,12 @@ class StakeholderReadService:
         org_session: AsyncSession,
         organisation_id: UUID,
         user_id: UUID | None = None,
+        access_actor: CRMAccessActor | None = None,
     ):
         self.org_session = org_session
         self.organisation_id = organisation_id
         self.user_id = user_id
+        self._access = DealAccessPolicy(org_session, organisation_id, access_actor)
 
     @property
     def session(self) -> AsyncSession:
@@ -115,12 +122,10 @@ class StakeholderReadService:
         cannot infer company metadata from a deal ID outside its organisation.
         Agent tools pass a limit to preserve their compact response contract.
         """
-        deal_stmt = select(CRMDeal).where(
-            col(CRMDeal.deal_id) == deal_id,
-            col(CRMDeal.organisation_id) == self.organisation_id,
-        )
-        deal_result = await self.session.execute(deal_stmt)
-        deal = deal_result.scalar_one_or_none()
+        try:
+            deal, _decision = await self._access.require_deal(deal_id, "view")
+        except CRMRecordAccessError as exc:
+            raise StakeholdersServiceError(exc.message, exc.status_code) from exc
 
         company_domain = deal.company_domain if deal else None
         company_name = deal.company_name if deal else None
@@ -177,6 +182,10 @@ class StakeholderReadService:
         Both `deal_id` and `organisation_id` are checked because participant IDs
         can arrive from agents or clients and must not cross tenant boundaries.
         """
+        try:
+            await self._access.require_deal(deal_id, "view")
+        except CRMRecordAccessError as exc:
+            raise StakeholdersServiceError(exc.message, exc.status_code) from exc
         stmt = select(CRMDealParticipant).where(
             col(CRMDealParticipant.participant_id) == participant_id,
             col(CRMDealParticipant.deal_id) == deal_id,

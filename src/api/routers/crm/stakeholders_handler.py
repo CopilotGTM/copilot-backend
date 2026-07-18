@@ -39,6 +39,7 @@ from src.contracts.crm.stakeholders import (
     UpdateStakeholderCommand,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import CRMAccessActor
 from src.service.crm.contacts.read_service import ContactReadService
 from src.service.crm.insights.stakeholders_service import (
     StakeholdersService,
@@ -144,7 +145,12 @@ async def get_stakeholder_read_service(
     session: AsyncSession = Depends(get_org_async_session),
 ):
     """Dependency that yields participant-backed stakeholder reads."""
-    service = StakeholderReadService(session, user_ids.organisation_id, user_ids.user_id)
+    service = StakeholderReadService(
+        session,
+        user_ids.organisation_id,
+        user_ids.user_id,
+        CRMAccessActor(user_ids.user_id, user_ids.user_role, user_ids.user_email),
+    )
     try:
         yield service
     finally:
@@ -159,7 +165,12 @@ async def get_stakeholder_write_service(
     session: AsyncSession = Depends(get_org_async_session),
 ):
     """Dependency that yields participant-backed stakeholder semantic writes."""
-    service = StakeholderWriteService(session, user_ids.organisation_id, user_ids.user_id)
+    service = StakeholderWriteService(
+        session,
+        user_ids.organisation_id,
+        user_ids.user_id,
+        CRMAccessActor(user_ids.user_id, user_ids.user_role, user_ids.user_email),
+    )
     try:
         yield service
     finally:

@@ -60,6 +60,7 @@ from src.domain.models.organisation_tables.sync.integration_models import (
     KnowledgeIntegration,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import CRMAccessActor
 from src.service.crm.deals.contracts import DealReadServiceError, DealWriteServiceError
 from src.service.crm.deals.read_service import (
     DealReadService,
@@ -188,7 +189,8 @@ async def get_deals_access_service(
     org_session: AsyncSession = Depends(get_org_async_session),
 ):
     """Dependency that yields a DealReadService instance for the current org."""
-    service = DealReadService(org_session, user_ids.organisation_id)
+    actor = CRMAccessActor(user_ids.user_id, user_ids.user_role, user_ids.user_email)
+    service = DealReadService(org_session, user_ids.organisation_id, actor=actor)
     try:
         yield service
     finally:
@@ -227,6 +229,11 @@ async def get_deal_write_service(
         master_session=master_session,
         organisation_id=user_ids.organisation_id,
         actor_user_id=user_ids.user_id,
+        access_actor=CRMAccessActor(
+            user_ids.user_id,
+            user_ids.user_role,
+            user_ids.user_email,
+        ),
     )
     try:
         yield service

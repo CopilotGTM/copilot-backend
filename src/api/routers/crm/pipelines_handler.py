@@ -7,6 +7,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.crm_record_access import (
+    access_actor_from_user,
+    require_crm_admin,
+)
 from src.api.dependencies.crm_write_guard import require_crm_write_scope
 from src.api.dependencies.master_dependencies import get_master_async_session
 from src.api.dependencies.organisation_dependencies import (
@@ -88,6 +92,7 @@ async def get_deal_write_service(
         master_session=master_session,
         organisation_id=user_ids.organisation_id,
         actor_user_id=user_ids.user_id,
+        access_actor=access_actor_from_user(user_ids),
     )
     try:
         yield service
@@ -478,6 +483,7 @@ async def move_pipeline_stage_deals(
     body: MoveStageDealsRequest,
     response: FastAPIResponse,
     service: DealWriteService = Depends(get_deal_write_service),
+    _admin: None = Depends(require_crm_admin),
     _crm_write_guard: None = Depends(require_crm_write_scope("pipelines:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[MoveStageDealsResponse]:

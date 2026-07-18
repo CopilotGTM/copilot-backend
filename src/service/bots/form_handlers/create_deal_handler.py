@@ -145,6 +145,7 @@ class CreateDealFormHandler(BaseFormHandler):
 
             # Form submission is the point where a preview becomes a CRM write;
             # keep the service imports local so read-only form handlers stay light.
+            from src.service.crm.access.record_access_policy import CRMAccessActor
             from src.service.crm.deals.contracts import DealWriteServiceError
             from src.service.crm.deals.write_service import DealWriteService
 
@@ -156,6 +157,11 @@ class CreateDealFormHandler(BaseFormHandler):
                             master_session=master_session,
                             organisation_id=org_id,
                             actor_user_id=user.user_id,
+                            access_actor=CRMAccessActor(
+                                user.user_id,
+                                user.user_role,
+                                str(user.email) if user.email else None,
+                            ),
                         )
 
                         payload: dict[str, Any] = {

@@ -37,6 +37,7 @@ from src.api.schemas.crm_lead_models import (
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.sync.crm.leads import CRMLeadSourceType, CRMLeadStatus
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import CRMAccessActor
 from src.service.crm.leads.contracts import LeadServiceError
 from src.service.crm.leads.conversion_service import LeadConversionService
 from src.service.crm.leads.participant_service import LeadParticipantService
@@ -53,6 +54,10 @@ require_leads_update_scope = require_crm_write_scope("leads:update")
 require_leads_convert_scope = require_crm_write_scope("leads:convert")
 
 
+def _access_actor(user_ids: UserIDs) -> CRMAccessActor:
+    return CRMAccessActor(user_ids.user_id, user_ids.user_role, user_ids.user_email)
+
+
 async def get_lead_read_service(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: AsyncSession = Depends(get_org_async_session),
@@ -64,6 +69,7 @@ async def get_lead_read_service(
         user_ids.organisation_id,
         user_ids.user_id,
         master_session,
+        _access_actor(user_ids),
     )
     try:
         yield service
@@ -85,6 +91,7 @@ async def get_lead_write_service(
         user_ids.organisation_id,
         user_ids.user_id,
         master_session,
+        _access_actor(user_ids),
     )
     try:
         yield service
@@ -106,6 +113,7 @@ async def get_lead_participant_service(
         user_ids.organisation_id,
         user_ids.user_id,
         master_session,
+        _access_actor(user_ids),
     )
     try:
         yield service
@@ -127,6 +135,7 @@ async def get_lead_conversion_service(
         user_ids.organisation_id,
         user_ids.user_id,
         master_session,
+        _access_actor(user_ids),
     )
     try:
         yield service
@@ -150,7 +159,7 @@ async def list_leads(
     status: CRMLeadStatus | None = Query(None, description="Filter leads by lifecycle status"),
     owner_id: UUID | None = Query(None, description="Filter leads by owner UUID"),
     source_type: CRMLeadSourceType | None = Query(None, description="Filter leads by source type"),
-    service: LeadWriteService = Depends(get_lead_write_service),
+    service: LeadReadService = Depends(get_lead_read_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[LeadsPage]:
     """List CRM leads with optional filters and pagination."""
@@ -251,7 +260,7 @@ async def update_lead(
     lead_id: UUID,
     body: UpdateLeadRequest,
     response: FastAPIResponse,
-    service: LeadConversionService = Depends(get_lead_conversion_service),
+    service: LeadWriteService = Depends(get_lead_write_service),
     _crm_write_guard: None = Depends(require_leads_update_scope),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[LeadListItem]:
@@ -271,6 +280,65 @@ async def update_lead(
 
 
 @leads_router.post(
+    "/leads/{lead_id}/claim",
+    response_model=GenericResponse[LeadListItem],
+    summary="Claim an unassigned CRM lead",
+)
+async def claim_lead(
+    lead_id: UUID,
+    response: FastAPIResponse,
+    service: LeadWriteService = Depends(get_lead_write_service),
+    _crm_write_guard: None = Depends(require_leads_update_scope),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[LeadListItem]:
+    """Atomically make the current user the owner of an unassigned lead."""
+    try:
+        lead = await service.claim_lead(lead_id)
+        return Response.success_response(message="Lead claimed", data=present_lead_list_item(lead))
+    except LeadServiceError as e:
+        await service.org_session.rollback()
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
+    except Exception:
+        await service.org_session.rollback()
+        logger.error("Error claiming lead", extra={"lead_id": str(lead_id)}, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+@leads_router.delete(
+    "/leads/{lead_id}",
+    response_model=GenericResponse[LeadListItem],
+    summary="Archive a CRM lead (admin only)",
+)
+async def archive_lead(
+    lead_id: UUID,
+    response: FastAPIResponse,
+    reason: str | None = Query(None, max_length=255),
+    service: LeadWriteService = Depends(get_lead_write_service),
+    _crm_write_guard: None = Depends(require_leads_update_scope),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[LeadListItem]:
+    """Soft-archive a lead while preserving its history and conversion links."""
+    try:
+        lead = await service.archive_lead(lead_id, reason)
+        return Response.success_response(message="Lead archived", data=present_lead_list_item(lead))
+    except LeadServiceError as e:
+        await service.org_session.rollback()
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
+    except Exception:
+        await service.org_session.rollback()
+        logger.error("Error archiving lead", extra={"lead_id": str(lead_id)}, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+@leads_router.post(
     "/leads/{lead_id}/participants",
     response_model=GenericResponse[LeadParticipantItem],
     summary="Add a participant to a CRM lead",
@@ -279,7 +347,7 @@ async def add_lead_participant(
     lead_id: UUID,
     body: CreateLeadParticipantRequest,
     response: FastAPIResponse,
-    service: LeadReadService = Depends(get_lead_read_service),
+    service: LeadParticipantService = Depends(get_lead_participant_service),
     _crm_write_guard: None = Depends(require_leads_update_scope),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[LeadParticipantItem]:
@@ -318,7 +386,7 @@ async def convert_lead(
     lead_id: UUID,
     body: ConvertLeadRequest,
     response: FastAPIResponse,
-    service: LeadReadService = Depends(get_lead_read_service),
+    service: LeadConversionService = Depends(get_lead_conversion_service),
     _crm_write_guard: None = Depends(require_leads_convert_scope),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[LeadConversionResponse]:

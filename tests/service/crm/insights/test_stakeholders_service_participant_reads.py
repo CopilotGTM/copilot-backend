@@ -152,7 +152,15 @@ async def test_get_stakeholder_detail_resolves_participant_id_and_contact_profil
         job_title="CFO",
         contact_research="Fresh contact research",
     )
-    session = _SequencedSession([_FakeResult(scalar=participant), _FakeResult(scalar=contact)])
+    deal = CRMDeal(
+        organisation_id=org_id,
+        integration_id=integration_id,
+        deal_id=deal_id,
+        name="Expansion",
+    )
+    session = _SequencedSession(
+        [_FakeResult(scalar=deal), _FakeResult(scalar=participant), _FakeResult(scalar=contact)]
+    )
     service = StakeholderReadService(org_session=session, organisation_id=org_id)  # type: ignore[arg-type]
 
     detail = await service.get_stakeholder_detail(deal_id, participant_id)

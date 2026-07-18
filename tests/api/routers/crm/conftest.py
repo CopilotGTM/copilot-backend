@@ -10,6 +10,10 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from src.api.dependencies.crm_record_access import (
+    require_deal_collaborate,
+    require_deal_view,
+)
 from src.api.dependencies.organisation_dependencies import UserIDs, get_current_user
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
 from src.api.routers.crm.deal_notes_handler import get_deal_notes_service
@@ -1608,6 +1612,8 @@ def insights_dependency_overrides(client, test_user_ids, fake_insight_service):
     app.dependency_overrides[get_insight_service] = _override_service
     app.dependency_overrides[rate_limit_user_read] = _override_rate_limit
     app.dependency_overrides[rate_limit_user_write] = _override_rate_limit
+    app.dependency_overrides[require_deal_view] = _override_rate_limit
+    app.dependency_overrides[require_deal_collaborate] = _override_rate_limit
     yield
     app.dependency_overrides = {}
 
@@ -2537,6 +2543,8 @@ def meetings_dependency_overrides(
     app.dependency_overrides[get_deal_meeting_job_service] = _override_job_service
     app.dependency_overrides[rate_limit_user_read] = _override_rate_limit
     app.dependency_overrides[rate_limit_user_write] = _override_rate_limit
+    app.dependency_overrides[require_deal_view] = _override_rate_limit
+    app.dependency_overrides[require_deal_collaborate] = _override_rate_limit
     yield {
         "meetings_service": fake_meetings_service,
         "job_service": fake_meeting_job_service,

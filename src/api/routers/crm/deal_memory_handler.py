@@ -9,6 +9,7 @@ from fastapi import Response as FastAPIResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
+from src.api.dependencies.crm_record_access import require_deal_view
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
@@ -31,7 +32,7 @@ deal_memory_router = APIRouter()
     response_model=GenericResponse[DealMemoryResponse | None],
     summary="Get deal memory",
     description="Retrieve the persistent memory document for a deal",
-    dependencies=[Depends(rate_limit_user_read)],
+    dependencies=[Depends(rate_limit_user_read), Depends(require_deal_view)],
 )
 async def get_deal_memory(
     deal_id: UUID,

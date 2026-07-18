@@ -96,6 +96,7 @@ class UpdateDealStageFormHandler(BaseFormHandler):
                     pass
 
             # Move the deal to the new stage
+            from src.service.crm.access.record_access_policy import CRMAccessActor
             from src.service.crm.deals.contracts import DealWriteServiceError
             from src.service.crm.deals.write_service import DealWriteService
 
@@ -107,6 +108,11 @@ class UpdateDealStageFormHandler(BaseFormHandler):
                             master_session=master_session,
                             organisation_id=org_id,
                             actor_user_id=user.user_id,
+                            access_actor=CRMAccessActor(
+                                user.user_id,
+                                user.user_role,
+                                str(user.email) if user.email else None,
+                            ),
                         )
 
                         deal = await write_service.move_stage(deal_id, stage_id)

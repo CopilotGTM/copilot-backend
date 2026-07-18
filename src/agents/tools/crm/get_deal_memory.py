@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy import select
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, require_agent_deal_access
 from src.domain.models.organisation_tables.sync.deal_memory_models import DealMemory
 
 if TYPE_CHECKING:
@@ -75,8 +76,12 @@ async def get_deal_memory(
 
     async with context.acquire_session() as session:
         try:
+            await require_agent_deal_access(context, session, deal_id)
             result = await session.execute(stmt)
             memory = result.scalar_one_or_none()
+        except AgentCRMAccessError:
+            logger.info("get_deal_memory: deal not visible to agent actor")
+            return {"status": "NOT_AVAILABLE", "message": "Deal memory is not available"}
         except Exception as e:
             logger.exception(f"get_deal_memory: database error: {e}")
             return {"status": "NOT_AVAILABLE", "message": "Error reading deal memory"}

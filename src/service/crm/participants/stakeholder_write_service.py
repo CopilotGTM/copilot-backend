@@ -28,6 +28,11 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 )
 from src.domain.models.organisation_tables.sync.crm.stakeholders import StakeholderSource
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import (
+    CRMAccessActor,
+    CRMRecordAccessError,
+    DealAccessPolicy,
+)
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.contacts.contracts import ContactWriteContext
 from src.service.crm.contacts.resolution_service import (
@@ -88,11 +93,13 @@ class StakeholderWriteService:
         org_session: AsyncSession,
         organisation_id: UUID,
         user_id: UUID | None = None,
+        access_actor: CRMAccessActor | None = None,
     ):
         """Capture immutable tenant context for the service instance."""
         self.org_session = org_session
         self.organisation_id = organisation_id
         self.user_id = user_id
+        self._access = DealAccessPolicy(org_session, organisation_id, access_actor)
 
     @property
     def session(self) -> AsyncSession:
@@ -616,6 +623,7 @@ class StakeholderWriteService:
         self, deal_id: UUID, participant_id: UUID
     ) -> CRMDealParticipant | None:
         """Get the canonical participant-backed stakeholder by participant ID."""
+        await self._require_deal_control(deal_id)
         return await self._find_contact_participant(
             deal_id=deal_id,
             participant_id=participant_id,
@@ -665,6 +673,7 @@ class StakeholderWriteService:
         Raises:
             StakeholdersServiceError: If email already exists for this deal.
         """
+        await self._require_deal_control(deal_id)
         email_normalized = normalize_email(request.email)
         name = clean_optional_string(request.name)
         linkedin_url = clean_optional_string(request.linkedin_url)
@@ -890,6 +899,7 @@ class StakeholderWriteService:
         Only contacts with valid email addresses are added. Contacts without
         emails or those that already exist as stakeholders are skipped.
         """
+        await self._require_deal_control(deal_id)
         added: list[StakeholderDetail] = []
         skipped: list[SkippedContact] = []
 
@@ -1039,3 +1049,11 @@ class StakeholderWriteService:
             await self.org_session.close()
         except Exception:
             logger.debug("StakeholderWriteService close exception", exc_info=True)
+
+    async def _require_deal_control(self, deal_id: UUID) -> None:
+        if self._access.actor is None:
+            return
+        try:
+            await self._access.require_deal(deal_id, "control")
+        except CRMRecordAccessError as exc:
+            raise StakeholdersServiceError(exc.message, exc.status_code) from exc

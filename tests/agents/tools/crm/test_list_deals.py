@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import get_args, get_type_hints
 from unittest.mock import AsyncMock, MagicMock
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from src.agents.tools.crm.list_deals import (
@@ -16,6 +16,17 @@ from src.agents.tools.crm.list_deals import (
     _format_deal_output,
     list_deals,
 )
+from src.domain.models.master_tables.user_models import UserAppRole
+from src.service.crm.access.record_access_policy import CRMAccessActor
+
+
+@pytest.fixture(autouse=True)
+def authenticated_member(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep tool tests focused while still requiring a concrete human actor."""
+    monkeypatch.setattr(
+        "src.agents.tools.crm.list_deals.resolve_agent_access_actor",
+        AsyncMock(return_value=CRMAccessActor(uuid4(), UserAppRole.MEMBER)),
+    )
 
 
 @pytest.fixture
@@ -401,6 +412,9 @@ class TestListDeals:
 
         assert len(result) == 1
         assert result[0]["name"] == "Test Deal"
+        statement = session.execute.await_args.args[0]
+        assert "created_by_user_id" in str(statement)
+        assert "crm_deal_participants" in str(statement)
 
     @pytest.mark.asyncio
     async def test_empty_results(self, mock_context: MagicMock) -> None:

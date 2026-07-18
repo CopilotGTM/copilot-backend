@@ -139,7 +139,10 @@ async def test_add_deal_note_direct_creates_note_commits_and_triggers_pipeline()
             title=" Budget approval ",
         )
 
-    write_cls.assert_called_once_with(org_session, context.organisation_id)
+    write_cls.assert_called_once_with(org_session, context.organisation_id, ANY)
+    access_actor = write_cls.call_args.args[2]
+    assert access_actor.user_id == context.user_id
+    assert access_actor.email == context.user_email
     dispatch_cls.assert_called_once_with(org_session, context.organisation_id)
     write_service.create_user_note.assert_awaited_once_with(
         deal_id=deal_id,

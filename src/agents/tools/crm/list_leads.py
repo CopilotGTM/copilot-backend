@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
 from src.domain.models.organisation_tables.sync.crm.leads import CRMLeadSourceType, CRMLeadStatus
 from src.service.crm.leads.contracts import LeadServiceError
 from src.service.crm.leads.read_service import LeadReadService
@@ -105,11 +106,17 @@ async def list_leads(
         return []
 
     async with context.acquire_session() as org_session:
+        try:
+            access_actor = await resolve_agent_access_actor(context)
+        except AgentCRMAccessError:
+            logger.warning("list_leads: authenticated CRM actor unavailable")
+            return []
         service = LeadReadService(
             org_session,
             organisation_id,
             actor_user_id=context.user_id,
             master_session=None,
+            access_actor=access_actor,
         )
         try:
             leads, _total_count = await service.list_leads(

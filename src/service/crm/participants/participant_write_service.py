@@ -22,6 +22,11 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMParticipantType,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import (
+    CRMAccessActor,
+    CRMRecordAccessError,
+    DealAccessPolicy,
+)
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
 from src.service.crm.participants.contracts import (
@@ -48,11 +53,13 @@ class ParticipantWriteService:
         organisation_id: UUID,
         actor_user_id: UUID,
         master_session: AsyncSession | None = None,
+        access_actor: CRMAccessActor | None = None,
     ):
         self.session = session
         self.organisation_id = organisation_id
         self.actor_user_id = actor_user_id
         self.master_session = master_session
+        self._access = DealAccessPolicy(session, organisation_id, access_actor)
 
     async def close(self) -> None:
         """Close the org-scoped session when the dependency owns its lifecycle."""
@@ -71,6 +78,7 @@ class ParticipantWriteService:
         commits after this returns so post-commit jobs cannot outlive a failed DB
         transaction.
         """
+        await self._require_deal_control(deal_id)
         deal, integration_id = await self._get_internal_deal(deal_id)
         now = datetime.now(UTC)
 
@@ -195,6 +203,7 @@ class ParticipantWriteService:
         External CRM participant rows are treated as provider-owned and read-only;
         callers must not remove provider-synced memberships through this path.
         """
+        await self._require_deal_control(deal_id)
         deal, integration_id = await self._get_internal_deal(deal_id)
         participant = await self.session.get(CRMDealParticipant, participant_id)
 
@@ -243,6 +252,7 @@ class ParticipantWriteService:
         The method preserves the old role uniqueness rule for non-contact
         participant types while keeping contact primary-contact state on one row.
         """
+        await self._require_deal_control(deal_id)
         _, integration_id = await self._get_internal_deal(deal_id)
         participant = await self.session.get(CRMDealParticipant, participant_id)
 
@@ -349,6 +359,14 @@ class ParticipantWriteService:
             raise ParticipantServiceError("Deal is deleted", 404)
 
         return deal, integration_id
+
+    async def _require_deal_control(self, deal_id: UUID) -> None:
+        if self._access.actor is None:
+            return
+        try:
+            await self._access.require_deal(deal_id, "control")
+        except CRMRecordAccessError as exc:
+            raise ParticipantServiceError(exc.message, exc.status_code) from exc
 
     async def _resolve_participant_entity(
         self,

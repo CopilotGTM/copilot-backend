@@ -61,6 +61,7 @@ def get_current_user(request: Request, user: User = Depends(user_auth)) -> UserI
         user_name=user_name,
         user_email=str(user.email) if user.email else None,
         user_timezone=effective_timezone,
+        user_role=user.user_role,
     )
 
 

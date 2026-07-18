@@ -25,6 +25,7 @@ from src.api.schemas.crm_participant_models import (
 )
 from src.api.utils.http_response import Response
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import CRMAccessActor
 from src.service.crm.participants.contracts import ParticipantServiceError
 from src.service.crm.participants.participant_write_service import (
     ParticipantWriteService,
@@ -49,7 +50,11 @@ async def get_participant_service(
     pointing at uncommitted data.
     """
     service = ParticipantWriteService(
-        session, user_ids.organisation_id, user_ids.user_id, master_session
+        session,
+        user_ids.organisation_id,
+        user_ids.user_id,
+        master_session,
+        CRMAccessActor(user_ids.user_id, user_ids.user_role, user_ids.user_email),
     )
     try:
         yield service

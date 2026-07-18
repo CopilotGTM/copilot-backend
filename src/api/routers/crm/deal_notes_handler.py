@@ -23,6 +23,7 @@ from src.api.schemas.crm_note_models import (
 )
 from src.api.utils.http_response import Response
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import CRMAccessActor
 from src.service.crm.notes.contracts import NotesServiceError, NoteWriteContext
 from src.service.crm.notes.insight_dispatch_service import NotesInsightDispatchService
 from src.service.crm.notes.read_service import NotesReadService
@@ -32,10 +33,15 @@ from src.service.crm.notes.write_service import NotesWriteService
 class DealNotesServices:
     """Request-scoped notes services sharing one org session."""
 
-    def __init__(self, org_session: AsyncSession, organisation_id: UUID):
+    def __init__(
+        self,
+        org_session: AsyncSession,
+        organisation_id: UUID,
+        access_actor: CRMAccessActor,
+    ):
         self.session = org_session
-        self.read = NotesReadService(org_session, organisation_id)
-        self.write = NotesWriteService(org_session, organisation_id)
+        self.read = NotesReadService(org_session, organisation_id, access_actor)
+        self.write = NotesWriteService(org_session, organisation_id, access_actor)
         self.dispatch = NotesInsightDispatchService(org_session, organisation_id)
 
     async def close(self) -> None:
@@ -67,7 +73,11 @@ async def get_deal_notes_services(
 
     Ensures proper cleanup of database connections via try/finally pattern.
     """
-    service = DealNotesServices(org_session, user_ids.organisation_id)
+    service = DealNotesServices(
+        org_session,
+        user_ids.organisation_id,
+        CRMAccessActor(user_ids.user_id, user_ids.user_role, user_ids.user_email),
+    )
     try:
         yield service
     finally:

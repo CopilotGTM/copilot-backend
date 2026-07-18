@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, require_agent_deal_access
 from src.service.crm.participants.stakeholder_read_service import StakeholderReadService
 
 if TYPE_CHECKING:
@@ -93,10 +94,12 @@ async def list_deal_stakeholders(
     # Acquire fresh session for database operations
     async with context.acquire_session() as session:
         try:
+            actor = await require_agent_deal_access(context, session, actual_deal_id)
             service = StakeholderReadService(
                 session,
                 organisation_id,
                 getattr(context, "user_id", None),
+                access_actor=actor,
             )
             if parsed_stakeholder_id:
                 payload = await service.get_stakeholder_detail(
@@ -112,6 +115,9 @@ async def list_deal_stakeholders(
                     limit=50 if query else effective_limit,
                 )
                 stakeholders = result.stakeholders
+        except AgentCRMAccessError:
+            logger.info("list_deal_stakeholders: deal not visible to agent actor")
+            return []
         except Exception as e:
             logger.exception(f"list_deal_stakeholders: database error: {e}")
             return []

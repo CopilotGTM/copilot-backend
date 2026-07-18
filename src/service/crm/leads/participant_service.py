@@ -24,7 +24,7 @@ class LeadParticipantService(LeadReadService):
         payload: dict[str, Any],
     ) -> CRMLeadParticipant:
         """Add a contact, company, user, or custom participant to a lead."""
-        await self._get_lead_or_404(lead_id)
+        await self._get_lead_or_404(lead_id, "control")
         if not (payload.get("related_local_id") or payload.get("email")):
             raise LeadServiceError(
                 "Participant requires related_local_id or email",

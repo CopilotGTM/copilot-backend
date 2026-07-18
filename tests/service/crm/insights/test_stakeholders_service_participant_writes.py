@@ -939,7 +939,9 @@ async def test_create_stakeholder_reactivates_existing_participant_without_profi
 
 
 @pytest.mark.asyncio
-async def test_update_stakeholder_updates_contact_profile_without_participant_profile() -> None:
+async def test_update_stakeholder_updates_contact_profile_without_participant_profile(
+    monkeypatch,
+) -> None:
     """Contact-backed profile edits should not refresh participant snapshots."""
     org_id = uuid4()
     deal_id = uuid4()
@@ -961,9 +963,26 @@ async def test_update_stakeholder_updates_contact_profile_without_participant_pr
         linkedin_url="https://linkedin.com/in/old-buyer",
     )
     session = _WriteSession(
-        [_FakeResult(scalar=participant), _FakeResult(scalar=contact), _FakeResult(scalar=contact)]
+        [
+            _FakeResult(scalar=participant),
+            _FakeResult(scalar=contact),
+            _FakeResult(scalar=contact),
+            _FakeResult(scalar=contact),
+        ]
     )
     service = StakeholderWriteService(session, org_id)  # type: ignore[arg-type]
+
+    class NoopProjection:
+        """Stop this profile-unit test at the activity projection boundary."""
+
+        def __init__(self, _session, _organisation_id):
+            """Accept the production projection constructor arguments."""
+
+        async def upsert_stakeholder_updated(self, *_args, **_kwargs) -> None:
+            """Leave projection persistence to its focused service tests."""
+            return None
+
+    monkeypatch.setattr(stakeholder_write_module, "ActivityFeedProjectionService", NoopProjection)
 
     result = await service.update_stakeholder(
         deal_id,

@@ -33,6 +33,7 @@ from sqlalchemy import func, select
 from sqlmodel import col
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
     CRMDealStage,
@@ -78,6 +79,11 @@ async def get_pipeline_details(
     stage_c = cast(Any, CRMDealStage).__table__.c
 
     async with context.acquire_session() as session:
+        try:
+            actor = await resolve_agent_access_actor(context)
+        except AgentCRMAccessError:
+            logger.warning("get_pipeline_details: authenticated CRM actor unavailable")
+            return None
         # Build pipeline query - select only required columns
         pipeline_filters = [
             pipeline_c.organisation_id == organisation_id,
@@ -162,6 +168,8 @@ async def get_pipeline_details(
         deal_counts_by_stage: dict[UUID, int] = {}
         if include_deal_counts:
             deal_c = cast(Any, CRMDeal).__table__.c
+            from src.service.crm.access.record_access_policy import DealAccessPolicy
+
             count_stmt = (
                 select(
                     col(CRMDeal.stage_id),
@@ -171,6 +179,11 @@ async def get_pipeline_details(
                     deal_c.organisation_id == organisation_id,
                     deal_c.is_deleted.is_(False),
                     deal_c.stage_id.isnot(None),
+                    DealAccessPolicy(
+                        session,
+                        organisation_id,
+                        actor,
+                    ).visible_deal_predicate(deal_c),
                 )
                 .group_by(col(CRMDeal.stage_id))
             )

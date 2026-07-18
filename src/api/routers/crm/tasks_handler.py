@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.crm_write_guard import require_crm_write_scope
+from src.api.dependencies.master_dependencies import get_master_async_session
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
@@ -40,6 +41,7 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMActivityType,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import CRMAccessActor
 from src.service.crm.tasks.contracts import (
     TaskReadServiceError,
     TaskWriteServiceError,
@@ -84,7 +86,11 @@ async def get_tasks_access_service(
 ):
     """Dependency that yields a TasksAccessService instance for the current org."""
 
-    service = TaskReadService(org_session, user_ids.organisation_id)
+    service = TaskReadService(
+        org_session,
+        user_ids.organisation_id,
+        CRMAccessActor(user_ids.user_id, user_ids.user_role, user_ids.user_email),
+    )
     try:
         yield service
     finally:
@@ -97,6 +103,7 @@ async def get_tasks_access_service(
 async def get_tasks_write_service(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: AsyncSession = Depends(get_org_async_session),
+    master_session: AsyncSession = Depends(get_master_async_session),
 ):
     """Dependency that yields a TasksWriteService instance for the current org."""
 
@@ -105,6 +112,8 @@ async def get_tasks_write_service(
         user_ids.organisation_id,
         user_ids.user_id,
         user_timezone=user_ids.user_timezone,
+        access_actor=CRMAccessActor(user_ids.user_id, user_ids.user_role, user_ids.user_email),
+        master_session=master_session,
     )
     try:
         yield service

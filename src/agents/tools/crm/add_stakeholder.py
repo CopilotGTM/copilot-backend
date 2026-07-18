@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
 from src.contracts.crm.stakeholders import CreateStakeholderRequest
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     DecisionPower,
@@ -255,7 +256,16 @@ async def add_stakeholder_direct(
     # Keep DB session scope tight to this path; all writes stay in-service and
     # can fail independently from the outbound research dispatch.
     async with context.acquire_session() as session:
-        service = StakeholderWriteService(session, organisation_id, user_id)
+        try:
+            access_actor = await resolve_agent_access_actor(context)
+        except AgentCRMAccessError as exc:
+            return {"status": "error", "message": str(exc)}
+        service = StakeholderWriteService(
+            session,
+            organisation_id,
+            user_id,
+            access_actor=access_actor,
+        )
         try:
             stakeholder = await service.create_stakeholder(
                 deal_uuid,

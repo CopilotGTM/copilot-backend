@@ -37,6 +37,7 @@ from src.api.schemas.crm_activity_feed_models import (
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.sync.crm import CRMActivityObjectType
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import CRMAccessActor
 from src.service.crm.accounts.contracts import (
     AccountCreateCommand,
     AccountReadServiceError,
@@ -65,7 +66,11 @@ async def get_account_read_service(
     org_session: AsyncSession = Depends(get_org_async_session),
 ):
     """Yield a read-only account service bound to the authenticated organisation."""
-    service = AccountReadService(org_session, user_ids.organisation_id)
+    service = AccountReadService(
+        org_session,
+        user_ids.organisation_id,
+        CRMAccessActor(user_ids.user_id, user_ids.user_role, user_ids.user_email),
+    )
     try:
         yield service
     finally:
@@ -80,7 +85,15 @@ async def get_account_write_service(
     org_session: AsyncSession = Depends(get_org_async_session),
 ):
     """Yield an account writer; endpoint handlers still own commit/rollback."""
-    service = AccountWriteService(org_session, user_ids.organisation_id)
+    service = AccountWriteService(
+        org_session,
+        user_ids.organisation_id,
+        access_actor=CRMAccessActor(
+            user_ids.user_id,
+            user_ids.user_role,
+            user_ids.user_email,
+        ),
+    )
     try:
         yield service
     finally:
@@ -434,6 +447,51 @@ async def update_account(
         )
     except Exception:
         logger.exception("Unexpected error updating account")
+        return Response.internal_server_error_response(_UNEXPECTED_ERR_MSG, response=response)
+
+
+@accounts_router.delete(
+    "/accounts/{company_id}",
+    response_model=GenericResponse[AccountListItem],
+    tags=["crm", "accounts"],
+    summary="Archive an account",
+)
+async def archive_account(
+    company_id: UUID,
+    response: FastAPIResponse,
+    user_ids: UserIDs = Depends(get_current_user),
+    service: AccountWriteService = Depends(get_account_write_service),
+    _crm_write_guard: None = Depends(require_crm_write_scope("accounts:delete")),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[AccountListItem]:
+    """Soft-archive an internal account without deleting linked CRM history."""
+    try:
+        company = await service.archive_account(
+            company_id,
+            context=AccountWriteContext(
+                source="api",
+                actor_user_id=user_ids.user_id,
+                created_via="accounts_app",
+            ),
+        )
+        await service.session.commit()
+        item = AccountListItem(
+            **company.model_dump(),
+            contact_count=0,
+            deal_count=0,
+            pipeline_value=0.0,
+        )
+        return Response.success_response("Account archived", data=item)
+    except AccountWriteServiceError as exc:
+        await service.session.rollback()
+        return Response.error_response(
+            status_code=exc.status_code,
+            message=exc.message,
+            response=response,
+        )
+    except Exception:
+        await service.session.rollback()
+        logger.exception("Unexpected error archiving account")
         return Response.internal_server_error_response(_UNEXPECTED_ERR_MSG, response=response)
 
 
