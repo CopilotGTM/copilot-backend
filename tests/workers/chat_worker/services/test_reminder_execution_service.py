@@ -78,9 +78,7 @@ async def test_load_and_lock_cancels_reminder_for_completed_task(monkeypatch) ->
         fake_acquire_session,
     )
 
-    result = await ReminderExecutionService(organisation_id)._load_and_lock(
-        reminder.reminder_id
-    )
+    result = await ReminderExecutionService(organisation_id)._load_and_lock(reminder.reminder_id)
 
     assert result is None
     assert reminder.status == ReminderStatus.CANCELLED

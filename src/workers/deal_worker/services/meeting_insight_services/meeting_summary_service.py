@@ -547,9 +547,7 @@ class MeetingSummaryService:
         await session.refresh(job)
         return job
 
-    async def _get_active_task_job(
-        self, session, deal_id: UUID, event_id: UUID
-    ) -> DealJobs | None:
+    async def _get_active_task_job(self, session, deal_id: UUID, event_id: UUID) -> DealJobs | None:
         """Return an existing task-sync job for an in-flight meeting summary."""
         stmt = select(DealJobs).where(
             col(DealJobs.organisation_id) == self.organisation_id,

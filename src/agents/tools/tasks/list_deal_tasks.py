@@ -69,9 +69,7 @@ async def list_deal_tasks(*, context: AgentContext) -> dict[str, Any]:
         "deal_id": str(context.deal_id),
         "task_count": len(tasks),
         "truncated": truncated,
-        "tasks": [
-            _format_task(task) for task in tasks[:MAX_TASKS_FOR_RECONCILIATION]
-        ],
+        "tasks": [_format_task(task) for task in tasks[:MAX_TASKS_FOR_RECONCILIATION]],
     }
 
 

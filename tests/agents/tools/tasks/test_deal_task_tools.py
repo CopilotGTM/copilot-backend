@@ -203,9 +203,10 @@ async def test_create_deal_task_links_one_nonrecurring_reminder(
         "recurrence": "NONE",
         "timezone": "UTC",
     }
-    assert _FakeService.instances[-1].created_calls[0][
-        "fallback_assignee_name_or_emails"
-    ] == ["deal-owner@example.com", "organiser@example.com"]
+    assert _FakeService.instances[-1].created_calls[0]["fallback_assignee_name_or_emails"] == [
+        "deal-owner@example.com",
+        "organiser@example.com",
+    ]
 
 
 @pytest.mark.asyncio
