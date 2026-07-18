@@ -1,10 +1,15 @@
+"""Validation and response schemas for chat attachment upload and access APIs."""
+
 from __future__ import annotations
 
 from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator
-from src.domain.models.organisation_tables.chat_message_models import AttachmentStatus
+from src.domain.models.organisation_tables.chat_message_models import (
+    AttachmentSourceProvider,
+    AttachmentStatus,
+)
 from src.infra.config.configs import chat_file_upload_config
 
 # Re-export event model from infra for backwards compatibility
@@ -31,6 +36,7 @@ class PresignRequest(BaseModel):
     @field_validator("mimetype")
     @classmethod
     def validate_mimetype(cls, v: str) -> str:
+        """Reject MIME types outside the configured chat upload allowlist."""
         if v not in ALLOWED_MIMETYPES:
             raise ValueError(f"MIME type '{v}' is not allowed.")
         return v
@@ -38,6 +44,7 @@ class PresignRequest(BaseModel):
     @field_validator("size_bytes")
     @classmethod
     def validate_size(cls, v: int) -> int:
+        """Reject files larger than the configured chat attachment limit."""
         if v > MAX_FILE_SIZE_BYTES:
             raise ValueError(
                 f"File size of {v} bytes exceeds the limit of {MAX_FILE_SIZE_BYTES} bytes."
@@ -105,6 +112,35 @@ class AttachmentDownloadResponse(BaseModel):
     expires_in_seconds: int = Field(default=30 * 60, description="Seconds until the URL expires")
 
 
+class AttachmentUploaderResponse(BaseModel):
+    """Basic uploader identity shown in the admin attachment catalogue."""
+
+    user_id: UUID
+    name: str | None = None
+    email: str | None = None
+
+
+class ChatAttachmentResponse(BaseModel):
+    """Playable metadata for one sent chat attachment."""
+
+    attachment_id: UUID
+    filename: str
+    mimetype: str
+    size_bytes: int
+    duration_seconds: float | None = None
+    source_provider: AttachmentSourceProvider
+    created_at: datetime
+    uploaded_by: AttachmentUploaderResponse | None = None
+    playback_url: HttpUrl
+
+
+class ChatAttachmentsPage(BaseModel):
+    """Cursor page of attachments visible to an organisation admin."""
+
+    items: list[ChatAttachmentResponse]
+    cursor: str | None = None
+
+
 # ---------------------------- Batch Models ---------------------------- #
 
 
@@ -160,6 +196,8 @@ class AttachmentBatchFinalizeRequest(BaseModel):
 
 
 class AttachmentBatchFinalizeResult(BaseModel):
+    """Finalization outcome for one attachment in a batch request."""
+
     attachment_id: UUID
     status: str | None = None
     error: str | None = None
@@ -167,5 +205,7 @@ class AttachmentBatchFinalizeResult(BaseModel):
 
 
 class AttachmentBatchFinalizeResponse(BaseModel):
+    """Aggregate successful and failed attachment finalization results."""
+
     results: list[AttachmentBatchFinalizeResult]
     errors: list[dict] = Field(default_factory=list)

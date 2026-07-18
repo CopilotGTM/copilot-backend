@@ -3,7 +3,8 @@
 ## Base URL
 
 ```text
-/users/chats/upload
+/users/chats/upload       # User-owned upload, status, and download operations
+/users/chats/attachments  # Organisation-admin attachment catalogue
 ```
 
 ---
@@ -90,7 +91,8 @@
 
 ### Security & Tenancy
 
-- All attachment operations are validated against the authenticated `user_id` and `organisation_id`.
+- Upload, status, and download operations are validated against the authenticated `user_id` and `organisation_id`.
+- The attachment catalogue is organisation-scoped and requires `data.role === "admin"`; members receive `403`.
 - Batch operations keep partial successes when possible; failures are reported per item.
 
 ### Security & Compliance (SOC 2 Alignment)
@@ -103,7 +105,8 @@
   - No public ACLs; access only via time-bound SAS URLs.
   - SAS URLs are path-scoped and short-lived (upload ~15m; download 30–120m). Clients must not persist SAS URLs in logs or databases.
 - Authentication & Authorization
-  - Bearer JWT required for all endpoints. Every read/write verified against tenant (`organisation_id`) and owner (`user_id`).
+  - Bearer JWT required for all endpoints. User-owned operations verify both tenant (`organisation_id`) and owner (`user_id`).
+  - Organisation-wide catalogue reads require the application-level `admin` role and remain restricted to the caller's organisation.
   - Follow least privilege: presign grants write to a single blob; download grants read to a single blob.
 - Input Validation & Content Controls
   - MIME type allowlist and strict max size enforced server-side; reject on violation.
@@ -177,6 +180,31 @@ export interface AttachmentDownloadResponse {
   attachment_id: UUID;
   download_url: string; // HttpUrl
   expires_in_seconds: number; // default ~1800
+}
+
+export type AttachmentMediaType = "audio";
+
+export interface AttachmentUploaderResponse {
+  user_id: UUID;
+  name: string | null;
+  email: string | null;
+}
+
+export interface ChatAttachmentResponse {
+  attachment_id: UUID;
+  filename: string;
+  mimetype: string;
+  size_bytes: number;
+  duration_seconds: number | null;
+  source_provider: "web" | "slack" | "teams" | "whatsapp";
+  created_at: string; // ISO 8601
+  uploaded_by: AttachmentUploaderResponse | null;
+  playback_url: string; // short-lived URL; do not persist
+}
+
+export interface ChatAttachmentsPage {
+  items: ChatAttachmentResponse[];
+  cursor: string | null;
 }
 
 // Batch presign per-file
@@ -556,6 +584,142 @@ POST /users/chats/upload/finalize/batch
 
 ---
 
+## 9) List Sent Audio Attachments (Organisation Admin)
+
+### Endpoint
+
+```http
+GET /users/chats/attachments?media_type=audio&limit=20&cursor=<opaque_cursor>
+Authorization: Bearer <access_token>
+```
+
+This is the frontend catalogue endpoint for the admin audio screen. It returns audio
+attachments from all users in the authenticated admin's organisation, not only the
+admin's own uploads.
+
+The backend includes an attachment only when it is:
+
+- linked to at least one sent chat message;
+- in `completed` status;
+- not soft-deleted;
+- backed by a storage path; and
+- identified by an `audio/*` MIME type.
+
+Rows are ordered newest first by attachment creation time. The endpoint does not read
+or probe audio bytes. `duration_seconds` is copied from persisted provider metadata when
+available and is otherwise `null`.
+
+### Login Role Gate
+
+For an active login, `POST /users/auth/login` returns the application role:
+
+```json
+{
+  "data": {
+    "state": "ACTIVE",
+    "role": "admin"
+  }
+}
+```
+
+The exact values are lowercase: `"admin" | "member"`. The frontend may use this value
+to show or hide the admin navigation item, but the backend role check remains authoritative.
+`GET /users/auth/me` returns the same role for a cold application bootstrap. The token-refresh
+response contains tokens only, so retain the authenticated profile or call `/users/auth/me`
+after restoring a session.
+
+Do not render the application catalogue during `PASSWORD_CHANGE_REQUIRED`; that login branch
+does not establish the active application experience and its `role` may be `null`.
+
+```ts
+type UserRole = "admin" | "member";
+
+const canViewOrganisationAttachments =
+  login.data?.state === "ACTIVE" && login.data.role === "admin";
+```
+
+### Query Parameters
+
+| Parameter | Required | Default | Constraints | Notes |
+|---|---:|---:|---|---|
+| `media_type` | No | `audio` | Currently only `audio` | Reserved for future media filters. |
+| `limit` | No | `20` | `1..100` | Maximum items in one page. |
+| `cursor` | No | — | Opaque string | Pass the previous response cursor unchanged. |
+
+### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Chat attachments listed",
+  "data": {
+    "items": [
+      {
+        "attachment_id": "2b5a4d8e-4e26-4e72-bb56-73673f952888",
+        "filename": "voice-note.ogg",
+        "mimetype": "audio/ogg",
+        "size_bytes": 123456,
+        "duration_seconds": 8.5,
+        "source_provider": "whatsapp",
+        "created_at": "2026-07-18T10:00:00Z",
+        "uploaded_by": {
+          "user_id": "6a533df6-f91d-48d9-a53f-da7fe4adafc1",
+          "name": "Asha Rao",
+          "email": "asha@example.com"
+        },
+        "playback_url": "https://storage.example/audio.ogg?<short-lived-sas>"
+      }
+    ],
+    "cursor": null
+  }
+}
+```
+
+`uploaded_by` may be `null` when the historical attachment's user profile no longer exists.
+`playback_url` expires after approximately 30 minutes. Bind it directly to the player and
+refetch the catalogue when a URL expires; never store SAS URLs in application state beyond
+the current session, analytics, logs, or a database.
+
+### Frontend Fetch Example
+
+```ts
+export async function listAdminAudioAttachments(
+  token: string,
+  cursor?: string,
+): Promise<ChatAttachmentsPage> {
+  const params = new URLSearchParams({ media_type: "audio", limit: "20" });
+  if (cursor) params.set("cursor", cursor);
+
+  const response = await fetch(`/users/chats/attachments?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const body: ApiEnvelope<ChatAttachmentsPage> = await response.json();
+  if (!response.ok || !body.data) throw new Error(body.message);
+  return body.data;
+}
+```
+
+Render playback with the browser's native audio element:
+
+```tsx
+<audio controls preload="metadata" src={attachment.playback_url}>
+  Your browser does not support audio playback.
+</audio>
+```
+
+Use `data.cursor` as the next-page parameter. A `null` cursor means there is no next page.
+
+### Error Responses
+
+- `400 Bad Request` — malformed cursor.
+- `401 Unauthorized` — missing or invalid bearer token.
+- `403 Forbidden` — authenticated user has role `member`.
+- `422 Unprocessable Entity` — unsupported `media_type`, or `limit` outside `1..100`.
+- `429 Too Many Requests` — read rate limit exceeded; honor `Retry-After`.
+- `500 Internal Server Error` — catalogue lookup or playback URL generation failed.
+
+---
+
 ## Configuration & Limits
 
 - Allowed MIME types (default): `application/pdf`, `text/plain`, `text/csv`, `text/tab-separated-values`, `text/tsv`, `text/markdown`, `text/x-markdown`, `application/x-ndjson`, `application/ndjson`, `application/jsonl`, `application/json`.
@@ -574,3 +738,4 @@ POST /users/chats/upload/finalize/batch
 4) Open SSE `/attachments/stream?attachment_ids=...` to observe progress until `complete`.
 5) Once `completed`, include the `attachment_id` in chat message payloads and/or fetch a download URL when user clicks download.
 6) Message lists (`/users/chats/messages/list`) return thumbnail URLs for rendering previews.
+7) For the admin audio screen, gate navigation on the active login role and call `GET /users/chats/attachments?media_type=audio` with cursor pagination.
