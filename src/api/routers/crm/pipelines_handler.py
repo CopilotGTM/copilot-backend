@@ -123,6 +123,7 @@ def _build_stage_item(
         probability=stage.probability,
         is_closed=stage.is_closed,
         display_order=stage.display_order,
+        updated_at=stage.updated_at,
         deal_count=deal_count,
         last_changed=_last_changed_from_event(last_changed_event),
     )
