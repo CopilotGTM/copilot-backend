@@ -5,13 +5,12 @@ from __future__ import annotations
 import base64
 import contextlib
 import json
-import re
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any, TypedDict, cast
 from uuid import UUID
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
@@ -33,32 +32,6 @@ logger = get_logger("deal_read_service")
 
 _CURSOR_NAME_KEY = "name"
 _CURSOR_ID_KEY = "deal_id"
-_AGENT_SEARCH_FILLER_WORDS = {
-    "find",
-    "search",
-    "show",
-    "lookup",
-    "look",
-    "up",
-    "deal",
-    "deals",
-    "opportunity",
-    "opportunities",
-    "please",
-    "the",
-    "for",
-    "about",
-}
-_AGENT_SEARCH_STATUS_WORDS = {
-    "open": CRMDealStatus.OPEN.value,
-    "active": CRMDealStatus.OPEN.value,
-    "won": CRMDealStatus.WON.value,
-    "win": CRMDealStatus.WON.value,
-    "lost": CRMDealStatus.LOST.value,
-    "closed": CRMDealStatus.CLOSED.value,
-    "close": CRMDealStatus.CLOSED.value,
-}
-_AGENT_SEARCH_TOKEN_RE = re.compile(r"[a-z0-9@._+-]+")
 
 
 def _deal_search_cursor_name_key(name: str | None, company_name: str | None) -> str:
@@ -70,32 +43,6 @@ def _normalize_deal_search_query(q: str | None) -> str | None:
         return None
     value = q.strip().lower()
     return value or None
-
-
-def _normalize_agent_deal_search_query(q: str | None) -> tuple[str | None, list[str]]:
-    """Return cleaned fuzzy text plus an explicit status filter.
-
-    Status words are deliberately removed from the fuzzy text. If the user says
-    "won Acme deal", "won" narrows `deal_status`; it must not make unrelated
-    deals match just because their names contain a similar word.
-    """
-
-    if q is None:
-        return None, [CRMDealStatus.OPEN.value]
-
-    statuses: list[str] = []
-    search_tokens: list[str] = []
-    for token in _AGENT_SEARCH_TOKEN_RE.findall(q.lower()):
-        status = _AGENT_SEARCH_STATUS_WORDS.get(token)
-        if status:
-            if status not in statuses:
-                statuses.append(status)
-            continue
-        if token in _AGENT_SEARCH_FILLER_WORDS:
-            continue
-        search_tokens.append(token)
-
-    return (" ".join(search_tokens) or None), (statuses or [CRMDealStatus.OPEN.value])
 
 
 def _encode_deal_search_cursor(name_key: str | None, deal_id: UUID) -> str:
@@ -378,87 +325,140 @@ class DealReadService:
         q: str,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        """Return fuzzy-ranked deal rows for agent tool lookup.
+        """Return deterministic deal matches with fuzzy search as a fallback.
 
         This intentionally lives beside the normal read-service search instead
-        of in a new subsystem: v1 only uses existing `crm_deals` columns and the
-        existing pg_trgm indexes. API search keeps its deterministic picker
-        behavior while agents get voice-tolerant ranking and match metadata.
+        of in a new subsystem. Direct substrings stay authoritative so fuzzy
+        candidates cannot displace a deal the user actually named; pg_trgm is
+        used only when the deterministic query returns no rows.
         """
 
-        search_query, statuses = _normalize_agent_deal_search_query(q)
+        search_query = q.strip().lower()
         if not search_query:
             return []
 
-        effective_limit = max(1, min(limit, 20))
+        effective_limit = max(1, min(limit, 10))
         c = cast(Any, CRMDeal).__table__.c
 
-        name_score = func.similarity(func.coalesce(c.name, ""), search_query)
-        company_score = func.similarity(func.coalesce(c.company_name, ""), search_query)
-        primary_contact_score = func.similarity(
-            func.coalesce(c.primary_contact_name, ""),
-            search_query,
-        )
-        identity_score = func.greatest(name_score, company_score)
         exact_name = func.lower(func.coalesce(c.name, "")) == search_query
         exact_company = func.lower(func.coalesce(c.company_name, "")) == search_query
         exact_primary_contact = (
             func.lower(func.coalesce(c.primary_contact_name, "")) == search_query
         )
-        total_score = (
-            case((or_(exact_name, exact_company), 2.0), (exact_primary_contact, 0.8), else_=0.0)
-            + identity_score * 1.4
-            + primary_contact_score * 0.7
+        name_prefix = c.name.ilike(f"{search_query}%")
+        company_prefix = c.company_name.ilike(f"{search_query}%")
+        primary_contact_prefix = c.primary_contact_name.ilike(f"{search_query}%")
+        name_contains = c.name.ilike(f"%{search_query}%")
+        company_contains = c.company_name.ilike(f"%{search_query}%")
+        primary_contact_contains = c.primary_contact_name.ilike(f"%{search_query}%")
+
+        # Direct text matches are intentionally ranked without trigram scores.
+        # This keeps a long named deal ahead of shorter, merely similar names.
+        deterministic_score = case(
+            (exact_name, 6.0),
+            (exact_company, 5.5),
+            (exact_primary_contact, 5.0),
+            (name_prefix, 4.5),
+            (company_prefix, 4.0),
+            (primary_contact_prefix, 3.5),
+            (name_contains, 3.0),
+            (company_contains, 2.5),
+            else_=2.0,
         )
-        match_field = case(
+        deterministic_match_field = case(
             (exact_name, "name"),
             (exact_company, "company_name"),
             (exact_primary_contact, "primary_contact_name"),
-            (name_score >= func.greatest(company_score, primary_contact_score), "name"),
-            (company_score >= primary_contact_score, "company_name"),
+            (name_prefix, "name"),
+            (company_prefix, "company_name"),
+            (primary_contact_prefix, "primary_contact_name"),
+            (name_contains, "name"),
+            (company_contains, "company_name"),
             else_="primary_contact_name",
         )
-        match_value = case(
-            (match_field == "name", c.name),
-            (match_field == "company_name", c.company_name),
+        deterministic_match_value = case(
+            (deterministic_match_field == "name", c.name),
+            (deterministic_match_field == "company_name", c.company_name),
             else_=c.primary_contact_name,
         )
-        match_type = case(
+        deterministic_match_type = case(
             (or_(exact_name, exact_company, exact_primary_contact), "exact"),
             else_="fuzzy",
         )
-
-        stmt = (
+        base_filters = (
+            c.organisation_id == self.organisation_id,
+            c.is_deleted.is_(False),
+            c.deal_status == CRMDealStatus.OPEN.value,
+        )
+        deterministic_stmt = (
             select(
                 CRMDeal,
-                total_score.label("score"),
-                name_score.label("name_score"),
-                company_score.label("company_score"),
-                primary_contact_score.label("primary_contact_score"),
-                match_field.label("match_field"),
-                match_value.label("match_value"),
-                match_type.label("match_type"),
+                deterministic_score.label("score"),
+                deterministic_match_field.label("match_field"),
+                deterministic_match_value.label("match_value"),
+                deterministic_match_type.label("match_type"),
             )
             .where(
-                c.organisation_id == self.organisation_id,
-                c.is_deleted.is_(False),
-                c.deal_status.in_(statuses),
-                or_(
-                    c.name.ilike(f"%{search_query}%"),
-                    c.company_name.ilike(f"%{search_query}%"),
-                    c.primary_contact_name.ilike(f"%{search_query}%"),
-                    c.name.op("%")(search_query),
-                    c.company_name.op("%")(search_query),
-                    c.primary_contact_name.op("%")(search_query),
-                ),
+                *base_filters,
+                or_(name_contains, company_contains, primary_contact_contains),
             )
-            .order_by(total_score.desc(), c.source_modified_at.desc().nullslast())
+            .order_by(
+                deterministic_score.desc(),
+                c.source_modified_at.desc().nullslast(),
+                c.deal_id.asc(),
+            )
             .limit(effective_limit)
         )
-        res = await self.org_session.execute(stmt)
+        result_rows = (await self.org_session.execute(deterministic_stmt)).all()
+
+        if not result_rows:
+            # Fuzzy matching is a recovery path for misspellings, not a source
+            # of extra candidates when the user's substring already matched.
+            name_score = func.similarity(func.coalesce(c.name, ""), search_query)
+            company_score = func.similarity(func.coalesce(c.company_name, ""), search_query)
+            primary_contact_score = func.similarity(
+                func.coalesce(c.primary_contact_name, ""),
+                search_query,
+            )
+            identity_score = func.greatest(name_score, company_score)
+            total_score = identity_score * 1.4 + primary_contact_score * 0.7
+            match_field = case(
+                (name_score >= func.greatest(company_score, primary_contact_score), "name"),
+                (company_score >= primary_contact_score, "company_name"),
+                else_="primary_contact_name",
+            )
+            match_value = case(
+                (match_field == "name", c.name),
+                (match_field == "company_name", c.company_name),
+                else_=c.primary_contact_name,
+            )
+            fuzzy_stmt = (
+                select(
+                    CRMDeal,
+                    total_score.label("score"),
+                    match_field.label("match_field"),
+                    match_value.label("match_value"),
+                    literal("fuzzy").label("match_type"),
+                )
+                .where(
+                    *base_filters,
+                    or_(
+                        c.name.op("%")(search_query),
+                        c.company_name.op("%")(search_query),
+                        c.primary_contact_name.op("%")(search_query),
+                    ),
+                )
+                .order_by(
+                    total_score.desc(),
+                    c.source_modified_at.desc().nullslast(),
+                    c.deal_id.asc(),
+                )
+                .limit(effective_limit)
+            )
+            result_rows = (await self.org_session.execute(fuzzy_stmt)).all()
 
         rows: list[dict[str, Any]] = []
-        for row in res.all():
+        for row in result_rows:
             rows.append(
                 {
                     "deal": row[0],
