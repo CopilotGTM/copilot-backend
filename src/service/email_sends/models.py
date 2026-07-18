@@ -1,7 +1,9 @@
-"""DTOs and errors for direct mailbox email sending."""
+"""DTOs for provider-backed email drafts and direct mailbox sending."""
 
 from __future__ import annotations
 
+import hashlib
+import json
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, TypeAdapter, field_validator
@@ -90,3 +92,62 @@ class EmailSendProviderResult(BaseModel):
 
     provider_status_code: int
     provider_resource_id: str | None = None
+
+
+class EmailDraftSaveRequest(EmailSendCreateRequest):
+    """Create or replace one draft in the authenticated user's mailbox.
+
+    `draft_id` is provider-owned and may only be used after the service resolves
+    the current user's integration; callers cannot use it to select a mailbox.
+    """
+
+    draft_id: str | None = Field(default=None, max_length=1024)
+
+
+class EmailDraftSnapshot(BaseModel):
+    """Provider-normalized draft returned for review and confirmation."""
+
+    draft_id: str
+    sender_email: str | None = None
+    to: list[EmailSendAddress] = Field(default_factory=list)
+    cc: list[EmailSendAddress] = Field(default_factory=list)
+    bcc: list[EmailSendAddress] = Field(default_factory=list)
+    subject: str
+    body: str
+    body_content_type: str = "Text"
+    content_hash: str
+    web_link: str | None = None
+
+
+class EmailDraftOperationResult(BaseModel):
+    """Audit-aware result for a successful draft provider operation."""
+
+    request_id: UUID | None = None
+    status: str
+    snapshot: EmailDraftSnapshot | None = None
+    provider_status_code: int | None = None
+
+
+def email_draft_content_hash(
+    *,
+    sender_email: str | None,
+    to: list[EmailSendAddress],
+    cc: list[EmailSendAddress],
+    bcc: list[EmailSendAddress],
+    subject: str,
+    body: str,
+    body_content_type: str,
+) -> str:
+    """Hash the exact user-visible draft fields that one approval authorizes."""
+
+    payload = {
+        "sender_email": sender_email,
+        "to": [item.model_dump() for item in to],
+        "cc": [item.model_dump() for item in cc],
+        "bcc": [item.model_dump() for item in bcc],
+        "subject": subject,
+        "body": body,
+        "body_content_type": body_content_type,
+    }
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()

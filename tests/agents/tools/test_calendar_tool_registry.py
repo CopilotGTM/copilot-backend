@@ -26,6 +26,21 @@ def test_general_agent_exposes_send_calendar_invite_tool() -> None:
     assert "send_calendar_invite_tool" in tool_names
 
 
+def test_general_agent_exposes_calendar_mutation_tools() -> None:
+    context = AgentContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        channel="teams",
+    )
+
+    tool_names = {
+        tool.__name__ for tool in get_tools_for_agent("GeneralAgent", context, lambda: None)
+    }
+
+    assert "update_calendar_meeting_tool" in tool_names
+    assert "cancel_calendar_meeting_tool" in tool_names
+
+
 def test_general_agent_exposes_unified_meeting_list_tool_only() -> None:
     context = AgentContext(
         organisation_id=UUID("11111111-1111-1111-1111-111111111111"),

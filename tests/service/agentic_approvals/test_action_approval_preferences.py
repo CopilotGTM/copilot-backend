@@ -17,6 +17,10 @@ def test_default_policy_contains_expected_tools() -> None:
     assert ACTION_APPROVAL_DEFAULTS["add_stakeholder"].approval_required is True
     assert ACTION_APPROVAL_DEFAULTS["send_calendar_invite"].approval_required is True
     assert ACTION_APPROVAL_DEFAULTS["send_email"].approval_required is True
+    assert ACTION_APPROVAL_DEFAULTS["save_email_draft"].approval_required is False
+    assert ACTION_APPROVAL_DEFAULTS["send_email_draft"].approval_required is True
+    assert ACTION_APPROVAL_DEFAULTS["update_calendar_meeting"].approval_required is True
+    assert ACTION_APPROVAL_DEFAULTS["cancel_calendar_meeting"].approval_required is True
 
 
 def test_send_email_is_locked() -> None:
@@ -25,6 +29,8 @@ def test_send_email_is_locked() -> None:
     assert default.editable is False
     assert "always approval-gated" in default.locked_reason
     assert "send_email" in LOCKED_APPROVAL_TOOLS
+    assert "send_email_draft" in LOCKED_APPROVAL_TOOLS
+    assert "cancel_calendar_meeting" in LOCKED_APPROVAL_TOOLS
 
 
 def test_effective_preferences_use_defaults_for_empty_payload() -> None:

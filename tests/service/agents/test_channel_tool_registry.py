@@ -4,6 +4,7 @@ from src.agents.context import AgentContext
 from src.agents.tools.registry import (
     AGENT_TOOLS,
     CHANNEL_ONLY_TOOLS,
+    REMINDER_MANAGEMENT_TOOLS,
     VOICE_REALTIME_WRITE_EXCLUDED_TOOLS,
     ToolName,
     ToolRegistry,
@@ -134,6 +135,17 @@ def test_send_email_is_available_on_supported_chat_and_voice_channels() -> None:
         assert "send_email_tool" in tool_names
 
 
+def test_mailbox_draft_tools_are_available_to_general_agent() -> None:
+    context = AgentContext(organisation_id=uuid4(), user_id=uuid4(), channel="web")
+    registry = ToolRegistry(context, lambda: None)
+
+    tools = registry.get_tools_for_agent("GeneralAgent", channel="web")
+    tool_names = {getattr(tool, "name", getattr(tool, "__name__", "")) for tool in tools}
+
+    assert "save_email_draft_tool" in tool_names
+    assert "send_email_draft_tool" in tool_names
+
+
 def test_general_agent_exposes_context_resolution_read_tools_on_web() -> None:
     context = AgentContext(organisation_id=uuid4(), user_id=uuid4(), channel="web")
     registry = ToolRegistry(context, lambda: None)
@@ -157,13 +169,7 @@ def test_scheduled_alert_context_excludes_reminder_management_tools() -> None:
 
     excluded = get_excluded_tools_for_context(context)
 
-    assert excluded == {
-        ToolName.CREATE_REMINDER,
-        ToolName.LIST_REMINDERS,
-        ToolName.CANCEL_REMINDER,
-        ToolName.SEND_CALENDAR_INVITE,
-        ToolName.SEND_EMAIL,
-    }
+    assert excluded == REMINDER_MANAGEMENT_TOOLS
 
 
 def test_voice_realtime_agent_excludes_unsupported_backend_write_tools() -> None:

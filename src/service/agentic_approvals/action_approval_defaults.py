@@ -101,6 +101,36 @@ ACTION_APPROVAL_DEFAULTS: dict[str, ActionApprovalDefault] = {
         editable=False,
         locked_reason="External email sending is always approval-gated.",
     ),
+    "save_email_draft": ActionApprovalDefault(
+        tool_name="save_email_draft",
+        label="Save email draft",
+        category="communication",
+        approval_required=False,
+        editable=True,
+    ),
+    "send_email_draft": ActionApprovalDefault(
+        tool_name="send_email_draft",
+        label="Send email draft",
+        category="communication",
+        approval_required=True,
+        editable=False,
+        locked_reason="External email sending is always approval-gated.",
+    ),
+    "update_calendar_meeting": ActionApprovalDefault(
+        tool_name="update_calendar_meeting",
+        label="Update calendar meeting",
+        category="calendar",
+        approval_required=True,
+        editable=True,
+    ),
+    "cancel_calendar_meeting": ActionApprovalDefault(
+        tool_name="cancel_calendar_meeting",
+        label="Cancel calendar meeting",
+        category="calendar",
+        approval_required=True,
+        editable=False,
+        locked_reason="Meeting cancellation is always approval-gated.",
+    ),
 }
 
 LOCKED_APPROVAL_TOOLS = {

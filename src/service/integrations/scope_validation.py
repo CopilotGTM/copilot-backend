@@ -22,6 +22,7 @@ from src.infra.config.google_integration_scopes import (
 from src.infra.config.microsoft_integration_scopes import (
     MICROSOFT_INTEGRATION_SCOPES,
     MICROSOFT_SCOPE_CALENDARS_READ_WRITE,
+    MICROSOFT_SCOPE_MAIL_READ_WRITE,
     MICROSOFT_SCOPE_MAIL_SEND,
     MICROSOFT_SCOPE_OFFLINE_ACCESS,
     MICROSOFT_SCOPE_USER_READ,
@@ -46,6 +47,9 @@ _GOOGLE_INTEGRATION_TYPES = frozenset(
     }
 )
 
+# Requested at connection time, but enforced only by the feature that needs it.
+_OPTIONAL_FEATURE_SCOPES = frozenset({MICROSOFT_SCOPE_MAIL_READ_WRITE})
+
 # Base required permissions by integration type.
 # Keep this map as the single source of truth for what a feature expects to
 # have before attempting provider calls.
@@ -58,7 +62,7 @@ _REQUIRED_SCOPES: dict[IntegrationType, frozenset[str]] = {
     IntegrationType.OUTLOOK_EMAIL: frozenset(
         scope
         for scope in MICROSOFT_INTEGRATION_SCOPES[IntegrationType.OUTLOOK_EMAIL]
-        if scope != MICROSOFT_SCOPE_OFFLINE_ACCESS
+        if scope != MICROSOFT_SCOPE_OFFLINE_ACCESS and scope not in _OPTIONAL_FEATURE_SCOPES
     ),
     IntegrationType.OUTLOOK_CALENDAR: frozenset(
         scope
@@ -73,7 +77,7 @@ _REQUIRED_SCOPES: dict[IntegrationType, frozenset[str]] = {
     IntegrationType.MICROSOFT: frozenset(
         scope
         for scope in MICROSOFT_INTEGRATION_SCOPES[IntegrationType.MICROSOFT]
-        if scope != MICROSOFT_SCOPE_OFFLINE_ACCESS
+        if scope != MICROSOFT_SCOPE_OFFLINE_ACCESS and scope not in _OPTIONAL_FEATURE_SCOPES
     ),
     IntegrationType.SLACK: frozenset(SLACK_USER_SCOPES),
     IntegrationType.HUBSPOT: frozenset(
@@ -156,6 +160,7 @@ _SATISFYING_SCOPES: dict[str, frozenset[str]] = {
             MICROSOFT_SCOPE_MAIL_SEND,
         }
     ),
+    MICROSOFT_SCOPE_MAIL_READ_WRITE: frozenset({MICROSOFT_SCOPE_MAIL_READ_WRITE}),
 }
 
 _SCOPE_DISPLAY_LABELS: dict[str, str] = {
@@ -178,6 +183,7 @@ _SCOPE_DISPLAY_LABELS: dict[str, str] = {
     "refresh_token": "Salesforce offline access",
     "Mail.Read": "Outlook mail access",
     "Mail.Send": "Outlook mail send access",
+    "Mail.ReadWrite": "Outlook draft access",
     "Calendars.Read": "Outlook calendar access",
     "Calendars.ReadWrite": "Outlook calendar write access",
     "Chat.Read": "Microsoft Teams chat access",

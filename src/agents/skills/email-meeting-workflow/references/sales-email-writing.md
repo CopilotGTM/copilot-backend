@@ -19,13 +19,15 @@ for CopilotGTM's CRM evidence workflow.
 ## Writing Rules
 
 - Sound like a peer, not a sales bot.
-- Prefer 60-120 words unless the user asks for a longer email.
-- Use short subject lines, usually 2-5 words.
+- Match length to purpose. Keep cold outreach concise, but preserve the context needed for
+  meeting follow-ups, proposals, customer updates, handoffs, and internal information-sharing.
+- Use a descriptive subject. Short subjects suit outreach; follow-ups and internal updates may
+  name the customer, meeting, project, or decision so recipients can find the email later.
 - Open with a specific context signal from the recipient, account, deal, meeting, email,
   or public company fact.
 - Tie the message to the recipient's likely priority, risk, or next step.
-- Use one clear ask. Prefer low-friction CTAs like a short meeting, quick confirmation,
-  or feedback on a specific point.
+- Give the email one clear objective. It may contain several decisions or action items when the
+  source meeting or document requires them.
 - Avoid hype, exaggerated metrics, fake familiarity, and generic "hope you're well" filler.
 
 ## Evidence to Reference
@@ -50,13 +52,23 @@ Translate evidence into customer-safe wording.
 
 ## Structure
 
-Use this default shape:
+Use this default shape for concise outreach:
 
 1. Subject line.
 2. Context hook: why this is relevant now.
 3. Value or reason: one sentence grounded in evidence.
 4. Ask: one low-friction CTA.
 5. Optional sign-off.
+
+For meeting follow-ups, proposals, handoffs, or team updates, use the context that the evidence
+supports:
+
+1. Descriptive subject and why the message is being shared.
+2. Customer, account, project, or meeting context.
+3. Discussion, proposal, or status details grouped with short headings or bullets.
+4. Decisions, dependencies, and open questions.
+5. Action items with evidence-backed owners and dates.
+6. Attachments or links that the user asked recipients to review.
 
 ## Personalization Levels
 
@@ -76,7 +88,7 @@ knowledge.
 
 - Do not repeat the first email.
 - Change the angle: risk, useful context, social proof, meeting recap, or concrete next step.
-- Keep each follow-up shorter than the first unless adding requested detail.
+- Avoid unnecessary repetition, but do not shorten away decisions, customer context, or actions.
 - Stop short of pressure language.
 
 ## Output

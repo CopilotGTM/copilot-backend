@@ -35,11 +35,15 @@ exist, ask a grounded choice question rather than a blank-slate question.
 
 | User intent | Action |
 | --- | --- |
-| Write or improve an email | Gather context, load `references/sales-email-writing.md`, then draft |
-| Send an email with exact content | Resolve sender and recipients, validate the payload, then send |
-| Send an email whose content must be generated or materially edited | Draft first, show the final payload, then wait for confirmation |
+| Write or improve an email | Generate and show copy in the current channel; do not save it to a mailbox unless persistence is explicit |
+| Save/store/put an email in Drafts or the mailbox | Resolve the mailbox and call `save_email_draft`; this does not send |
+| Send/share generated email content | Save it to the provider Drafts folder by default so the user can review it there |
+| Send an exact email immediately | Use `send_email` only after the user explicitly insists on immediate delivery and confirms the exact payload |
+| Send a saved mailbox draft | Preview its current provider content, then use `send_email_draft` after confirmation |
+| Create MOM or meeting minutes | Load `references/meeting-minutes-writing.md`, produce MOM in the current channel, and do not assume it should be emailed |
 | Schedule or send a meeting invite | Resolve title, date, time, timezone, organizer, attendees, and context; show the final preview; then wait for confirmation |
-| Update, reschedule, or cancel an existing calendar event | Explain that calendar event update/cancel tools are not available; do not create a replacement unless the user explicitly asks |
+| Update or reschedule an existing calendar event | Use `update_calendar_meeting` only for a single event organized by the user's connected calendar |
+| Cancel an existing calendar event | Use `cancel_calendar_meeting` only after an exact cancellation preview |
 | "Send meeting/email to all stakeholders" | Resolve the deal and stakeholders, expand and deduplicate recipients, then show the final recipient list |
 | "Send it to Sarah/the champion/the buyer" | Resolve the person from stakeholders, contacts, meetings, emails, or conversation |
 | List or find meetings | Use the connected calendar, apply the requested date range, and return enough details to distinguish matching events |
@@ -256,6 +260,21 @@ already have a specific message ID.
 
 ## Email Workflow
 
+### Draft copy versus mailbox draft
+
+Interpret intent semantically across languages instead of matching only the English word
+"draft":
+
+- A bare request to draft, write, or compose means generate copy in the current channel.
+- Save/store/put/create-in-mailbox intent means call `save_email_draft`.
+- A request to send or share assistant-generated copy defaults to saving a provider draft.
+- Immediate delivery requires explicit "send now/directly" intent and final confirmation.
+- If both destinations remain plausible after conversation context, ask whether to show the
+  copy here or save it to the user's email Drafts folder.
+
+Always call generated text an **email draft** or **email copy** and provider-persisted state
+a **Gmail/Outlook mailbox draft** so the user can tell which action occurred.
+
 ### 1. Classify the email
 
 Determine whether the request is:
@@ -342,7 +361,9 @@ edit is not paired with explicit send intent, show the revised preview and wait.
 
 ### 6. Send once
 
-Call `send_email` only with the exact approved payload.
+Call `send_email_draft` with the provider draft ID and exact reviewed content hash by default.
+Call `send_email` only when the user explicitly asks for immediate delivery of the exact
+approved payload.
 
 The email send service owns payload-scoped idempotency. Do not alter the approved
 payload to force a retry or duplicate send.

@@ -96,3 +96,49 @@ class CalendarInviteCreateResult(BaseModel):
     subject: str
     conference_link: str | None = None
     web_link: str | None = None
+
+
+class CalendarMeetingUpdateRequest(BaseModel):
+    """Complete desired state for one organizer-owned, non-recurring meeting."""
+
+    organisation_id: UUID
+    requested_by_user_id: UUID
+    event_id: UUID
+    expected_version: str | None = None
+    title: str = Field(min_length=1, max_length=500)
+    start_at: datetime
+    end_at: datetime
+    timezone: str = Field(min_length=1, max_length=128)
+    attendees: list[CalendarInviteAttendee] = Field(default_factory=list, max_length=100)
+    body: str | None = Field(default=None, max_length=10000)
+    location: str | None = Field(default=None, max_length=500)
+    body_changed: bool = Field(default=False, exclude=True)
+    provider_body: str | None = Field(default=None, exclude=True)
+    provider_body_content_type: str | None = Field(default=None, exclude=True)
+    previous_body: str | None = Field(default=None, exclude=True)
+    provider_etag: str | None = Field(default=None, exclude=True)
+
+    _clean_required_string = field_validator("title", "timezone", mode="before")(
+        CalendarInviteCreateRequest.clean_required_string.__func__
+    )
+    _require_aware_datetime = field_validator("start_at", "end_at")(
+        CalendarInviteCreateRequest.require_aware_datetime.__func__
+    )
+
+    @field_validator("end_at")
+    @classmethod
+    def require_end_after_start(cls, value: datetime, info) -> datetime:
+        start_at = info.data.get("start_at")
+        if start_at and value <= start_at:
+            raise ValueError("end_at must be after start_at")
+        return value
+
+
+class CalendarMeetingMutationResult(BaseModel):
+    """Result of updating or cancelling one provider calendar event."""
+
+    request_id: UUID | None = None
+    event_id: UUID
+    provider_event_id: str
+    status: str
+    provider_response: dict | None = None

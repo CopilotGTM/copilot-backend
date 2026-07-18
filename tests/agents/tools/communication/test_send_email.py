@@ -122,7 +122,37 @@ async def test_send_email_requires_confirmation_when_sender_missing(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_send_email_requires_exact_recipient_email_for_names() -> None:
+async def test_send_email_requires_confirmation_for_exact_explicit_payload(monkeypatch) -> None:
+    """Even a fully resolved direct-send payload remains read-only until confirmation."""
+
+    service = MagicMock()
+    monkeypatch.setattr("src.agents.tools.communication.send_email.EmailSendService", service)
+
+    result = await send_email(
+        context=_FakeContext(
+            organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+            user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        ),
+        to=["buyer@example.com"],
+        subject="Follow-up",
+        body="Thanks.",
+        sender_email="seller@example.com",
+    )
+
+    assert result["status"] == "confirmation_required"
+    assert "final_send_confirmation" in result["confirmation_reasons"]
+    service.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_email_requires_exact_recipient_email_for_names(monkeypatch) -> None:
+    """An unresolved display name cannot become an external send recipient."""
+
+    monkeypatch.setattr(
+        "src.infra.database.sessions.acquire_master_async_session",
+        lambda: _user_scope([]),
+    )
+
     result = await send_email(
         context=_FakeContext(
             organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
