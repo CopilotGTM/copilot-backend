@@ -1762,9 +1762,7 @@ class RateLimitConfig:
     CONTACT_RESEARCH_PER_MINUTE: int = int(
         os.getenv("RATE_LIMIT_CONTACT_RESEARCH_PER_MINUTE", "10")
     )
-    CONTACT_RESEARCH_PER_HOUR: int = int(
-        os.getenv("RATE_LIMIT_CONTACT_RESEARCH_PER_HOUR", "100")
-    )
+    CONTACT_RESEARCH_PER_HOUR: int = int(os.getenv("RATE_LIMIT_CONTACT_RESEARCH_PER_HOUR", "100"))
 
     # Public lead forms need more headroom because anonymous website traffic is
     # scoped per form and client IP, not per authenticated user.

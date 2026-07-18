@@ -306,7 +306,9 @@ async def list_meetings(
         logger.warning("list_meetings: query exceeds %d characters", MAX_MEETING_QUERY_CHARS)
         return []
     for label, value in (("attendee_email", attendee_email), ("attendee_name", attendee_name)):
-        if value is not None and (not value.strip() or len(value.strip()) > MAX_MEETING_QUERY_CHARS):
+        if value is not None and (
+            not value.strip() or len(value.strip()) > MAX_MEETING_QUERY_CHARS
+        ):
             logger.warning("list_meetings: invalid %s length", label)
             return []
     attendee_email = attendee_email.strip() if attendee_email else None

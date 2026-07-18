@@ -76,7 +76,9 @@ async def search_contacts(
         value is not None and (not value.strip() or len(value.strip()) > MAX_CONTACT_QUERY_CHARS)
         for value in (query, company_name)
     ):
-        logger.warning("search_contacts: identifying query must be 1-%d characters", MAX_CONTACT_QUERY_CHARS)
+        logger.warning(
+            "search_contacts: identifying query must be 1-%d characters", MAX_CONTACT_QUERY_CHARS
+        )
         return []
 
     effective_limit = max(1, min(limit, 50))

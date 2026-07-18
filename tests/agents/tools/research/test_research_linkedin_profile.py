@@ -77,7 +77,9 @@ async def test_cached_email_research_skips_apollo_and_rate_limit(
     context = _context(_Session(contact))
     apollo = AsyncMock()
     limiter = MagicMock()
-    monkeypatch.setattr(research_module, "get_internal_domains", AsyncMock(return_value={"seller.example"}))
+    monkeypatch.setattr(
+        research_module, "get_internal_domains", AsyncMock(return_value={"seller.example"})
+    )
     monkeypatch.setattr(research_module, "apollo_enrich_person", apollo)
     monkeypatch.setattr(research_module, "enforce_contact_research_rate_limit", limiter)
 
@@ -107,7 +109,9 @@ async def test_external_email_without_contact_calls_sanitized_apollo(
         }
     )
     limiter = MagicMock()
-    monkeypatch.setattr(research_module, "get_internal_domains", AsyncMock(return_value={"seller.example"}))
+    monkeypatch.setattr(
+        research_module, "get_internal_domains", AsyncMock(return_value={"seller.example"})
+    )
     monkeypatch.setattr(research_module, "apollo_enrich_person", apollo)
     monkeypatch.setattr(research_module, "enforce_contact_research_rate_limit", limiter)
 
@@ -188,9 +192,7 @@ async def test_rate_limited_email_never_reaches_apollo(
 async def test_plain_name_and_linkedin_lookalike_are_rejected() -> None:
     """Only exact email or a URL on LinkedIn's real hostname identifies a person."""
     plain_name = await research_linkedin_profile(query="Buyer Person")
-    lookalike = await research_linkedin_profile(
-        query="https://linkedin.com.evil.example/in/buyer"
-    )
+    lookalike = await research_linkedin_profile(query="https://linkedin.com.evil.example/in/buyer")
 
     assert plain_name["success"] is False
     assert lookalike["success"] is False
@@ -201,9 +203,7 @@ async def test_valid_linkedin_url_returns_sanitized_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """General URL lookup remains available but never exposes Apollo's raw object."""
-    apollo = AsyncMock(
-        return_value={"success": True, "name": "Buyer", "raw": {"private": True}}
-    )
+    apollo = AsyncMock(return_value={"success": True, "name": "Buyer", "raw": {"private": True}})
     monkeypatch.setattr(research_module, "apollo_enrich_person", apollo)
 
     result = await research_linkedin_profile(query="linkedin.com/in/buyer")
