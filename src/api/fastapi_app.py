@@ -42,6 +42,7 @@ from src.api.routers.chat.voice_realtime_handler import router as voice_realtime
 from src.api.routers.chat_attachments.access_handler import (
     download_router as attachment_access_router,
 )
+from src.api.routers.chat_attachments.catalog_handler import catalog_router
 from src.api.routers.chat_attachments.upload_handler import upload_router
 from src.api.routers.crm import (
     accounts_router,
@@ -275,6 +276,7 @@ def create_fastapi_app():
     fastapp.include_router(chat_sessions_router, prefix="/users/chats", tags=["chats"])
     # Chat messages
     fastapp.include_router(chat_messages_router, prefix="/users/chats", tags=["chat_messages"])
+    fastapp.include_router(catalog_router, prefix="/users/chats", tags=["chat_attachments"])
     # Voice realtime chat persistence
     if voice_realtime_api_enabled:
         fastapp.include_router(

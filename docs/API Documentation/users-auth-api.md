@@ -71,7 +71,7 @@ Not required
     "email": "user@example.com",
     "first_name": "Jane",
     "last_name": "Doe",
-    "role": "ADMIN | MEMBER",
+    "role": "admin",
     "state": "ACTIVE",
     "created_at": "2025-09-01T08:00:00Z",
     "email_verified": true,
@@ -150,6 +150,16 @@ Not required
 }
 ```
 
+For `state: "ACTIVE"`, `data.role` is always one of the lowercase application-role values:
+
+```ts
+type UserRole = "admin" | "member";
+```
+
+The frontend can use `role === "admin"` to expose organisation-admin navigation such as
+the sent-audio attachment catalogue. This is a presentation gate only; protected endpoints
+also enforce the role on the backend.
+
 ### Password change required
 
 ```json
@@ -227,6 +237,10 @@ Not required
   }
 }
 ```
+
+The password-change-required branch does not populate the active user's role, so `role` may
+be `null`. Do not render authenticated admin/member application features until the login
+response has `state: "ACTIVE"`.
 
 `user_preferences` is returned during login/session bootstrap so listing endpoints can stay focused on data rows. If a user has saved contact-list, account-list, deal-list, or task-list column preferences, those override the backend defaults; otherwise the ordered defaults above are returned.
 
@@ -475,6 +489,38 @@ curl -X POST "$BASE_URL/users/auth/logout" \
   -H "Content-Type: application/json" \
   -d '{"global_logout":false}'
 ```
+
+---
+
+## Session Bootstrap: Current User Profile
+
+```http
+GET /users/auth/me
+Authorization: Bearer <access_token>
+```
+
+Use this endpoint after restoring an existing session when the frontend no longer has the
+login profile in memory. It returns the same lowercase `role` used by active login responses,
+along with the current profile and preferences. It does not return access or refresh tokens.
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Current user fetched successfully",
+  "data": {
+    "email": "user@example.com",
+    "first_name": "Jane",
+    "last_name": "Doe",
+    "role": "admin",
+    "state": "ACTIVE",
+    "organisation_id": "6f573f51-f201-4a68-b0ba-9d81779360d4",
+    "tokens": null
+  }
+}
+```
+
+- `401 Unauthorized` — missing, invalid, inactive, or unapproved user credentials.
+- `500 Internal Server Error` — profile or organisation-preference lookup failed.
 
 ---
 
