@@ -13,6 +13,10 @@ if TYPE_CHECKING:
         create_list_chat_attachments,
         create_read_chat_attachment,
     )
+    from src.agents.tools.communication.email_drafts import (
+        create_save_email_draft,
+        create_send_email_draft,
+    )
     from src.agents.tools.communication.fetch_teams_chat_messages import (
         create_fetch_teams_chat_messages,
     )
@@ -63,6 +67,14 @@ _EXPORTS = {
     "create_send_email": (
         "src.agents.tools.communication.send_email",
         "create_send_email",
+    ),
+    "create_save_email_draft": (
+        "src.agents.tools.communication.email_drafts",
+        "create_save_email_draft",
+    ),
+    "create_send_email_draft": (
+        "src.agents.tools.communication.email_drafts",
+        "create_send_email_draft",
     ),
 }
 

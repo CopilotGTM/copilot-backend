@@ -118,6 +118,8 @@ class ToolName(str, Enum):
     LIST_CONNECTED_EMAIL_ACCOUNTS = "list_connected_email_accounts"
     SEARCH_MAILBOX_EMAILS = "search_mailbox_emails"
     SEND_EMAIL = "send_email"
+    SAVE_EMAIL_DRAFT = "save_email_draft"
+    SEND_EMAIL_DRAFT = "send_email_draft"
     READ_CHAT_ATTACHMENT = "read_chat_attachment"
     LIST_CHAT_ATTACHMENTS = "list_chat_attachments"
     LIST_DEAL_NOTES = "list_deal_notes"
@@ -143,6 +145,8 @@ class ToolName(str, Enum):
     GET_UPCOMING_MEETINGS = "get_upcoming_meetings"
     GET_CALENDAR_EVENTS = "get_calendar_events"
     SEND_CALENDAR_INVITE = "send_calendar_invite"
+    UPDATE_CALENDAR_MEETING = "update_calendar_meeting"
+    CANCEL_CALENDAR_MEETING = "cancel_calendar_meeting"
 
     # -------------------------------------------------------------------------
     # BRIEFING/FOLLOW-UP TOOLS - For meeting prep and action items
@@ -178,7 +182,11 @@ REMINDER_MANAGEMENT_TOOLS = {
     ToolName.LIST_REMINDERS,
     ToolName.CANCEL_REMINDER,
     ToolName.SEND_CALENDAR_INVITE,
+    ToolName.UPDATE_CALENDAR_MEETING,
+    ToolName.CANCEL_CALENDAR_MEETING,
     ToolName.SEND_EMAIL,
+    ToolName.SAVE_EMAIL_DRAFT,
+    ToolName.SEND_EMAIL_DRAFT,
 }
 
 VOICE_REALTIME_WRITE_EXCLUDED_TOOLS = {
@@ -221,8 +229,12 @@ CHANNEL_ONLY_TOOLS: dict[ToolName, set[str]] = {
     ToolName.LIST_REMINDERS: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.CANCEL_REMINDER: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.SEND_CALENDAR_INVITE: {"teams", "slack", "whatsapp", "web", "voice"},
+    ToolName.UPDATE_CALENDAR_MEETING: {"teams", "slack", "whatsapp", "web", "voice"},
+    ToolName.CANCEL_CALENDAR_MEETING: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.SEND_MEETING_BOT_INVITE: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.SEND_EMAIL: {"teams", "slack", "whatsapp", "web", "voice"},
+    ToolName.SAVE_EMAIL_DRAFT: {"teams", "slack", "whatsapp", "web", "voice"},
+    ToolName.SEND_EMAIL_DRAFT: {"teams", "slack", "whatsapp", "web", "voice"},
 }
 
 
@@ -271,6 +283,8 @@ GENERAL_AGENT_TOOLS: set[ToolName] = {
     ToolName.LIST_CONNECTED_EMAIL_ACCOUNTS,
     ToolName.SEARCH_MAILBOX_EMAILS,
     ToolName.SEND_EMAIL,
+    ToolName.SAVE_EMAIL_DRAFT,
+    ToolName.SEND_EMAIL_DRAFT,
     ToolName.READ_CHAT_ATTACHMENT,
     ToolName.LIST_CHAT_ATTACHMENTS,
     ToolName.LIST_DEAL_NOTES,
@@ -309,6 +323,8 @@ GENERAL_AGENT_TOOLS: set[ToolName] = {
     ToolName.CANCEL_REMINDER,
     # Calendar write tools (channel-only)
     ToolName.SEND_CALENDAR_INVITE,
+    ToolName.UPDATE_CALENDAR_MEETING,
+    ToolName.CANCEL_CALENDAR_MEETING,
 }
 
 AGENT_TOOLS: dict[str, set[ToolName]] = {
@@ -565,12 +581,16 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.GET_UPCOMING_MEETINGS: ToolCategory.CALENDAR,
     ToolName.GET_CALENDAR_EVENTS: ToolCategory.CALENDAR,
     ToolName.SEND_CALENDAR_INVITE: ToolCategory.CALENDAR,
+    ToolName.UPDATE_CALENDAR_MEETING: ToolCategory.CALENDAR,
+    ToolName.CANCEL_CALENDAR_MEETING: ToolCategory.CALENDAR,
     # Communication
     ToolName.LIST_DEAL_EMAILS: ToolCategory.COMMUNICATION,
     ToolName.GET_EMAIL_DETAILS: ToolCategory.COMMUNICATION,
     ToolName.LIST_CONNECTED_EMAIL_ACCOUNTS: ToolCategory.COMMUNICATION,
     ToolName.SEARCH_MAILBOX_EMAILS: ToolCategory.COMMUNICATION,
     ToolName.SEND_EMAIL: ToolCategory.COMMUNICATION,
+    ToolName.SAVE_EMAIL_DRAFT: ToolCategory.COMMUNICATION,
+    ToolName.SEND_EMAIL_DRAFT: ToolCategory.COMMUNICATION,
     ToolName.READ_CHAT_ATTACHMENT: ToolCategory.COMMUNICATION,
     ToolName.LIST_CHAT_ATTACHMENTS: ToolCategory.COMMUNICATION,
     ToolName.LIST_DEAL_CHANNEL_MESSAGES: ToolCategory.COMMUNICATION,
@@ -629,7 +649,11 @@ class ToolRegistry:
     def _register_tool_factories(self) -> None:
         """Register all available tool factories."""
         # Import here to avoid circular imports across tool modules and registry.
-        from src.agents.tools.calendar import create_send_calendar_invite
+        from src.agents.tools.calendar import (
+            create_cancel_calendar_meeting,
+            create_send_calendar_invite,
+            create_update_calendar_meeting,
+        )
         from src.agents.tools.communication import (
             create_fetch_teams_chat_messages,
             create_get_email_details,
@@ -638,8 +662,10 @@ class ToolRegistry:
             create_list_deal_channel_messages,
             create_list_deal_emails,
             create_read_chat_attachment,
+            create_save_email_draft,
             create_search_mailbox_emails,
             create_send_email,
+            create_send_email_draft,
         )
         from src.agents.tools.crm import (
             create_add_deal_note,
@@ -837,6 +863,12 @@ class ToolRegistry:
         self._tool_factories[ToolName.SEND_CALENDAR_INVITE] = lambda: create_send_calendar_invite(
             self.context, self.capabilities_getter
         )
+        self._tool_factories[ToolName.UPDATE_CALENDAR_MEETING] = (
+            lambda: create_update_calendar_meeting(self.context, self.capabilities_getter)
+        )
+        self._tool_factories[ToolName.CANCEL_CALENDAR_MEETING] = (
+            lambda: create_cancel_calendar_meeting(self.context, self.capabilities_getter)
+        )
         self._tool_factories[ToolName.GET_MEETING_DETAILS] = lambda: create_get_meeting_details(
             self.context, self.capabilities_getter
         )
@@ -867,6 +899,12 @@ class ToolRegistry:
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.SEND_EMAIL] = lambda: create_send_email(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.SAVE_EMAIL_DRAFT] = lambda: create_save_email_draft(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.SEND_EMAIL_DRAFT] = lambda: create_send_email_draft(
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.READ_CHAT_ATTACHMENT] = lambda: create_read_chat_attachment(

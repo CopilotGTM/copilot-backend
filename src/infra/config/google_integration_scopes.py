@@ -8,6 +8,7 @@ GOOGLE_SCOPE_USERINFO_EMAIL = "https://www.googleapis.com/auth/userinfo.email"
 GOOGLE_SCOPE_USERINFO_PROFILE = "https://www.googleapis.com/auth/userinfo.profile"
 GOOGLE_SCOPE_GMAIL_READONLY = "https://www.googleapis.com/auth/gmail.readonly"
 GOOGLE_SCOPE_GMAIL_SEND = "https://www.googleapis.com/auth/gmail.send"
+GOOGLE_SCOPE_GMAIL_COMPOSE = "https://www.googleapis.com/auth/gmail.compose"
 GOOGLE_SCOPE_CALENDAR_READONLY = "https://www.googleapis.com/auth/calendar.readonly"
 GOOGLE_SCOPE_CALENDAR_EVENTS = "https://www.googleapis.com/auth/calendar.events"
 GOOGLE_SCOPE_MEETINGS_SPACE_READONLY = "https://www.googleapis.com/auth/meetings.space.readonly"
@@ -35,6 +36,7 @@ GOOGLE_PROVIDER_SCOPES = (
     *GOOGLE_CALENDAR_SCOPES,
     GOOGLE_SCOPE_GMAIL_READONLY,
     GOOGLE_SCOPE_GMAIL_SEND,
+    GOOGLE_SCOPE_GMAIL_COMPOSE,
 )
 
 GOOGLE_INTEGRATION_SCOPES: dict[IntegrationType, tuple[str, ...]] = {
@@ -43,6 +45,7 @@ GOOGLE_INTEGRATION_SCOPES: dict[IntegrationType, tuple[str, ...]] = {
         *GOOGLE_IDENTITY_SCOPES,
         GOOGLE_SCOPE_GMAIL_READONLY,
         GOOGLE_SCOPE_GMAIL_SEND,
+        GOOGLE_SCOPE_GMAIL_COMPOSE,
     ),
     IntegrationType.GOOGLE_CALENDAR: GOOGLE_CALENDAR_SCOPES,
 }

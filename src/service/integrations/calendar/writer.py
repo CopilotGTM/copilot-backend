@@ -33,7 +33,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, func
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
@@ -359,6 +359,46 @@ class CalendarSyncWriter:
 
         result = await self.session.execute(stmt)
         return cast(CalendarEventUserState, result.scalars().one())
+
+    async def soft_delete_user_state(
+        self,
+        event: CalendarEvent,
+        *,
+        integration_id: UUID,
+        external_id: str,
+    ) -> bool:
+        """Delete one mailbox copy and cancel the shared row only when none remain.
+
+        Calendar sync and organizer-triggered cancellation share this invariant:
+        deleting one attendee's copy must not cancel an event still visible through
+        another active integration in the organisation.
+        """
+
+        stmt = select(CalendarEventUserState).where(
+            col(CalendarEventUserState.event_id) == event.event_id,
+            col(CalendarEventUserState.integration_id) == integration_id,
+            col(CalendarEventUserState.external_id) == external_id,
+        )
+        result = await self.session.execute(stmt)
+        state = result.scalar_one_or_none()
+        if state is None:
+            return False
+        state.is_deleted = True
+        state.updated_at = datetime.now(UTC)
+        self.session.add(state)
+
+        remaining = await self.session.execute(
+            select(CalendarEventUserState).where(
+                col(CalendarEventUserState.event_id) == event.event_id,
+                col(CalendarEventUserState.is_deleted).is_(False),
+                col(CalendarEventUserState.state_id) != state.state_id,
+            )
+        )
+        if remaining.scalars().first() is None:
+            event.status = "cancelled"
+            event.synced_at = datetime.now(UTC)
+            self.session.add(event)
+        return True
 
     async def batch_sync_attendees(
         self,

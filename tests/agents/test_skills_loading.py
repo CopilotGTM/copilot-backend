@@ -755,14 +755,15 @@ def test_email_meeting_workflow_skill_forbids_email_based_titles_and_yes_sender(
     assert "does not answer a question asking which sender mailbox to use" in instructions
 
 
-def test_email_meeting_workflow_skill_does_not_claim_calendar_update_tools() -> None:
-    """The workflow must not imply unsupported calendar update/cancel execution."""
+def test_email_meeting_workflow_skill_routes_calendar_update_tools() -> None:
+    """The workflow must route supported organizer update/cancel execution."""
     loader = LocalSkills(str(SKILLS_DIR))
     skills = loader.load()
     skill = next(s for s in skills if s.name == "email-meeting-workflow")
     instructions = skill.instructions
-    assert "calendar event update/cancel tools are not available" in instructions
-    assert "use the matching calendar tool" not in instructions
+    assert "Use `update_calendar_meeting`" in instructions
+    assert "Use `cancel_calendar_meeting`" in instructions
+    assert "organized by the user's connected calendar" in instructions
     assert "pending action" not in instructions
     assert "preview token" not in instructions
 
@@ -773,6 +774,7 @@ def test_email_meeting_workflow_skill_has_email_writing_reference() -> None:
     skills = loader.load()
     skill = next(s for s in skills if s.name == "email-meeting-workflow")
     assert "sales-email-writing.md" in skill.references
+    assert "meeting-minutes-writing.md" in skill.references
 
 
 def test_skills_system_prompt_snippet_mentions_call_analysis() -> None:

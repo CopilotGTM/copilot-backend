@@ -231,6 +231,9 @@ async def send_email(
         }
 
     confirmation_reasons: list[str] = []
+    # External sending is irreversible, so even an exact user-supplied payload
+    # must cross the same explicit final-confirmation boundary as calendar sends.
+    confirmation_reasons.append("final_send_confirmation")
     if not sender_email:
         confirmation_reasons.append("sender_not_explicit")
     if (
@@ -322,7 +325,8 @@ def create_send_email(
     ) -> dict[str, Any]:
         """Send a new Gmail or Outlook email.
 
-        Use only for new emails, not replies, drafts, scheduled sends, attachments,
+        Use only when the user explicitly insists on immediate delivery of a new
+        email, not replies, drafts, scheduled sends, attachments,
         or thread continuation. Required before sending: explicit recipient email,
         subject, and body. If sender_email is not explicit or a recipient came from
         a name/contact resolution, ask for confirmation and call again with
