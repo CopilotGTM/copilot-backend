@@ -358,12 +358,13 @@ async def test_provider_result_fills_empty_email_and_preserves_match_metadata() 
             enrichment_source="apollo",
             email="ada@acme.com",
             name="Ada Buyer",
-            linkedin_url="https://linkedin.com/in/ada-buyer",
+            linkedin_url="https://linkedin.com/in/provider-should-not-replace-manual",
         ),
     )
 
     assert persisted is True
     assert contact.email == "ada@acme.com"
+    assert contact.linkedin_url == "https://linkedin.com/in/ada-buyer"
     assert contact.profile_enrichment["apollo_id"] == "person_123"
     assert contact.profile_enrichment["match_source"] == "linkedin_url"
     assert contact.profile_enriched_at is not None

@@ -329,6 +329,54 @@ async def test_provider_not_found_marks_attempt_without_summary(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_force_refresh_retries_prior_miss_with_all_current_identities(monkeypatch) -> None:
+    """A new identity must bypass the prior miss and reach Apollo with both identifiers."""
+    workflow_module = import_module(
+        "src.workers.deal_worker.services.deal_insight_services.contact_research_service"
+    )
+    service_module = import_module("src.service.crm.contacts.research_service")
+
+    organisation_id = uuid4()
+    contact_id = uuid4()
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=contact_id,
+        email="buyer@gmail.com",
+        linkedin_url="https://linkedin.com/in/buyer",
+        profile_enrichment={"provider": "apollo", "status": "not_found"},
+    )
+    load_session = _LoadSession(contact)
+    write_session = _WriteSession(contact)
+    completion_session = _WriteSession(contact)
+    monkeypatch.setattr(
+        workflow_module,
+        "acquire_org_async_session",
+        _SessionFactory(load_session, write_session, completion_session),
+    )
+    PROJECTIONS.clear()
+    monkeypatch.setattr(workflow_module, "ActivityFeedProjectionService", _Projection)
+    payloads = []
+
+    async def fake_provider(payload):  # noqa: ANN001
+        """Capture the provider identity set and return a terminal miss."""
+        payloads.append(payload)
+        return service_module.ContactProviderResearchResult(status="not_found")
+
+    workflow = workflow_module.ContactResearchWorkflowService(
+        organisation_id,
+        provider_lookup=fake_provider,
+    )
+
+    result = await workflow.research_contact(contact_id, force_refresh=True)
+
+    assert result.provider_status == "not_found"
+    assert len(payloads) == 1
+    assert payloads[0].email == "buyer@gmail.com"
+    assert payloads[0].linkedin_url == "https://linkedin.com/in/buyer"
+
+
+@pytest.mark.asyncio
 async def test_provider_error_records_no_completed_activity(monkeypatch) -> None:
     """Retryable provider failures should not look like completed enrichment."""
     workflow_module = import_module(

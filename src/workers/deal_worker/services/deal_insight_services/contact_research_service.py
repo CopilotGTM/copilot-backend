@@ -83,16 +83,20 @@ class ContactResearchWorkflowService:
         contact_id: UUID,
         *,
         job_id: UUID | None = None,
+        force_refresh: bool = False,
     ) -> ContactResearchWorkflowResult:
-        """Research one contact and return independent provider/summary statuses."""
+        """Research one contact, optionally bypassing provider evidence from an older identity."""
         snapshot = await self._load_snapshot(contact_id)
         if snapshot is None:
             raise ContactResearchWorkflowError("Contact not found", retryable=False)
 
-        if snapshot.profile_enrichment:
+        has_cached_profile = bool(snapshot.profile_enrichment) and (
+            snapshot.profile_enrichment.get("status") != "not_found"
+        )
+        if has_cached_profile and not force_refresh:
             provider_status = "cached"
             profile_enrichment = snapshot.profile_enrichment
-        elif not snapshot.email or not snapshot.company_domain:
+        elif not snapshot.linkedin_url and (not snapshot.email or not snapshot.company_domain):
             return ContactResearchWorkflowResult(
                 provider_status="skipped",
                 summary_status="skipped",

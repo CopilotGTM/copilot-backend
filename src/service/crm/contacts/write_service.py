@@ -561,6 +561,15 @@ class ContactWriteService:
                     changed_fields[field] = change
                 setattr(contact, field, value)
 
+        if {"email", "linkedin_url"}.intersection(changed_fields) and (
+            contact.profile_enrichment or {}
+        ).get("status") == "not_found":
+            # A miss belongs to the identifiers used for that attempt. Once a user adds
+            # another identity, expose the contact as researchable until the retry finishes.
+            contact.profile_enrichment = {}
+            contact.profile_enriched_at = None
+            contact.profile_enrichment_source = None
+
         self.org_session.add(contact)
         await self.org_session.flush()
         await self.org_session.refresh(contact)
