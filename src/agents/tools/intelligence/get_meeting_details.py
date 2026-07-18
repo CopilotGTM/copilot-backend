@@ -3,8 +3,8 @@
 Tool for retrieving detailed information about a specific meeting,
 including attendees, transcript status, and AI-generated insights.
 
-SECURITY: organisation_id is taken from context (immutable).
-This tool does NOT accept organisation_id as a parameter.
+SECURITY: organisation_id plus user_id or deal_id are taken from context
+(immutable). This tool does NOT accept those boundaries as parameters.
 """
 
 from __future__ import annotations
@@ -22,14 +22,20 @@ from src.domain.models.organisation_tables.sync.calendar import (
     AssociationStatus,
     CalendarEvent,
     CalendarEventDealAssociation,
+    CalendarEventUserState,
     GenerationStatus,
 )
+from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     Meeting,
     MeetingSource,
     MeetingStatus,
 )
 from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
+from src.service.crm.utils.internal_domains import get_internal_domains, is_internal_email
+from src.service.integrations.calendar.integration_types import (
+    PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPE_VALUES as CALENDAR_INTEGRATION_TYPES,
+)
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -52,8 +58,9 @@ async def get_meeting_details(
     Returns comprehensive meeting details including attendees, AI-generated
     summary, prep notes, and follow-up actions.
 
-    SECURITY: organisation_id is taken from context (immutable).
-    This prevents cross-org data access.
+    SECURITY: interactive reads must come through the current user's active
+    calendar. Userless background briefing reads must come through the immutable
+    deal association in context; an event UUID alone never grants access.
 
     Args:
         event_id: The calendar event UUID as a string
@@ -66,11 +73,14 @@ async def get_meeting_details(
     Returns:
         Meeting dictionary with detailed information, or None if not found
     """
-    # SECURITY: organisation_id comes from context, not parameters
     organisation_id = context.organisation_id
+    user_id = context.user_id
 
     if not organisation_id:
         logger.warning("get_meeting_details: missing organisation_id in context")
+        return None
+    if not user_id and not context.deal_id:
+        logger.warning("get_meeting_details: missing user or deal access boundary")
         return None
 
     # Parse event_id
@@ -82,19 +92,51 @@ async def get_meeting_details(
 
     # Use table columns for SQLAlchemy operations (type-safe pattern)
     event_c = cast(Any, CalendarEvent).__table__.c
+    user_state_c = cast(Any, CalendarEventUserState).__table__.c
+    integration_c = cast(Any, KnowledgeIntegration).__table__.c
     assoc_c = cast(Any, CalendarEventDealAssociation).__table__.c
     meeting_c = cast(Any, Meeting).__table__.c
 
-    # Acquire fresh session for database operations
+    # Internal domains live in the master schema. Load them before acquiring the
+    # org session so the cross-schema lookup cannot hold two pooled sessions.
+    internal_domains = await get_internal_domains(organisation_id)
+
     async with context.acquire_session() as session:
-        # Fetch calendar event with attendees
-        event_stmt = (
-            select(CalendarEvent)
-            .options(selectinload(cast(Any, CalendarEvent).attendees))
-            .where(
-                event_c.event_id == parsed_event_id,
+        event_stmt = select(CalendarEvent).options(selectinload(cast(Any, CalendarEvent).attendees))
+        event_access_filters: tuple[Any, ...]
+        if user_id:
+            # The provider event ID is externally supplied, so current-user
+            # calendar ownership is the interactive-read authorization boundary.
+            event_stmt = event_stmt.join(
+                CalendarEventUserState, user_state_c.event_id == event_c.event_id
+            ).join(
+                KnowledgeIntegration,
+                integration_c.integration_id == user_state_c.integration_id,
             )
-        )
+            event_access_filters = (
+                user_state_c.is_deleted.is_(False),
+                integration_c.organisation_id == organisation_id,
+                integration_c.created_by_user_id == user_id,
+                integration_c.is_active.is_(True),
+                integration_c.integration_type.in_(CALENDAR_INTEGRATION_TYPES),
+            )
+        else:
+            # Automated meeting prep has no interactive user but is immutable-deal
+            # scoped. Keep that existing worker path behind an active association.
+            event_stmt = event_stmt.join(
+                CalendarEventDealAssociation,
+                assoc_c.event_id == event_c.event_id,
+            )
+            event_access_filters = (
+                assoc_c.organisation_id == organisation_id,
+                assoc_c.deal_id == context.deal_id,
+                assoc_c.status == AssociationStatus.ACTIVE,
+            )
+        event_stmt = event_stmt.where(
+            event_c.event_id == parsed_event_id,
+            event_c.organisation_id == organisation_id,
+            *event_access_filters,
+        ).limit(1)
 
         try:
             event_result = await session.execute(event_stmt)
@@ -146,6 +188,7 @@ async def get_meeting_details(
                     "name": resolve_attendee_display_name(att.display_name, att.email),
                     "response_status": att.response_status,
                     "is_organiser": att.is_organiser,
+                    "is_internal": is_internal_email(att.email, internal_domains),
                 }
             )
 
@@ -252,8 +295,8 @@ def create_get_meeting_details(
 ) -> Callable[..., Any]:
     """Factory to create get_meeting_details tool bound to a context.
 
-    SECURITY: The context contains the immutable organisation_id.
-    The tool does NOT accept organisation_id as a parameter.
+    SECURITY: The context contains immutable organisation plus user or deal
+    boundaries. The tool does not accept those boundaries as parameters.
 
     Args:
         context: AgentContext with organisation metadata
@@ -273,7 +316,7 @@ def create_get_meeting_details(
         """Get detailed information about a specific meeting.
 
         Use this tool when you need comprehensive information about a meeting,
-        including who attended, what was discussed (summary), and any follow-up
+        including who was invited, what was discussed (summary), and any follow-up
         actions. This is useful for:
         - Reviewing what happened in a customer meeting
         - Preparing for a follow-up meeting
@@ -286,15 +329,17 @@ def create_get_meeting_details(
             include_prep: Include meeting prep notes (default: False)
             include_followup: Include follow-up actions (default: True)
 
-        Note: organisation_id is automatically set from context and cannot be overridden.
+        The returned people are calendar invitees with RSVP states; they are not
+        proof of actual attendance. Use attendee `is_internal` when the user asks
+        for a particular participant scope.
         """
         logger.info(
             f"[TOOL CALLED] get_meeting_details - event_id='{event_id}', "
             f"include_transcript={include_transcript}, include_summary={include_summary}"
         )
 
-        if not context.organisation_id:
-            logger.warning("get_meeting_details unavailable: missing organisation_id in context")
+        if not context.organisation_id or not (context.user_id or context.deal_id):
+            logger.warning("get_meeting_details unavailable: missing event access context")
             return None
 
         # Tool acquires its own sessions on-demand, no lock needed

@@ -432,9 +432,29 @@ When listing or resolving meetings:
 3. Interpret relative dates using the user's current timezone.
 4. Prefer upcoming, non-cancelled events unless the user asks for historical or
    cancelled meetings.
-5. Match using title, exact date/time, organizer, attendees, and related context.
+5. Match using title, exact date/time, organizer, attendees, and related context. When
+   using `list_meetings.query`, pass only the identifying title, person, company, or
+   email rather than the full request. Combine it with date filters when both are known.
 6. Do not select based on title alone when multiple events match.
 7. Return enough human-readable information to distinguish the events.
+8. Fetch `get_meeting_details` before answering about the complete participant list.
+
+Calendar attendees and RSVP states are invitation evidence, not proof of actual
+attendance. If a transcript exists, identified speakers prove only that those people
+spoke; they are not a complete attendance list.
+
+When the user asks for background on all participants or a selected subset:
+
+1. Resolve the meeting and load its complete attendees.
+2. Select the requested people using `is_internal` only when the user asks for an
+   internal or external scope.
+3. Search CRM contacts first for available internal context.
+4. If no CRM contact exists or its context is insufficient, call
+   `research_linkedin_profile` directly with the attendee's name and reliable company
+   context. A contact, stakeholder, account, or deal is not a prerequisite.
+5. Do not create a CRM record merely to research a person.
+6. Ask for clarification when the attendee identity or research result is ambiguous,
+   and report unavailable background without guessing.
 
 For multiple matches, present a compact selection such as:
 

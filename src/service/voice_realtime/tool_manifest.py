@@ -101,6 +101,17 @@ def _build_search_accounts_factory(context: AgentContext) -> Callable[[], Callab
     return partial(create_search_accounts, context, _build_empty_capabilities)
 
 
+def _build_research_linkedin_profile_factory(
+    _context: AgentContext,
+) -> Callable[[], Callable[..., Any]]:
+    """Expose the existing read-only person research tool to realtime voice."""
+    from src.agents.tools.research.research_linkedin_profile import (
+        create_research_linkedin_profile,
+    )
+
+    return partial(create_research_linkedin_profile, _build_empty_capabilities)
+
+
 def _build_list_meetings_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
     from src.agents.tools.intelligence.list_meetings_unified import create_list_meetings
 
@@ -739,19 +750,62 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
         factory_builder=_build_search_accounts_factory,
     ),
     VoiceRealtimeToolDefinition(
-        tool_name=ToolName.LIST_MEETINGS,
-        description="List meetings from the current user's connected calendar.",
+        tool_name=ToolName.RESEARCH_LINKEDIN_PROFILE,
+        description=(
+            "Research a person's professional background by name or LinkedIn URL, including "
+            "people who are not CRM contacts or deal stakeholders."
+        ),
         parameters={
             "type": "object",
             "properties": {
-                "start_datetime": {"type": "string"},
-                "end_datetime": {"type": "string"},
+                "query": {
+                    "type": "string",
+                    "description": "The person's name or LinkedIn profile URL.",
+                },
+                "company": {
+                    "type": "string",
+                    "description": "Reliable company name used only to disambiguate a name.",
+                },
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        factory_builder=_build_research_linkedin_profile_factory,
+    ),
+    VoiceRealtimeToolDefinition(
+        tool_name=ToolName.LIST_MEETINGS,
+        description=(
+            "List or find meetings from the current user's connected calendar. Combine date "
+            "filters with a short identifying query when the user provides both."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "start_datetime": {
+                    "type": "string",
+                    "description": "User-local range start, such as Monday or tomorrow.",
+                },
+                "end_datetime": {
+                    "type": "string",
+                    "description": "User-local exclusive range end, such as Tuesday.",
+                },
                 "limit": {"type": "integer"},
                 "deal_id": {"type": "string"},
                 "attendee_email": {"type": "string"},
                 "attendee_name": {"type": "string"},
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Only the identifying title, person, company, or email; never the full "
+                        "spoken request."
+                    ),
+                },
                 "has_transcript": {"type": "boolean"},
                 "has_summary": {"type": "boolean"},
+                "time_direction": {
+                    "type": "string",
+                    "enum": ["past", "present", "future"],
+                },
             },
             "required": [],
             "additionalProperties": False,
