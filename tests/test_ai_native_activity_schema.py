@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import get_type_hints
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -99,6 +101,56 @@ def test_ai_native_activity_feed_fields_are_separate_from_full_task_and_note_sto
     }.issubset(activity_columns)
     assert {"due_at", "reminder_at", "assigned_to_user_id"}.issubset(task_columns)
     assert {"body", "body_format", "author_user_id", "visibility"}.issubset(note_columns)
+
+
+def test_activity_feed_orm_does_not_map_columns_retired_by_migration_066() -> None:
+    """Prevent ORM reads from selecting activity columns that no longer exist."""
+    # Migration 066 removed task/note detail from the feed projection. Mapping any
+    # retired name makes every select(CRMActivity) fail before rows can be returned.
+    retired_columns = {
+        "body",
+        "status",
+        "priority",
+        "activity_subtype",
+        "owner_name",
+        "owner_email",
+        "owner_id",
+        "external_assignee_email",
+        "external_assignee_name",
+        "source",
+        "created_by_user_id",
+        "due_date",
+        "end_date",
+        "completed_date",
+        "reminder_date",
+        "duration_minutes",
+        "attendees",
+        "direction",
+        "call_outcome",
+        "source_created_at",
+        "source_modified_at",
+        "synced_at",
+        "last_seen_at",
+        "is_all_day",
+        "properties",
+        "metrics",
+    }
+    retired_indexes = {
+        "ix_crm_activity_org_status",
+        "ix_crm_activity_org_priority",
+        "ix_crm_activity_due_date",
+        "ix_crm_activity_org_due",
+        "ix_crm_activity_status_due",
+        "ix_crm_activity_synced",
+        "ix_crm_activity_source",
+        "ix_crm_activity_created_by",
+        "ix_crm_activity_task_owner_due",
+        "ix_crm_activity_task_created_by_due",
+        "ix_crm_activity_task_external_email_due",
+    }
+
+    assert retired_columns.isdisjoint(CRMActivity.__table__.columns.keys())
+    assert retired_indexes.isdisjoint(_index_names(CRMActivity))
 
 
 def test_task_state_fields_have_database_guards() -> None:
@@ -309,9 +361,11 @@ def test_activity_display_payload_shape_is_validated_by_pydantic_not_database() 
 
 
 def test_email_display_payload_has_typed_pydantic_contract() -> None:
+    association_id = uuid4()
     payload = validate_crm_activity_display_payload(
         "EMAIL",
         {
+            "association_id": association_id,
             "direction": "INBOUND",
             "participants_preview": [
                 {"name": "Sarah Chen", "email": "sarah@acme.example", "role": "SENDER"}
@@ -322,6 +376,7 @@ def test_email_display_payload_has_typed_pydantic_contract() -> None:
     )
 
     assert payload == {
+        "association_id": str(association_id),
         "direction": "INBOUND",
         "participants_preview": [
             {"name": "Sarah Chen", "email": "sarah@acme.example", "role": "SENDER"}
@@ -336,9 +391,15 @@ def test_email_display_payload_has_typed_pydantic_contract() -> None:
 
 
 def test_meeting_display_payload_has_typed_pydantic_contract() -> None:
+    association_id = uuid4()
+    start_at = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
+    end_at = datetime(2026, 7, 1, 9, 45, tzinfo=UTC)
     payload = validate_crm_activity_display_payload(
         "MEETING",
         {
+            "association_id": association_id,
+            "start_at": start_at,
+            "end_at": end_at,
             "participants_preview": [
                 {"name": "Maya Singh", "email": "maya@copilotgtm.example", "role": "ORGANIZER"}
             ],
@@ -349,6 +410,9 @@ def test_meeting_display_payload_has_typed_pydantic_contract() -> None:
     )
 
     assert payload == {
+        "association_id": str(association_id),
+        "start_at": start_at.isoformat().replace("+00:00", "Z"),
+        "end_at": end_at.isoformat().replace("+00:00", "Z"),
         "participants_preview": [
             {"name": "Maya Singh", "email": "maya@copilotgtm.example", "role": "ORGANIZER"}
         ],

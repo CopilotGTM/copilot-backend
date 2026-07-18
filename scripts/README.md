@@ -25,6 +25,7 @@ Routine maintenance and cleanup scripts
 - Used by: Operations teams
 - `ensure_internal_crm_setup.py` - Ensure internal CRM integration + default pipeline exist per org
 - `delete_recent_internal_deals.py` - Delete internal CRM deals created in a recent time window (dry-run by default)
+- `purge_organisation_data.py` - Dry-run or atomically empty one tenant while preserving mandatory internal CRM setup; execute only with schema migrations/provisioning paused
 
 ### 👑 `/admin/`
 Administrative and super-admin scripts

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -32,6 +33,17 @@ from src.service.crm.contacts.contracts import (
     ContactWriteResult,
     ContactWriteServiceError,
 )
+
+
+@pytest.fixture(autouse=True)
+def contact_hydration_dispatch(monkeypatch) -> AsyncMock:
+    dispatch = AsyncMock(return_value=["hydration-task"])
+    monkeypatch.setattr(
+        contacts_handler,
+        "dispatch_contact_communication_hydration_async",
+        dispatch,
+    )
+    return dispatch
 
 
 class _FakeContactReadService:
@@ -241,6 +253,44 @@ async def test_create_contact_handler_passes_create_command_to_service(monkeypat
     )
     assert "phone" not in service.calls[0]
     assert "company_id" not in service.calls[0]
+    assert service.org_session.commit.count == 1
+
+
+@pytest.mark.asyncio
+async def test_create_contact_handler_dispatches_activity_backfill_after_commit(
+    monkeypatch,
+    contact_hydration_dispatch,
+) -> None:
+    org_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="buyer@example.com",
+        created_at=datetime(2026, 6, 25, 10, 0, tzinfo=UTC),
+        updated_at=datetime(2026, 6, 25, 10, 0, tzinfo=UTC),
+    )
+    service = _FakeContactWriteService(contact)
+
+    async def noop_research(**_kwargs):
+        return None
+
+    monkeypatch.setattr(contacts_handler, "dispatch_contact_research_async", noop_research)
+
+    await create_contact(
+        body=CreateContactRequest(email="buyer@example.com"),
+        response=FastAPIResponse(),
+        service=service,  # type: ignore[arg-type]
+        user_ids=SimpleNamespace(user_id=uuid4(), organisation_id=org_id),
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    contact_hydration_dispatch.assert_awaited_once_with(
+        organisation_id=org_id,
+        contact_ids=[contact.contact_id],
+        trigger="manual_contact_create",
+    )
     assert service.org_session.commit.count == 1
 
 

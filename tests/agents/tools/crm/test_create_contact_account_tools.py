@@ -33,6 +33,16 @@ class _AsyncSessionContext:
         return False
 
 
+@pytest.fixture(autouse=True)
+def contact_hydration_dispatch(monkeypatch) -> AsyncMock:
+    dispatch = AsyncMock(return_value=["hydration-task"])
+    monkeypatch.setattr(
+        "src.agents.tools.crm.create_contact.dispatch_contact_communication_hydration_async",
+        dispatch,
+    )
+    return dispatch
+
+
 def _context(*, channel: str = "teams") -> AgentContext:
     context = AgentContext(
         organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
@@ -606,7 +616,8 @@ async def test_create_contact_direct_can_link_contact_to_deal() -> None:
             deal_name="Acme Renewal",
         )
 
-    assert org_session.commit.await_count == 2
+    # Contact creation and deal linking are one transaction; hydration starts only after it commits.
+    assert org_session.commit.await_count == 1
     dispatch.assert_awaited_once()
     assert result["deal_link_status"] == "linked"
     assert result["deal_id"] == str(deal_id)

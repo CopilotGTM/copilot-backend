@@ -51,3 +51,15 @@ Before dropping legacy `crm_activities` columns, verify:
 - deal memory note eligibility uses `CRMNote`,
 - activity-feed APIs for deals, contacts, and accounts pass,
 - archived docs are clearly marked historical where they teach the old model.
+
+## Communication Source-ID Rollout
+
+Before enabling contact/account activity cards in an environment that already has
+association-backed email or meeting projections, replay every active contact through
+`dispatch_contact_communication_hydration_async(..., contact_ids=..., trigger="activity_source_id_backfill")`.
+The dispatcher chunks IDs at 100 contacts and the projection upserts deterministic activity IDs,
+so the replay is tenant-scoped, restart-safe, and safe to repeat after a partial queue failure.
+
+Verify the replay metrics and then audit that association-backed `EMAIL` and `MEETING` rows have
+canonical email/calendar IDs in `source_record_id`; their association IDs remain in
+`display_payload.association_id`.

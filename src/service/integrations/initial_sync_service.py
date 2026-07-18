@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from celery import chain
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.infra.utils.logger import get_logger
 from src.service.integrations.crm.orchestration.hubspot_initial_sync_chain import (
@@ -25,7 +24,6 @@ from src.service.integrations.crm.orchestration.salesforce_initial_sync_chain im
     build_salesforce_initial_sync_chain,
 )
 from src.workers.integrations_worker.client import (
-    get_integrations_celery_client,
     send_integrations_task,
 )
 
@@ -156,7 +154,6 @@ class InitialSyncService:
                 self._trigger_provider_capability_syncs(
                     org_id_str,
                     int_id_str,
-                    str(integration.connection_id or integration.integration_id),
                     capabilities,
                 )
                 return
@@ -166,7 +163,6 @@ class InitialSyncService:
                 self._trigger_calendar_sync(
                     org_id_str,
                     int_id_str,
-                    str(integration.connection_id or integration.integration_id),
                 )
                 if integration_type in MICROSOFT_WEBHOOK_INTEGRATION_TYPES:
                     # Initial sync establishes the first delta cursor; the
@@ -240,39 +236,26 @@ class InitialSyncService:
         self,
         org_id_str: str,
         int_id_str: str,
-        connection_id: str,
     ) -> None:
         """Trigger calendar initial sync."""
-        client = get_integrations_celery_client()
-        sync_signature = client.signature(
-            "integrations.sync_calendar_integration",
+        # The integration task now owns post-commit contact hydration and deal-mapping dispatch.
+        # Sending one task avoids a second API-side Celery chain whose callback could run even
+        # when the sync returned a handled failure result.
+        send_integrations_task(
+            task_name="integrations.sync_calendar_integration",
             kwargs={"organisation_id": org_id_str, "integration_id": int_id_str},
-            immutable=True,
         )
-        discovery_signature = client.signature(
-            "deal.discover_calendar_contacts_accounts",
-            kwargs={
-                "organisation_id": org_id_str,
-                "source_integration_id": int_id_str,
-                "trigger": "calendar_connection",
-                "trigger_id": connection_id,
-            },
-            queue="deal",
-            routing_key="deal",
-        )
-        chain(sync_signature, discovery_signature).apply_async()
         logger.info("Triggered initial calendar sync: integration=%s", int_id_str)
 
     def _trigger_provider_capability_syncs(
         self,
         org_id_str: str,
         int_id_str: str,
-        connection_id: str,
         enabled_capabilities: list[IntegrationType],
     ) -> None:
         for capability in enabled_capabilities:
             if capability in self.CALENDAR_INTEGRATION_TYPES:
-                self._trigger_calendar_sync(org_id_str, int_id_str, connection_id)
+                self._trigger_calendar_sync(org_id_str, int_id_str)
                 if capability in MICROSOFT_WEBHOOK_INTEGRATION_TYPES:
                     self._trigger_microsoft_graph_subscription_ensure(org_id_str, int_id_str)
                 if capability in GOOGLE_WEBHOOK_INTEGRATION_TYPES:

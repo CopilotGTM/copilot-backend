@@ -35,6 +35,9 @@ from src.service.integrations.sync_health import record_sync_failure
 from src.workers.deal_worker.services.deal_mapper_services.communication_deal_mapping_trigger_service import (
     CommunicationDealMappingTriggerService,
 )
+from src.workers.deal_worker.utils.contact_communication_hydration_dispatch import (
+    dispatch_contact_communication_hydration_async,
+)
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.config import TASK_LIMITS
 
@@ -108,6 +111,17 @@ def sync_email_integration_task(
         if result.get("status") == "success" and (
             result.get("messages_synced", 0) > 0 or result.get("changed_email_ids")
         ):
+            # Delta sync commits before returning, so the hydration worker can safely read these
+            # IDs. Queue it before deal mapping, which may transfer card ownership to an
+            # association-backed projection while both jobs remain replay-safe.
+            result[
+                "contact_communication_hydration_task_ids"
+            ] = await dispatch_contact_communication_hydration_async(
+                organisation_id=org_id,
+                integration_id=int_id,
+                changed_email_ids=result.get("changed_email_ids", []),
+                trigger="email_sync",
+            )
             result["communication_deal_mapping"] = (
                 await CommunicationDealMappingTriggerService(
                     org_id

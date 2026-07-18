@@ -958,13 +958,24 @@ COMPANY`; canonical notes and tasks remain in `crm_notes` and `crm_tasks`.
 | `cursor` | string | - | Opaque | Cursor returned by the previous response |
 | `activity_types` | string | - | Comma-separated | Filter by projected activity type |
 | `source_types` | string | - | Comma-separated | Filter by projected source type |
-| `start_date` | datetime | - | ISO 8601 | Include activities at/after this time |
-| `end_date` | datetime | - | ISO 8601 | Include activities at/before this time |
+| `start_date` | datetime | - | ISO 8601 with timezone | Include activities at/after this time |
+| `end_date` | datetime | - | ISO 8601 with timezone; must be at/after `start_date` | Include activities at/before this time |
 | `sort` | `asc` or `desc` | `desc` | Enum | Sort by linked activity occurrence time |
 
 Contact lifecycle cards linked to an account may use `source_type` values
 `CONTACT_CREATED`, `CONTACT_ENRICHMENT_TRIGGERED`, and
 `CONTACT_ENRICHMENT_COMPLETED`.
+
+#### Ordering and navigation contract
+
+- Each projected activity appears once even when it has multiple link roles to the account.
+- `occurred_at`, not `updated_at`, controls filtering, sorting, and cursor pagination.
+- `source_type` plus `source_record_id` identifies the canonical local email, calendar
+  event, task, or note row to open. `source_url` is the provider URL when one exists.
+- `related_objects` groups link roles by CRM object and supplies stable object IDs for
+  opening related contact, account, or deal pages.
+- Association-backed email and meeting cards keep `association_id` in `display_payload`.
+  Meeting cards also expose ISO-8601 `start_at` and `end_at` values there.
 
 #### Success Response (200)
 

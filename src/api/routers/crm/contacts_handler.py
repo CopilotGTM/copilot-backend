@@ -65,6 +65,9 @@ from src.service.crm.contacts.write_service import ContactWriteService
 from src.workers.deal_worker.utils.account_research_dispatch import (
     dispatch_account_research_async,
 )
+from src.workers.deal_worker.utils.contact_communication_hydration_dispatch import (
+    dispatch_contact_communication_hydration_async,
+)
 from src.workers.deal_worker.utils.contact_research_dispatch import (
     dispatch_contact_research_async,
 )
@@ -413,6 +416,24 @@ async def create_contact(
         # The write service stages all changes on the request session; the router commits only
         # after the mutation succeeds so validation failures can cleanly roll back.
         await service.org_session.commit()
+        # The worker opens its own org session and must not race the commit above. Treat enqueue
+        # failure as best-effort enrichment rather than turning a durable contact into a 500.
+        try:
+            await dispatch_contact_communication_hydration_async(
+                organisation_id=user_ids.organisation_id,
+                contact_ids=[data.contact_id],
+                trigger="manual_contact_create",
+            )
+        except Exception:
+            logger.warning(
+                "Contact activity backfill dispatch failed after contact create",
+                extra={
+                    "event": "contact_activity_backfill_dispatch_failed",
+                    "organisation_id": str(user_ids.organisation_id),
+                    "contact_id": str(data.contact_id),
+                },
+                exc_info=True,
+            )
         if data.email or body.linkedin_url:
             background_tasks.add_task(
                 _dispatch_contact_research_background,

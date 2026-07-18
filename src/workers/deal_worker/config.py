@@ -56,7 +56,7 @@ class DealWorkerConfig(BaseWorkerConfig):
             "stakeholder.sync_all_deals_stakeholders_all_orgs",
             # "stakeholder.trigger_analysis_all_orgs",  # Disabled — uses pipeline dispatch now
             # Calendar matching
-            "deal.discover_calendar_contacts_accounts",
+            "deal.hydrate_contact_communications",
             "deal.match_calendar_to_deals_org",
             "deal.match_calendar_to_deals",
             "deal.match_calendar_to_deals_all_orgs",

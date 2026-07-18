@@ -124,15 +124,7 @@ class HubSpotContactPrivacyDeletionHandler:
             activity.actor_name = None
             activity.actor_email = None
             activity.subject = None
-            activity.body = None
-            activity.owner_name = None
-            activity.owner_email = None
-            activity.external_assignee_email = None
-            activity.external_assignee_name = None
-            activity.attendees = []
             activity.display_payload = dict(_PRIVACY_DELETED_PAYLOAD)
-            activity.properties = dict(_PRIVACY_DELETED_PAYLOAD)
-            activity.metrics = dict(_PRIVACY_DELETED_PAYLOAD)
 
         for participant in deal_participants or []:
             participant.is_deleted = True

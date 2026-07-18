@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy.dialects.postgresql import array
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
@@ -246,6 +249,64 @@ class ContactWriteService:
                 400,
             )
         return await self._create_contact_record(command, context=context)
+
+    async def find_contacts_by_email_batch(
+        self,
+        emails: Sequence[str],
+    ) -> dict[str, CRMContact]:
+        """Resolve active contacts by primary or additional normalized email in one query."""
+        candidate_emails = {
+            normalized for email in emails if (normalized := normalize_email(email))
+        }
+        if not candidate_emails:
+            return {}
+
+        # Email is caller/provider data, not a tenant boundary. Always pair it with the
+        # service's authenticated organisation before resolving existing identities.
+        stmt = select(CRMContact).where(
+            col(CRMContact.organisation_id) == self.organisation_id,
+            col(CRMContact.is_deleted).is_(False),
+            or_(
+                func.lower(func.trim(col(CRMContact.email))).in_(candidate_emails),
+                col(CRMContact.additional_emails).op("?|")(array(sorted(candidate_emails))),
+            ),
+        )
+        existing = list((await self.org_session.execute(stmt)).scalars().all())
+        resolved: dict[str, CRMContact] = {}
+        for contact in existing:
+            for identity in [contact.email, *(contact.additional_emails or [])]:
+                normalized = normalize_email(identity)
+                if normalized in candidate_emails:
+                    resolved[normalized] = contact
+        return resolved
+
+    async def find_or_create_contacts_by_email_batch(
+        self,
+        commands: Sequence[ContactCreateCommand],
+        *,
+        context: ContactWriteContext | None = None,
+    ) -> dict[str, ContactWriteResult]:
+        """Resolve many email identities with one contact lookup, then create only misses."""
+        commands_by_email = {
+            normalized: replace(command, email=normalized)
+            for command in commands
+            if (normalized := normalize_email(command.email))
+        }
+        if not commands_by_email:
+            return {}
+
+        existing = await self.find_contacts_by_email_batch(list(commands_by_email))
+        resolved = {
+            email: ContactWriteResult(contact, False, "email")
+            for email, contact in existing.items()
+        }
+
+        # Resolve every hit before creating misses so one query replaces an N-contact lookup
+        # loop. The caller serializes creation to prevent concurrent batches duplicating misses.
+        for email, command in commands_by_email.items():
+            if email not in resolved:
+                resolved[email] = await self._create_contact_record(command, context=context)
+        return resolved
 
     async def _create_contact_record(
         self,
