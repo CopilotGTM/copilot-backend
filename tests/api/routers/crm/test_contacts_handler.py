@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 import src.api.routers.crm.contacts_handler as contacts_handler
+from fastapi import BackgroundTasks
 from fastapi import Response as FastAPIResponse
 from pydantic import ValidationError
 from src.api.routers.crm.contacts_handler import (
@@ -14,6 +15,7 @@ from src.api.routers.crm.contacts_handler import (
     get_contact_detail,
     list_contacts,
     search_contact_create_candidates,
+    update_contact,
 )
 from src.api.schemas.crm_contact_models import CreateContactRequest, UpdateContactRequest
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
@@ -59,6 +61,7 @@ class _FakeContactSearchService:
 class _FakeContactDetailService:
     def __init__(self, result: dict):
         self.result = result
+        self.organisation_id = result["contact"].organisation_id
 
     async def get_contact_detail(self, contact_id):
         self.contact_id = contact_id
@@ -68,6 +71,7 @@ class _FakeContactDetailService:
 class _FakeContactWriteService:
     def __init__(self, contact: CRMContact):
         self.contact = contact
+        self.organisation_id = getattr(contact, "organisation_id", None)
         self.org_session = SimpleNamespace(commit=_AsyncCall(), rollback=_AsyncCall())
         self.calls: list[dict] = []
 
@@ -81,6 +85,13 @@ class _FakeContactWriteService:
             contact=self.contact,
             impact=ContactArchiveImpact(cleared_deal_primary_contacts=1),
         )
+
+    async def update_contact(self, contact_id, updates, **kwargs):
+        """Apply explicit update fields so route tests can inspect background follow-up work."""
+        self.calls.append({"contact_id": contact_id, "updates": dict(updates), **kwargs})
+        for field, value in updates.items():
+            setattr(self.contact, field, value)
+        return ContactWriteResult(contact=self.contact, created=False, matched_by="explicit_id")
 
 
 class _AsyncCall:
@@ -214,6 +225,7 @@ async def test_create_contact_handler_passes_create_command_to_service(monkeypat
             linkedin_url="https://linkedin.com/in/buyer",
         ),
         response=FastAPIResponse(),
+        background_tasks=BackgroundTasks(),
         service=service,  # type: ignore[arg-type]
         user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
         _crm_write_guard=None,
@@ -263,9 +275,11 @@ async def test_create_contact_handler_dispatches_research_after_commit(monkeypat
         raising=False,
     )
 
+    background_tasks = BackgroundTasks()
     result = await create_contact(
         body=CreateContactRequest(email="buyer@example.com"),
         response=FastAPIResponse(),
+        background_tasks=background_tasks,
         service=service,  # type: ignore[arg-type]
         user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
         _crm_write_guard=None,
@@ -273,6 +287,8 @@ async def test_create_contact_handler_dispatches_research_after_commit(monkeypat
     )
 
     assert result.data.email == "buyer@example.com"  # type: ignore[union-attr]
+    assert calls == []
+    await background_tasks()
     assert calls == [
         {
             "organisation_id": org_id,
@@ -318,9 +334,11 @@ async def test_create_contact_handler_dispatches_linkedin_contact_without_email(
         raising=False,
     )
 
+    background_tasks = BackgroundTasks()
     result = await create_contact(
         body=CreateContactRequest(linkedin_url="https://linkedin.com/in/buyer"),
         response=FastAPIResponse(),
+        background_tasks=background_tasks,
         service=service,  # type: ignore[arg-type]
         user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
         _crm_write_guard=None,
@@ -328,6 +346,8 @@ async def test_create_contact_handler_dispatches_linkedin_contact_without_email(
     )
 
     assert result.data.email is None  # type: ignore[union-attr]
+    assert calls == []
+    await background_tasks()
     assert calls == [
         {
             "organisation_id": org_id,
@@ -374,6 +394,7 @@ async def test_create_contact_response_tolerates_missing_updated_at(monkeypatch)
     result = await create_contact(
         body=CreateContactRequest(linkedin_url="https://linkedin.com/in/buyer"),
         response=FastAPIResponse(),
+        background_tasks=BackgroundTasks(),
         service=service,  # type: ignore[arg-type]
         user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
         _crm_write_guard=None,
@@ -421,9 +442,11 @@ async def test_create_contact_handler_uses_precommit_snapshot_for_response(monke
         raising=False,
     )
 
+    background_tasks = BackgroundTasks()
     result = await create_contact(
         body=CreateContactRequest(email="jane@example.com"),
         response=FastAPIResponse(),
+        background_tasks=background_tasks,
         service=service,  # type: ignore[arg-type]
         user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
         _crm_write_guard=None,
@@ -432,6 +455,8 @@ async def test_create_contact_handler_uses_precommit_snapshot_for_response(monke
 
     assert result.data.contact_id == contact_id  # type: ignore[union-attr]
     assert result.data.email == "jane@example.com"  # type: ignore[union-attr]
+    assert calls == []
+    await background_tasks()
     assert calls == [
         {
             "organisation_id": org_id,
@@ -470,6 +495,7 @@ async def test_create_contact_handler_skips_research_for_name_only_contact(monke
     result = await create_contact(
         body=CreateContactRequest(name="Jane Buyer"),
         response=FastAPIResponse(),
+        background_tasks=BackgroundTasks(),
         service=service,  # type: ignore[arg-type]
         user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
         _crm_write_guard=None,
@@ -532,9 +558,11 @@ async def test_create_contact_handler_dispatches_account_research_for_created_ac
         raising=False,
     )
 
+    background_tasks = BackgroundTasks()
     result = await create_contact(
         body=CreateContactRequest(email="buyer@example.com"),
         response=FastAPIResponse(),
+        background_tasks=background_tasks,
         service=service,  # type: ignore[arg-type]
         user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
         _crm_write_guard=None,
@@ -542,6 +570,9 @@ async def test_create_contact_handler_dispatches_account_research_for_created_ac
     )
 
     assert result.status == "SUCCESS"
+    assert contact_calls == []
+    assert account_calls == []
+    await background_tasks()
     assert len(contact_calls) == 1
     assert account_calls == [
         {
@@ -598,9 +629,11 @@ async def test_create_contact_handler_dispatches_account_research_for_linked_acc
         raising=False,
     )
 
+    background_tasks = BackgroundTasks()
     result = await create_contact(
         body=CreateContactRequest(email="buyer@example.com"),
         response=FastAPIResponse(),
+        background_tasks=background_tasks,
         service=service,  # type: ignore[arg-type]
         user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
         _crm_write_guard=None,
@@ -608,6 +641,9 @@ async def test_create_contact_handler_dispatches_account_research_for_linked_acc
     )
 
     assert result.status == "SUCCESS"
+    assert contact_calls == []
+    assert account_calls == []
+    await background_tasks()
     assert len(contact_calls) == 1
     assert account_calls == [
         {
@@ -642,9 +678,11 @@ async def test_create_contact_handler_ignores_research_dispatch_failure(monkeypa
         raising=False,
     )
 
+    background_tasks = BackgroundTasks()
     result = await create_contact(
         body=CreateContactRequest(email="buyer@example.com"),
         response=FastAPIResponse(),
+        background_tasks=background_tasks,
         service=service,  # type: ignore[arg-type]
         user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
         _crm_write_guard=None,
@@ -654,6 +692,80 @@ async def test_create_contact_handler_ignores_research_dispatch_failure(monkeypa
     assert result.data.email == "buyer@example.com"  # type: ignore[union-attr]
     assert service.org_session.commit.count == 1
     assert service.org_session.rollback.count == 0
+    await background_tasks()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "expected_email", "expected_linkedin"),
+    [
+        (UpdateContactRequest(email="buyer@acme.com"), "buyer@acme.com", None),
+        (
+            UpdateContactRequest(linkedin_url="https://linkedin.com/in/buyer"),
+            None,
+            "https://linkedin.com/in/buyer",
+        ),
+    ],
+)
+async def test_identity_addition_forces_research_after_update(
+    monkeypatch,
+    body,
+    expected_email,
+    expected_linkedin,
+) -> None:
+    """Either newly supplied identity should retry a contact that still lacks research."""
+    org_id = uuid4()
+    user_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email=None,
+        linkedin_url=None,
+        contact_research=None,
+    )
+    service = _FakeContactWriteService(contact)
+    calls: list[dict] = []
+
+    class _SourceReader:
+        def __init__(self, *_args):
+            pass
+
+        async def resolve_source_for_contact(self, _integration_id):
+            return "manual"
+
+    async def fake_dispatch(**kwargs):
+        """Capture the retry inputs queued for the newly added identity."""
+        calls.append(kwargs)
+
+    monkeypatch.setattr(contacts_handler, "ContactReadService", _SourceReader)
+    monkeypatch.setattr(contacts_handler, "dispatch_contact_research_async", fake_dispatch)
+    background_tasks = BackgroundTasks()
+    result = await update_contact(
+        contact_id=contact.contact_id,
+        body=body,
+        response=FastAPIResponse(),
+        background_tasks=background_tasks,
+        service=service,  # type: ignore[arg-type]
+        user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    assert result.status == "SUCCESS"
+    assert contact.email == expected_email
+    assert contact.linkedin_url == expected_linkedin
+    assert calls == []
+    await background_tasks()
+    assert calls == [
+        {
+            "organisation_id": org_id,
+            "contact_id": contact.contact_id,
+            "user_id": user_id,
+            "trigger": "contact_identity_added",
+            "force_refresh": True,
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -912,6 +1024,7 @@ async def test_get_contact_detail_returns_page_ready_contract() -> None:
     result = await get_contact_detail(
         contact_id=contact_id,
         response=FastAPIResponse(),
+        background_tasks=BackgroundTasks(),
         service=service,  # type: ignore[arg-type]
         _rl_read=None,
     )
@@ -1059,6 +1172,7 @@ async def test_get_contact_detail_allows_safe_missing_identity_fields_to_be_set(
     result = await get_contact_detail(
         contact_id=contact_id,
         response=FastAPIResponse(),
+        background_tasks=BackgroundTasks(),
         service=service,  # type: ignore[arg-type]
         _rl_read=None,
     )
@@ -1073,6 +1187,60 @@ async def test_get_contact_detail_allows_safe_missing_identity_fields_to_be_set(
     assert fields_by_key["linkedin_url"]["locked_reason"] is None
     assert fields_by_key["company.id"]["editable"] is False
     assert fields_by_key["company.id"]["locked_reason"] == "Add an email before linking an account."
+
+
+@pytest.mark.asyncio
+async def test_get_contact_detail_recovers_eligible_contact_without_a_job(monkeypatch) -> None:
+    """Viewing a legacy eligible contact should self-heal a missing research dispatch."""
+    org_id = uuid4()
+    contact_id = uuid4()
+    now = datetime(2026, 7, 16, 10, 0, tzinfo=UTC)
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=contact_id,
+        email="buyer@acme.com",
+        created_at=now,
+        updated_at=now,
+        synced_at=now,
+    )
+    service = _FakeContactDetailService(
+        {
+            "contact": contact,
+            "research_status": "not_started",
+            "source": "manual",
+            "company": None,
+            "owner": None,
+            "deals": [],
+        }
+    )
+    calls: list[dict] = []
+
+    async def fake_dispatch(**kwargs):
+        """Capture the self-healing dispatch after the detail response is ready."""
+        calls.append(kwargs)
+
+    monkeypatch.setattr(contacts_handler, "dispatch_contact_research_async", fake_dispatch)
+    background_tasks = BackgroundTasks()
+
+    result = await get_contact_detail(
+        contact_id=contact_id,
+        response=FastAPIResponse(),
+        background_tasks=background_tasks,
+        service=service,  # type: ignore[arg-type]
+        _rl_read=None,
+    )
+
+    assert result.data.research_status == "not_started"  # type: ignore[union-attr]
+    assert calls == []
+    await background_tasks()
+    assert calls == [
+        {
+            "organisation_id": org_id,
+            "contact_id": contact_id,
+            "trigger": "contact_detail_opened",
+        }
+    ]
 
 
 @pytest.mark.asyncio

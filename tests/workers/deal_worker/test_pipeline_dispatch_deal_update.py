@@ -57,7 +57,9 @@ def test_create_pipeline_jobs_adds_deal_update_when_enabled(monkeypatch):
     monkeypatch.setattr(pipeline_dispatch, "org_session_scope", fake_org_session_scope)
 
     risk_job_id, stakeholder_job_id, task_job_id, deal_update_job_id = (
-        pipeline_dispatch._create_pipeline_jobs(str(uuid4()), str(uuid4()))
+        pipeline_dispatch._create_pipeline_jobs(
+            str(uuid4()), str(uuid4()), source_event_id=str(uuid4())
+        )
     )
 
     assert risk_job_id

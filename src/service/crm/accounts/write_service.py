@@ -569,7 +569,9 @@ class AccountWriteService:
             col(event.actor_user_id) == actor.user_id,
         )
         if (await self.session.execute(stmt)).scalar_one_or_none() is None:
-            raise AccountWriteServiceError("Only the account creator or an admin may archive it", 403)
+            raise AccountWriteServiceError(
+                "Only the account creator or an admin may archive it", 403
+            )
 
     async def upsert_company_from_account(
         self,

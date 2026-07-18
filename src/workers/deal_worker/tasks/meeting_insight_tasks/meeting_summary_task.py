@@ -69,6 +69,9 @@ async def _dispatch_insight_pipeline_for_manual_summary(
     organisation_id: UUID,
     deal_id: UUID,
     *,
+    event_id: UUID,
+    association_id: UUID | None,
+    summary_job_id: UUID,
     source: str = "transcript_upload",
 ) -> None:
     """Dispatch the deal insight pipeline after a manual meeting summary completes.
@@ -93,6 +96,9 @@ async def _dispatch_insight_pipeline_for_manual_summary(
                 str(organisation_id),
                 str(deal_id),
                 str(deal_memory_job_id),
+                source_event_id=str(event_id),
+                source_association_id=str(association_id) if association_id else None,
+                source_summary_job_id=str(summary_job_id),
             )
             logger.info(
                 "Dispatched insight pipeline after manual summary",
@@ -112,6 +118,9 @@ async def _dispatch_insight_pipeline_for_manual_summary(
                 "deal_id": str(deal_id),
             },
         )
+        # Summary data is already durable at this point. Propagate so Celery
+        # retries dispatch instead of leaving task automation silently stranded.
+        raise
 
 
 async def _dispatch_summary_ready_notification(
@@ -409,9 +418,23 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
                 if job_metadata.get("source") == "recall_webhook"
                 else "transcript_upload"
             )
+            association_id = None
+            raw_association_id = job_metadata.get("association_id")
+            if raw_association_id:
+                try:
+                    association_id = UUID(str(raw_association_id))
+                except ValueError:
+                    logger.warning(
+                        "Ignoring invalid meeting association id %s for summary job %s",
+                        raw_association_id,
+                        job_uuid,
+                    )
             await _dispatch_insight_pipeline_for_manual_summary(
                 org_uuid,
                 deal_id,
+                event_id=event_id,
+                association_id=association_id,
+                summary_job_id=job_uuid,
                 source=source,
             )
 

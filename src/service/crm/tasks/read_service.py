@@ -583,8 +583,7 @@ class TaskReadService:
         personal = [
             task.created_by_user_id == actor.user_id,
             task.assigned_to_user_id == actor.user_id,
-            task.task_metadata["assigned_to_public_user_id"].as_string()
-            == str(actor.user_id),
+            task.task_metadata["assigned_to_public_user_id"].as_string() == str(actor.user_id),
         ]
         if actor.normalized_email:
             personal.append(func.lower(task.assigned_to_email) == actor.normalized_email)

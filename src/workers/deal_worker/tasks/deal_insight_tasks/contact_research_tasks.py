@@ -7,6 +7,7 @@ state stay in one place.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import UUID
 
 from celery import Task
@@ -54,13 +55,18 @@ def process_contact_research_job(self: Task, organisation_id: str, job_id: str):
                 raise ContactResearchWorkflowError("Contact research job missing contact_id", False)
 
             contact_id = UUID(str(contact_id_raw))
+            force_refresh = bool(metadata.get("force_refresh"))
             job.status = JobStatus.IN_PROGRESS
+            # Refresh the recovery lease on every Celery attempt. The status may already be
+            # in_progress, so assigning it alone would not advance updated_at on retries.
+            job.updated_at = datetime.now(UTC)
             await session.commit()
             break
 
         result = await ContactResearchWorkflowService(org_uuid).research_contact(
             contact_id,
             job_id=job_uuid,
+            force_refresh=force_refresh,
         )
 
         async for session in acquire_org_async_session(org_uuid):
@@ -80,11 +86,12 @@ def process_contact_research_job(self: Task, organisation_id: str, job_id: str):
     try:
         return run_async(_run())
     except ContactResearchWorkflowError as exc:
-        run_async(_mark_failed(UUID(organisation_id), UUID(job_id), exc.message))
         if not exc.retryable:
+            run_async(_mark_failed(UUID(organisation_id), UUID(job_id), exc.message))
             return {"status": "failed", "job_id": job_id, "error": exc.message}
         if self.request.retries < self.max_retries:
             raise self.retry(exc=exc, countdown=30 * (2**self.request.retries)) from exc
+        run_async(_mark_failed(UUID(organisation_id), UUID(job_id), exc.message))
         return {"status": "failed", "job_id": job_id, "error": exc.message}
     except Exception as exc:
         logger.exception(

@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     from src.agents.tools.transparent_tools import AgentCapabilities
     from src.domain.models.organisation_tables.sync.crm import CRMTask
 
+MAX_TASKS_FOR_RECONCILIATION = 200
+
 
 def _format_task(task: CRMTask) -> dict[str, Any]:
     """Build a compact API-safe task shape for tool consumers.
@@ -56,10 +58,18 @@ async def list_deal_tasks(*, context: AgentContext) -> dict[str, Any]:
         service = DealTaskAutomationService(session, context.organisation_id)
         tasks = await service.list_deal_tasks(context.deal_id)
 
+    truncated = len(tasks) > MAX_TASKS_FOR_RECONCILIATION
+    # Record the read-before-write guard on the shared run context. Write tools
+    # reject calls when the agent skipped this check or could not inspect the full list.
+    context.metadata["deal_task_list_checked"] = True
+    context.metadata["deal_task_list_truncated"] = truncated
+
     return {
         "status": "ok",
         "deal_id": str(context.deal_id),
-        "tasks": [_format_task(task) for task in tasks],
+        "task_count": len(tasks),
+        "truncated": truncated,
+        "tasks": [_format_task(task) for task in tasks[:MAX_TASKS_FOR_RECONCILIATION]],
     }
 
 

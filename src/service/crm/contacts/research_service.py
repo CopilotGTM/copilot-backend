@@ -16,7 +16,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID
 
@@ -39,6 +39,7 @@ PROFILE_RAW_KEY = "_raw"
 PROFILE_METADATA_KEY = "_metadata"
 PROFILE_SCHEMA_VERSION = 2
 CONTACT_RESEARCH_PROMPT_VERSION = "contact_career_v1"
+CONTACT_RESEARCH_JOB_STALE_AFTER = timedelta(minutes=5)
 # PostgreSQL JSONB can hold much larger values, but keeping one contact payload
 # below 1 MiB prevents a provider anomaly from making routine contact reads expensive.
 RAW_PAYLOAD_WARNING_BYTES = 256 * 1024
@@ -217,7 +218,9 @@ class ContactResearchService:
             contact.email = normalize_email(result.email)
         if self._should_fill_empty(contact.job_title, result.job_title):
             contact.job_title = result.job_title
-        if self._should_fill(contact.linkedin_url, result.linkedin_url):
+        # Email and LinkedIn are set-once identities in the contacts API. Provider data may
+        # fill a missing counterpart, but it must not replace an identity a user supplied.
+        if self._should_fill_empty(contact.linkedin_url, result.linkedin_url):
             contact.linkedin_url = result.linkedin_url
 
         if commit:

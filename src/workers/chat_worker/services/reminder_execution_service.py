@@ -31,6 +31,9 @@ from src.domain.models.organisation_tables.reminder_models import (
     UserReminder,
     UserReminderRun,
 )
+from src.domain.models.organisation_tables.sync.crm import CRMActivityStatus, CRMTask
+from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
+from src.infra.config.configs import app_config
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.service.channels import OutboundChannelService, OutboundDeliveryTarget
@@ -132,6 +135,26 @@ class ReminderExecutionService:
             if not reminder:
                 return None
 
+            task = None
+            deal_name = None
+            if reminder.activity_id:
+                task = await session.get(CRMTask, reminder.activity_id)
+                closed_statuses = {
+                    CRMActivityStatus.COMPLETED.value,
+                    CRMActivityStatus.CANCELLED.value,
+                }
+                if task and (task.is_deleted or task.status in closed_statuses):
+                    # Task state wins at execution time. This final guard prevents
+                    # stale Redis entries from notifying users after completion.
+                    reminder.status = ReminderStatus.CANCELLED
+                    session.add(reminder)
+                    await session.commit()
+                    return None
+                if task and getattr(task, "deal_id", None):
+                    deal = await session.get(CRMDeal, task.deal_id)
+                    if deal and deal.organisation_id == self.organisation_id:
+                        deal_name = deal.name
+
             # Dedup: skip if triggered very recently (within 2 minutes)
             if reminder.last_triggered_at:
                 since_last = datetime.now(UTC) - reminder.last_triggered_at
@@ -164,6 +187,11 @@ class ReminderExecutionService:
                 "recurrence_end_at": reminder.recurrence_end_at,
                 "trigger_count": reminder.trigger_count,
                 "consecutive_failures": reminder.consecutive_failures,
+                "activity_id": reminder.activity_id,
+                "task_title": task.title if task else None,
+                "task_due_at": task.due_at if task else None,
+                "task_due_date": task.due_date if task else None,
+                "deal_name": deal_name,
             }
 
         return None
@@ -207,12 +235,44 @@ class ReminderExecutionService:
         if data.get("message_content"):
             text += f"\n\n{data['message_content']}"
 
-        sent = await self._send_text(
-            delivery_channel=data["delivery_channel"],
-            delivery_context=data["delivery_context"],
-            text=text,
-        )
+        if data["delivery_channel"] == "whatsapp" and data.get("activity_id"):
+            sent = await self._send_whatsapp_task_template(data)
+        else:
+            sent = await self._send_text(
+                delivery_channel=data["delivery_channel"],
+                delivery_context=data["delivery_context"],
+                text=text,
+            )
         return sent, text
+
+    async def _send_whatsapp_task_template(self, data: dict[str, Any]) -> bool:
+        """Send task reminders with the approved template required outside Meta's service window."""
+        from src.service.channels import (
+            DEFAULT_TEMPLATE_LANGUAGE,
+            TASK_REMINDER_TEMPLATE_NAME,
+            WhatsAppOutboundProvider,
+        )
+
+        due_value = data.get("task_due_at") or data.get("task_due_date")
+        due_text = due_value.strftime("%B %d, %Y at %I:%M %p") if due_value else "No due date"
+        task_title = data.get("task_title") or data["title"]
+        base_url = (app_config.APP_URL or "").rstrip("/") or "https://app.copilotgtm.com"
+        task_url = f"{base_url}/tasks?task_id={data['activity_id']}"
+        context = data["delivery_context"]
+        return bool(
+            await WhatsAppOutboundProvider().send_template_message_with_id(
+                phone_number_id=str(context.get("phone_number_id", "")),
+                recipient_wa_id=str(context.get("recipient_wa_id", "")),
+                template_name=TASK_REMINDER_TEMPLATE_NAME,
+                language_code=DEFAULT_TEMPLATE_LANGUAGE,
+                body_parameters=[
+                    task_title,
+                    due_text,
+                    data.get("deal_name") or "No deal",
+                    task_url,
+                ],
+            )
+        )
 
     async def _execute_agentic(self, data: dict[str, Any]) -> tuple[bool, str | None, list]:
         """Run GeneralAgent with the stored prompt and send the result."""
@@ -462,20 +522,23 @@ class ReminderExecutionService:
                 self._apply_token_data(run, token_data)
                 session.add(run)
 
-            recurrence = data["recurrence"]
-            if recurrence == ReminderRecurrence.NONE:
-                reminder.status = ReminderStatus.COMPLETED
-            else:
-                next_trigger = self._compute_next_trigger(
-                    reminder.last_triggered_at,
-                    recurrence,
-                    data["user_timezone"],
-                )
-                if data.get("recurrence_end_at") and next_trigger > data["recurrence_end_at"]:
+            # Completion may cancel an in-flight task reminder while the provider
+            # call is running. Preserve that terminal state instead of reviving it.
+            if reminder.status != ReminderStatus.CANCELLED:
+                recurrence = data["recurrence"]
+                if recurrence == ReminderRecurrence.NONE:
                     reminder.status = ReminderStatus.COMPLETED
                 else:
-                    reminder.next_trigger_at = next_trigger
-                    reminder.status = ReminderStatus.ACTIVE
+                    next_trigger = self._compute_next_trigger(
+                        reminder.last_triggered_at,
+                        recurrence,
+                        data["user_timezone"],
+                    )
+                    if data.get("recurrence_end_at") and next_trigger > data["recurrence_end_at"]:
+                        reminder.status = ReminderStatus.COMPLETED
+                    else:
+                        reminder.next_trigger_at = next_trigger
+                        reminder.status = ReminderStatus.ACTIVE
 
             session.add(reminder)
             await session.commit()
@@ -522,8 +585,10 @@ class ReminderExecutionService:
             )
             run = (await session.execute(run_stmt)).scalars().first()
 
-            reminder.consecutive_failures += 1
-            reminder.last_error = error_msg
+            was_cancelled = reminder.status == ReminderStatus.CANCELLED
+            if not was_cancelled:
+                reminder.consecutive_failures += 1
+                reminder.last_error = error_msg
 
             if run:
                 run.status = run_status
@@ -533,15 +598,16 @@ class ReminderExecutionService:
                 self._apply_token_data(run, token_data)
                 session.add(run)
 
-            if reminder.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                reminder.status = ReminderStatus.FAILED
-                logger.warning(
-                    "Reminder %s failed %d times, marking as FAILED",
-                    reminder_id,
-                    reminder.consecutive_failures,
-                )
-            else:
-                reminder.status = ReminderStatus.ACTIVE
+            if not was_cancelled:
+                if reminder.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    reminder.status = ReminderStatus.FAILED
+                    logger.warning(
+                        "Reminder %s failed %d times, marking as FAILED",
+                        reminder_id,
+                        reminder.consecutive_failures,
+                    )
+                else:
+                    reminder.status = ReminderStatus.ACTIVE
 
             session.add(reminder)
             await session.commit()

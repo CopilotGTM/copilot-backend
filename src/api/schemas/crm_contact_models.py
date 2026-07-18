@@ -347,6 +347,15 @@ class ContactDetail(BaseModel):
     source_created_at: datetime | None
     source_modified_at: datetime | None
     synced_at: datetime
+    research_status: Literal[
+        "not_eligible",
+        "not_started",
+        "pending",
+        "in_progress",
+        "completed",
+        "not_found",
+        "failed",
+    ]
     research_summary: ContactResearchSummary | None
     profile_enrichment: ContactProfileEnrichment
     deal_count: int = Field(0)

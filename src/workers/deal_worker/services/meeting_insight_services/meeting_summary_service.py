@@ -547,6 +547,45 @@ class MeetingSummaryService:
         await session.refresh(job)
         return job
 
+    async def _get_active_task_job(self, session, deal_id: UUID, event_id: UUID) -> DealJobs | None:
+        """Return an existing task-sync job for an in-flight meeting summary."""
+        stmt = select(DealJobs).where(
+            col(DealJobs.organisation_id) == self.organisation_id,
+            col(DealJobs.deal_id) == deal_id,
+            col(DealJobs.event_id) == event_id,
+            col(DealJobs.job_type) == DealJobType.DEAL_TASK_SYNC,
+            col(DealJobs.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
+        )
+        return (await session.execute(stmt)).scalars().first()
+
+    async def _create_task_job(
+        self,
+        session,
+        deal_id: UUID,
+        event_id: UUID,
+        association_id: UUID,
+        summary_job_id: UUID,
+    ) -> DealJobs:
+        """Create the task-sync job paired with one meeting summary job."""
+        job = DealJobs(
+            organisation_id=self.organisation_id,
+            user_id=AUTOMATED_PIPELINE_USER_ID,
+            job_type=DealJobType.DEAL_TASK_SYNC,
+            deal_id=deal_id,
+            event_id=event_id,
+            status=JobStatus.PENDING,
+            job_metadata={
+                "source": "meeting_summary_completed",
+                "chained_from": "meeting_summary",
+                "source_association_id": str(association_id),
+                "source_summary_job_id": str(summary_job_id),
+            },
+        )
+        session.add(job)
+        await session.flush()
+        await session.refresh(job)
+        return job
+
     async def _trigger_deal_insight_pipeline(self, deal_id: UUID, result: PipelineResult) -> None:
         """Trigger the parallel risk+stakeholder -> deal memory pipeline."""
         deal_memory_job_id: UUID | None = None
@@ -728,11 +767,11 @@ class MeetingSummaryService:
 
         # Build durable jobs first, then wire Celery signatures from committed IDs.
         # This lets retries recover from broker failures without losing visibility.
-        job_ids: list[UUID] = []
+        summary_task_job_ids: list[tuple[UUID, UUID]] = []
         deal_memory_job_id: UUID | None = None
 
         async for session in acquire_org_async_session(self.organisation_id):
-            for event_id, _association_id, event_deal_id in events:
+            for event_id, association_id, event_deal_id in events:
                 # Reuse active jobs so an overlapping pipeline request does not
                 # generate two summaries for the same deal/event pair.
                 existing_job = await self._get_active_job(session, event_deal_id, event_id)
@@ -744,21 +783,32 @@ class MeetingSummaryService:
                         existing_job.job_id,
                     )
                     result.jobs_skipped += 1
-                    # Still add to chain so it runs in sequence
-                    job_ids.append(existing_job.job_id)
+                    # The existing pipeline owns both summary completion and its
+                    # task sync. Re-chaining an IN_PROGRESS summary would skip its
+                    # worker guard and run task extraction before the summary exists.
                     continue
 
                 # New jobs stay pending until the Celery chain reaches them.
                 # The job row is visible to API/SSE clients before execution starts.
-                job = await self._create_job(session, event_deal_id, event_id)
-                job_ids.append(job.job_id)
+                summary_job = await self._create_job(session, event_deal_id, event_id)
                 result.jobs_created += 1
                 logger.debug(
                     "Created job for deal=%s event=%s job=%s",
                     event_deal_id,
                     event_id,
-                    job.job_id,
+                    summary_job.job_id,
                 )
+
+                task_job = await self._get_active_task_job(session, event_deal_id, event_id)
+                if not task_job:
+                    task_job = await self._create_task_job(
+                        session,
+                        event_deal_id,
+                        event_id,
+                        association_id,
+                        summary_job.job_id,
+                    )
+                summary_task_job_ids.append((summary_job.job_id, task_job.job_id))
 
             # The deal-memory job is the fan-in point after all meeting summaries
             # complete, so downstream risk/stakeholder tasks see fresh context.
@@ -785,22 +835,35 @@ class MeetingSummaryService:
 
             await session.commit()
 
-        if not job_ids:
+        if not summary_task_job_ids:
             logger.debug("No jobs to trigger for deal %s", deal_id)
             return result
 
         # Build task signatures for the chain
         task_signatures = []
-        for job_id in job_ids:
+        for summary_job_id, task_job_id in summary_task_job_ids:
             # Each summary task must carry the current request/task lineage into the chained pipeline.
             sig = signature(
                 "meeting_summary_task.process",
-                args=[str(self.organisation_id), str(job_id)],
+                args=[str(self.organisation_id), str(summary_job_id)],
                 queue="deal_jobs",
                 headers=correlation_headers(),
                 immutable=True,  # Don't pass result to next task
             )
             task_signatures.append(sig)
+            task_signatures.append(
+                signature(
+                    "deal_tasks.sync_from_summary",
+                    kwargs={
+                        "organisation_id": str(self.organisation_id),
+                        "deal_id": str(deal_id),
+                        "job_id": str(task_job_id),
+                    },
+                    queue="deal_jobs",
+                    headers=correlation_headers(),
+                    immutable=True,
+                )
+            )
 
         try:
             await dispatch_deal_insight_pipeline_async(
@@ -818,7 +881,7 @@ class MeetingSummaryService:
                 "deal_memory=%s, risk_blocker=%s, stakeholder=%s, created=%d, skipped=%d)",
                 result.tasks_triggered,
                 deal_id,
-                len(job_ids),
+                len(summary_task_job_ids),
                 result.deal_memory_triggered,
                 result.risk_blocker_triggered,
                 result.stakeholder_analysis_triggered,
@@ -831,7 +894,7 @@ class MeetingSummaryService:
                     "tasks_triggered": result.tasks_triggered,
                     "jobs_created": result.jobs_created,
                     "jobs_skipped": result.jobs_skipped,
-                    "event_count": len(job_ids),
+                    "event_count": len(summary_task_job_ids),
                     "deal_memory_job_id": str(deal_memory_job_id) if deal_memory_job_id else None,
                 },
             )
@@ -847,6 +910,7 @@ class MeetingSummaryService:
                     "error": str(e),
                 },
             )
+            raise
 
         # For backwards compat
         result.meetings_processed = result.tasks_triggered

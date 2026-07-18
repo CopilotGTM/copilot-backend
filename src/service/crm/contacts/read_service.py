@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
 
@@ -11,6 +12,7 @@ from sqlalchemy import String, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 from sqlmodel import col
+from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
@@ -25,8 +27,13 @@ from src.domain.models.organisation_tables.sync.integration_models import (
 )
 from src.infra.utils.logger import get_logger
 from src.service.crm.access.record_access_policy import CRMAccessActor, DealAccessPolicy
+from src.service.crm.accounts.domain_resolution_service import AccountDomainResolutionService
 from src.service.crm.contacts.contracts import ContactReadServiceError
-from src.service.crm.contacts.research_service import PROFILE_METADATA_KEY, PROFILE_RAW_KEY
+from src.service.crm.contacts.research_service import (
+    CONTACT_RESEARCH_JOB_STALE_AFTER,
+    PROFILE_METADATA_KEY,
+    PROFILE_RAW_KEY,
+)
 
 logger = get_logger("contact_read_service")
 
@@ -646,9 +653,7 @@ class ContactReadService:
             .where(
                 col(CRMDeal.organisation_id) == self.organisation_id,
                 col(CRMDeal.is_deleted).is_(False),
-                self._deal_access.visible_deal_predicate(
-                    cast(Any, CRMDeal).__table__.c
-                ),
+                self._deal_access.visible_deal_predicate(cast(Any, CRMDeal).__table__.c),
             )
         )
         deal_res = await self.org_session.execute(deal_stmt)
@@ -685,6 +690,10 @@ class ContactReadService:
         return {
             "contact": contact,
             "profile_enrichment": row.public_profile_enrichment or {},
+            "research_status": await self._contact_research_status(
+                contact,
+                row.public_profile_enrichment or {},
+            ),
             "deals": deals,
             "company": self._contact_detail_company_payload(
                 contact=contact,
@@ -694,6 +703,67 @@ class ContactReadService:
             "owner": self._contact_owner_payload(contact),
             "source": await self.resolve_source_for_contact(contact.integration_id),
         }
+
+    async def _contact_research_status(
+        self,
+        contact: CRMContact,
+        profile_enrichment: dict[str, Any],
+    ) -> str:
+        """Return the polling state for the contact overview's research panel."""
+        if contact.contact_research:
+            return "completed"
+
+        email = (contact.email or "").strip().lower()
+        linkedin_url = (contact.linkedin_url or "").strip() or None
+
+        # copilotgtm: contact_id still lives in JSONB. Keep the lookup bounded in SQL;
+        # promote it to an indexed column if contact-job volume makes this expression hot.
+        stmt = (
+            select(DealJobs)
+            .where(
+                col(DealJobs.organisation_id) == self.organisation_id,
+                col(DealJobs.job_type) == DealJobType.CONTACT_RESEARCH,
+                DealJobs.job_metadata["contact_id"].as_string() == str(contact.contact_id),
+            )
+            .order_by(col(DealJobs.created_at).desc())
+            .limit(1)
+        )
+        result = await self.org_session.execute(stmt)
+        job = result.scalars().first()
+        if job:
+            metadata = job.job_metadata or {}
+            if (
+                metadata.get("normalized_email") != (email or None)
+                or metadata.get("linkedin_url") != linkedin_url
+            ):
+                return "not_started"
+            status = getattr(job.status, "value", job.status)
+            if status in {JobStatus.PENDING.value, JobStatus.IN_PROGRESS.value}:
+                job_updated_at = job.updated_at or job.created_at
+                if job_updated_at and job_updated_at < datetime.now(UTC) - (
+                    CONTACT_RESEARCH_JOB_STALE_AFTER
+                ):
+                    return "not_started"
+                return str(status)
+            if status in {JobStatus.FAILED.value, JobStatus.CANCELLED.value}:
+                return "failed"
+            result_data = job.result_data or {}
+            if result_data.get("provider_status") in {"not_found", "skipped"}:
+                return "not_found"
+            if result_data.get("summary_status") in {"error", "skipped"}:
+                return "failed"
+            if status == JobStatus.COMPLETED.value:
+                # A completed job without stored research is inconsistent but terminal;
+                # polling it forever cannot repair the missing write.
+                return "failed"
+
+        if profile_enrichment.get("status") == "not_found":
+            return "not_found"
+        has_safe_email = bool(AccountDomainResolutionService.derive_safe_domain_from_email(email))
+        has_provider_data = bool(profile_enrichment)
+        if contact.linkedin_url or has_safe_email or has_provider_data:
+            return "not_started"
+        return "not_eligible"
 
     @staticmethod
     def _contact_detail_company_payload(

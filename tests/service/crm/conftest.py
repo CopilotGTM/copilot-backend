@@ -97,6 +97,7 @@ def explicit_admin_for_legacy_service_tests(
         )
 
     if not request.module.__name__.endswith("test_deal_last_activity_service"):
+
         async def skip_last_activity_projection(_service: Any, _deal_id: Any) -> None:
             return None
 

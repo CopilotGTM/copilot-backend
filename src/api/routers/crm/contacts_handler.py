@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.crm_write_guard import require_crm_write_scope
@@ -75,6 +75,40 @@ logger = get_logger("contacts_handler")
 _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your request"
 
 contacts_router = APIRouter()
+
+
+async def _dispatch_contact_research_background(**kwargs) -> None:
+    """Run a research follow-up without propagating queue errors to the HTTP response."""
+    try:
+        await dispatch_contact_research_async(**kwargs)
+    except Exception:
+        # Research is follow-up work. Report dispatch failure through the job/logs instead
+        # of turning an otherwise successful mutation or detail read into an HTTP failure.
+        logger.warning(
+            "Contact research background dispatch failed",
+            extra={
+                "event": "contact_research_dispatch_failed",
+                "organisation_id": str(kwargs["organisation_id"]),
+                "contact_id": str(kwargs["contact_id"]),
+            },
+            exc_info=True,
+        )
+
+
+async def _dispatch_account_research_background(**kwargs) -> None:
+    """Dispatch account research after the contact mutation response is sent."""
+    try:
+        await dispatch_account_research_async(**kwargs)
+    except Exception:
+        logger.warning(
+            "Account research background dispatch failed",
+            extra={
+                "event": "account_research_dispatch_failed",
+                "organisation_id": str(kwargs["organisation_id"]),
+                "company_id": str(kwargs["company_id"]),
+            },
+            exc_info=True,
+        )
 
 
 def _map_contact_mutation_item(
@@ -351,6 +385,7 @@ async def search_contact_create_candidates(
 async def create_contact(
     body: CreateContactRequest,
     response: FastAPIResponse,
+    background_tasks: BackgroundTasks,
     service: ContactWriteService = Depends(get_contact_write_service),
     user_ids: UserIDs = Depends(get_current_user),
     _crm_write_guard: None = Depends(require_crm_write_scope("contacts:create")),
@@ -379,43 +414,22 @@ async def create_contact(
         # after the mutation succeeds so validation failures can cleanly roll back.
         await service.org_session.commit()
         if data.email or body.linkedin_url:
-            try:
-                await dispatch_contact_research_async(
-                    organisation_id=user_ids.organisation_id,
-                    contact_id=data.contact_id,
-                    user_id=user_ids.user_id,
-                    trigger="contact_created",
-                )
-            except Exception:
-                logger.warning(
-                    "Contact research dispatch failed after contact create",
-                    extra={
-                        "event": "contact_research_dispatch_failed",
-                        "organisation_id": str(user_ids.organisation_id),
-                        "contact_id": str(data.contact_id),
-                    },
-                    exc_info=True,
-                )
+            background_tasks.add_task(
+                _dispatch_contact_research_background,
+                organisation_id=user_ids.organisation_id,
+                contact_id=data.contact_id,
+                user_id=user_ids.user_id,
+                trigger="contact_created",
+            )
         account_research_company_id = result.created_account_id or data.company_id
         if account_research_company_id:
-            try:
-                await dispatch_account_research_async(
-                    organisation_id=user_ids.organisation_id,
-                    company_id=account_research_company_id,
-                    user_id=user_ids.user_id,
-                    trigger="contact_created_account",
-                )
-            except Exception:
-                logger.warning(
-                    "Account research dispatch failed after contact-created account",
-                    extra={
-                        "event": "account_research_dispatch_failed",
-                        "organisation_id": str(user_ids.organisation_id),
-                        "company_id": str(account_research_company_id),
-                        "contact_id": str(data.contact_id),
-                    },
-                    exc_info=True,
-                )
+            background_tasks.add_task(
+                _dispatch_account_research_background,
+                organisation_id=user_ids.organisation_id,
+                company_id=account_research_company_id,
+                user_id=user_ids.user_id,
+                trigger="contact_created_account",
+            )
 
         return Response.created_response(message="Contact created", data=data)
     except ContactWriteServiceError as e:
@@ -441,6 +455,7 @@ async def create_contact(
 async def get_contact_detail(
     contact_id: UUID,
     response: FastAPIResponse,
+    background_tasks: BackgroundTasks,
     service: ContactReadService = Depends(get_contact_read_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[ContactDetail]:
@@ -480,6 +495,10 @@ async def get_contact_detail(
                 last_researched_at=contact.last_researched_at,
             )
 
+        research_status = result.get(
+            "research_status",
+            "completed" if contact.contact_research else "not_eligible",
+        )
         data = ContactDetail(
             detail_field_definitions=contact_detail_field_definitions(contact),
             contact_id=contact.contact_id,
@@ -504,6 +523,7 @@ async def get_contact_detail(
             source_created_at=contact.source_created_at,
             source_modified_at=contact.source_modified_at,
             synced_at=contact.synced_at,
+            research_status=research_status,
             additional_emails=contact.additional_emails or [],
             address=contact.address,
             city=contact.city,
@@ -522,6 +542,15 @@ async def get_contact_detail(
             ),
             deal_involvement=deal_involvement,
         )
+        if research_status == "not_started":
+            # Eligible legacy contacts and a lost post-response dispatch both recover on view.
+            # Identity-aware dedupe keeps repeated polling from creating duplicate work.
+            background_tasks.add_task(
+                _dispatch_contact_research_background,
+                organisation_id=service.organisation_id,
+                contact_id=contact_id,
+                trigger="contact_detail_opened",
+            )
         return Response.success_response(message="Contact retrieved", data=data)
     except ContactReadServiceError as e:
         return Response.error_response(
@@ -598,6 +627,7 @@ async def update_contact(
     contact_id: UUID,
     body: UpdateContactRequest,
     response: FastAPIResponse,
+    background_tasks: BackgroundTasks,
     service: ContactWriteService = Depends(get_contact_write_service),
     user_ids: UserIDs = Depends(get_current_user),
     _crm_write_guard: None = Depends(require_crm_write_scope("contacts:update")),
@@ -606,6 +636,7 @@ async def update_contact(
     """Patch allowed contact fields and return the updated contact projection."""
     try:
         updates = body.model_dump(exclude_unset=True)
+        identity_added = bool(updates.get("email") or updates.get("linkedin_url"))
         result = await service.update_contact(
             contact_id,
             updates,
@@ -627,6 +658,15 @@ async def update_contact(
         ).resolve_source_for_contact(contact.integration_id)
 
         data = _map_contact_mutation_item(contact, source=source)
+        if identity_added and not contact.contact_research:
+            background_tasks.add_task(
+                _dispatch_contact_research_background,
+                organisation_id=user_ids.organisation_id,
+                contact_id=contact_id,
+                user_id=user_ids.user_id,
+                trigger="contact_identity_added",
+                force_refresh=True,
+            )
         return Response.success_response(message="Contact updated", data=data)
     except ContactWriteServiceError as e:
         await service.org_session.rollback()

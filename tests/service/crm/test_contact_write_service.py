@@ -867,6 +867,34 @@ async def test_update_contact_stores_linkedin_url_in_profile_column_without_comm
 
 
 @pytest.mark.asyncio
+async def test_update_contact_invalidates_a_provider_miss_after_identity_addition() -> None:
+    """A previous miss must not remain terminal after LinkedIn supplies a new lookup key."""
+    org_id = uuid4()
+    contact = CRMContact(
+        organisation_id=org_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="jane@example.com",
+        profile_enrichment={"provider": "apollo", "status": "not_found"},
+        profile_enriched_at=datetime.now(UTC),
+        profile_enrichment_source="apollo",
+    )
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=_FakeResult(scalars=[contact]))
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+
+    result = await ContactWriteService(session, org_id).update_contact(
+        contact.contact_id,
+        {"linkedin_url": "https://linkedin.com/in/jane"},
+    )
+
+    assert result.contact.profile_enrichment == {}
+    assert result.contact.profile_enriched_at is None
+    assert result.contact.profile_enrichment_source is None
+
+
+@pytest.mark.asyncio
 async def test_update_contact_rejects_company_linkedin_url() -> None:
     """Contact updates should reject account LinkedIn URLs before mutating the row."""
     org_id = uuid4()
