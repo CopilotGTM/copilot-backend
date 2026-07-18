@@ -31,10 +31,12 @@ class ActivityFeedReadServiceError(Exception):
 
 @dataclass(frozen=True)
 class ActivityFeedRecord:
-    """Joined projection row plus the object-link row that made it visible."""
+    """One unique activity plus its scoped and navigable object links."""
 
     activity: CRMActivity
     link: CRMActivityLink
+    occurred_at: datetime | None = None
+    related_links: tuple[CRMActivityLink, ...] = ()
 
 
 def _table(model: Any) -> Table:
@@ -50,38 +52,44 @@ def _split_csv(value: str | None) -> list[str]:
     return [part.strip().upper() for part in value.split(",") if part.strip()]
 
 
+def _validate_date_bounds(start_date: datetime | None, end_date: datetime | None) -> None:
+    """Reject ambiguous or reversed timestamps before issuing database work."""
+    for name, value in (("start_date", start_date), ("end_date", end_date)):
+        if value is not None and value.utcoffset() is None:
+            raise ActivityFeedReadServiceError(f"{name} must include a timezone", 400)
+    if start_date and end_date and start_date > end_date:
+        raise ActivityFeedReadServiceError(
+            "start_date must be before or equal to end_date",
+            400,
+        )
+
+
 def _encode_activity_feed_cursor(
     *,
     occurred_at: datetime,
     activity_id: UUID,
-    activity_link_id: UUID,
 ) -> str:
     blob = json.dumps(
         {
             "ts": occurred_at.isoformat(),
             "activity_id": str(activity_id),
-            "activity_link_id": str(activity_link_id),
         }
     ).encode()
     return base64.urlsafe_b64encode(blob).decode()
 
 
-def _decode_activity_feed_cursor(cursor: str) -> tuple[datetime, UUID, UUID | None]:
+def _decode_activity_feed_cursor(cursor: str) -> tuple[datetime, UUID]:
     try:
         data = json.loads(base64.urlsafe_b64decode(cursor.encode()))
     except Exception:
-        ts, activity_id = decode_cursor(cursor)
-        return ts, activity_id, None
+        return decode_cursor(cursor)
 
-    if "activity_id" not in data or "activity_link_id" not in data:
-        ts, activity_id = decode_cursor(cursor)
-        return ts, activity_id, None
+    if "activity_id" not in data:
+        return decode_cursor(cursor)
 
-    return (
-        datetime.fromisoformat(data["ts"]),
-        UUID(data["activity_id"]),
-        UUID(data["activity_link_id"]),
-    )
+    # Cursors emitted before unique-activity pagination also contain an
+    # activity_link_id. It is intentionally ignored so deployed cursors remain valid.
+    return datetime.fromisoformat(data["ts"]), UUID(data["activity_id"])
 
 
 class ActivityFeedReadService:
@@ -92,6 +100,7 @@ class ActivityFeedReadService:
         self.organisation_id = organisation_id
 
     async def close(self) -> None:
+        """Close the organisation-scoped database session owned by this service."""
         await self.session.close()
 
     async def list_object_activities(
@@ -107,15 +116,32 @@ class ActivityFeedReadService:
         end_date: datetime | None = None,
         sort_order: str = "desc",
     ) -> tuple[list[ActivityFeedRecord], str | None, int]:
+        """Return one card per activity linked to an object, ordered by occurrence time.
+
+        A single activity can have multiple roles for the same object. The scoped link
+        subquery collapses those roles before counting and paginating so duplicates do not
+        consume page slots; the bounded page is then hydrated with its related object links.
+        """
+        _validate_date_bounds(start_date, end_date)
         link_t = _table(CRMActivityLink)
         activity_t = _table(CRMActivity)
         type_values = _split_csv(activity_types)
         source_values = _split_csv(source_types)
 
+        scoped_links = (
+            select(
+                link_t.c.activity_id.label("activity_id"),
+                func.max(link_t.c.occurred_at).label("occurred_at"),
+            )
+            .where(
+                link_t.c.organisation_id == self.organisation_id,
+                link_t.c.object_type == object_type,
+                link_t.c.object_id == object_id,
+            )
+            .group_by(link_t.c.activity_id)
+            .subquery("scoped_activity_links")
+        )
         where = [
-            link_t.c.organisation_id == self.organisation_id,
-            link_t.c.object_type == object_type,
-            link_t.c.object_id == object_id,
             activity_t.c.organisation_id == self.organisation_id,
             or_(activity_t.c.is_deleted.is_(False), activity_t.c.is_deleted.is_(None)),
         ]
@@ -124,88 +150,113 @@ class ActivityFeedReadService:
         if source_values:
             where.append(activity_t.c.source_type.in_(source_values))
         if start_date:
-            where.append(link_t.c.occurred_at >= start_date)
+            where.append(scoped_links.c.occurred_at >= start_date)
         if end_date:
-            where.append(link_t.c.occurred_at <= end_date)
+            where.append(scoped_links.c.occurred_at <= end_date)
 
         count_where = list(where)
 
         if cursor:
             try:
-                ts, activity_id, activity_link_id = _decode_activity_feed_cursor(cursor)
+                ts, activity_id = _decode_activity_feed_cursor(cursor)
             except Exception as exc:
                 raise ActivityFeedReadServiceError("Invalid cursor", 400) from exc
             if sort_order == "desc":
                 cursor_predicate = or_(
-                    link_t.c.occurred_at < ts,
+                    scoped_links.c.occurred_at < ts,
                     and_(
-                        link_t.c.occurred_at == ts,
-                        link_t.c.activity_id < activity_id,
+                        scoped_links.c.occurred_at == ts,
+                        scoped_links.c.activity_id < activity_id,
                     ),
                 )
-                if activity_link_id is not None:
-                    cursor_predicate = or_(
-                        cursor_predicate,
-                        and_(
-                            link_t.c.occurred_at == ts,
-                            link_t.c.activity_id == activity_id,
-                            link_t.c.activity_link_id < activity_link_id,
-                        ),
-                    )
                 where.append(cursor_predicate)
             else:
                 cursor_predicate = or_(
-                    link_t.c.occurred_at > ts,
+                    scoped_links.c.occurred_at > ts,
                     and_(
-                        link_t.c.occurred_at == ts,
-                        link_t.c.activity_id > activity_id,
+                        scoped_links.c.occurred_at == ts,
+                        scoped_links.c.activity_id > activity_id,
                     ),
                 )
-                if activity_link_id is not None:
-                    cursor_predicate = or_(
-                        cursor_predicate,
-                        and_(
-                            link_t.c.occurred_at == ts,
-                            link_t.c.activity_id == activity_id,
-                            link_t.c.activity_link_id > activity_link_id,
-                        ),
-                    )
                 where.append(cursor_predicate)
 
-        base_join = link_t.join(
-            activity_t,
-            (activity_t.c.organisation_id == link_t.c.organisation_id)
-            & (activity_t.c.activity_id == link_t.c.activity_id),
+        base_join = activity_t.join(
+            scoped_links,
+            activity_t.c.activity_id == scoped_links.c.activity_id,
         )
         count_stmt = select(func.count()).select_from(base_join).where(*count_where)
         total_count = (await self.session.execute(count_stmt)).scalar() or 0
 
-        stmt = select(CRMActivity, CRMActivityLink).select_from(base_join).where(*where)
+        stmt = select(CRMActivity, scoped_links.c.occurred_at).select_from(base_join).where(*where)
         if sort_order == "desc":
             stmt = stmt.order_by(
-                link_t.c.occurred_at.desc(),
-                link_t.c.activity_id.desc(),
-                link_t.c.activity_link_id.desc(),
+                scoped_links.c.occurred_at.desc(),
+                scoped_links.c.activity_id.desc(),
             )
         else:
             stmt = stmt.order_by(
-                link_t.c.occurred_at.asc(),
-                link_t.c.activity_id.asc(),
-                link_t.c.activity_link_id.asc(),
+                scoped_links.c.occurred_at.asc(),
+                scoped_links.c.activity_id.asc(),
             )
         stmt = stmt.limit(limit + 1)
 
         result = await self.session.execute(stmt)
-        records = [ActivityFeedRecord(activity=row[0], link=row[1]) for row in result.all()]
+        page_rows = result.all()
 
         next_cursor = None
-        if len(records) > limit:
-            records = records[:limit]
-            last = records[-1].link
+        if len(page_rows) > limit:
+            page_rows = page_rows[:limit]
+            last_activity, last_occurred_at = page_rows[-1]
             next_cursor = _encode_activity_feed_cursor(
-                occurred_at=last.occurred_at,
-                activity_id=last.activity_id,
-                activity_link_id=last.activity_link_id,
+                occurred_at=last_occurred_at,
+                activity_id=last_activity.activity_id,
+            )
+
+        if not page_rows:
+            return [], next_cursor, total_count
+
+        activity_ids = [row[0].activity_id for row in page_rows]
+        links_stmt = (
+            select(CRMActivityLink)
+            .where(
+                link_t.c.organisation_id == self.organisation_id,
+                link_t.c.activity_id.in_(activity_ids),
+            )
+            .order_by(
+                link_t.c.activity_id,
+                link_t.c.object_type,
+                link_t.c.object_id,
+                link_t.c.link_role,
+            )
+        )
+        links_result = await self.session.execute(links_stmt)
+        links_by_activity: dict[UUID, list[CRMActivityLink]] = {}
+        for row in links_result.all():
+            link = row[0]
+            links_by_activity.setdefault(link.activity_id, []).append(link)
+
+        records = []
+        for activity, occurred_at in page_rows:
+            related_links = links_by_activity.get(activity.activity_id, [])
+            scoped_link = next(
+                (
+                    link
+                    for link in related_links
+                    if link.object_type == object_type and link.object_id == object_id
+                ),
+                None,
+            )
+            if scoped_link is None:
+                # Projection workers may replace links between the page and hydration reads.
+                # Advancing the opaque cursor while omitting that vanished card avoids a transient 500.
+                continue
+            records.append(
+                ActivityFeedRecord(
+                    activity=activity,
+                    link=scoped_link,
+                    occurred_at=occurred_at,
+                    related_links=tuple(related_links),
+                )
             )
 
         return records, next_cursor, total_count

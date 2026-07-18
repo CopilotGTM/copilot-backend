@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import get_type_hints
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -309,9 +311,11 @@ def test_activity_display_payload_shape_is_validated_by_pydantic_not_database() 
 
 
 def test_email_display_payload_has_typed_pydantic_contract() -> None:
+    association_id = uuid4()
     payload = validate_crm_activity_display_payload(
         "EMAIL",
         {
+            "association_id": association_id,
             "direction": "INBOUND",
             "participants_preview": [
                 {"name": "Sarah Chen", "email": "sarah@acme.example", "role": "SENDER"}
@@ -322,6 +326,7 @@ def test_email_display_payload_has_typed_pydantic_contract() -> None:
     )
 
     assert payload == {
+        "association_id": str(association_id),
         "direction": "INBOUND",
         "participants_preview": [
             {"name": "Sarah Chen", "email": "sarah@acme.example", "role": "SENDER"}
@@ -336,9 +341,15 @@ def test_email_display_payload_has_typed_pydantic_contract() -> None:
 
 
 def test_meeting_display_payload_has_typed_pydantic_contract() -> None:
+    association_id = uuid4()
+    start_at = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
+    end_at = datetime(2026, 7, 1, 9, 45, tzinfo=UTC)
     payload = validate_crm_activity_display_payload(
         "MEETING",
         {
+            "association_id": association_id,
+            "start_at": start_at,
+            "end_at": end_at,
             "participants_preview": [
                 {"name": "Maya Singh", "email": "maya@copilotgtm.example", "role": "ORGANIZER"}
             ],
@@ -349,6 +360,9 @@ def test_meeting_display_payload_has_typed_pydantic_contract() -> None:
     )
 
     assert payload == {
+        "association_id": str(association_id),
+        "start_at": start_at.isoformat().replace("+00:00", "Z"),
+        "end_at": end_at.isoformat().replace("+00:00", "Z"),
         "participants_preview": [
             {"name": "Maya Singh", "email": "maya@copilotgtm.example", "role": "ORGANIZER"}
         ],

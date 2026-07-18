@@ -73,11 +73,13 @@ class _FakeSession:
         *,
         deal: object | None = None,
         contacts: list[object] | None = None,
+        canonical_email_id: object | None = None,
     ) -> None:
         self.statements: list[object] = []
         self.added: list[object] = []
         self._deal = deal
         self._contacts = contacts or []
+        self._canonical_email_id = canonical_email_id
 
     async def execute(self, statement, _parameters=None):  # noqa: ANN001
         """Capture writes and return scripted rows for org-scoped local lookups."""
@@ -87,6 +89,10 @@ class _FakeSession:
             return _FakeExecuteResult([self._deal] if self._deal else [])
         if "FROM crm_contacts" in statement_text:
             return _FakeExecuteResult(self._contacts)
+        if "FROM emails" in statement_text:
+            return _FakeExecuteResult(
+                [self._canonical_email_id] if self._canonical_email_id else []
+            )
         return _FakeExecuteResult()
 
     def add(self, obj: object) -> None:
@@ -539,11 +545,12 @@ async def test_email_association_projection_writes_email_activity_and_safe_links
     assert values["preview"] == "Can you send the new quote?"
     assert values["occurred_at"] == received_at
     assert values["source_type"] == "EMAIL"
-    assert values["source_record_id"] == str(association_id)
+    assert values["source_record_id"] == str(email.email_id)
     assert values["source_provider"] == "gmail"
     assert values["actor_name"] == "Buyer"
     assert values["actor_email"] == "buyer@example.com"
     assert values["display_payload"] == {
+        "association_id": str(association_id),
         "direction": "INBOUND",
         "participants_preview": [
             {"name": "Buyer", "email": "buyer@example.com", "role": "sender"},
@@ -558,6 +565,37 @@ async def test_email_association_projection_writes_email_activity_and_safe_links
         ("CONTACT", contact_id, "RELATED", "SYSTEM"),
         ("COMPANY", company_id, "RELATED", "SYSTEM"),
     }
+
+
+@pytest.mark.asyncio
+async def test_email_association_projection_uses_the_same_canonical_email_row_for_copies() -> None:
+    """Mailbox copies of one message must retain one navigable source record ID."""
+    organisation_id = uuid4()
+    canonical_email_id = uuid4()
+    association = DealEmailAssociation(
+        association_id=uuid4(),
+        organisation_id=organisation_id,
+        deal_id=uuid4(),
+        internet_message_id="<message-1@example.com>",
+        status=AssociationStatus.ACTIVE,
+    )
+    email = Email(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        folder_id=uuid4(),
+        external_message_id="provider-message-copy",
+        internet_message_id=association.internet_message_id,
+        from_email="buyer@example.com",
+    )
+    session = _FakeSession(canonical_email_id=canonical_email_id)
+
+    await ActivityFeedProjectionService(session, organisation_id).upsert_email_association(
+        association,
+        email,
+    )
+
+    values = _activity_values_by_source_type(session, "EMAIL")
+    assert values["source_record_id"] == str(canonical_email_id)
 
 
 @pytest.mark.asyncio
@@ -625,11 +663,14 @@ async def test_meeting_association_projection_writes_meeting_activity_and_attend
     assert values["title"] == "Renewal review"
     assert values["occurred_at"] == start_at
     assert values["source_type"] == "MEETING"
-    assert values["source_record_id"] == str(association_id)
+    assert values["source_record_id"] == str(event.event_id)
     assert values["source_provider"] == "google"
     assert values["actor_name"] == "Seller"
     assert values["actor_email"] == "seller@ourco.com"
     assert values["display_payload"] == {
+        "association_id": str(association_id),
+        "start_at": start_at.isoformat().replace("+00:00", "Z"),
+        "end_at": end_at.isoformat().replace("+00:00", "Z"),
         "participants_preview": [
             {"name": "Buyer", "email": "buyer@example.com", "role": "attendee"},
             {"name": "Seller", "email": "seller@ourco.com", "role": "organizer"},

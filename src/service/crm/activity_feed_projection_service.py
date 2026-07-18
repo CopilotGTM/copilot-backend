@@ -30,6 +30,7 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMDeal,
     CRMNote,
     CRMTask,
+    validate_crm_activity_display_payload,
 )
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
@@ -247,6 +248,7 @@ class ActivityFeedProjectionService:
         replay-safe card without making `crm_activities` the email source table.
         """
         await self._lock_communication("email", email.internet_message_id or email.email_id)
+        source_record_id = await self._canonical_email_source_record_id(email)
         # Once deal matching creates an association-backed card, retire the earlier direct
         # communication card so the same email is not shown twice in contact/company feeds.
         await self.soft_delete_activity_projection(
@@ -280,11 +282,12 @@ class ActivityFeedProjectionService:
             preview=_compact_preview(email.snippet or email.body_text or email.subject),
             occurred_at=occurred_at,
             source_type="EMAIL",
-            source_record_id=str(association.association_id),
+            source_record_id=source_record_id,
             source_provider=provider,
             actor_name=email.from_name,
             actor_email=email.from_email,
             display_payload={
+                "association_id": association.association_id,
                 "direction": _enum_value(association.direction),
                 "participants_preview": participants_preview,
                 "participant_count": len(self._email_participant_emails(email)),
@@ -326,6 +329,7 @@ class ActivityFeedProjectionService:
         """
         source_id = email.internet_message_id or email.email_id
         await self._lock_communication("email", source_id)
+        source_record_id = await self._canonical_email_source_record_id(email)
         if email.internet_message_id:
             association = await self.session.execute(
                 select(col(DealEmailAssociation.association_id)).where(
@@ -354,7 +358,7 @@ class ActivityFeedProjectionService:
             preview=_compact_preview(email.snippet or email.body_text or email.subject),
             occurred_at=occurred_at,
             source_type="EMAIL",
-            source_record_id=str(email.email_id),
+            source_record_id=source_record_id,
             source_provider=provider,
             actor_name=email.from_name,
             actor_email=email.from_email,
@@ -428,11 +432,14 @@ class ActivityFeedProjectionService:
             preview=_compact_preview(event.description or event.title),
             occurred_at=occurred_at,
             source_type="MEETING",
-            source_record_id=str(association.association_id),
+            source_record_id=str(event.event_id),
             source_provider=event.provider,
             actor_name=event.organiser_name,
             actor_email=event.organiser_email,
             display_payload={
+                "association_id": association.association_id,
+                "start_at": event.start_at,
+                "end_at": event.end_at,
                 "participants_preview": self._meeting_participants_preview(event),
                 "participant_count": event.attendee_count or len(event.attendees or []),
                 "duration_minutes": self._meeting_duration_minutes(event),
@@ -502,6 +509,8 @@ class ActivityFeedProjectionService:
             actor_name=event.organiser_name,
             actor_email=event.organiser_email,
             display_payload={
+                "start_at": event.start_at,
+                "end_at": event.end_at,
                 "participants_preview": self._meeting_participants_preview(event),
                 "participant_count": event.attendee_count or len(event.attendees or []),
                 "duration_minutes": self._meeting_duration_minutes(event),
@@ -1124,6 +1133,25 @@ class ActivityFeedProjectionService:
             },
         )
 
+    async def _canonical_email_source_record_id(self, email: Email) -> str:
+        """Return one stable local Email row ID for a provider message."""
+        if not email.internet_message_id:
+            return str(email.email_id)
+
+        # Exchange and Gmail can sync the same internet message into multiple folders.
+        # Keep navigation pinned to the lowest UUID in this org so replays do not swap targets.
+        stmt = (
+            select(col(Email.email_id))
+            .where(
+                col(Email.organisation_id) == self.organisation_id,
+                col(Email.internet_message_id) == email.internet_message_id,
+            )
+            .order_by(col(Email.email_id))
+            .limit(1)
+        )
+        canonical_email_id = (await self.session.execute(stmt)).scalar_one_or_none()
+        return str(canonical_email_id or email.email_id)
+
     async def _upsert_activity(
         self,
         *,
@@ -1142,9 +1170,10 @@ class ActivityFeedProjectionService:
         display_payload: dict[str, Any] | None = None,
     ) -> None:
         now = _now_utc()
-        clean_display_payload = {
-            key: value for key, value in (display_payload or {}).items() if value is not None
-        }
+        clean_display_payload = validate_crm_activity_display_payload(
+            activity_type,
+            {key: value for key, value in (display_payload or {}).items() if value is not None},
+        )
         values: dict[str, Any] = {
             "activity_id": activity_id,
             "organisation_id": self.organisation_id,

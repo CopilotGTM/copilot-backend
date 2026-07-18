@@ -28,6 +28,14 @@ class ActivityFeedQueryParams(BaseModel):
     sort: str = Query("desc", pattern="^(asc|desc)$", description="Sort order")
 
 
+class ActivityFeedRelatedObject(BaseModel):
+    """CRM object a frontend can open from an activity card."""
+
+    object_type: str
+    object_id: UUID
+    link_roles: list[str]
+
+
 class ActivityFeedItem(BaseModel):
     """One activity-feed card backed by crm_activity_links and crm_activities."""
 
@@ -48,6 +56,7 @@ class ActivityFeedItem(BaseModel):
     link_role: str
     link_source: str
     confidence_score: float | None = None
+    related_objects: list[ActivityFeedRelatedObject] = Field(default_factory=list)
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

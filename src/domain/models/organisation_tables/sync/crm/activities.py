@@ -129,6 +129,7 @@ class CRMActivityEmailDisplayPayload(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    association_id: UUID | None = None
     direction: str | None = None
     participants_preview: list[CRMActivityParticipantPreview] = PydanticField(
         default_factory=list,
@@ -143,6 +144,9 @@ class CRMActivityMeetingDisplayPayload(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    association_id: UUID | None = None
+    start_at: datetime | None = None
+    end_at: datetime | None = None
     participants_preview: list[CRMActivityParticipantPreview] = PydanticField(
         default_factory=list,
         max_length=5,
