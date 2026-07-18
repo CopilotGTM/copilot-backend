@@ -887,7 +887,9 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
     ),
     VoiceRealtimeToolDefinition(
         tool_name=ToolName.GET_EMAIL_DETAILS,
-        description="Get the full details for an email message.",
+        description=(
+            "Get email details within an owned mailbox_email or authorized deal_id scope."
+        ),
         parameters={
             "type": "object",
             "properties": {
@@ -895,6 +897,10 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
                 "include_body": {"type": "boolean"},
                 "include_html": {"type": "boolean"},
                 "max_body_length": {"type": "integer"},
+                "mailbox_email": {"type": "string"},
+                "include_thread": {"type": "boolean"},
+                "max_thread_messages": {"type": "integer"},
+                "deal_id": {"type": "string"},
             },
             "required": ["internet_message_id"],
             "additionalProperties": False,

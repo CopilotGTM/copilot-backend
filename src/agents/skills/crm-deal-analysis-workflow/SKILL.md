@@ -132,6 +132,9 @@ For most CRM/deal analysis, answer these internally before writing:
 2. For inbound leads from email, resolve the exact connected mailbox first and use
    `search_mailbox_emails`; do not read all connected mailboxes unless the user asked
    for all of them.
+   Mailbox thread discovery is broader than CRM: a conversation may begin before a
+   lead or deal exists. Use CRM matches as enrichment and prioritisation, not as a
+   prerequisite for including the email.
 3. Check whether the lead already maps to a contact, account, company, or deal.
 4. Gather captured message, source, owner, status, company, and recent activity if available.
 5. Identify qualification gaps such as missing buyer identity, company fit, interest,
