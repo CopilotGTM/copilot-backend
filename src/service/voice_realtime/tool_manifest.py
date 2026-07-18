@@ -102,14 +102,14 @@ def _build_search_accounts_factory(context: AgentContext) -> Callable[[], Callab
 
 
 def _build_research_linkedin_profile_factory(
-    _context: AgentContext,
+    context: AgentContext,
 ) -> Callable[[], Callable[..., Any]]:
-    """Expose the existing read-only person research tool to realtime voice."""
+    """Expose tenant-bound, external-only person research to realtime voice."""
     from src.agents.tools.research.research_linkedin_profile import (
         create_research_linkedin_profile,
     )
 
-    return partial(create_research_linkedin_profile, _build_empty_capabilities)
+    return partial(create_research_linkedin_profile, context, _build_empty_capabilities)
 
 
 def _build_list_meetings_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
@@ -726,8 +726,8 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
         parameters={
             "type": "object",
             "properties": {
-                "query": {"type": "string"},
-                "company_name": {"type": "string"},
+                "query": {"type": "string", "minLength": 1, "maxLength": 200},
+                "company_name": {"type": "string", "minLength": 1, "maxLength": 200},
                 "limit": {"type": "integer"},
             },
             "required": [],
@@ -752,22 +752,33 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
     VoiceRealtimeToolDefinition(
         tool_name=ToolName.RESEARCH_LINKEDIN_PROFILE,
         description=(
-            "Research a person's professional background by name or LinkedIn URL, including "
-            "people who are not CRM contacts or deal stakeholders."
+            "Research an external person's professional background. For meeting attendees, "
+            "use the exact invitation email; do not search by display name."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "The person's name or LinkedIn profile URL.",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "A LinkedIn profile URL for an explicit general lookup.",
+                },
+                "email": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 320,
+                    "description": "Exact external attendee email from the calendar invitation.",
                 },
                 "company": {
                     "type": "string",
-                    "description": "Reliable company name used only to disambiguate a name.",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "Reliable company name, when known from the invitation.",
                 },
+                "refresh": {"type": "boolean"},
             },
-            "required": ["query"],
+            "required": [],
             "additionalProperties": False,
         },
         factory_builder=_build_research_linkedin_profile_factory,
@@ -791,10 +802,12 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
                 },
                 "limit": {"type": "integer"},
                 "deal_id": {"type": "string"},
-                "attendee_email": {"type": "string"},
-                "attendee_name": {"type": "string"},
+                "attendee_email": {"type": "string", "minLength": 1, "maxLength": 200},
+                "attendee_name": {"type": "string", "minLength": 1, "maxLength": 200},
                 "query": {
                     "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
                     "description": (
                         "Only the identifying title, person, company, or email; never the full "
                         "spoken request."

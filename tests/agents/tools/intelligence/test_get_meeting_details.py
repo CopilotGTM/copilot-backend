@@ -146,3 +146,26 @@ async def test_get_meeting_details_preserves_userless_deal_scoped_briefing(
     assert "calendar_event_deal_associations" in event_sql
     assert "calendar_event_deal_associations.deal_id" in event_sql
     assert "calendar_event_user_states" not in event_sql
+
+
+@pytest.mark.asyncio
+async def test_get_meeting_details_keeps_classification_unknown_without_domains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing domain configuration must not misclassify invitees as external."""
+    event_id = uuid4()
+    session = _CaptureSession([_calendar_event(event_id), None, None])
+    context = AgentContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+    )
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "src.agents.tools.intelligence.get_meeting_details.get_internal_domains",
+        AsyncMock(return_value=set()),
+    )
+
+    result = await get_meeting_details(str(event_id), context=context)
+
+    assert result is not None
+    assert [attendee["is_internal"] for attendee in result["attendees"]] == [None, None]

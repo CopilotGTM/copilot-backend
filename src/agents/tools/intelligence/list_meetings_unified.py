@@ -47,6 +47,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MeetingTimeDirection = Literal["past", "future", "present"]
+MAX_MEETING_QUERY_CHARS = 200
+
+
+def _escape_like(value: str) -> str:
+    """Escape PostgreSQL LIKE metacharacters so identity text stays literal."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def normalize_meeting_limit(limit: int | None) -> int:
@@ -108,6 +114,7 @@ def _meeting_search_expressions(event_c: Any, query: str) -> tuple[Any, Any, Any
     """
     attendee_c = cast(Any, CalendarAttendee).__table__.c
     lowered_query = query.lower()
+    like_query = _escape_like(lowered_query)
 
     title = func.lower(func.coalesce(event_c.title, ""))
     organiser_name = func.lower(func.coalesce(event_c.organiser_name, ""))
@@ -129,14 +136,14 @@ def _meeting_search_expressions(event_c: Any, query: str) -> tuple[Any, Any, Any
     )
     prefix_attendee = attendee_exists(
         or_(
-            attendee_name.like(f"{lowered_query}%"),
-            attendee_email.like(f"{lowered_query}%"),
+            attendee_name.like(f"{like_query}%", escape="\\"),
+            attendee_email.like(f"{like_query}%", escape="\\"),
         )
     )
     contains_attendee = attendee_exists(
         or_(
-            attendee_name.like(f"%{lowered_query}%"),
-            attendee_email.like(f"%{lowered_query}%"),
+            attendee_name.like(f"%{like_query}%", escape="\\"),
+            attendee_email.like(f"%{like_query}%", escape="\\"),
         )
     )
 
@@ -145,13 +152,13 @@ def _meeting_search_expressions(event_c: Any, query: str) -> tuple[Any, Any, Any
         (organiser_name == lowered_query, 5.5),
         (organiser_email == lowered_query, 5.0),
         (exact_attendee, 4.5),
-        (title.like(f"{lowered_query}%"), 4.0),
-        (organiser_name.like(f"{lowered_query}%"), 3.8),
-        (organiser_email.like(f"{lowered_query}%"), 3.6),
+        (title.like(f"{like_query}%", escape="\\"), 4.0),
+        (organiser_name.like(f"{like_query}%", escape="\\"), 3.8),
+        (organiser_email.like(f"{like_query}%", escape="\\"), 3.6),
         (prefix_attendee, 3.4),
-        (title.like(f"%{lowered_query}%"), 3.0),
-        (organiser_name.like(f"%{lowered_query}%"), 2.8),
-        (organiser_email.like(f"%{lowered_query}%"), 2.6),
+        (title.like(f"%{like_query}%", escape="\\"), 3.0),
+        (organiser_name.like(f"%{like_query}%", escape="\\"), 2.8),
+        (organiser_email.like(f"%{like_query}%", escape="\\"), 2.6),
         (contains_attendee, 2.4),
     )
     deterministic_filter = or_(*(condition for condition, _score in deterministic_checks))
@@ -291,7 +298,19 @@ async def list_meetings(
     effective_limit = normalize_meeting_limit(limit)
     if limit == 10 and isinstance(metadata_limit, int):
         effective_limit = normalize_meeting_limit(metadata_limit)
-    search_query = query.strip() if query and query.strip() else None
+    if query is not None and not query.strip():
+        logger.warning("list_meetings: query cannot be blank")
+        return []
+    search_query = query.strip() if query else None
+    if search_query and len(search_query) > MAX_MEETING_QUERY_CHARS:
+        logger.warning("list_meetings: query exceeds %d characters", MAX_MEETING_QUERY_CHARS)
+        return []
+    for label, value in (("attendee_email", attendee_email), ("attendee_name", attendee_name)):
+        if value is not None and (not value.strip() or len(value.strip()) > MAX_MEETING_QUERY_CHARS):
+            logger.warning("list_meetings: invalid %s length", label)
+            return []
+    attendee_email = attendee_email.strip() if attendee_email else None
+    attendee_name = attendee_name.strip() if attendee_name else None
 
     explicit_start = start_datetime is not None
     explicit_end = end_datetime is not None
@@ -390,7 +409,13 @@ async def list_meetings(
                 func.lower(filter_c.email) == attendee_email.lower()
             )
         if attendee_name:
-            attendee_stmt = attendee_stmt.where(filter_c.display_name.ilike(f"%{attendee_name}%"))
+            escaped_attendee_name = _escape_like(attendee_name.strip())
+            attendee_stmt = attendee_stmt.where(
+                filter_c.display_name.ilike(
+                    f"%{escaped_attendee_name}%",
+                    escape="\\",
+                )
+            )
         stmt = stmt.where(attendee_stmt.correlate(CalendarEvent).exists())
 
     if has_transcript is True:

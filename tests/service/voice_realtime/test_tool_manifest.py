@@ -239,16 +239,20 @@ def test_list_meetings_voice_schema_combines_identity_and_time_clues() -> None:
 
     assert "query" in properties
     assert "full spoken request" in properties["query"]["description"]
+    assert properties["query"]["minLength"] == 1
+    assert properties["query"]["maxLength"] == 200
     assert properties["time_direction"]["enum"] == ["past", "present", "future"]
     assert "Monday" in properties["start_datetime"]["description"]
 
 
 def test_voice_exposes_existing_read_only_profile_research() -> None:
-    """A voice user can research an invitee even when no CRM contact or deal exists."""
+    """Voice research accepts exact attendee email without requiring a CRM record."""
     schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
 
     schema = schemas[ToolName.RESEARCH_LINKEDIN_PROFILE.value]
 
-    assert schema["parameters"]["required"] == ["query"]
-    assert "not CRM contacts" in schema["description"]
-    assert "company" in schema["parameters"]["properties"]
+    properties = schema["parameters"]["properties"]
+    assert schema["parameters"]["required"] == []
+    assert "exact invitation email" in schema["description"]
+    assert properties["email"]["maxLength"] == 320
+    assert properties["company"]["maxLength"] == 200

@@ -182,13 +182,18 @@ async def get_meeting_details(
         # Build attendee list (while session is active for relationship access)
         attendees = []
         for att in event.attendees:
+            # An empty domain set cannot prove that an invitee is external. Keep
+            # the classification unknown so downstream research fails closed.
+            attendee_is_internal = (
+                is_internal_email(att.email, internal_domains) if internal_domains else None
+            )
             attendees.append(
                 {
                     "email": att.email,
                     "name": resolve_attendee_display_name(att.display_name, att.email),
                     "response_status": att.response_status,
                     "is_organiser": att.is_organiser,
-                    "is_internal": is_internal_email(att.email, internal_domains),
+                    "is_internal": attendee_is_internal,
                 }
             )
 
@@ -330,8 +335,8 @@ def create_get_meeting_details(
             include_followup: Include follow-up actions (default: True)
 
         The returned people are calendar invitees with RSVP states; they are not
-        proof of actual attendance. Use attendee `is_internal` when the user asks
-        for a particular participant scope.
+        proof of actual attendance. `is_internal=null` means the organisation
+        has no reliable domain classification; never enrich those invitees.
         """
         logger.info(
             f"[TOOL CALLED] get_meeting_details - event_id='{event_id}', "

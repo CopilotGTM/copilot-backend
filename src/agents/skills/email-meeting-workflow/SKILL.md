@@ -446,12 +446,11 @@ spoke; they are not a complete attendance list.
 When the user asks for background on all participants or a selected subset:
 
 1. Resolve the meeting and load its complete attendees.
-2. Select the requested people using `is_internal` only when the user asks for an
-   internal or external scope.
-3. Search CRM contacts first for available internal context.
-4. If no CRM contact exists or its context is insufficient, call
-   `research_linkedin_profile` directly with the attendee's name and reliable company
-   context. A contact, stakeholder, account, or deal is not a prerequisite.
+2. Research only attendees whose `is_internal` value is explicitly `false`. A null
+   value means classification is unavailable and must not be sent to enrichment.
+3. Call `research_linkedin_profile` with the exact attendee email from the invitation.
+   The tool reuses cached CRM research before Apollo, so do not search separately by name.
+4. A contact, stakeholder, account, or deal is not a prerequisite for email research.
 5. Do not create a CRM record merely to research a person.
 6. Ask for clarification when the attendee identity or research result is ambiguous,
    and report unavailable background without guessing.

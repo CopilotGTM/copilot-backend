@@ -220,6 +220,21 @@ def rate_limit_user_read(user: UserIDs = Depends(get_current_user)) -> None:
     _enforce_rate_limit(user, category="read")
 
 
+def enforce_contact_research_rate_limit(user_id: str) -> None:
+    """Apply the paid-provider budget to one authenticated agent user.
+
+    Agent tools run outside FastAPI dependency injection, so callers pass the
+    immutable user ID from ``AgentContext``. Cache hits must skip this function.
+    """
+    _enforce_rate_limit_for_limits(
+        "u",
+        user_id,
+        "contact_research",
+        per_minute_limit=rate_limit_config.CONTACT_RESEARCH_PER_MINUTE,
+        per_hour_limit=rate_limit_config.CONTACT_RESEARCH_PER_HOUR,
+    )
+
+
 def rate_limit_admin_read(admin: SuperAdmin = Depends(admin_auth)) -> None:
     """Per-admin limiter for read endpoints (GET) in admin APIs.
 
@@ -530,6 +545,7 @@ __all__ = [
     "rate_limit_admin_login",
     "rate_limit_password_reset",
     "rate_limit_user_read",
+    "enforce_contact_research_rate_limit",
     "rate_limit_admin_read",
     "enforce_public_lead_form_read_rate_limit",
     "enforce_public_lead_form_submit_rate_limit",

@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 import pytest
 from src.agents.context import AgentContext
 from src.agents.tools.intelligence.list_meetings_unified import (
+    _escape_like,
     list_meetings,
     normalize_meeting_limit,
 )
@@ -290,3 +291,53 @@ async def test_list_meetings_does_not_add_fuzzy_candidates_after_direct_match() 
 
     assert len(session.statements) == 1
     assert result[0]["match"]["type"] == "exact"
+
+
+@pytest.mark.asyncio
+async def test_list_meetings_escapes_like_wildcards() -> None:
+    """Percent and underscore in a spoken identity must remain literal text."""
+    session = _CaptureSession()
+    context = AgentContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={"current_datetime": "2026-07-16T00:00:00+00:00"},
+    )
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))  # type: ignore[method-assign]
+
+    await list_meetings(context=context, query="CQA_%")
+
+    assert _escape_like("CQA_%\\") == "CQA\\_\\%\\\\"
+    compiled = session.statements[0].compile(compile_kwargs={"literal_binds": True})
+    assert " ESCAPE " in str(compiled)
+
+
+@pytest.mark.asyncio
+async def test_list_meetings_rejects_oversized_query_before_database() -> None:
+    """An oversized identity query must not reach PostgreSQL or trigram matching."""
+    context = AgentContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={"current_datetime": "2026-07-16T00:00:00+00:00"},
+    )
+    context.acquire_session = MagicMock()  # type: ignore[method-assign]
+
+    result = await list_meetings(context=context, query="x" * 201)
+
+    assert result == []
+    context.acquire_session.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_list_meetings_rejects_explicit_blank_query() -> None:
+    """A blank identity filter must not silently broaden into all calendar events."""
+    context = AgentContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={"current_datetime": "2026-07-16T00:00:00+00:00"},
+    )
+    context.acquire_session = MagicMock()  # type: ignore[method-assign]
+
+    result = await list_meetings(context=context, query="   ")
+
+    assert result == []
+    context.acquire_session.assert_not_called()
