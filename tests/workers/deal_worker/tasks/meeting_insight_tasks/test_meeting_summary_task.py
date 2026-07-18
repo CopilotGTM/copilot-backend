@@ -4,12 +4,13 @@ Tests verify that:
 1. Manual (non-automated) summaries trigger the insight pipeline
 2. Automated pipeline summaries do NOT double-trigger
 3. _dispatch_insight_pipeline_for_manual_summary creates a job and dispatches correctly
-4. Errors in pipeline dispatch are caught and do not fail the summary task
+4. Errors in pipeline dispatch propagate so Celery can retry them
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
@@ -50,6 +51,9 @@ class TestDispatchInsightPipelineForManualSummary:
         org_id = uuid4()
         deal_id = uuid4()
         memory_job_id = uuid4()
+        event_id = uuid4()
+        association_id = uuid4()
+        summary_job_id = uuid4()
 
         mock_session = AsyncMock()
         mock_session.commit = AsyncMock()
@@ -80,7 +84,13 @@ class TestDispatchInsightPipelineForManualSummary:
                 _dispatch_insight_pipeline_for_manual_summary,
             )
 
-            await _dispatch_insight_pipeline_for_manual_summary(org_id, deal_id)
+            await _dispatch_insight_pipeline_for_manual_summary(
+                org_id,
+                deal_id,
+                event_id=event_id,
+                association_id=association_id,
+                summary_job_id=summary_job_id,
+            )
 
             mock_get_or_create.assert_called_once_with(
                 mock_session,
@@ -93,6 +103,9 @@ class TestDispatchInsightPipelineForManualSummary:
                 str(org_id),
                 str(deal_id),
                 str(memory_job_id),
+                source_event_id=str(event_id),
+                source_association_id=str(association_id),
+                source_summary_job_id=str(summary_job_id),
             )
 
     @pytest.mark.asyncio
@@ -134,6 +147,9 @@ class TestDispatchInsightPipelineForManualSummary:
             await _dispatch_insight_pipeline_for_manual_summary(
                 org_id,
                 deal_id,
+                event_id=uuid4(),
+                association_id=uuid4(),
+                summary_job_id=uuid4(),
                 source="recall_webhook",
             )
 
@@ -151,6 +167,8 @@ class TestDispatchInsightPipelineForManualSummary:
         org_id = uuid4()
         deal_id = uuid4()
         existing_job_id = uuid4()
+        event_id = uuid4()
+        summary_job_id = uuid4()
 
         mock_session = AsyncMock()
         mock_session.commit = AsyncMock()
@@ -181,17 +199,26 @@ class TestDispatchInsightPipelineForManualSummary:
                 _dispatch_insight_pipeline_for_manual_summary,
             )
 
-            await _dispatch_insight_pipeline_for_manual_summary(org_id, deal_id)
+            await _dispatch_insight_pipeline_for_manual_summary(
+                org_id,
+                deal_id,
+                event_id=event_id,
+                association_id=None,
+                summary_job_id=summary_job_id,
+            )
 
             mock_dispatch.assert_awaited_once_with(
                 str(org_id),
                 str(deal_id),
                 str(existing_job_id),
+                source_event_id=str(event_id),
+                source_association_id=None,
+                source_summary_job_id=str(summary_job_id),
             )
 
     @pytest.mark.asyncio
-    async def test_dispatch_error_does_not_propagate(self):
-        """Errors in dispatch should be caught — must not crash the summary task."""
+    async def test_dispatch_error_propagates_for_worker_retry(self):
+        """Broker failures must propagate so Celery retries post-summary dispatch."""
         org_id = uuid4()
         deal_id = uuid4()
 
@@ -225,12 +252,18 @@ class TestDispatchInsightPipelineForManualSummary:
                 _dispatch_insight_pipeline_for_manual_summary,
             )
 
-            # Should not raise
-            await _dispatch_insight_pipeline_for_manual_summary(org_id, deal_id)
+            with pytest.raises(RuntimeError, match="Redis down"):
+                await _dispatch_insight_pipeline_for_manual_summary(
+                    org_id,
+                    deal_id,
+                    event_id=uuid4(),
+                    association_id=None,
+                    summary_job_id=uuid4(),
+                )
 
     @pytest.mark.asyncio
-    async def test_session_error_does_not_propagate(self):
-        """Errors acquiring DB session should be caught — must not crash the summary task."""
+    async def test_session_error_propagates_for_worker_retry(self):
+        """Database failures must propagate so dispatch is retried rather than abandoned."""
         org_id = uuid4()
         deal_id = uuid4()
 
@@ -255,8 +288,14 @@ class TestDispatchInsightPipelineForManualSummary:
                 _dispatch_insight_pipeline_for_manual_summary,
             )
 
-            # Should not raise
-            await _dispatch_insight_pipeline_for_manual_summary(org_id, deal_id)
+            with pytest.raises(RuntimeError, match="DB unavailable"):
+                await _dispatch_insight_pipeline_for_manual_summary(
+                    org_id,
+                    deal_id,
+                    event_id=uuid4(),
+                    association_id=None,
+                    summary_job_id=uuid4(),
+                )
 
             # Pipeline should NOT be dispatched since job creation failed
             mock_dispatch.assert_not_called()
@@ -320,6 +359,113 @@ class TestMeetingSummaryService:
 
         assert MeetingLevelSummaryAgent is not None
         assert MeetingLevelSummaryInput is not None
+
+    @pytest.mark.asyncio
+    async def test_batch_pipeline_pairs_task_sync_with_every_meeting(self, monkeypatch):
+        """A backlog of meetings must enqueue one source-bound task sync per summary."""
+        from src.workers.deal_worker.services.meeting_insight_services import (
+            meeting_summary_service as module,
+        )
+
+        org_id = uuid4()
+        deal_id = uuid4()
+        events = [(uuid4(), uuid4(), deal_id), (uuid4(), uuid4(), deal_id)]
+        summary_jobs = [SimpleNamespace(job_id=uuid4()), SimpleNamespace(job_id=uuid4())]
+        task_jobs = [SimpleNamespace(job_id=uuid4()), SimpleNamespace(job_id=uuid4())]
+        service = module.MeetingSummaryService(org_id)
+        service._get_events_needing_summary = AsyncMock(  # type: ignore[method-assign]
+            return_value=events
+        )
+        service._get_active_job = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        service._get_active_task_job = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        service._create_job = AsyncMock(side_effect=summary_jobs)  # type: ignore[method-assign]
+        service._create_task_job = AsyncMock(side_effect=task_jobs)  # type: ignore[method-assign]
+
+        class FakeSession:
+            """Provide the transaction boundary used by batch job creation."""
+
+            async def commit(self):
+                """Accept the durable job commit."""
+                return None
+
+        async def fake_org_session(_organisation_id):
+            """Yield the deterministic batch job session."""
+            yield FakeSession()
+
+        captured_signatures = []
+
+        def fake_signature(name, **kwargs):
+            """Capture Celery signatures in their requested order."""
+            value = {"name": name, **kwargs}
+            captured_signatures.append(value)
+            return value
+
+        dispatch = AsyncMock()
+        monkeypatch.setattr(module, "acquire_org_async_session", fake_org_session)
+        monkeypatch.setattr(module, "get_or_create_deal_memory_job", AsyncMock(return_value=(uuid4(), True)))
+        monkeypatch.setattr(module, "signature", fake_signature)
+        monkeypatch.setattr(module, "dispatch_deal_insight_pipeline_async", dispatch)
+
+        result = await service.process_deal_pipeline(deal_id)
+
+        assert [item["name"] for item in captured_signatures] == [
+            "meeting_summary_task.process",
+            "deal_tasks.sync_from_summary",
+            "meeting_summary_task.process",
+            "deal_tasks.sync_from_summary",
+        ]
+        assert [
+            item["kwargs"]["job_id"]
+            for item in captured_signatures
+            if item["name"] == "deal_tasks.sync_from_summary"
+        ] == [str(job.job_id) for job in task_jobs]
+        dispatch.assert_awaited_once()
+        assert result.tasks_triggered == 7
+
+    @pytest.mark.asyncio
+    async def test_batch_pipeline_does_not_rechain_active_summary(self, monkeypatch):
+        """An overlapping scheduler run must leave an active meeting pipeline alone."""
+        from src.workers.deal_worker.services.meeting_insight_services import (
+            meeting_summary_service as module,
+        )
+
+        org_id = uuid4()
+        deal_id = uuid4()
+        service = module.MeetingSummaryService(org_id)
+        service._get_events_needing_summary = AsyncMock(  # type: ignore[method-assign]
+            return_value=[(uuid4(), uuid4(), deal_id)]
+        )
+        service._get_active_job = AsyncMock(  # type: ignore[method-assign]
+            return_value=SimpleNamespace(job_id=uuid4())
+        )
+        service._create_task_job = AsyncMock()  # type: ignore[method-assign]
+
+        class FakeSession:
+            """Provide the transaction boundary used by the overlap check."""
+
+            async def commit(self):
+                """Accept the durable deal-memory job commit."""
+                return None
+
+        async def fake_org_session(_organisation_id):
+            """Yield the deterministic overlap-check session."""
+            yield FakeSession()
+
+        dispatch = AsyncMock()
+        monkeypatch.setattr(module, "acquire_org_async_session", fake_org_session)
+        monkeypatch.setattr(
+            module,
+            "get_or_create_deal_memory_job",
+            AsyncMock(return_value=(uuid4(), False)),
+        )
+        monkeypatch.setattr(module, "dispatch_deal_insight_pipeline_async", dispatch)
+
+        result = await service.process_deal_pipeline(deal_id)
+
+        assert result.jobs_skipped == 1
+        assert result.tasks_triggered == 0
+        service._create_task_job.assert_not_awaited()
+        dispatch.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_deal_linked_summary_dual_writes_association_and_meeting(

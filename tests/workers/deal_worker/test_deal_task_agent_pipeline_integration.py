@@ -31,7 +31,7 @@ class _FakeSession:
     async def get(self, _model: object, _entity_id: object) -> object | None:
         return self.get_result
 
-    async def execute(self, _statement: object):
+    async def execute(self, _statement: object, _parameters: object | None = None):
         return SimpleNamespace()
 
     def add(self, obj: object) -> None:
@@ -101,7 +101,7 @@ def test_meeting_summary_pipeline_creates_final_task_sync_job(monkeypatch) -> No
     monkeypatch.setattr(pipeline_dispatch, "org_session_scope", fake_org_session_scope)
 
     _, _, task_job_id, deal_update_job_id = pipeline_dispatch._create_pipeline_jobs(
-        str(uuid4()), str(uuid4())
+        str(uuid4()), str(uuid4()), source_event_id=str(uuid4())
     )
 
     assert task_job_id
@@ -114,10 +114,14 @@ async def test_task_sync_creates_task_with_no_assignee() -> None:
     organisation_id = uuid4()
     deal = _deal(organisation_id=organisation_id)
     service = DealTaskAutomationService(_FakeSession(), organisation_id)
+    service._projection.upsert_task = AsyncMock()
     service._load_deal = AsyncMock(return_value=deal)  # type: ignore[method-assign]
     service._find_existing_task = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    service._allowed_assignee_emails = AsyncMock(  # type: ignore[method-assign]
+        return_value=set()
+    )
     service._resolve_assignee = AsyncMock(  # type: ignore[method-assign]
-        return_value=(None, None, None, {"status": "not_provided"})
+        return_value=(None, None, None, None, "UTC", {"status": "not_provided"})
     )
 
     result = await service.create_task(
@@ -142,10 +146,21 @@ async def test_task_sync_creates_task_with_resolved_assignee() -> None:
     deal = _deal(organisation_id=organisation_id)
     owner_id = uuid4()
     service = DealTaskAutomationService(_FakeSession(), organisation_id)
+    service._projection.upsert_task = AsyncMock()
     service._load_deal = AsyncMock(return_value=deal)  # type: ignore[method-assign]
     service._find_existing_task = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    service._allowed_assignee_emails = AsyncMock(  # type: ignore[method-assign]
+        return_value={"alex@example.com"}
+    )
     service._resolve_assignee = AsyncMock(  # type: ignore[method-assign]
-        return_value=(owner_id, "Alex Morgan", "alex@example.com", {"status": "resolved"})
+        return_value=(
+            owner_id,
+            uuid4(),
+            "Alex Morgan",
+            "alex@example.com",
+            "UTC",
+            {"status": "resolved"},
+        )
     )
 
     result = await service.create_task(
@@ -195,6 +210,8 @@ async def test_task_sync_completes_existing_internal_task() -> None:
     task = _task(organisation_id=organisation_id, deal_id=deal_id)
     session = _FakeSession(get_result=task)
     service = DealTaskAutomationService(session, organisation_id)
+    service._projection.upsert_task = AsyncMock()
+    service._reminders.cancel_task_reminders = AsyncMock()
 
     completed = await service.complete_task(
         task.activity_id,

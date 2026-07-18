@@ -502,7 +502,9 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
     # Purpose: Creates and completes internal deal tasks from meeting summaries.
     # -------------------------------------------------------------------------
     "DealTaskAgent": {
+        ToolName.GET_DEAL_DETAILS,
         ToolName.GET_DEAL_MEMORY,
+        ToolName.GET_MEETING_DETAILS,
         ToolName.GET_MEETING_SUMMARY,
         ToolName.GET_COMPRESSED_TRANSCRIPT,
         ToolName.LIST_DEAL_TASKS,

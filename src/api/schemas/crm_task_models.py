@@ -14,7 +14,7 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMActivityType,
 )
 
-VALID_REMINDER_DELIVERY_CHANNELS = {"teams", "slack"}
+VALID_REMINDER_DELIVERY_CHANNELS = {"teams", "slack", "whatsapp"}
 _ALLOWED_TASK_STATUS_VALUES = {"NOT_STARTED", "IN_PROGRESS", "COMPLETED", "CANCELLED"}
 
 
@@ -64,7 +64,7 @@ class ReminderConfig(BaseModel):
     )
     delivery_channel: str | None = Field(
         default=None,
-        description="Reminder delivery channel: teams or slack.",
+        description="Reminder delivery channel: teams, slack, or whatsapp.",
     )
     timezone: str | None = Field(
         default=None,
