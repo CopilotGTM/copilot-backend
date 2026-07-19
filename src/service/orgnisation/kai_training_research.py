@@ -23,13 +23,17 @@ class _OrganisationResearchSnapshot:
 
 
 class KaiTrainingResearchService:
-    def __init__(self, organisation_id: UUID):
+    def __init__(self, organisation_id: UUID, run_id: UUID):
         self.organisation_id = organisation_id
+        self.run_id = run_id
 
-    async def run(self) -> None:
+    async def run(self) -> bool:
         snapshot = await self._load_snapshot()
         async with master_async_session_scope() as session:
-            await KaiTrainingService(session, self.organisation_id).mark_in_progress()
+            if not await KaiTrainingService(session, self.organisation_id).mark_in_progress(
+                self.run_id
+            ):
+                return False
 
         crawl_result, search_results = await asyncio.gather(
             crawl_webpage(snapshot.website) if snapshot.website else _empty_crawl(),
@@ -44,8 +48,8 @@ class KaiTrainingResearchService:
             evidence=evidence,
         )
         async with master_async_session_scope() as session:
-            await KaiTrainingService(session, self.organisation_id).persist_research(
-                output.model_dump(), sources
+            return await KaiTrainingService(session, self.organisation_id).persist_research(
+                self.run_id, output.model_dump(), sources
             )
 
     async def _load_snapshot(self) -> _OrganisationResearchSnapshot:
@@ -53,17 +57,19 @@ class KaiTrainingResearchService:
             organisation = await session.get(Organisation, self.organisation_id)
             if not organisation:
                 raise ValueError("Organisation not found")
-            website = next((str(url).strip() for url in organisation.website_urls or [] if url), None)
-            domain = next((str(value).strip() for value in organisation.domain or [] if value), None)
+            website = next(
+                (str(url).strip() for url in organisation.website_urls or [] if url), None
+            )
+            domain = next(
+                (str(value).strip() for value in organisation.domain or [] if value), None
+            )
             return _OrganisationResearchSnapshot(
                 name=organisation.organisation_name,
                 website=website or (f"https://{domain}" if domain else None),
                 domain=domain,
             )
 
-    async def _search(
-        self, snapshot: _OrganisationResearchSnapshot
-    ) -> list[dict[str, str]]:
+    async def _search(self, snapshot: _OrganisationResearchSnapshot) -> list[dict[str, str]]:
         identity = snapshot.domain or snapshot.name
         queries = (
             f'"{identity}" company overview',

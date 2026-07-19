@@ -35,8 +35,8 @@ from src.infra.messaging.redis_client import get_redis_client
 from src.infra.messaging.task_dispatcher import send_task_async
 from src.infra.utils.logger import get_logger
 from src.service.orgnisation.kai_training_service import (
-    append_organisation_profile,
     load_organisation_runtime_context,
+    with_organisation_context_policy,
 )
 from src.service.users.voice_realtime_contract import (
     VOICE_REALTIME_QUEUE,
@@ -694,6 +694,7 @@ def _runtime_config_payload(
     tool_policy: RealtimeToolPolicy,
     allowed_tools: list[str],
     session_update: dict[str, object],
+    organisation_context_item: dict[str, object] | None,
     issued_at: datetime,
     expires_at: datetime,
 ) -> dict[str, object]:
@@ -706,6 +707,7 @@ def _runtime_config_payload(
         "tool_policy": tool_policy.value,
         "allowed_tools": allowed_tools,
         "session_update": session_update,
+        "organisation_context_item": organisation_context_item,
         "issued_at": issued_at.astimezone(UTC).isoformat(),
         "expires_at": expires_at.astimezone(UTC).isoformat(),
     }
@@ -739,8 +741,8 @@ def _build_runtime_config(
         "session": {
             "type": "realtime",
             "output_modalities": ["audio"],
-            "instructions": append_organisation_profile(
-                get_voice_realtime_system_prompt(org_name), organisation_profile
+            "instructions": with_organisation_context_policy(
+                get_voice_realtime_system_prompt(org_name)
             ),
             "tools": tool_schemas,
             "audio": {
@@ -756,6 +758,16 @@ def _build_runtime_config(
             },
         },
     }
+    organisation_context_item: dict[str, object] | None = None
+    if organisation_profile:
+        organisation_context_item = {
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": organisation_profile}],
+            },
+        }
     payload = _runtime_config_payload(
         session_id=session_id,
         chat_session_id=chat_session_id,
@@ -764,6 +776,7 @@ def _build_runtime_config(
         tool_policy=tool_policy,
         allowed_tools=allowed_tools,
         session_update=session_update,
+        organisation_context_item=organisation_context_item,
         issued_at=issued_at,
         expires_at=expires_at,
     )
@@ -774,6 +787,7 @@ def _build_runtime_config(
         tool_policy=tool_policy,
         allowed_tools=allowed_tools,
         session_update=session_update,
+        organisation_context_item=organisation_context_item,
         issued_at=issued_at,
         expires_at=expires_at,
         signature=signature,
@@ -814,6 +828,7 @@ def verify_runtime_config_signature(
         tool_policy=runtime_config.tool_policy,
         allowed_tools=list(runtime_config.allowed_tools),
         session_update=runtime_config.session_update,
+        organisation_context_item=runtime_config.organisation_context_item,
         issued_at=runtime_config.issued_at,
         expires_at=runtime_config.expires_at,
     )

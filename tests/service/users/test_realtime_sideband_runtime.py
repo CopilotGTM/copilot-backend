@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -66,6 +67,14 @@ def _make_runtime_config() -> UserRealtimeRuntimeConfig:
                 "tools": build_voice_realtime_tool_schemas(),
             },
         },
+        organisation_context_item={
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Directional context"}],
+            },
+        },
         issued_at=datetime(2026, 4, 11, 9, 45, 0, tzinfo=UTC),
         expires_at=datetime(2026, 4, 11, 10, 45, 0, tzinfo=UTC),
         signature="signed-payload",
@@ -96,14 +105,16 @@ async def test_voice_realtime_sideband_runtime_handles_function_call_event() -> 
     assert transport.connected
     assert transport.closed
     assert transport.sent_events[0]["type"] == "session.update"
-    assert executor.calls == [("search_internal_knowledge", {"query": "pricing"})]
     assert transport.sent_events[1]["type"] == "conversation.item.create"
-    assert transport.sent_events[1]["item"]["call_id"] == "tool-call-123"
-    assert json.loads(transport.sent_events[1]["item"]["output"]) == {
+    assert transport.sent_events[1]["item"]["role"] == "user"
+    assert executor.calls == [("search_internal_knowledge", {"query": "pricing"})]
+    assert transport.sent_events[2]["type"] == "conversation.item.create"
+    assert transport.sent_events[2]["item"]["call_id"] == "tool-call-123"
+    assert json.loads(transport.sent_events[2]["item"]["output"]) == {
         "ok": True,
         "data": {"answer": "done"},
     }
-    assert transport.sent_events[2] == {"type": "response.create"}
+    assert transport.sent_events[3] == {"type": "response.create"}
 
 
 @pytest.mark.asyncio
@@ -165,6 +176,24 @@ async def test_voice_realtime_sideband_service_passes_user_timezone_to_tool_cont
     )
     monkeypatch.setattr(runtime_module.openai_config, "AZURE_OPENAI_API_KEY", "test-key")
     monkeypatch.setattr(runtime_module.agent_config, "VOICE_REALTIME_MODEL", "gpt-realtime-mini")
+
+    @asynccontextmanager
+    async def fake_master_async_session_scope():
+        yield object()
+
+    async def fake_load_organisation_runtime_context(_session, _organisation_id):
+        return "Acme", "Directional organisation context"
+
+    monkeypatch.setattr(
+        runtime_module,
+        "master_async_session_scope",
+        fake_master_async_session_scope,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "load_organisation_runtime_context",
+        fake_load_organisation_runtime_context,
+    )
 
     service = VoiceRealtimeSidebandService(
         organisation_id=uuid4(),

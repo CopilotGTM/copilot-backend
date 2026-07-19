@@ -41,6 +41,8 @@ class VoiceRealtimeSidebandRuntime:
         await self.transport.connect()
         try:
             await self.transport.send_event(self.runtime_config.session_update)
+            if self.runtime_config.organisation_context_item:
+                await self.transport.send_event(self.runtime_config.organisation_context_item)
             async for event in self.transport.iter_events():
                 await self._handle_event(event)
         finally:

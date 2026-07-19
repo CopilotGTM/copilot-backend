@@ -49,9 +49,10 @@ class KaiTrainingResponse(BaseModel):
     fields: KaiTrainingFields
     field_origins: dict[KaiTrainingFieldName, Literal["research", "user", "empty"]]
     sources: list[KaiTrainingSource] = Field(default_factory=list)
-    research_status: Literal[
-        "not_started", "pending", "in_progress", "completed", "failed"
-    ] = "not_started"
+    research_status: Literal["not_started", "pending", "in_progress", "completed", "failed"] = (
+        "not_started"
+    )
     last_researched_at: datetime | None = None
+    next_research_at: datetime | None = None
     research_error: str | None = None
     can_edit: bool

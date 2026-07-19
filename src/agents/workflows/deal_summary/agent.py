@@ -29,7 +29,10 @@ from src.agents.workflows.deal_summary.models import DealHealthStatus, DealSumma
 from src.agents.workflows.deal_summary.prompts import get_deal_summary_system_prompt
 from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
-from src.service.orgnisation.kai_training_service import append_organisation_profile
+from src.service.orgnisation.kai_training_service import (
+    append_organisation_context,
+    with_organisation_context_policy,
+)
 
 if TYPE_CHECKING:
     from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
@@ -104,8 +107,8 @@ class DealSummaryAgent:
                 request_params={"parallel_tool_calls": True},
             ),
             output_schema=DealSummaryData,
-            description=append_organisation_profile(
-                get_deal_summary_system_prompt(self.context.org_name), organisation_profile
+            description=with_organisation_context_policy(
+                get_deal_summary_system_prompt(self.context.org_name)
             ),
             tools=tools,
             markdown=True,
@@ -144,7 +147,9 @@ class DealSummaryAgent:
 
         self._publish_progress("AI is gathering information...", "tools", 0.5)
 
-        response = await self.agent.arun(user_prompt)
+        response = await self.agent.arun(
+            append_organisation_context(user_prompt, self.context.organisation_profile)
+        )
 
         self.last_token_usage = extract_token_usage(response, agent_name="DealSummaryAgent")
 

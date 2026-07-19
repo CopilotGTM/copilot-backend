@@ -139,6 +139,7 @@ class UserRealtimeRuntimeConfig(BaseModel):
     tool_policy: RealtimeToolPolicy
     allowed_tools: list[str]
     session_update: dict[str, Any]
+    organisation_context_item: dict[str, Any] | None = None
     issued_at: datetime
     expires_at: datetime
     signature: str

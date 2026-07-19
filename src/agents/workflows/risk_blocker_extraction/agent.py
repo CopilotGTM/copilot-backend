@@ -31,7 +31,10 @@ from src.agents.workflows.risk_blocker_extraction.models import RiskBlockerExtra
 from src.agents.workflows.risk_blocker_extraction.prompts import get_risk_blocker_system_prompt
 from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
-from src.service.orgnisation.kai_training_service import append_organisation_profile
+from src.service.orgnisation.kai_training_service import (
+    append_organisation_context,
+    with_organisation_context_policy,
+)
 
 if TYPE_CHECKING:
     from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
@@ -111,8 +114,8 @@ class RiskBlockerExtractionAgent:
             tool_call_limit=100,
             **get_agno_datetime_settings(self.context.metadata),
             debug_mode=config.debug_mode,
-            system_message=append_organisation_profile(
-                get_risk_blocker_system_prompt(self.context.org_name), organisation_profile
+            system_message=with_organisation_context_policy(
+                get_risk_blocker_system_prompt(self.context.org_name)
             ),
             telemetry=False,
         )
@@ -159,7 +162,9 @@ class RiskBlockerExtractionAgent:
         self._publish_progress("AI is analyzing meetings and emails...", "tools", 0.4)
 
         # Run agent - it will use tools to gather data
-        response = await self.agent.arun(user_prompt)
+        response = await self.agent.arun(
+            append_organisation_context(user_prompt, self.context.organisation_profile)
+        )
 
         self.last_token_usage = extract_token_usage(
             response, agent_name="RiskBlockerExtractionAgent"

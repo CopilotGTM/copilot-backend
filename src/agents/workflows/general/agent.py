@@ -10,6 +10,7 @@ from typing import Any
 
 from agno.agent import Agent as AgnoAgent
 from agno.models.azure.openai_chat import AzureOpenAI
+from agno.models.message import Message
 from agno.skills import LocalSkills, Skills
 from dotenv import load_dotenv
 from src.agents.attachment_grounding import ground_chat_attachments
@@ -36,7 +37,7 @@ from src.infra.messaging.chat_stream_models import (
     ToolUsage,
 )
 from src.infra.utils.logger import get_logger
-from src.service.orgnisation.kai_training_service import append_organisation_profile
+from src.service.orgnisation.kai_training_service import with_organisation_context_policy
 
 load_dotenv()
 logger = get_logger()
@@ -109,9 +110,7 @@ class GeneralAgent(BaseAgent):
         )
 
         # Generate prompt with org_name from context (falls back to "Our Organization" if None)
-        system_prompt = append_organisation_profile(
-            get_general_prompt(context.org_name), context.organisation_profile
-        )
+        system_prompt = with_organisation_context_policy(get_general_prompt(context.org_name))
         if context.metadata.get("source") == "scheduled_alert":
             system_prompt += (
                 "\n\nYou are executing a reminder that has already been created. "
@@ -185,6 +184,12 @@ class GeneralAgent(BaseAgent):
                     message_list,
                     attachment_text=attachment_text_for_run,
                 )
+                organisation_profile = getattr(self.context, "organisation_profile", None)
+                if organisation_profile:
+                    processed_messages.insert(
+                        0,
+                        Message(role="user", content=organisation_profile),
+                    )
                 preparation_completed = True
             finally:
                 _log_latency(

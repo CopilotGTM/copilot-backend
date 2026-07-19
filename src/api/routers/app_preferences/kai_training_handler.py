@@ -11,7 +11,12 @@ from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.kai_training_models import KaiTrainingResponse, UpdateKaiTrainingRequest
 from src.api.utils.http_response import Response
 from src.domain.models.master_tables import UserAppRole
-from src.service.orgnisation.kai_training_service import KaiTrainingService
+from src.infra.rate_limit import RateLimitExceededError
+from src.service.orgnisation.kai_training_service import (
+    KaiTrainingCooldownError,
+    KaiTrainingService,
+    enforce_organisation_research_quota,
+)
 from src.workers.organization_worker.client import send_organization_research_task
 
 kai_training_router = APIRouter()
@@ -38,9 +43,9 @@ async def get_kai_training(
     master_session: AsyncSession = Depends(get_master_async_session),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[KaiTrainingResponse]:
-    payload = await KaiTrainingService(
-        master_session, user_ids.organisation_id
-    ).get_response(can_edit=_is_admin(user_ids))
+    payload = await KaiTrainingService(master_session, user_ids.organisation_id).get_response(
+        can_edit=_is_admin(user_ids)
+    )
     return Response.success_response(
         message="Kai Training profile retrieved successfully",
         data=payload,
@@ -58,9 +63,9 @@ async def update_kai_training(
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[KaiTrainingResponse]:
     _require_admin(user_ids)
-    payload = await KaiTrainingService(
-        master_session, user_ids.organisation_id
-    ).update_user_values(request, can_edit=True)
+    payload = await KaiTrainingService(master_session, user_ids.organisation_id).update_user_values(
+        request, can_edit=True
+    )
     return Response.success_response(
         message="Kai Training profile saved successfully",
         data=payload,
@@ -79,12 +84,37 @@ async def research_kai_training(
 ) -> GenericResponse[KaiTrainingResponse]:
     _require_admin(user_ids)
     service = KaiTrainingService(master_session, user_ids.organisation_id)
-    payload, should_enqueue = await service.mark_pending()
+    try:
+        payload, should_enqueue, run_id = await service.mark_pending()
+    except KaiTrainingCooldownError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Kai Training research is cooling down",
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
     if should_enqueue:
+        assert run_id is not None
         try:
-            await send_organization_research_task(str(user_ids.organisation_id))
+            enforce_organisation_research_quota(user_ids.organisation_id)
+        except RateLimitExceededError as exc:
+            await service.mark_failed(
+                run_id,
+                "Research limit reached. Please try again later.",
+                clear_cooldown=True,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Kai Training research limit reached",
+                headers={"Retry-After": str(exc.retry_after)},
+            ) from exc
+        try:
+            await send_organization_research_task(str(user_ids.organisation_id), str(run_id))
         except Exception:
-            await service.mark_failed("Research could not be queued. Please try again.")
+            await service.mark_failed(
+                run_id,
+                "Research could not be queued. Please try again.",
+                clear_cooldown=True,
+            )
             raise
     return Response.accepted_response(
         message="Kai Training research queued",

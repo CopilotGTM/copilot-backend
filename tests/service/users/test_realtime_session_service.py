@@ -127,7 +127,7 @@ async def test_create_session_returns_signed_runtime_config(monkeypatch) -> None
     )
 
     async def fake_load_organisation_runtime_context(_session, _organisation_id):
-        return "Acme", {"about_company": "Acme builds sales software."}
+        return "Acme", "Directional organisation context"
 
     monkeypatch.setattr(
         realtime_module,
@@ -163,6 +163,15 @@ async def test_create_session_returns_signed_runtime_config(monkeypatch) -> None
     assert "create_task" in result.runtime_config.allowed_tools
     assert result.runtime_config.session_update["type"] == "session.update"
     assert result.runtime_config.session_update["session"]["type"] == "realtime"
+    assert (
+        "Directional organisation context"
+        not in result.runtime_config.session_update["session"]["instructions"]
+    )
+    assert result.runtime_config.organisation_context_item
+    assert (
+        result.runtime_config.organisation_context_item["item"]["content"][0]["text"]
+        == "Directional organisation context"
+    )
     assert "modalities" not in result.runtime_config.session_update["session"]
     assert result.runtime_config.session_update["session"]["output_modalities"] == ["audio"]
     assert result.runtime_config.session_update["session"]["instructions"].startswith("You are Kai")

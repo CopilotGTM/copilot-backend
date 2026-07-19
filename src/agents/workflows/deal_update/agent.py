@@ -15,7 +15,10 @@ from src.agents.tools.registry import get_tools_for_agent
 from src.agents.workflows.deal_update.models import DealUpdateResult
 from src.agents.workflows.deal_update.prompts import get_deal_update_system_prompt
 from src.infra.config.agent_config import agent_config
-from src.service.orgnisation.kai_training_service import append_organisation_profile
+from src.service.orgnisation.kai_training_service import (
+    append_organisation_context,
+    with_organisation_context_policy,
+)
 
 
 class DealUpdateAgent:
@@ -56,8 +59,8 @@ class DealUpdateAgent:
             markdown=False,
             **get_agno_datetime_settings(self.context.metadata),
             debug_mode=config.debug_mode,
-            system_message=append_organisation_profile(
-                get_deal_update_system_prompt(org_name), organisation_profile
+            system_message=with_organisation_context_policy(
+                get_deal_update_system_prompt(org_name)
             ),
             telemetry=False,
         )
@@ -76,7 +79,16 @@ class DealUpdateAgent:
             f"Trigger source id: {trigger_source_id or 'none'}\n"
             f"Instruction: {instruction or 'Use available deal context and tools.'}"
         )
-        response = await self.agent.arun([Message(role="user", content=user_prompt)])
+        response = await self.agent.arun(
+            [
+                Message(
+                    role="user",
+                    content=append_organisation_context(
+                        user_prompt, self.context.organisation_profile
+                    ),
+                )
+            ]
+        )
         self.last_token_usage = extract_token_usage(response, agent_name="DealUpdateAgent")
         if isinstance(response.content, DealUpdateResult):
             return response.content

@@ -17,7 +17,10 @@ from src.infra.messaging.organisation_job_status_publish import publish_org_job_
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.admin.organisation_job_service import organisation_job_service
-from src.service.orgnisation.kai_training_service import KaiTrainingService
+from src.service.orgnisation.kai_training_service import (
+    KaiTrainingService,
+    enforce_organisation_research_quota,
+)
 from src.service.orgnisation.organization_management import (
     organization_management_service,
 )
@@ -175,13 +178,20 @@ def create_organization_task(
 
             # Research is best-effort and must never turn successful provisioning
             # into a failed organisation creation job.
+            run_id: UUID | None = None
+            research_queued = False
             try:
                 async with master_async_session_scope() as session:
-                    _, should_enqueue = await KaiTrainingService(
+                    _, should_enqueue, run_id = await KaiTrainingService(
                         session, organization.organisation_id
                     ).mark_pending()
                 if should_enqueue:
-                    await send_organization_research_task(str(organization.organisation_id))
+                    assert run_id is not None
+                    enforce_organisation_research_quota(organization.organisation_id)
+                    await send_organization_research_task(
+                        str(organization.organisation_id), str(run_id)
+                    )
+                    research_queued = True
             except Exception as research_exc:
                 logger.exception(
                     "Unable to queue initial Kai Training research for %s",
@@ -189,9 +199,14 @@ def create_organization_task(
                 )
                 try:
                     async with master_async_session_scope() as session:
-                        await KaiTrainingService(session, organization.organisation_id).mark_failed(
-                            str(research_exc)
-                        )
+                        if run_id is not None:
+                            await KaiTrainingService(
+                                session, organization.organisation_id
+                            ).mark_failed(
+                                run_id,
+                                str(research_exc),
+                                clear_cooldown=not research_queued,
+                            )
                 except Exception:
                     logger.exception(
                         "Unable to record initial Kai Training research failure for %s",
@@ -238,24 +253,34 @@ def create_organization_task(
     soft_time_limit=180,
     time_limit=210,
 )
-def research_kai_training_task(self, organisation_id: str) -> dict[str, str]:
+def research_kai_training_task(self, organisation_id: str, run_id: str) -> dict[str, str]:
     """Research and persist Kai's organisation profile without holding DB sessions."""
     from src.service.orgnisation.kai_training_research import KaiTrainingResearchService
 
     org_uuid = UUID(organisation_id)
+    run_uuid = UUID(run_id)
     try:
-        run_async(KaiTrainingResearchService(org_uuid).run())
-        return {"status": "completed", "organisation_id": organisation_id}
+        completed = run_async(KaiTrainingResearchService(org_uuid, run_uuid).run())
+        return {
+            "status": "completed" if completed else "superseded",
+            "organisation_id": organisation_id,
+        }
     except Exception as exc:
         logger.exception("Kai Training research failed for %s", organisation_id)
         if self.request.retries < self.max_retries:
+
+            async def _prepare_retry() -> None:
+                async with master_async_session_scope() as session:
+                    await KaiTrainingService(session, org_uuid).mark_retry_pending(run_uuid)
+
+            run_async(_prepare_retry())
             raise self.retry(exc=exc, countdown=30 * (2**self.request.retries)) from exc
 
         error_message = str(exc)
 
         async def _mark_failed() -> None:
             async with master_async_session_scope() as session:
-                await KaiTrainingService(session, org_uuid).mark_failed(error_message)
+                await KaiTrainingService(session, org_uuid).mark_failed(run_uuid, error_message)
 
         run_async(_mark_failed())
         return {"status": "failed", "organisation_id": organisation_id}

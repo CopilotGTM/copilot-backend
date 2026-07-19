@@ -25,7 +25,10 @@ from src.agents.workflows.deal_tasks.models import DealTaskSyncResult
 from src.agents.workflows.deal_tasks.prompts import get_deal_task_system_prompt
 from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
-from src.service.orgnisation.kai_training_service import append_organisation_profile
+from src.service.orgnisation.kai_training_service import (
+    append_organisation_context,
+    with_organisation_context_policy,
+)
 
 if TYPE_CHECKING:
     from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
@@ -91,8 +94,8 @@ class DealTaskAgent:
             tool_call_limit=80,
             **get_agno_datetime_settings(self.context.metadata),
             debug_mode=config.debug_mode,
-            system_message=append_organisation_profile(
-                get_deal_task_system_prompt(self.org_name), organisation_profile
+            system_message=with_organisation_context_policy(
+                get_deal_task_system_prompt(self.org_name)
             ),
             telemetry=False,
         )
@@ -124,7 +127,9 @@ class DealTaskAgent:
             "or read-only items. Do not use a different meeting as the source."
         )
 
-        response = await self.agent.arun(user_prompt)
+        response = await self.agent.arun(
+            append_organisation_context(user_prompt, self.context.organisation_profile)
+        )
         self.last_token_usage = extract_token_usage(response, agent_name="DealTaskAgent")
 
         content = response.content
