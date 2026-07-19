@@ -58,7 +58,9 @@ class KaiTrainingResearchAgent:
         if isinstance(content, KaiTrainingResearchOutput):
             return content
         if isinstance(content, dict):
-            return cast(KaiTrainingResearchOutput, KaiTrainingResearchOutput.model_validate(content))
+            return cast(
+                KaiTrainingResearchOutput, KaiTrainingResearchOutput.model_validate(content)
+            )
         if isinstance(content, str):
             try:
                 return cast(
