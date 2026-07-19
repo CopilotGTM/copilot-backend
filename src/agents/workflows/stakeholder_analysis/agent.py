@@ -30,6 +30,7 @@ from src.agents.workflows.stakeholder_analysis.models import DealStakeholdersAna
 from src.agents.workflows.stakeholder_analysis.prompts import get_stakeholder_system_prompt
 from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
+from src.service.orgnisation.kai_training_service import append_organisation_profile
 
 if TYPE_CHECKING:
     from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
@@ -56,6 +57,7 @@ class StakeholderAnalysisAgent:
         deal_id: UUID,
         publisher: DealJobRedisPublisher | None = None,
         org_name: str | None = None,
+        organisation_profile: str | None = None,
     ):
         self.organisation_id = organisation_id
         self.deal_id = deal_id
@@ -66,6 +68,7 @@ class StakeholderAnalysisAgent:
             organisation_id=organisation_id,
             deal_id=deal_id,
             org_name=org_name or "Our Organization",
+            organisation_profile=organisation_profile,
         )
 
         tools = self._get_tools()
@@ -81,7 +84,9 @@ class StakeholderAnalysisAgent:
                 request_params={"parallel_tool_calls": True},
             ),
             output_schema=DealStakeholdersAnalysisData,
-            description=get_stakeholder_system_prompt(self.context.org_name),
+            description=append_organisation_profile(
+                get_stakeholder_system_prompt(self.context.org_name), organisation_profile
+            ),
             tools=tools,
             markdown=True,
             **get_agno_datetime_settings(self.context.metadata),

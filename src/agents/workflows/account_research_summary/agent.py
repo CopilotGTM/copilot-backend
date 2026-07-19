@@ -18,6 +18,7 @@ from src.agents.workflows.account_research_summary.prompts import (
 from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
 from src.service.crm.accounts.research_service import AccountResearchSummaryResult
+from src.service.orgnisation.kai_training_service import append_organisation_profile
 
 logger = get_logger(__name__)
 
@@ -34,7 +35,12 @@ class _SummaryOutput(BaseModel):
 class AccountResearchSummaryAgent:
     """Generate a short account UI summary from already-persisted provider data."""
 
-    def __init__(self, organisation_id: UUID, org_name: str | None = None):
+    def __init__(
+        self,
+        organisation_id: UUID,
+        org_name: str | None = None,
+        organisation_profile: str | None = None,
+    ):
         self.organisation_id = organisation_id
         self.org_name = org_name or "Our Organization"
         self.last_token_usage: TokenUsageData | None = None
@@ -53,7 +59,10 @@ class AccountResearchSummaryAgent:
             tool_call_limit=0,
             output_schema=_SummaryOutput,
             debug_mode=config.debug_mode,
-            system_message=get_account_research_summary_system_prompt(self.org_name),
+            system_message=append_organisation_profile(
+                get_account_research_summary_system_prompt(self.org_name),
+                organisation_profile,
+            ),
             telemetry=False,
         )
 

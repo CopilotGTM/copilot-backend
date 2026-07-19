@@ -30,11 +30,16 @@ from src.service.crm.meetings.attendee_display import resolve_attendee_display_n
 
 # Re-export shared public-schema readers so deal workers keep one import path.
 from src.workers.base.worker_utils import (
+    get_organisation_agent_context,
     get_organisation_briefing_context,
     get_organisation_name,
 )
 
-__all__ = ["get_organisation_briefing_context", "get_organisation_name"]
+__all__ = [
+    "get_organisation_agent_context",
+    "get_organisation_briefing_context",
+    "get_organisation_name",
+]
 
 
 async def get_deal(session: AsyncSession, org_id: UUID, deal_id: UUID) -> CRMDeal | None:

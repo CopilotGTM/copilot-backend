@@ -9,7 +9,7 @@ from uuid import UUID
 
 from src.agents.workflows.account_research_summary import AccountResearchSummaryAgent
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
-from src.infra.database.sessions import acquire_org_async_session
+from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.crm.accounts.domain_resolution_service import AccountDomainResolutionService
 from src.service.crm.accounts.research_service import (
@@ -20,6 +20,7 @@ from src.service.crm.accounts.research_service import (
     research_account_with_apollo,
 )
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
+from src.workers.base.worker_utils import get_organisation_agent_context
 
 ProviderLookup = Callable[[AccountProviderResearchInput], Awaitable]
 SummaryGenerator = Callable[[dict], Awaitable[AccountResearchSummaryResult]]
@@ -159,7 +160,17 @@ class AccountResearchWorkflowService:
     ) -> AccountResearchSummaryResult:
         if self.summary_generator:
             return await self.summary_generator(company_enrichment)
-        agent = AccountResearchSummaryAgent(self.organisation_id)
+        org_name: str | None = None
+        organisation_profile: str | None = None
+        async for master_session in acquire_master_async_session():
+            org_name, organisation_profile = await get_organisation_agent_context(
+                master_session, self.organisation_id
+            )
+        agent = AccountResearchSummaryAgent(
+            self.organisation_id,
+            org_name=org_name,
+            organisation_profile=organisation_profile,
+        )
         try:
             return await agent.summarize(
                 company_id=company_id,

@@ -13,7 +13,7 @@ from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.celery_app import app
 from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
-from src.workers.deal_worker.utils.deal_job_utils import get_organisation_name
+from src.workers.deal_worker.utils.deal_job_utils import get_organisation_agent_context
 
 logger = get_logger(__name__)
 
@@ -49,13 +49,22 @@ def process_deal_update_job(self: Task, organisation_id: str, job_id: str):
             job.status = JobStatus.IN_PROGRESS
             await session.commit()
 
+        org_name: str | None = None
+        organisation_profile: str | None = None
         async for master_session in acquire_master_async_session():
-            org_name = await get_organisation_name(master_session, org_uuid)
+            org_name, organisation_profile = await get_organisation_agent_context(
+                master_session, org_uuid
+            )
 
         publisher = DealJobRedisPublisher(org_uuid, job_uuid, DealJobType.DEAL_UPDATE.value)
         publisher.publish_progress("Running deal update agent...", "agent", 0.2)
 
-        agent = DealUpdateAgent(organisation_id=org_uuid, deal_id=deal_id, org_name=org_name)
+        agent = DealUpdateAgent(
+            organisation_id=org_uuid,
+            deal_id=deal_id,
+            org_name=org_name,
+            organisation_profile=organisation_profile,
+        )
         result = await agent.generate(
             trigger_type=metadata.get("trigger_type") or "manual",
             trigger_source_id=metadata.get("trigger_source_id"),

@@ -16,6 +16,7 @@ from src.agents.tools.registry import get_tools_for_agent
 from src.agents.workflows.voice_realtime.prompts import get_voice_realtime_system_prompt
 from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
+from src.service.orgnisation.kai_training_service import append_organisation_profile
 
 if TYPE_CHECKING:
     from src.agents.tools.transparent_tools import AgentCapabilities
@@ -53,7 +54,10 @@ class VoiceRealtimeAgent:
                 request_params={"parallel_tool_calls": True},
             ),
             description="Kai voice realtime assistant.",
-            instructions=get_voice_realtime_system_prompt(self.org_name),
+            instructions=append_organisation_profile(
+                get_voice_realtime_system_prompt(self.org_name),
+                context.organisation_profile,
+            ),
             markdown=False,
             debug_mode=config.debug_mode,
             telemetry=False,

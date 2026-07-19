@@ -36,6 +36,7 @@ from src.infra.messaging.chat_stream_models import (
     ToolUsage,
 )
 from src.infra.utils.logger import get_logger
+from src.service.orgnisation.kai_training_service import append_organisation_profile
 
 load_dotenv()
 logger = get_logger()
@@ -108,7 +109,9 @@ class GeneralAgent(BaseAgent):
         )
 
         # Generate prompt with org_name from context (falls back to "Our Organization" if None)
-        system_prompt = get_general_prompt(context.org_name)
+        system_prompt = append_organisation_profile(
+            get_general_prompt(context.org_name), context.organisation_profile
+        )
         if context.metadata.get("source") == "scheduled_alert":
             system_prompt += (
                 "\n\nYou are executing a reminder that has already been created. "

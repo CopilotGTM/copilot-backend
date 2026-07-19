@@ -30,10 +30,14 @@ from src.infra.auth.user_context import UserIDs
 from src.infra.config.agent_config import agent_config
 from src.infra.config.configs import openai_config, security_secrets_config
 from src.infra.config.constant import RealtimeErrors
-from src.infra.database.sessions import acquire_org_async_session
+from src.infra.database.sessions import acquire_org_async_session, master_async_session_scope
 from src.infra.messaging.redis_client import get_redis_client
 from src.infra.messaging.task_dispatcher import send_task_async
 from src.infra.utils.logger import get_logger
+from src.service.orgnisation.kai_training_service import (
+    append_organisation_profile,
+    load_organisation_runtime_context,
+)
 from src.service.users.voice_realtime_contract import (
     VOICE_REALTIME_QUEUE,
     VOICE_REALTIME_TASK_NAME,
@@ -197,6 +201,10 @@ class RealtimeSessionService:
             voice=voice,
             db=db,
         )
+        async with master_async_session_scope() as master_session:
+            org_name, organisation_profile = await load_organisation_runtime_context(
+                master_session, self.user_ids.organisation_id
+            )
         runtime_config = _build_runtime_config(
             session_id=session_id,
             chat_session_id=chat_session_id,
@@ -204,7 +212,8 @@ class RealtimeSessionService:
             expires_at=expires_at,
             user_ids=self.user_ids,
             secret=runtime_config_secret,
-            org_name="Our Organization",
+            org_name=org_name or "Our Organization",
+            organisation_profile=organisation_profile,
             conversation_mode=session_request.conversation_mode,
         )
         turn_mode = _resolve_turn_mode(session_request.conversation_mode)
@@ -717,6 +726,7 @@ def _build_runtime_config(
     secret: str,
     org_name: str,
     conversation_mode: RealtimeConversationMode,
+    organisation_profile: str | None = None,
 ) -> UserRealtimeRuntimeConfig:
     issued_at = datetime.now(UTC)
     control_mode = RealtimeControlMode.BACKEND_SIDEBAND
@@ -729,7 +739,9 @@ def _build_runtime_config(
         "session": {
             "type": "realtime",
             "output_modalities": ["audio"],
-            "instructions": get_voice_realtime_system_prompt(org_name),
+            "instructions": append_organisation_profile(
+                get_voice_realtime_system_prompt(org_name), organisation_profile
+            ),
             "tools": tool_schemas,
             "audio": {
                 "input": {

@@ -17,10 +17,12 @@ from src.infra.messaging.organisation_job_status_publish import publish_org_job_
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.admin.organisation_job_service import organisation_job_service
+from src.service.orgnisation.kai_training_service import KaiTrainingService
 from src.service.orgnisation.organization_management import (
     organization_management_service,
 )
 from src.workers.organization_worker.celery_app import app
+from src.workers.organization_worker.client import send_organization_research_task
 
 # Load environment variables
 load_dotenv(override=True)
@@ -171,6 +173,31 @@ def create_organization_task(
                     result_data=response_data,
                 )
 
+            # Research is best-effort and must never turn successful provisioning
+            # into a failed organisation creation job.
+            try:
+                async with master_async_session_scope() as session:
+                    _, should_enqueue = await KaiTrainingService(
+                        session, organization.organisation_id
+                    ).mark_pending()
+                if should_enqueue:
+                    await send_organization_research_task(str(organization.organisation_id))
+            except Exception as research_exc:
+                logger.exception(
+                    "Unable to queue initial Kai Training research for %s",
+                    organization.organisation_id,
+                )
+                try:
+                    async with master_async_session_scope() as session:
+                        await KaiTrainingService(session, organization.organisation_id).mark_failed(
+                            str(research_exc)
+                        )
+                except Exception:
+                    logger.exception(
+                        "Unable to record initial Kai Training research failure for %s",
+                        organization.organisation_id,
+                    )
+
             return response_data
 
         except Exception as e:
@@ -201,3 +228,34 @@ def create_organization_task(
             raise
 
     return run_async(_run_task())
+
+
+@app.task(
+    name="organization.research_kai_training",
+    bind=True,
+    acks_late=True,
+    max_retries=2,
+    soft_time_limit=180,
+    time_limit=210,
+)
+def research_kai_training_task(self, organisation_id: str) -> dict[str, str]:
+    """Research and persist Kai's organisation profile without holding DB sessions."""
+    from src.service.orgnisation.kai_training_research import KaiTrainingResearchService
+
+    org_uuid = UUID(organisation_id)
+    try:
+        run_async(KaiTrainingResearchService(org_uuid).run())
+        return {"status": "completed", "organisation_id": organisation_id}
+    except Exception as exc:
+        logger.exception("Kai Training research failed for %s", organisation_id)
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc, countdown=30 * (2**self.request.retries)) from exc
+
+        error_message = str(exc)
+
+        async def _mark_failed() -> None:
+            async with master_async_session_scope() as session:
+                await KaiTrainingService(session, org_uuid).mark_failed(error_message)
+
+        run_async(_mark_failed())
+        return {"status": "failed", "organisation_id": organisation_id}

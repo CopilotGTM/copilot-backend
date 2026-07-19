@@ -39,7 +39,7 @@ from src.workers.deal_worker.utils.deal_job_utils import (
     count_deal_emails,
     count_deal_meetings,
     get_deal,
-    get_organisation_name,
+    get_organisation_agent_context,
 )
 
 logger = get_logger(__name__)
@@ -197,6 +197,7 @@ class RiskBlockerExtractionService:
         self._publish_progress("Loading deal context...", "context", 0.1)
 
         org_name: str | None = None
+        organisation_profile: str | None = None
         meeting_count: int = 0
         email_count: int = 0
 
@@ -214,7 +215,9 @@ class RiskBlockerExtractionService:
 
         # Org name lives in public schema — use a master session
         async for master_session in acquire_master_async_session():
-            org_name = await get_organisation_name(master_session, self.organisation_id)
+            org_name, organisation_profile = await get_organisation_agent_context(
+                master_session, self.organisation_id
+            )
 
         logger.info(
             "Starting risk/blocker extraction for deal %s",
@@ -233,6 +236,7 @@ class RiskBlockerExtractionService:
             deal_id=deal_id,
             publisher=self.publisher,
             org_name=org_name,
+            organisation_profile=organisation_profile,
         )
         result = await agent.extract()
         self.last_token_usage = agent.last_token_usage

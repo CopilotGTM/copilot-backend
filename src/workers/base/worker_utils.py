@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from src.domain.models.master_tables.organisation_models import Organisation
+from src.service.orgnisation.kai_training_service import load_organisation_runtime_context
 
 
 async def get_organisation_name(session: AsyncSession, org_id: UUID) -> str | None:
@@ -35,6 +36,18 @@ async def get_organisation_name(session: AsyncSession, org_id: UUID) -> str | No
         with contextlib.suppress(Exception):
             await session.rollback()
         return None
+
+
+async def get_organisation_agent_context(
+    session: AsyncSession, org_id: UUID
+) -> tuple[str | None, str | None]:
+    """Load the name and effective Kai profile for an agent invocation."""
+    try:
+        return await load_organisation_runtime_context(session, org_id)
+    except SQLAlchemyError:
+        with contextlib.suppress(Exception):
+            await session.rollback()
+        return None, None
 
 
 async def get_organisation_briefing_context(

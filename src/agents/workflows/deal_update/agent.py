@@ -15,6 +15,7 @@ from src.agents.tools.registry import get_tools_for_agent
 from src.agents.workflows.deal_update.models import DealUpdateResult
 from src.agents.workflows.deal_update.prompts import get_deal_update_system_prompt
 from src.infra.config.agent_config import agent_config
+from src.service.orgnisation.kai_training_service import append_organisation_profile
 
 
 class DealUpdateAgent:
@@ -26,12 +27,14 @@ class DealUpdateAgent:
         organisation_id: UUID,
         deal_id: UUID,
         org_name: str | None = None,
+        organisation_profile: str | None = None,
     ):
         """Build a deal-update workflow bound to an org+deal boundary."""
         self.context = AgentContext(
             organisation_id=organisation_id,
             deal_id=deal_id,
             org_name=org_name or "Our Organization",
+            organisation_profile=organisation_profile,
         )
         self.last_token_usage: TokenUsageData | None = None
 
@@ -53,7 +56,9 @@ class DealUpdateAgent:
             markdown=False,
             **get_agno_datetime_settings(self.context.metadata),
             debug_mode=config.debug_mode,
-            system_message=get_deal_update_system_prompt(org_name),
+            system_message=append_organisation_profile(
+                get_deal_update_system_prompt(org_name), organisation_profile
+            ),
             telemetry=False,
         )
 

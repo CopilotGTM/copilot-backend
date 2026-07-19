@@ -25,6 +25,7 @@ from src.agents.workflows.deal_tasks.models import DealTaskSyncResult
 from src.agents.workflows.deal_tasks.prompts import get_deal_task_system_prompt
 from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
+from src.service.orgnisation.kai_training_service import append_organisation_profile
 
 if TYPE_CHECKING:
     from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
@@ -44,6 +45,7 @@ class DealTaskAgent:
         source_summary_job_id: UUID | None = None,
         publisher: DealJobRedisPublisher | None = None,
         org_name: str | None = None,
+        organisation_profile: str | None = None,
     ):
         """Build a deal-scoped automation agent with immutable tenant context."""
         self.organisation_id = organisation_id
@@ -57,6 +59,7 @@ class DealTaskAgent:
             organisation_id=organisation_id,
             deal_id=deal_id,
             org_name=self.org_name,
+            organisation_profile=organisation_profile,
             metadata={
                 "source_event_id": str(source_event_id),
                 "source_association_id": (
@@ -88,7 +91,9 @@ class DealTaskAgent:
             tool_call_limit=80,
             **get_agno_datetime_settings(self.context.metadata),
             debug_mode=config.debug_mode,
-            system_message=get_deal_task_system_prompt(self.org_name),
+            system_message=append_organisation_profile(
+                get_deal_task_system_prompt(self.org_name), organisation_profile
+            ),
             telemetry=False,
         )
 

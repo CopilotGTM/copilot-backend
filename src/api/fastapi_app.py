@@ -32,6 +32,7 @@ from src.api.routers.admin.admin_auth_handler import router as admin_auth_router
 from src.api.routers.admin.organizations_handler import router as admin_org_router
 from src.api.routers.admin.users_handler import router as admin_user_router
 from src.api.routers.app_preferences.agent_actions_handler import agent_action_approval_router
+from src.api.routers.app_preferences.kai_training_handler import kai_training_router
 from src.api.routers.app_preferences.meeting_recording_policy_handler import (
     meeting_recording_policy_router,
 )
@@ -247,6 +248,11 @@ def create_fastapi_app():
     )
     fastapp.include_router(
         meeting_recording_policy_router,
+        prefix="/users/preference",
+        tags=["user-preferences"],
+    )
+    fastapp.include_router(
+        kai_training_router,
         prefix="/users/preference",
         tags=["user-preferences"],
     )

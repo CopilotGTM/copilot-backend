@@ -41,6 +41,7 @@ from src.workers.deal_worker.utils.deal_job_utils import (
     get_association,
     get_deal,
     get_event,
+    get_organisation_agent_context,
     get_organisation_briefing_context,
 )
 
@@ -118,6 +119,7 @@ class MeetingPrepService:
         org_name: str | None = None
         organisation_website_urls: list[str] = []
         organisation_summary: str | None = None
+        organisation_profile: str | None = None
         deal_name: str | None = None
         company_name: str | None = None
         event_title: str | None = None
@@ -140,6 +142,9 @@ class MeetingPrepService:
             ) = await get_organisation_briefing_context(
                 master_session,
                 self.organisation_id,
+            )
+            _, organisation_profile = await get_organisation_agent_context(
+                master_session, self.organisation_id
             )
 
         async for session in acquire_org_async_session(self.organisation_id):
@@ -245,6 +250,7 @@ class MeetingPrepService:
             deal_id=self.deal_id,
             publisher=self.publisher,
             org_name=org_name,
+            organisation_profile=organisation_profile,
         )
         briefing_data = await agent.generate(input_data)
         self.last_token_usage = agent.last_token_usage

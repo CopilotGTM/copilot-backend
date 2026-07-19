@@ -301,3 +301,17 @@ async def send_organization_create_task(
         queue=queue,
         headers=headers,
     )
+
+
+async def send_organization_research_task(
+    organisation_id: str,
+    queue: str = "organization",
+    headers: dict | None = None,
+) -> str:
+    """Queue a Kai Training research refresh for one organisation."""
+    return await send_organization_task_async(
+        task_name="organization.research_kai_training",
+        kwargs={"organisation_id": organisation_id},
+        queue=queue,
+        headers=headers,
+    )

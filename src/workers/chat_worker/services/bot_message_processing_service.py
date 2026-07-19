@@ -27,7 +27,7 @@ from src.infra.observability.metrics import (
 )
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
-from src.workers.base.worker_utils import get_organisation_name
+from src.workers.base.worker_utils import get_organisation_agent_context
 
 if TYPE_CHECKING:
     from src.adapters import ChannelPayload
@@ -1341,12 +1341,17 @@ class BotMessageProcessingService:
             metadata["allowed_attachment_ids"] = allowed_attachment_ids
 
         org_name = "Our Organization"
+        organisation_profile: str | None = None
         async for master_session in acquire_master_async_session():
-            org_name = await get_organisation_name(master_session, self.organisation_id) or org_name
+            loaded_name, organisation_profile = await get_organisation_agent_context(
+                master_session, self.organisation_id
+            )
+            org_name = loaded_name or org_name
 
         context = AgentContext(
             organisation_id=self.organisation_id,
             org_name=org_name,
+            organisation_profile=organisation_profile,
             user_id=user_id,
             user_email=user_email,
             channel=channel,

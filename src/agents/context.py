@@ -61,6 +61,7 @@ class AgentContext:
     organisation_id: UUID
     deal_id: UUID | None = None  # SECURITY: Immutable for deal-scoped agents
     org_name: str = "Our Organization"
+    organisation_profile: str | None = None
     user_id: UUID | None = None
     user_email: str | None = None
     channel: str = (
@@ -102,6 +103,7 @@ class AgentContext:
             organisation_id=self.organisation_id,
             deal_id=self.deal_id,
             org_name=self.org_name,
+            organisation_profile=self.organisation_profile,
             user_id=self.user_id,
             user_email=self.user_email,
             channel=self.channel,
@@ -119,6 +121,7 @@ class AgentContext:
             organisation_id=self.organisation_id,
             deal_id=self.deal_id,
             org_name=self.org_name,
+            organisation_profile=self.organisation_profile,
             user_id=self.user_id,
             user_email=self.user_email,
             channel=self.channel,

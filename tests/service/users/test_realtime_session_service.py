@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -123,6 +124,25 @@ async def test_create_session_returns_signed_runtime_config(monkeypatch) -> None
         realtime_module,
         "acquire_org_async_session",
         fake_acquire_org_async_session,
+    )
+
+    async def fake_load_organisation_runtime_context(_session, _organisation_id):
+        return "Acme", {"about_company": "Acme builds sales software."}
+
+    monkeypatch.setattr(
+        realtime_module,
+        "load_organisation_runtime_context",
+        fake_load_organisation_runtime_context,
+    )
+
+    @asynccontextmanager
+    async def fake_master_async_session_scope():
+        yield object()
+
+    monkeypatch.setattr(
+        realtime_module,
+        "master_async_session_scope",
+        fake_master_async_session_scope,
     )
 
     user_ids = _make_user_ids()
