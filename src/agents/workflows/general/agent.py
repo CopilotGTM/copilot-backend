@@ -5,6 +5,7 @@ import contextlib
 import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from agno.agent import Agent as AgnoAgent
@@ -42,6 +43,31 @@ logger = get_logger()
 # Sentinel object to signal the Agno stream has finished producing frames
 _AGNO_DONE = object()
 _TOOLS_DONE = object()
+
+
+def _log_latency(
+    context: AgentContext,
+    *,
+    stage: str,
+    started_at: float,
+    outcome: str,
+) -> None:
+    """Emit one content-free latency event for a GeneralAgent stage."""
+    duration_ms = max(0, round((perf_counter() - started_at) * 1000))
+    logger.info(
+        "Chat agent stage completed stage=%s outcome=%s duration_ms=%d",
+        stage,
+        outcome,
+        duration_ms,
+        extra={
+            "event": "chat_agent_latency",
+            "channel": context.channel,
+            "message_id": context.message_id,
+            "stage": stage,
+            "duration_ms": duration_ms,
+            "outcome": outcome,
+        },
+    )
 
 
 class _AnswerEmissionState:
@@ -132,15 +158,38 @@ class GeneralAgent(BaseAgent):
         )
 
         async def _run() -> AsyncIterator[Frame]:
-            images_for_run, attachment_text_for_run = await self._ground_automatic_attachments(
-                message_list=message_list,
-                images=images,
-                attachment_text=attachment_text,
-            )
-            processed_messages = prepare_messages(
-                message_list,
-                attachment_text=attachment_text_for_run,
-            )
+            grounding_started_at = perf_counter()
+            grounding_completed = False
+            try:
+                images_for_run, attachment_text_for_run = await self._ground_automatic_attachments(
+                    message_list=message_list,
+                    images=images,
+                    attachment_text=attachment_text,
+                )
+                grounding_completed = True
+            finally:
+                _log_latency(
+                    self.context,
+                    stage="attachment_grounding",
+                    started_at=grounding_started_at,
+                    outcome="success" if grounding_completed else "failed",
+                )
+
+            preparation_started_at = perf_counter()
+            preparation_completed = False
+            try:
+                processed_messages = prepare_messages(
+                    message_list,
+                    attachment_text=attachment_text_for_run,
+                )
+                preparation_completed = True
+            finally:
+                _log_latency(
+                    self.context,
+                    stage="message_preparation",
+                    started_at=preparation_started_at,
+                    outcome="success" if preparation_completed else "failed",
+                )
             frame_message_id = self._get_frame_message_id()
 
             # Use an asyncio.Queue so tool frames are available immediately,
@@ -148,6 +197,9 @@ class GeneralAgent(BaseAgent):
             frame_queue: asyncio.Queue[Frame | object] = asyncio.Queue()
             self.capabilities = self._setup_capabilities(frame_message_id, frame_queue)
 
+            provider_started_at = perf_counter()
+            first_frame_recorded = False
+            provider_failed = False
             try:
                 # Agno V2: arun(stream=True) returns async generator directly (no await)
                 # stream_events=True enables RunCompleted event for token metrics
@@ -162,11 +214,27 @@ class GeneralAgent(BaseAgent):
                 async for frame in self._process_streaming_response(
                     chat_response, buffer, frame_queue
                 ):
+                    if not first_frame_recorded:
+                        _log_latency(
+                            self.context,
+                            stage="provider_time_to_first_frame",
+                            started_at=provider_started_at,
+                            outcome="success",
+                        )
+                        first_frame_recorded = True
                     yield frame
 
             except Exception as exc:  # pylint: disable=broad-exception-caught
+                provider_failed = True
                 logger.exception("Error in enhanced run_workflow: %s", exc)
             finally:
+                if not first_frame_recorded:
+                    _log_latency(
+                        self.context,
+                        stage="provider_time_to_first_frame",
+                        started_at=provider_started_at,
+                        outcome="failed" if provider_failed else "no_frame",
+                    )
                 for frame in self._finalize_stream(frame_queue):
                     yield frame
 

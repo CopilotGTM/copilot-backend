@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
+from time import perf_counter
 from typing import Any
 
 from src.agents.context import AgentContext
@@ -11,6 +12,34 @@ from src.domain.models.organisation_tables.chat_message_models import ChatMessag
 from src.domain.models.organisation_tables.chat_session_models import ChatType
 from src.infra.messaging.chat_stream_models import Frame
 from src.infra.utils.agent_datetime import extract_temporal_hints
+from src.infra.utils.logger import get_logger
+
+logger = get_logger()
+
+
+def _log_latency(
+    context: AgentContext,
+    *,
+    stage: str,
+    started_at: float,
+    outcome: str,
+) -> None:
+    """Emit one content-free latency event for a chat-agent stage."""
+    duration_ms = max(0, round((perf_counter() - started_at) * 1000))
+    logger.info(
+        "Chat agent stage completed stage=%s outcome=%s duration_ms=%d",
+        stage,
+        outcome,
+        duration_ms,
+        extra={
+            "event": "chat_agent_latency",
+            "channel": context.channel,
+            "message_id": context.message_id,
+            "stage": stage,
+            "duration_ms": duration_ms,
+            "outcome": outcome,
+        },
+    )
 
 
 async def run_agent_for_chat(
@@ -40,20 +69,60 @@ async def run_agent_for_chat(
         Frame objects representing agent output
     """
     _ = chat_type
-    user_text = latest_user_text(messages)
-    temporal_hints = extract_temporal_hints(user_text)
-    if user_text or temporal_hints:
-        metadata: dict[str, Any] = {"latest_user_text": user_text}
-        if temporal_hints.get("direction"):
-            metadata["temporal_direction"] = temporal_hints["direction"]
-        if temporal_hints.get("limit"):
-            metadata["temporal_limit"] = temporal_hints["limit"]
-        context = context.with_metadata(**metadata)
+    total_started_at = perf_counter()
+    completed = False
+    try:
+        user_text = latest_user_text(messages)
+        temporal_hints = extract_temporal_hints(user_text)
+        if user_text or temporal_hints:
+            metadata: dict[str, Any] = {"latest_user_text": user_text}
+            if temporal_hints.get("direction"):
+                metadata["temporal_direction"] = temporal_hints["direction"]
+            if temporal_hints.get("limit"):
+                metadata["temporal_limit"] = temporal_hints["limit"]
+            context = context.with_metadata(**metadata)
 
-    resolution = await resolve_context_references(context=context, latest_user_text=user_text)
-    if resolution:
-        context = context.with_metadata(context_resolution=resolution)
+        resolution_started_at = perf_counter()
+        resolution_completed = False
+        try:
+            resolution = await resolve_context_references(
+                context=context,
+                latest_user_text=user_text,
+            )
+            resolution_completed = True
+        finally:
+            _log_latency(
+                context,
+                stage="context_resolution",
+                started_at=resolution_started_at,
+                outcome="success" if resolution_completed else "failed",
+            )
+        if resolution:
+            context = context.with_metadata(context_resolution=resolution)
 
-    agent = GeneralAgent(context=context)
-    async for frame in agent.run_stream(messages, images=images, attachment_text=attachment_text):
-        yield frame
+        initialization_started_at = perf_counter()
+        initialization_completed = False
+        try:
+            agent = GeneralAgent(context=context)
+            initialization_completed = True
+        finally:
+            _log_latency(
+                context,
+                stage="agent_initialization",
+                started_at=initialization_started_at,
+                outcome="success" if initialization_completed else "failed",
+            )
+        async for frame in agent.run_stream(
+            messages,
+            images=images,
+            attachment_text=attachment_text,
+        ):
+            yield frame
+        completed = True
+    finally:
+        _log_latency(
+            context,
+            stage="total",
+            started_at=total_started_at,
+            outcome="success" if completed else "failed",
+        )

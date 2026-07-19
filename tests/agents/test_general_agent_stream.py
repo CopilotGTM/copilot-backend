@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from agno.media import Image
@@ -14,6 +15,48 @@ class _FakeBuffer:
     async def stream(self, _chat_response):
         yield ("answer", "Hi", False)
         yield ("final", "", False)
+
+
+@pytest.mark.asyncio
+async def test_run_stream_logs_general_agent_latency_stages(monkeypatch) -> None:
+    agent = object.__new__(GeneralAgent)
+    agent.context = SimpleNamespace(channel="web", message_id="message-123")
+    agent._frame_message_id = "message-123"
+    agent.separators = ["separator"]
+    latency_logger = MagicMock()
+
+    async def _ground(**_kwargs):
+        return None, None
+
+    async def _stream(*_args, **_kwargs):
+        yield AnswerDelta(content="Hi")
+
+    agent._ground_automatic_attachments = _ground
+    agent._process_streaming_response = _stream
+    agent.general_agent = SimpleNamespace(arun=lambda **_kwargs: object())
+    monkeypatch.setattr("src.agents.workflows.general.agent.logger", latency_logger)
+    monkeypatch.setattr(
+        "src.agents.workflows.general.agent.prepare_messages",
+        lambda *_args, **_kwargs: ["private provider payload"],
+    )
+
+    frames = [frame async for frame in agent.run_stream([{"content": "private text"}])]
+
+    assert any(isinstance(frame, AnswerDelta) for frame in frames)
+    events = [
+        call.kwargs["extra"]
+        for call in latency_logger.info.call_args_list
+        if call.kwargs.get("extra", {}).get("event") == "chat_agent_latency"
+    ]
+    assert [event["stage"] for event in events] == [
+        "attachment_grounding",
+        "message_preparation",
+        "provider_time_to_first_frame",
+    ]
+    assert all(event["channel"] == "web" for event in events)
+    assert all(event["message_id"] == "message-123" for event in events)
+    assert all(event["outcome"] == "success" for event in events)
+    assert all("content" not in event and "payload" not in event for event in events)
 
 
 @pytest.mark.asyncio

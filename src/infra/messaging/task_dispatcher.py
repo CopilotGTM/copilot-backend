@@ -12,6 +12,7 @@ import contextvars
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from time import monotonic
+from uuid import uuid4
 
 from celery import Celery
 from src.infra.observability.context import correlation_headers
@@ -21,13 +22,77 @@ logger = get_logger("task_dispatcher")
 
 _client_lock = threading.Lock()
 _task_client: Celery | None = None
+_executor_lock = threading.Lock()
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="celery_dispatcher")
+_executor_generation = 0
+_generation_inflight: dict[int, int] = {}
+_retired_generations: set[int] = set()
 
 DEFAULT_TASK_PUBLISH_TIMEOUT_SECONDS = 3.0
 
 
 class TaskPublishTimeoutError(TimeoutError):
     """Raised when the broker does not confirm task publication before the API deadline."""
+
+
+def _publish_log_extra(
+    *,
+    task_name: str,
+    queue: str,
+    outcome: str,
+    started_at: float,
+    publish_attempt_id: str,
+) -> dict[str, str | int]:
+    """Build the low-cardinality fields shared by every publish outcome."""
+    return {
+        "event": "celery_publish",
+        "task_name": task_name,
+        "queue": queue,
+        "outcome": outcome,
+        "duration_ms": max(0, round((monotonic() - started_at) * 1000)),
+        "publish_attempt_id": publish_attempt_id,
+    }
+
+
+def _acquire_executor() -> tuple[ThreadPoolExecutor, int]:
+    """Reserve one publish slot against the current executor generation."""
+    with _executor_lock:
+        _generation_inflight[_executor_generation] = (
+            _generation_inflight.get(_executor_generation, 0) + 1
+        )
+        return _executor, _executor_generation
+
+
+def _release_executor_generation(generation: int) -> None:
+    """Release one publish and forget drained retired generations."""
+    with _executor_lock:
+        remaining = _generation_inflight.get(generation, 0) - 1
+        if remaining > 0:
+            _generation_inflight[generation] = remaining
+            return
+        _generation_inflight.pop(generation, None)
+        _retired_generations.discard(generation)
+
+
+def _retire_executor(executor: ThreadPoolExecutor, generation: int) -> None:
+    """Replace a timed-out publisher generation without waiting for blocked broker calls."""
+    global _executor, _executor_generation
+
+    with _executor_lock:
+        if executor is not _executor or generation != _executor_generation:
+            return
+        if any(_generation_inflight.get(item, 0) for item in _retired_generations):
+            return
+        _retired_generations.add(generation)
+        _executor_generation += 1
+        _executor = ThreadPoolExecutor(
+            max_workers=4,
+            thread_name_prefix=f"celery_dispatcher_{_executor_generation}",
+        )
+
+    # The broker call already exceeded its API deadline. Waiting here would pin
+    # the event loop; queued calls are cancelled and running calls report late.
+    executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _create_task_client() -> Celery:
@@ -115,11 +180,27 @@ def _record_late_publish_outcome(
     task_name: str,
     queue: str,
     started_at: float,
+    publish_attempt_id: str,
 ) -> None:
     """Log what the broker operation did after the caller's deadline expired."""
     elapsed = monotonic() - started_at
     try:
         task_id = future.result()
+    except asyncio.CancelledError:
+        logger.warning(
+            "Timed-out Celery publish was cancelled before execution task=%s queue=%s "
+            "elapsed_seconds=%.3f",
+            task_name,
+            queue,
+            elapsed,
+            extra=_publish_log_extra(
+                task_name=task_name,
+                queue=queue,
+                outcome="failed_late",
+                started_at=started_at,
+                publish_attempt_id=publish_attempt_id,
+            ),
+        )
     except Exception as exc:
         logger.error(
             "Timed-out Celery publish failed late task=%s queue=%s exception_type=%s "
@@ -130,6 +211,13 @@ def _record_late_publish_outcome(
             elapsed,
             str(exc) or repr(exc),
             exc_info=(type(exc), exc, exc.__traceback__),
+            extra=_publish_log_extra(
+                task_name=task_name,
+                queue=queue,
+                outcome="failed_late",
+                started_at=started_at,
+                publish_attempt_id=publish_attempt_id,
+            ),
         )
     else:
         logger.warning(
@@ -139,6 +227,13 @@ def _record_late_publish_outcome(
             queue,
             task_id,
             elapsed,
+            extra=_publish_log_extra(
+                task_name=task_name,
+                queue=queue,
+                outcome="completed_late",
+                started_at=started_at,
+                publish_attempt_id=publish_attempt_id,
+            ),
         )
 
 
@@ -158,9 +253,18 @@ async def send_task_async(
     loop = asyncio.get_running_loop()
     ctx = contextvars.copy_context()
     started_at = monotonic()
-    publish_future = loop.run_in_executor(
-        _executor,
-        lambda: ctx.run(send_task, task_name, args, kwargs, queue, routing_key, headers),
+    publish_attempt_id = str(uuid4())
+    executor, executor_generation = _acquire_executor()
+    try:
+        publish_future = loop.run_in_executor(
+            executor,
+            lambda: ctx.run(send_task, task_name, args, kwargs, queue, routing_key, headers),
+        )
+    except Exception:
+        _release_executor_generation(executor_generation)
+        raise
+    publish_future.add_done_callback(
+        lambda _completed: _release_executor_generation(executor_generation)
     )
     logger.debug(
         "Publishing Celery task task=%s queue=%s timeout_seconds=%.3f",
@@ -183,6 +287,13 @@ async def send_task_async(
             queue,
             timeout_seconds,
             elapsed,
+            extra=_publish_log_extra(
+                task_name=task_name,
+                queue=queue,
+                outcome="timeout",
+                started_at=started_at,
+                publish_attempt_id=publish_attempt_id,
+            ),
         )
         publish_future.add_done_callback(
             lambda completed: _record_late_publish_outcome(
@@ -190,8 +301,10 @@ async def send_task_async(
                 task_name=task_name,
                 queue=queue,
                 started_at=started_at,
+                publish_attempt_id=publish_attempt_id,
             )
         )
+        _retire_executor(executor, executor_generation)
         raise TaskPublishTimeoutError(
             f"Celery publish timed out: task={task_name} queue={queue} "
             f"timeout_seconds={timeout_seconds:.2f}"
@@ -206,6 +319,13 @@ async def send_task_async(
             type(exc).__name__,
             elapsed,
             str(exc) or repr(exc),
+            extra=_publish_log_extra(
+                task_name=task_name,
+                queue=queue,
+                outcome="failed",
+                started_at=started_at,
+                publish_attempt_id=publish_attempt_id,
+            ),
         )
         raise
 
@@ -215,6 +335,13 @@ async def send_task_async(
         queue,
         task_id,
         monotonic() - started_at,
+        extra=_publish_log_extra(
+            task_name=task_name,
+            queue=queue,
+            outcome="published",
+            started_at=started_at,
+            publish_attempt_id=publish_attempt_id,
+        ),
     )
     return task_id
 
