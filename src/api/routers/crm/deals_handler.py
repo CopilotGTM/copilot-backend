@@ -20,7 +20,9 @@ from src.api.dependencies.organisation_dependencies import (
     get_org_async_session,
 )
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
+from src.api.presenters.crm.activity_feed_presenter import present_activity_feed_page
 from src.api.schemas.base_models import GenericResponse
+from src.api.schemas.crm_activity_feed_models import ActivityFeedPage, ActivityFeedQueryParams
 from src.api.schemas.crm_deal_write_models import (
     DealAccountUpdateRequest,
     DealCloseRequest,
@@ -53,6 +55,7 @@ from src.api.schemas.crm_models import (
 from src.api.schemas.crm_schema_models import CRMEntitySchemaResponse
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.job_models import JobStatus
+from src.domain.models.organisation_tables.sync.crm.activities import CRMActivityObjectType
 from src.domain.models.organisation_tables.sync.crm.custom_fields import CRMCustomFieldEntity
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
 from src.domain.models.organisation_tables.sync.integration_models import (
@@ -61,6 +64,10 @@ from src.domain.models.organisation_tables.sync.integration_models import (
 )
 from src.infra.utils.logger import get_logger
 from src.service.crm.access.record_access_policy import CRMAccessActor
+from src.service.crm.activity_feed_read_service import (
+    ActivityFeedReadService,
+    ActivityFeedReadServiceError,
+)
 from src.service.crm.deals.contracts import DealReadServiceError, DealWriteServiceError
 from src.service.crm.deals.read_service import (
     DealReadService,
@@ -198,6 +205,21 @@ async def get_deals_access_service(
             await service.close()
         except Exception:
             logger.debug("Deals service close failed", exc_info=True)
+
+
+async def get_deal_activity_feed_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    org_session: AsyncSession = Depends(get_org_async_session),
+):
+    """Yield an activity-feed reader scoped to the authenticated organisation."""
+    service = ActivityFeedReadService(org_session, user_ids.organisation_id)
+    try:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:
+            logger.debug("Deal activity-feed service close failed", exc_info=True)
 
 
 async def get_deal_job_service(
@@ -903,6 +925,74 @@ async def get_deals_stats(
         )
     except Exception as e:
         logger.error("Unexpected error calculating stats: %s", e, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG,
+            status_code=500,
+            response=response,
+        )
+
+
+@deals_router.get(
+    "/deals/{deal_id}/activity-feed",
+    response_model=GenericResponse[ActivityFeedPage],
+    tags=["crm", "deals"],
+    summary="Get deal activity feed",
+)
+async def get_deal_activity_feed(
+    deal_id: UUID,
+    response: FastAPIResponse,
+    service: ActivityFeedReadService = Depends(get_deal_activity_feed_service),
+    access_service: DealReadService = Depends(get_deals_access_service),
+    query: ActivityFeedQueryParams = Depends(),
+    _rl_read: None = Depends(rate_limit_user_read),
+) -> GenericResponse[ActivityFeedPage]:
+    """Return activity-feed cards linked to this deal through org-local links."""
+    try:
+        if await access_service.get_deal_by_id(deal_id) is None:
+            return Response.error_response(
+                message="Deal not found",
+                status_code=404,
+                response=response,
+            )
+        # The org-scoped reader is the tenant boundary; a caller-supplied deal id
+        # cannot resolve links from another organisation after deal visibility is checked.
+        records, next_cursor, total_count = await service.list_object_activities(
+            object_type=CRMActivityObjectType.DEAL.value,
+            object_id=deal_id,
+            limit=query.limit,
+            cursor=query.cursor,
+            activity_types=query.activity_types,
+            source_types=query.source_types,
+            start_date=query.start_date,
+            end_date=query.end_date,
+            sort_order=query.sort,
+        )
+        return Response.success_response(
+            message="Activity feed retrieved successfully",
+            data=present_activity_feed_page(
+                object_type=CRMActivityObjectType.DEAL.value,
+                object_id=deal_id,
+                records=records,
+                total_count=total_count,
+                cursor=next_cursor,
+            ),
+        )
+    except ActivityFeedReadServiceError as exc:
+        logger.warning("Deal activity feed access error: %s", exc.message, exc_info=True)
+        return Response.error_response(
+            message=exc.message,
+            status_code=exc.status_code,
+            response=response,
+        )
+    except DealReadServiceError as exc:
+        logger.warning("Deal activity feed visibility error: %s", exc.message, exc_info=True)
+        return Response.error_response(
+            message=exc.message,
+            status_code=exc.status_code,
+            response=response,
+        )
+    except Exception:
+        logger.exception("Unexpected error getting activity feed for deal %s", deal_id)
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG,
             status_code=500,

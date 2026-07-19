@@ -1,8 +1,8 @@
 # CRM Deals API Documentation
 
-> Version: 1.5
+> Version: 1.6
 > Base URL: `/users/crm`
-> Last Updated: 2026-07-12
+> Last Updated: 2026-07-19
 
 ---
 
@@ -90,6 +90,9 @@ Use this checklist when updating the deal UI:
   stakeholders on the deal as the picker source. Do not let users choose an
   archived contact, removed/rejected/pending stakeholder, or unrelated contact as
   the deal POC.
+- Read the deal timeline from `GET /users/crm/deals/{deal_id}/activity-feed`.
+  Use `occurred_at` for feed ordering and source-specific values in
+  `display_payload` (for example meeting `start_at`) for event detail labels.
 
 ---
 
@@ -1189,7 +1192,133 @@ repeated as Get Details metadata rows:
 
 ---
 
-## 4.1 Generic Deal Job Stream
+## 4.1 Get Deal Activity Feed
+
+Cursor-paginated CRM activity cards linked to one visible deal.
+
+### Endpoint
+
+```http
+GET /users/crm/deals/{deal_id}/activity-feed
+```
+
+### Path Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `deal_id` | UUID | Yes | Deal whose linked activity cards should be returned |
+
+### Authorization
+
+The authenticated user must be allowed to view the deal under the normal deal
+relationship policy (admin, owner, creator, or active participant). A missing,
+deleted, or inaccessible deal returns `404` so the endpoint does not disclose
+whether another user's deal exists.
+
+### Query Parameters
+
+| Parameter | Type | Default | Validation | Description |
+|-----------|------|---------|------------|-------------|
+| `limit` | integer | `20` | `1-100` | Maximum feed items per page |
+| `cursor` | string | - | Opaque | Cursor returned by the previous response |
+| `activity_types` | string | - | Comma-separated | Projected activity types to include, for example `EMAIL,MEETING,TASK` |
+| `source_types` | string | - | Comma-separated | Source kinds to include, for example `EMAIL,MEETING,STAGE_CHANGE` |
+| `start_date` | datetime | - | ISO 8601 with timezone | Include activities at or after this occurrence time |
+| `end_date` | datetime | - | ISO 8601 with timezone; must be at or after `start_date` | Include activities at or before this occurrence time |
+| `sort` | `asc` or `desc` | `desc` | Enum | Sort by linked activity occurrence time |
+
+### Ordering and Timestamp Contract
+
+- Each activity appears once even when it has multiple link roles to the deal.
+- `occurred_at`, not `created_at` or `updated_at`, controls filtering, sorting,
+  and cursor pagination.
+- `occurred_at` normally represents the source event time. When the source has no
+  usable event timestamp, it falls back to the association or projection time.
+- A past meeting uses its actual `start_at`. A future meeting uses its association
+  time for feed ordering; its scheduled time remains in `display_payload.start_at`.
+- Email cards prefer association email date, then received/sent time. Notes prefer
+  provider-created time. Task cards prefer due time/date.
+
+### Navigation Contract
+
+- `source_type` and `source_record_id` identify the canonical local email,
+  calendar event, task, or note row used for detail hydration.
+- `source_url` is the provider URL when one is available.
+- `related_objects` groups CRM targets by `object_type` and `object_id`, with all
+  applicable `link_roles`, so the frontend can open related deal, contact, and
+  account pages.
+- Association-backed email and meeting cards include `association_id` in
+  `display_payload`.
+
+### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Activity feed retrieved successfully",
+  "data": {
+    "object_type": "DEAL",
+    "object_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
+    "items": [
+      {
+        "activity_id": "9e41b693-a053-4ed4-bf4a-46e01251e118",
+        "activity_type": "MEETING",
+        "source_type": "MEETING",
+        "source_record_id": "287ca162-2096-4e40-bca3-023291900904",
+        "source_provider": "GOOGLE_CALENDAR",
+        "source_integration_id": "70e0f73a-74ca-4084-ae20-d6c64d33362f",
+        "source_url": "https://calendar.google.com/calendar/event?eid=example",
+        "title": "Acme discovery call",
+        "summary": "Discovery call with the buying committee",
+        "preview": "Discovery call with the buying committee",
+        "occurred_at": "2026-07-19T09:30:00Z",
+        "actor_name": "Jane Seller",
+        "actor_email": "jane@example.com",
+        "display_payload": {
+          "association_id": "9e41b693-a053-4ed4-bf4a-46e01251e118",
+          "start_at": "2026-07-19T09:30:00Z",
+          "end_at": "2026-07-19T10:00:00Z",
+          "participants_preview": [],
+          "participant_count": 4,
+          "duration_minutes": 30,
+          "meeting_status": "confirmed"
+        },
+        "link_role": "PRIMARY",
+        "link_source": "SYSTEM",
+        "confidence_score": null,
+        "related_objects": [
+          {
+            "object_type": "DEAL",
+            "object_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
+            "link_roles": ["PRIMARY"]
+          }
+        ],
+        "created_at": "2026-07-19T10:01:00Z",
+        "updated_at": "2026-07-19T10:01:00Z"
+      }
+    ],
+    "total_count": 1,
+    "cursor": null
+  }
+}
+```
+
+`cursor` is `null` when no additional page exists. Pass a non-null returned
+cursor unchanged in the next request.
+
+### Error Responses
+
+| HTTP Status | `message` | When |
+|-------------|-----------|------|
+| `400` | Validation message | Invalid cursor, timezone-free date, or reversed date range |
+| `404` | `"Deal not found"` | Deal is missing, deleted, or not visible to the authenticated user |
+| `422` | FastAPI validation response | Invalid UUID, limit, datetime, sort value, or query value shape |
+| `429` | `"Too many requests ..."` | User read rate limit exceeded |
+| `500` | `"An unexpected error occurred while processing your request"` | Unhandled server error |
+
+---
+
+## 4.2 Generic Deal Job Stream
 
 Subscribe to any user-visible deal job returned by deal or stakeholder APIs.
 This stream is used for stakeholder add processing jobs and stakeholder research
@@ -2361,6 +2490,14 @@ The removed deal-scoped import endpoints are no longer registered.
 ---
 
 ## Changelog
+
+### 2026-07-19
+
+1. Added `GET /users/crm/deals/{deal_id}/activity-feed` with cursor pagination,
+   activity/source filters, occurrence-date filtering, and ascending/descending
+   ordering.
+2. Documented deal visibility authorization, activity navigation fields, and
+   source-specific `occurred_at` behavior.
 
 ### 2026-07-05
 
