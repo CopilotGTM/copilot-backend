@@ -564,7 +564,12 @@ class ActivityFeedProjectionService:
             raise ValueError("deal does not belong to projection organisation")
 
         occurred_at = deal.source_created_at or deal.created_at or _now_utc()
-        title = f"Deal created: {deal.name}" if deal.name else "Deal created"
+        if deal.stage_name:
+            title = f"Deal created in {deal.stage_name}"
+            if deal.name:
+                title = f"{title}: {deal.name}"
+        else:
+            title = f"Deal created: {deal.name}" if deal.name else "Deal created"
         await self._upsert_activity(
             activity_id=deal.deal_id,
             integration_id=deal.integration_id,
@@ -578,7 +583,14 @@ class ActivityFeedProjectionService:
             source_provider=None,
             actor_name=deal.owner_name,
             actor_email=deal.owner_email,
-            display_payload={"deal_name": deal.name},
+            display_payload={
+                "deal_name": deal.name,
+                "pipeline_id": str(deal.pipeline_id) if deal.pipeline_id else None,
+                "pipeline_name": deal.pipeline_name,
+                "stage_id": str(deal.stage_id) if deal.stage_id else None,
+                "stage_name": deal.stage_name,
+            },
+            update_existing=False,
         )
         await self._sync_primary_deal_link(
             activity_id=deal.deal_id,
@@ -1168,6 +1180,7 @@ class ActivityFeedProjectionService:
         actor_name: str | None,
         actor_email: str | None,
         display_payload: dict[str, Any] | None = None,
+        update_existing: bool = True,
     ) -> None:
         now = _now_utc()
         clean_display_payload = validate_crm_activity_display_payload(
@@ -1193,10 +1206,9 @@ class ActivityFeedProjectionService:
             "is_deleted": False,
             "updated_at": now,
         }
-        stmt = (
-            pg_insert(CRMActivity)
-            .values(**values)
-            .on_conflict_do_update(
+        stmt = pg_insert(CRMActivity).values(**values)
+        if update_existing:
+            stmt = stmt.on_conflict_do_update(
                 index_elements=["activity_id"],
                 set_={
                     "integration_id": integration_id,
@@ -1216,7 +1228,8 @@ class ActivityFeedProjectionService:
                     "updated_at": now,
                 },
             )
-        )
+        else:
+            stmt = stmt.on_conflict_do_nothing(index_elements=["activity_id"])
         await self.session.execute(stmt)
 
     async def _load_deal(self, deal_id: UUID) -> CRMDeal | None:

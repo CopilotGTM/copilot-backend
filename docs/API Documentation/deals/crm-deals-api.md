@@ -1,6 +1,6 @@
 # CRM Deals API Documentation
 
-> Version: 1.6
+> Version: 1.7
 > Base URL: `/users/crm`
 > Last Updated: 2026-07-19
 
@@ -1250,6 +1250,60 @@ whether another user's deal exists.
 - Association-backed email and meeting cards include `association_id` in
   `display_payload`.
 
+### Deal-Created Card Contract
+
+A deal creation is returned as one activity card with `source_type` set to
+`DEAL_CREATED`. It records the stage and pipeline in which the deal was created;
+it is not a stage-transition event.
+
+The backend provides a display-ready `title`. The frontend should render it
+verbatim instead of rebuilding it from `display_payload`:
+
+| Available values | `title` format |
+|---|---|
+| `stage_name` and `deal_name` | `Deal created in {stage_name}: {deal_name}` |
+| `stage_name` only | `Deal created in {stage_name}` |
+| `deal_name` only | `Deal created: {deal_name}` |
+| Neither | `Deal created` |
+
+The creation card includes this snapshot in `display_payload`:
+
+| Field | Type | Description |
+|---|---|---|
+| `deal_name` | `string \| null` | Deal name at projection time. |
+| `pipeline_id` | `UUID string \| null` | Local ID of the pipeline in which the deal was created. |
+| `pipeline_name` | `string \| null` | Display name of the creation pipeline. |
+| `stage_id` | `UUID string \| null` | Local ID of the stage in which the deal was created. |
+| `stage_name` | `string \| null` | Display name of the creation stage. |
+
+Example creation card fields:
+
+```json
+{
+  "activity_type": "EVENT",
+  "source_type": "DEAL_CREATED",
+  "title": "Deal created in Discovery: Acme renewal",
+  "display_payload": {
+    "deal_name": "Acme renewal",
+    "pipeline_id": "04e49288-e72d-49de-bca1-3261c14f5af5",
+    "pipeline_name": "Sales",
+    "stage_id": "fd67a4ea-a511-4f90-9bd7-6a0a32ebfb25",
+    "stage_name": "Discovery"
+  }
+}
+```
+
+Frontend behavior:
+
+- Show this card with the **Created** label and the supplied `title`.
+- Use the stage and pipeline fields for secondary UI such as chips, details, or
+  navigation.
+- Do not label `DEAL_CREATED` as **Stage changed** or infer a stage transition
+  from this payload.
+- Do not use the deal's current stage to describe its creation stage; the card's
+  `display_payload` is the creation snapshot.
+- A genuine later stage transition is a separate `STAGE_CHANGE` activity.
+
 ### Success Response (200)
 
 ```json
@@ -2498,6 +2552,8 @@ The removed deal-scoped import endpoints are no longer registered.
    ordering.
 2. Documented deal visibility authorization, activity navigation fields, and
    source-specific `occurred_at` behavior.
+3. Documented the `DEAL_CREATED` title rules and its initial stage/pipeline
+   snapshot so clients can render creation separately from later stage changes.
 
 ### 2026-07-05
 

@@ -768,6 +768,8 @@ async def test_deal_created_projection_writes_event_activity_and_available_local
     company_id = uuid4()
     contact_id = uuid4()
     owner_id = uuid4()
+    pipeline_id = uuid4()
+    stage_id = uuid4()
     created_at = datetime(2026, 6, 22, 9, 15, tzinfo=UTC)
     deal = CRMDeal(
         deal_id=deal_id,
@@ -775,6 +777,10 @@ async def test_deal_created_projection_writes_event_activity_and_available_local
         integration_id=integration_id,
         name="Acme renewal",
         description="Renewal for Acme",
+        pipeline_id=pipeline_id,
+        pipeline_name="Sales",
+        stage_id=stage_id,
+        stage_name="Discovery",
         source_created_at=created_at,
         company_id=company_id,
         primary_contact_id=contact_id,
@@ -787,9 +793,10 @@ async def test_deal_created_projection_writes_event_activity_and_available_local
     await ActivityFeedProjectionService(session, organisation_id).upsert_deal_created(deal)
 
     values = _compiled_values(session.statements[0])
+    assert "DO NOTHING" in str(session.statements[0])
     assert values["activity_id"] == deal_id
     assert values["activity_type"] == "EVENT"
-    assert values["title"] == "Deal created: Acme renewal"
+    assert values["title"] == "Deal created in Discovery: Acme renewal"
     assert values["summary"] == "Renewal for Acme"
     assert values["preview"] == "Renewal for Acme"
     assert values["occurred_at"] == created_at
@@ -798,7 +805,13 @@ async def test_deal_created_projection_writes_event_activity_and_available_local
     assert values["source_integration_id"] == integration_id
     assert values["actor_name"] == "Owner User"
     assert values["actor_email"] == "owner@example.com"
-    assert values["display_payload"] == {"deal_name": "Acme renewal"}
+    assert values["display_payload"] == {
+        "deal_name": "Acme renewal",
+        "pipeline_id": str(pipeline_id),
+        "pipeline_name": "Sales",
+        "stage_id": str(stage_id),
+        "stage_name": "Discovery",
+    }
     assert _activity_link_values(session) == {
         ("DEAL", deal_id, "PRIMARY", "SYSTEM"),
         ("COMPANY", company_id, "RELATED", "SYSTEM"),
