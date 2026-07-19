@@ -301,8 +301,8 @@ async def test_create_deal_sets_initial_stage_timestamps_and_history_source() ->
 
 
 @pytest.mark.asyncio
-async def test_create_deal_projects_deal_created_and_initial_stage_history() -> None:
-    """Internal deal creation projects both source rows created by the writer."""
+async def test_create_deal_does_not_project_initial_stage_history_as_change() -> None:
+    """Initial stage history supports analytics but is not a user-visible transition."""
     session = _FakeOrgSession()
     organisation_id = uuid4()
     service = DealWriteService(
@@ -334,8 +334,9 @@ async def test_create_deal_projects_deal_created_and_initial_stage_history() -> 
         deal = await service.create_deal({"name": "New Deal"})
 
     history = next(obj for obj in session.added if isinstance(obj, CRMDealStageHistory))
+    assert history.from_stage_id is None
     projection.upsert_deal_created.assert_awaited_once_with(deal)
-    projection.upsert_stage_change.assert_awaited_once_with(history, deal=deal)
+    projection.upsert_stage_change.assert_not_awaited()
 
 
 @pytest.mark.asyncio

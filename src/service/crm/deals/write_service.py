@@ -599,7 +599,8 @@ class DealWriteService:
                 await self._replace_primary_contact_participant(deal, contact, now)
 
         await self._projection.upsert_deal_created(deal)
-        await self._projection.upsert_stage_change(history, deal=deal)
+        # Initial history starts dwell-time accounting; it is not a transition because
+        # there is no previous stage. Real moves project their history in move_stage().
 
         created_changed_fields = DealMutationPolicy.build_create_changed_fields(deal)
 
