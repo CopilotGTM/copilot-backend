@@ -30,10 +30,14 @@ from src.infra.auth.user_context import UserIDs
 from src.infra.config.agent_config import agent_config
 from src.infra.config.configs import openai_config, security_secrets_config
 from src.infra.config.constant import RealtimeErrors
-from src.infra.database.sessions import acquire_org_async_session
+from src.infra.database.sessions import acquire_org_async_session, master_async_session_scope
 from src.infra.messaging.redis_client import get_redis_client
 from src.infra.messaging.task_dispatcher import send_task_async
 from src.infra.utils.logger import get_logger
+from src.service.orgnisation.kai_training_service import (
+    load_organisation_runtime_context,
+    with_organisation_context_policy,
+)
 from src.service.users.voice_realtime_contract import (
     VOICE_REALTIME_QUEUE,
     VOICE_REALTIME_TASK_NAME,
@@ -197,6 +201,10 @@ class RealtimeSessionService:
             voice=voice,
             db=db,
         )
+        async with master_async_session_scope() as master_session:
+            org_name, organisation_profile = await load_organisation_runtime_context(
+                master_session, self.user_ids.organisation_id
+            )
         runtime_config = _build_runtime_config(
             session_id=session_id,
             chat_session_id=chat_session_id,
@@ -204,7 +212,8 @@ class RealtimeSessionService:
             expires_at=expires_at,
             user_ids=self.user_ids,
             secret=runtime_config_secret,
-            org_name="Our Organization",
+            org_name=org_name or "Our Organization",
+            organisation_profile=organisation_profile,
             conversation_mode=session_request.conversation_mode,
         )
         turn_mode = _resolve_turn_mode(session_request.conversation_mode)
@@ -685,6 +694,7 @@ def _runtime_config_payload(
     tool_policy: RealtimeToolPolicy,
     allowed_tools: list[str],
     session_update: dict[str, object],
+    organisation_context_item: dict[str, object] | None,
     issued_at: datetime,
     expires_at: datetime,
 ) -> dict[str, object]:
@@ -697,6 +707,7 @@ def _runtime_config_payload(
         "tool_policy": tool_policy.value,
         "allowed_tools": allowed_tools,
         "session_update": session_update,
+        "organisation_context_item": organisation_context_item,
         "issued_at": issued_at.astimezone(UTC).isoformat(),
         "expires_at": expires_at.astimezone(UTC).isoformat(),
     }
@@ -717,6 +728,7 @@ def _build_runtime_config(
     secret: str,
     org_name: str,
     conversation_mode: RealtimeConversationMode,
+    organisation_profile: str | None = None,
 ) -> UserRealtimeRuntimeConfig:
     issued_at = datetime.now(UTC)
     control_mode = RealtimeControlMode.BACKEND_SIDEBAND
@@ -729,7 +741,9 @@ def _build_runtime_config(
         "session": {
             "type": "realtime",
             "output_modalities": ["audio"],
-            "instructions": get_voice_realtime_system_prompt(org_name),
+            "instructions": with_organisation_context_policy(
+                get_voice_realtime_system_prompt(org_name)
+            ),
             "tools": tool_schemas,
             "audio": {
                 "input": {
@@ -744,6 +758,16 @@ def _build_runtime_config(
             },
         },
     }
+    organisation_context_item: dict[str, object] | None = None
+    if organisation_profile:
+        organisation_context_item = {
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": organisation_profile}],
+            },
+        }
     payload = _runtime_config_payload(
         session_id=session_id,
         chat_session_id=chat_session_id,
@@ -752,6 +776,7 @@ def _build_runtime_config(
         tool_policy=tool_policy,
         allowed_tools=allowed_tools,
         session_update=session_update,
+        organisation_context_item=organisation_context_item,
         issued_at=issued_at,
         expires_at=expires_at,
     )
@@ -762,6 +787,7 @@ def _build_runtime_config(
         tool_policy=tool_policy,
         allowed_tools=allowed_tools,
         session_update=session_update,
+        organisation_context_item=organisation_context_item,
         issued_at=issued_at,
         expires_at=expires_at,
         signature=signature,
@@ -802,6 +828,7 @@ def verify_runtime_config_signature(
         tool_policy=runtime_config.tool_policy,
         allowed_tools=list(runtime_config.allowed_tools),
         session_update=runtime_config.session_update,
+        organisation_context_item=runtime_config.organisation_context_item,
         issued_at=runtime_config.issued_at,
         expires_at=runtime_config.expires_at,
     )

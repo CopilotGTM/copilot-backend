@@ -22,6 +22,7 @@ from src.agents.workflows.deal_memory.prompts import (
 )
 from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
+from src.service.orgnisation.kai_training_service import with_organisation_context_policy
 
 logger = get_logger(__name__)
 
@@ -35,6 +36,7 @@ class DealMemoryAgent:
         deal_id: UUID,
         publisher=None,
         org_name: str | None = None,
+        organisation_profile: str | None = None,
     ):
         self.organisation_id = organisation_id
         self.deal_id = deal_id
@@ -46,6 +48,7 @@ class DealMemoryAgent:
             organisation_id=organisation_id,
             deal_id=deal_id,
             org_name=self.org_name,
+            organisation_profile=organisation_profile,
         )
 
         tools = get_tools_for_agent("DealMemoryAgent", self.context, lambda: None)
@@ -67,7 +70,9 @@ class DealMemoryAgent:
             markdown=True,
             **get_agno_datetime_settings(self.context.metadata),
             debug_mode=config.debug_mode,
-            system_message=get_deal_memory_system_prompt(self.org_name),
+            system_message=with_organisation_context_policy(
+                get_deal_memory_system_prompt(self.org_name)
+            ),
             telemetry=False,
         )
 
@@ -82,8 +87,6 @@ class DealMemoryAgent:
 
         Returns the complete markdown string.
         """
-        system_prompt = get_deal_memory_system_prompt(self.org_name)
-        logger.info("Generated system prompt for DealMemoryAgent:\n%s", system_prompt)
         user_prompt = f"Work On deal memory for deal {self.deal_id} based on new information..\n\n"
 
         # Include trigger info for incremental updates, to help the agent understand what new information it should focus on
@@ -102,6 +105,8 @@ class DealMemoryAgent:
             Message(role="user", content=get_expected_output_format()),
             Message(role="user", content=user_prompt),
         ]
+        if self.context.organisation_profile:
+            message_list.insert(0, Message(role="user", content=self.context.organisation_profile))
 
         response = await self.agent.arun(message_list)
 

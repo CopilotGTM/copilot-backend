@@ -280,6 +280,7 @@ class ReminderExecutionService:
         from src.agents.context import AgentContext
         from src.agents.orchestrator import run_agent_for_chat
         from src.infra.database.sessions import acquire_master_async_session
+        from src.workers.base.worker_utils import get_organisation_agent_context
 
         delivery_channel = data["delivery_channel"]
         delivery_context = data["delivery_context"]
@@ -302,19 +303,18 @@ class ReminderExecutionService:
 
         # Look up org name and user email for proper agent context
         org_name = "Our Organization"
+        organisation_profile: str | None = None
         user_email: str | None = None
         async for session in acquire_master_async_session():
             from sqlalchemy import select
             from sqlmodel import col
 
-            from src.domain.models.master_tables import Organisation, User
+            from src.domain.models.master_tables import User
 
-            org_stmt = select(col(Organisation.organisation_name)).where(
-                col(Organisation.organisation_id) == self.organisation_id
+            loaded_name, organisation_profile = await get_organisation_agent_context(
+                session, self.organisation_id
             )
-            org_row = (await session.execute(org_stmt)).scalar_one_or_none()
-            if org_row:
-                org_name = org_row
+            org_name = loaded_name or org_name
 
             user_stmt = select(col(User.email)).where(col(User.user_id) == data["user_id"])
             user_email = (await session.execute(user_stmt)).scalar_one_or_none()
@@ -339,6 +339,7 @@ class ReminderExecutionService:
             organisation_id=self.organisation_id,
             deal_id=deal_id,
             org_name=org_name,
+            organisation_profile=organisation_profile,
             user_id=data["user_id"],
             user_email=user_email,
             channel=delivery_channel,

@@ -21,9 +21,10 @@ from src.domain.models.organisation_tables.chat_session_models import ChatSessio
 from src.domain.models.user_models import RealtimeControlMode, UserRealtimeRuntimeConfig
 from src.infra.config.agent_config import agent_config
 from src.infra.config.configs import openai_config
-from src.infra.database.sessions import acquire_org_async_session
+from src.infra.database.sessions import acquire_org_async_session, master_async_session_scope
 from src.infra.messaging.redis_client import get_redis_client
 from src.infra.utils.logger import get_logger
+from src.service.orgnisation.kai_training_service import load_organisation_runtime_context
 
 logger = get_logger(__name__)
 
@@ -208,6 +209,8 @@ class VoiceRealtimeSidebandRuntime:
         await self.transport.connect()
         try:
             await self.transport.send_event(self.runtime_config.session_update)
+            if self.runtime_config.organisation_context_item:
+                await self.transport.send_event(self.runtime_config.organisation_context_item)
             async for event in self.transport.iter_events():
                 await self._handle_event(event)
         finally:
@@ -275,6 +278,10 @@ class VoiceRealtimeSidebandService:
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
         try:
+            async with master_async_session_scope() as master_session:
+                org_name, organisation_profile = await load_organisation_runtime_context(
+                    master_session, self.organisation_id
+                )
             runtime = VoiceRealtimeSidebandRuntime(
                 runtime_config=self.runtime_config,
                 transport=self.transport_factory(
@@ -286,6 +293,8 @@ class VoiceRealtimeSidebandService:
                 tool_executor=BackendRealtimeToolExecutor(
                     context=AgentContext(
                         organisation_id=self.organisation_id,
+                        org_name=org_name or "Our Organization",
+                        organisation_profile=organisation_profile,
                         user_id=self.user_id,
                         user_email=self.user_email,
                         channel="voice",

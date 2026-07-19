@@ -51,7 +51,7 @@ from src.infra.database.sessions import acquire_master_async_session, acquire_or
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.utils.deal_job_utils import (
     get_deal,
-    get_organisation_name,
+    get_organisation_agent_context,
 )
 
 logger = get_logger(__name__)
@@ -289,6 +289,7 @@ class StakeholderAnalysisService:
         """
         # Phase 1: Validate deal, get org_name, check stakeholders exist
         org_name: str | None = None
+        organisation_profile: str | None = None
         deal: CRMDeal | None = None
 
         async for session in acquire_org_async_session(self.organisation_id):
@@ -309,7 +310,9 @@ class StakeholderAnalysisService:
 
         # Org name lives in public schema — use a master session
         async for master_session in acquire_master_async_session():
-            org_name = await get_organisation_name(master_session, self.organisation_id)
+            org_name, organisation_profile = await get_organisation_agent_context(
+                master_session, self.organisation_id
+            )
 
         stakeholders = await self.get_stakeholders_for_deal(deal_id)
         if not stakeholders:
@@ -342,6 +345,7 @@ class StakeholderAnalysisService:
             organisation_id=self.organisation_id,
             deal_id=deal_id,
             org_name=org_name,
+            organisation_profile=organisation_profile,
         )
         batch_result: DealStakeholdersAnalysisData = await agent.generate()
         self.last_token_usage = agent.last_token_usage

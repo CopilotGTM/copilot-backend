@@ -38,7 +38,7 @@ from src.workers.deal_worker.utils.deal_job_utils import (
     get_association,
     get_deal,
     get_event,
-    get_organisation_name,
+    get_organisation_agent_context,
 )
 from src.workers.deal_worker.utils.pipeline_dispatch import (
     dispatch_deal_insight_pipeline_async,
@@ -201,6 +201,7 @@ class MeetingSummaryService:
         self._publish_progress("Loading meeting context...", "Querying Database", 0.1)
 
         org_name: str | None = None
+        organisation_profile: str | None = None
         internal_domains: list[str] = []
         association_id: UUID | None = None
         online_meeting_id: str | None = None
@@ -208,7 +209,9 @@ class MeetingSummaryService:
         attendee_roster: list[dict[str, str | bool | None]] = []
 
         async for master_session in acquire_master_async_session():
-            org_name = await get_organisation_name(master_session, self.organisation_id)
+            org_name, organisation_profile = await get_organisation_agent_context(
+                master_session, self.organisation_id
+            )
             org_stmt = select(col(Organisation.domain)).where(
                 col(Organisation.organisation_id) == self.organisation_id,
             )
@@ -336,6 +339,7 @@ class MeetingSummaryService:
             deal_id=self.deal_id,
             publisher=self.publisher,
             org_name=org_name,
+            organisation_profile=organisation_profile,
         )
         summary_data = await agent.generate(input_data)
         self.last_token_usage = agent.last_token_usage
@@ -384,6 +388,7 @@ class MeetingSummaryService:
         self._publish_progress("Loading meeting context...", "Querying Database", 0.1)
 
         org_name: str | None = None
+        organisation_profile: str | None = None
         internal_domains: list[str] = []
         event: CalendarEvent | None = None
         meeting_id: UUID | None = None
@@ -393,7 +398,9 @@ class MeetingSummaryService:
         async for master_session in acquire_master_async_session():
             # Master data is read first, then released before the LLM call below.
             # The prompt only needs org name/domains, not a live DB session.
-            org_name = await get_organisation_name(master_session, self.organisation_id)
+            org_name, organisation_profile = await get_organisation_agent_context(
+                master_session, self.organisation_id
+            )
             org_stmt = select(col(Organisation.domain)).where(
                 col(Organisation.organisation_id) == self.organisation_id,
             )
@@ -444,6 +451,7 @@ class MeetingSummaryService:
         agent = MeetingLevelSummaryAgent(
             organisation_id=self.organisation_id,
             org_name=org_name,
+            organisation_profile=organisation_profile,
         )
         summary_data = await agent.generate(
             MeetingLevelSummaryInput(

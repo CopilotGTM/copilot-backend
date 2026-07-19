@@ -10,6 +10,8 @@ from src.agents.context import AgentContext
 from src.domain.models.user_models import UserRealtimeRuntimeConfig
 from src.infra.config.agent_config import agent_config
 from src.infra.config.configs import openai_config
+from src.infra.database.sessions import master_async_session_scope
+from src.service.orgnisation.kai_training_service import load_organisation_runtime_context
 from src.service.voice_realtime.state_service import (
     VOICE_REALTIME_LOCK_HEARTBEAT_SECONDS,
     VoiceRealtimeStateService,
@@ -39,6 +41,8 @@ class VoiceRealtimeSidebandRuntime:
         await self.transport.connect()
         try:
             await self.transport.send_event(self.runtime_config.session_update)
+            if self.runtime_config.organisation_context_item:
+                await self.transport.send_event(self.runtime_config.organisation_context_item)
             async for event in self.transport.iter_events():
                 await self._handle_event(event)
         finally:
@@ -121,6 +125,11 @@ class VoiceRealtimeSidebandService:
             if self.user_timezone:
                 metadata["user_timezone"] = self.user_timezone
 
+            async with master_async_session_scope() as master_session:
+                org_name, organisation_profile = await load_organisation_runtime_context(
+                    master_session, self.organisation_id
+                )
+
             runtime = VoiceRealtimeSidebandRuntime(
                 runtime_config=self.runtime_config,
                 transport=self.transport_factory(
@@ -132,6 +141,8 @@ class VoiceRealtimeSidebandService:
                 tool_executor=BackendRealtimeToolExecutor(
                     context=AgentContext(
                         organisation_id=self.organisation_id,
+                        org_name=org_name or "Our Organization",
+                        organisation_profile=organisation_profile,
                         user_id=self.user_id,
                         user_email=self.user_email,
                         channel="voice",

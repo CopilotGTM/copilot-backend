@@ -27,6 +27,10 @@ from src.service.crm.contacts.research_service import (
     ContactResearchSummaryResult,
     build_contact_research_fact_pack,
 )
+from src.service.orgnisation.kai_training_service import (
+    append_organisation_context,
+    with_organisation_context_policy,
+)
 
 logger = get_logger(__name__)
 
@@ -43,9 +47,15 @@ class _SummaryOutput(BaseModel):
 class ContactResearchSummaryAgent:
     """Generate a career-complete contact profile from persisted provider evidence."""
 
-    def __init__(self, organisation_id: UUID, org_name: str | None = None):
+    def __init__(
+        self,
+        organisation_id: UUID,
+        org_name: str | None = None,
+        organisation_profile: str | None = None,
+    ):
         self.organisation_id = organisation_id
         self.org_name = org_name or "Our Organization"
+        self.organisation_profile = organisation_profile
         self.last_token_usage: TokenUsageData | None = None
 
         config = agent_config.get_config("contact_research_summary_agent")
@@ -62,7 +72,9 @@ class ContactResearchSummaryAgent:
             tool_call_limit=0,
             output_schema=_SummaryOutput,
             debug_mode=config.debug_mode,
-            system_message=get_contact_research_summary_system_prompt(self.org_name),
+            system_message=with_organisation_context_policy(
+                get_contact_research_summary_system_prompt(self.org_name)
+            ),
             telemetry=False,
         )
 
@@ -81,10 +93,13 @@ class ContactResearchSummaryAgent:
             [
                 Message(
                     role="user",
-                    content=(
-                        "Create the contact profile from this provider evidence only.\n\n"
-                        f"Contact ID: {contact_id}\n"
-                        f"Provider evidence:\n{json.dumps(fact_pack, default=str)}"
+                    content=append_organisation_context(
+                        (
+                            "Create the contact profile from this provider evidence only.\n\n"
+                            f"Contact ID: {contact_id}\n"
+                            f"Provider evidence:\n{json.dumps(fact_pack, default=str)}"
+                        ),
+                        self.organisation_profile,
                     ),
                 )
             ]

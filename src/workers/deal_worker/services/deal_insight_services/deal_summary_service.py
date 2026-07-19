@@ -25,7 +25,7 @@ from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
 from src.workers.deal_worker.utils.deal_job_utils import (
     get_deal,
-    get_organisation_name,
+    get_organisation_agent_context,
 )
 
 logger = get_logger(__name__)
@@ -135,6 +135,7 @@ class DealSummaryService:
         self._publish_progress("Loading deal context...", "context", 0.1)
 
         org_name: str | None = None
+        organisation_profile: str | None = None
 
         async for session in acquire_org_async_session(self.organisation_id):
             deal = await get_deal(session, self.organisation_id, deal_id)
@@ -144,7 +145,9 @@ class DealSummaryService:
 
         # Org name lives in public schema — use a master session
         async for master_session in acquire_master_async_session():
-            org_name = await get_organisation_name(master_session, self.organisation_id)
+            org_name, organisation_profile = await get_organisation_agent_context(
+                master_session, self.organisation_id
+            )
 
         logger.info(
             "Starting deal summary generation for deal %s",
@@ -164,6 +167,7 @@ class DealSummaryService:
             deal_id=deal_id,
             publisher=self.publisher,
             org_name=org_name,
+            organisation_profile=organisation_profile,
         )
         try:
             summary_data = await agent.generate()

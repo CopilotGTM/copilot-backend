@@ -10,10 +10,11 @@ from celery import Task
 
 from src.agents.workflows.deal_tasks import DealTaskAgent, DealTaskSyncResult
 from src.domain.models.organisation_tables.job_models import DealJobs, JobStatus
-from src.infra.database.sessions import acquire_org_async_session
+from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.celery_app import app
+from src.workers.deal_worker.utils.deal_job_utils import get_organisation_agent_context
 
 logger = get_logger(__name__)
 
@@ -73,12 +74,21 @@ def sync_deal_tasks_from_summary(
                 logger.warning("Ignoring invalid %s on deal task job %s", key, job_uuid)
                 return None
 
+        org_name: str | None = None
+        organisation_profile: str | None = None
+        async for master_session in acquire_master_async_session():
+            org_name, organisation_profile = await get_organisation_agent_context(
+                master_session, org_uuid
+            )
+
         agent = DealTaskAgent(
             organisation_id=org_uuid,
             deal_id=deal_uuid,
             source_event_id=source_event_id,
             source_association_id=_metadata_uuid("source_association_id"),
             source_summary_job_id=_metadata_uuid("source_summary_job_id"),
+            org_name=org_name,
+            organisation_profile=organisation_profile,
         )
         try:
             result = await agent.sync_from_summary()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -125,6 +126,25 @@ async def test_create_session_returns_signed_runtime_config(monkeypatch) -> None
         fake_acquire_org_async_session,
     )
 
+    async def fake_load_organisation_runtime_context(_session, _organisation_id):
+        return "Acme", "Directional organisation context"
+
+    monkeypatch.setattr(
+        realtime_module,
+        "load_organisation_runtime_context",
+        fake_load_organisation_runtime_context,
+    )
+
+    @asynccontextmanager
+    async def fake_master_async_session_scope():
+        yield object()
+
+    monkeypatch.setattr(
+        realtime_module,
+        "master_async_session_scope",
+        fake_master_async_session_scope,
+    )
+
     user_ids = _make_user_ids()
     service = RealtimeSessionService(user_ids)
     result = await service.create_session(_make_request())
@@ -143,6 +163,15 @@ async def test_create_session_returns_signed_runtime_config(monkeypatch) -> None
     assert "create_task" in result.runtime_config.allowed_tools
     assert result.runtime_config.session_update["type"] == "session.update"
     assert result.runtime_config.session_update["session"]["type"] == "realtime"
+    assert (
+        "Directional organisation context"
+        not in result.runtime_config.session_update["session"]["instructions"]
+    )
+    assert result.runtime_config.organisation_context_item
+    assert (
+        result.runtime_config.organisation_context_item["item"]["content"][0]["text"]
+        == "Directional organisation context"
+    )
     assert "modalities" not in result.runtime_config.session_update["session"]
     assert result.runtime_config.session_update["session"]["output_modalities"] == ["audio"]
     assert result.runtime_config.session_update["session"]["instructions"].startswith("You are Kai")

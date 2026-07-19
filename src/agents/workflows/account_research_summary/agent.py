@@ -18,6 +18,10 @@ from src.agents.workflows.account_research_summary.prompts import (
 from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
 from src.service.crm.accounts.research_service import AccountResearchSummaryResult
+from src.service.orgnisation.kai_training_service import (
+    append_organisation_context,
+    with_organisation_context_policy,
+)
 
 logger = get_logger(__name__)
 
@@ -34,9 +38,15 @@ class _SummaryOutput(BaseModel):
 class AccountResearchSummaryAgent:
     """Generate a short account UI summary from already-persisted provider data."""
 
-    def __init__(self, organisation_id: UUID, org_name: str | None = None):
+    def __init__(
+        self,
+        organisation_id: UUID,
+        org_name: str | None = None,
+        organisation_profile: str | None = None,
+    ):
         self.organisation_id = organisation_id
         self.org_name = org_name or "Our Organization"
+        self.organisation_profile = organisation_profile
         self.last_token_usage: TokenUsageData | None = None
 
         config = agent_config.get_config("account_research_summary_agent")
@@ -53,7 +63,9 @@ class AccountResearchSummaryAgent:
             tool_call_limit=0,
             output_schema=_SummaryOutput,
             debug_mode=config.debug_mode,
-            system_message=get_account_research_summary_system_prompt(self.org_name),
+            system_message=with_organisation_context_policy(
+                get_account_research_summary_system_prompt(self.org_name)
+            ),
             telemetry=False,
         )
 
@@ -71,10 +83,13 @@ class AccountResearchSummaryAgent:
             [
                 Message(
                     role="user",
-                    content=(
-                        "Write the account summary from this provider data only.\n\n"
-                        f"Company ID: {company_id}\n"
-                        f"Provider data:\n{json.dumps(company_enrichment, default=str)}"
+                    content=append_organisation_context(
+                        (
+                            "Write the account summary from this provider data only.\n\n"
+                            f"Company ID: {company_id}\n"
+                            f"Provider data:\n{json.dumps(company_enrichment, default=str)}"
+                        ),
+                        self.organisation_profile,
                     ),
                 )
             ]

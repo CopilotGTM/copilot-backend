@@ -19,6 +19,10 @@ from src.agents.workflows.meeting_level_summary.prompts import (
 from src.agents.workflows.summary.models import SummaryData
 from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
+from src.service.orgnisation.kai_training_service import (
+    append_organisation_context,
+    with_organisation_context_policy,
+)
 
 logger = get_logger(__name__)
 
@@ -30,10 +34,17 @@ class MeetingLevelSummaryAgent:
     deal tools, deal prompts, or UI progress behavior by accident.
     """
 
-    def __init__(self, *, organisation_id: UUID, org_name: str | None = None):
+    def __init__(
+        self,
+        *,
+        organisation_id: UUID,
+        org_name: str | None = None,
+        organisation_profile: str | None = None,
+    ):
         """Initialize the no-deal summary agent."""
         self.organisation_id = organisation_id
         self.org_name = org_name or "Our Organization"
+        self.organisation_profile = organisation_profile
         self.last_token_usage: TokenUsageData | None = None
 
         config = agent_config.get_config("summary_agent")
@@ -46,7 +57,9 @@ class MeetingLevelSummaryAgent:
                 exponential_backoff=True,
             ),
             output_schema=SummaryData,
-            description=get_non_deal_meeting_summary_system_prompt(self.org_name),
+            description=with_organisation_context_policy(
+                get_non_deal_meeting_summary_system_prompt(self.org_name)
+            ),
             markdown=True,
             debug_mode=config.debug_mode,
             telemetry=False,
@@ -110,7 +123,12 @@ class MeetingLevelSummaryAgent:
             input_data.event_id,
         )
 
-        response = await self.agent.arun(build_non_deal_meeting_summary_user_prompt(input_data))
+        response = await self.agent.arun(
+            append_organisation_context(
+                build_non_deal_meeting_summary_user_prompt(input_data),
+                self.organisation_profile,
+            )
+        )
         self.last_token_usage = extract_token_usage(
             response,
             agent_name="MeetingLevelSummaryAgent",

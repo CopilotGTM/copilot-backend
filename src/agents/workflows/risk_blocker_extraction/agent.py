@@ -31,6 +31,10 @@ from src.agents.workflows.risk_blocker_extraction.models import RiskBlockerExtra
 from src.agents.workflows.risk_blocker_extraction.prompts import get_risk_blocker_system_prompt
 from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
+from src.service.orgnisation.kai_training_service import (
+    append_organisation_context,
+    with_organisation_context_policy,
+)
 
 if TYPE_CHECKING:
     from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
@@ -57,6 +61,7 @@ class RiskBlockerExtractionAgent:
         deal_id: UUID,
         publisher: DealJobRedisPublisher | None = None,
         org_name: str | None = None,
+        organisation_profile: str | None = None,
     ):
         """Initialize the agent with organisation and deal context.
 
@@ -84,6 +89,7 @@ class RiskBlockerExtractionAgent:
             organisation_id=organisation_id,
             deal_id=deal_id,
             org_name=org_name or "Our Organization",
+            organisation_profile=organisation_profile,
         )
 
         # Get tools for this agent
@@ -108,7 +114,9 @@ class RiskBlockerExtractionAgent:
             tool_call_limit=100,
             **get_agno_datetime_settings(self.context.metadata),
             debug_mode=config.debug_mode,
-            system_message=get_risk_blocker_system_prompt(self.context.org_name),
+            system_message=with_organisation_context_policy(
+                get_risk_blocker_system_prompt(self.context.org_name)
+            ),
             telemetry=False,
         )
 
@@ -154,7 +162,9 @@ class RiskBlockerExtractionAgent:
         self._publish_progress("AI is analyzing meetings and emails...", "tools", 0.4)
 
         # Run agent - it will use tools to gather data
-        response = await self.agent.arun(user_prompt)
+        response = await self.agent.arun(
+            append_organisation_context(user_prompt, self.context.organisation_profile)
+        )
 
         self.last_token_usage = extract_token_usage(
             response, agent_name="RiskBlockerExtractionAgent"

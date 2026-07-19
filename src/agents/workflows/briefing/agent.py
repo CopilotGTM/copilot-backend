@@ -32,6 +32,10 @@ from src.agents.workflows.briefing.prompts import (
 )
 from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
+from src.service.orgnisation.kai_training_service import (
+    append_organisation_context,
+    with_organisation_context_policy,
+)
 
 if TYPE_CHECKING:
     from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
@@ -59,6 +63,7 @@ class BriefingAgent:
         deal_id: UUID,
         publisher: DealJobRedisPublisher | None = None,
         org_name: str | None = None,
+        organisation_profile: str | None = None,
     ):
         """Initialize the agent with organisation and deal context.
 
@@ -86,6 +91,7 @@ class BriefingAgent:
             organisation_id=organisation_id,
             deal_id=deal_id,
             org_name=org_name or "Our Organization",
+            organisation_profile=organisation_profile,
         )
 
         tools = self._get_tools()
@@ -103,7 +109,9 @@ class BriefingAgent:
                 request_params={"parallel_tool_calls": True},
             ),
             output_schema=BriefingData,
-            description=get_briefing_system_prompt(self.context.org_name),
+            description=with_organisation_context_policy(
+                get_briefing_system_prompt(self.context.org_name)
+            ),
             tools=tools,
             markdown=True,
             **get_agno_datetime_settings(self.context.metadata),
@@ -144,7 +152,9 @@ class BriefingAgent:
         self._publish_progress("AI is gathering information...", "tools", 0.5)
 
         # Run agent - it will use tools to gather data
-        response = await self.agent.arun(user_prompt)
+        response = await self.agent.arun(
+            append_organisation_context(user_prompt, self.context.organisation_profile)
+        )
 
         self.last_token_usage = extract_token_usage(response, agent_name="BriefingAgent")
 
