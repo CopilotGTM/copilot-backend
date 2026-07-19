@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -40,6 +40,48 @@ async def test_run_agent_for_chat_uses_general_agent_for_current_chat_flows() ->
     assert len(frames) == 1
     assert frames[0].type == "finalize"
     assert _FakeGeneralAgent.contexts[0].metadata["latest_user_text"] == "hi"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_for_chat_logs_orchestration_latency_without_content() -> None:
+    context = AgentContext(
+        organisation_id=uuid4(),
+        channel="whatsapp",
+        message_id="message-123",
+    )
+    latency_logger = MagicMock()
+    _FakeGeneralAgent.contexts = []
+
+    with (
+        patch("src.agents.orchestrator.GeneralAgent", _FakeGeneralAgent),
+        patch("src.agents.orchestrator.logger", latency_logger),
+    ):
+        async for _frame in run_agent_for_chat(
+            chat_type="WHATSAPP_CHAT",
+            messages=[{"role": "user", "content": "private message text"}],
+            context=context,
+        ):
+            pass
+
+    events = [call.kwargs["extra"] for call in latency_logger.info.call_args_list]
+    assert [event["stage"] for event in events] == [
+        "context_resolution",
+        "agent_initialization",
+        "total",
+    ]
+    assert all(
+        event
+        == {
+            "event": "chat_agent_latency",
+            "channel": "whatsapp",
+            "message_id": "message-123",
+            "stage": event["stage"],
+            "duration_ms": event["duration_ms"],
+            "outcome": "success",
+        }
+        for event in events
+    )
+    assert all(event["duration_ms"] >= 0 for event in events)
 
 
 @pytest.mark.asyncio

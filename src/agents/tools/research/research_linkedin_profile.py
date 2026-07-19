@@ -12,12 +12,12 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
-from fastapi import HTTPException
 from sqlalchemy import func, or_, select
 
 from src.agents.tools.base import execute_with_capabilities
-from src.api.dependencies.rate_limit import enforce_contact_research_rate_limit
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.infra.config.configs import rate_limit_config
+from src.infra.rate_limit import RateLimitExceededError, enforce_fixed_window_rate_limit
 from src.service.crm.contacts.research_service import public_profile_enrichment
 from src.service.crm.utils.identity import is_valid_email, normalize_email
 from src.service.crm.utils.internal_domains import get_internal_domains, is_internal_email
@@ -32,6 +32,17 @@ logger = logging.getLogger(__name__)
 MAX_EMAIL_CHARS = 320
 MAX_LINKEDIN_URL_CHARS = 500
 MAX_COMPANY_CHARS = 200
+
+
+def _enforce_contact_research_rate_limit(user_id: str) -> None:
+    """Apply the paid-provider budget without importing the FastAPI layer."""
+    enforce_fixed_window_rate_limit(
+        "u",
+        user_id,
+        "contact_research",
+        per_minute_limit=rate_limit_config.CONTACT_RESEARCH_PER_MINUTE,
+        per_hour_limit=rate_limit_config.CONTACT_RESEARCH_PER_HOUR,
+    )
 
 
 def _normalize_linkedin_url(value: str) -> str | None:
@@ -161,12 +172,12 @@ async def research_linkedin_profile(
         # Charge only real provider calls. Cached CRM reads above remain free and
         # a rejected rate limit never sends attendee data to Apollo.
         try:
-            enforce_contact_research_rate_limit(str(context.user_id))
-        except HTTPException as exc:
+            _enforce_contact_research_rate_limit(str(context.user_id))
+        except RateLimitExceededError as exc:
             return {
                 "success": False,
                 "error": "Contact research rate limit exceeded",
-                "retry_after": exc.headers.get("Retry-After") if exc.headers else None,
+                "retry_after": str(exc.retry_after),
             }
         result = await apollo_enrich_person(
             email=normalized_email,
@@ -175,12 +186,12 @@ async def research_linkedin_profile(
     elif linkedin_url:
         if context and context.user_id:
             try:
-                enforce_contact_research_rate_limit(str(context.user_id))
-            except HTTPException as exc:
+                _enforce_contact_research_rate_limit(str(context.user_id))
+            except RateLimitExceededError as exc:
                 return {
                     "success": False,
                     "error": "Contact research rate limit exceeded",
-                    "retry_after": exc.headers.get("Retry-After") if exc.headers else None,
+                    "retry_after": str(exc.retry_after),
                 }
         result = await apollo_enrich_person(linkedin_url=linkedin_url)
     else:

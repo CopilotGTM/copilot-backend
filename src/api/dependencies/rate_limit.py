@@ -20,6 +20,7 @@ from src.domain.models.master_tables import SuperAdmin
 from src.infra.auth.admin_auth import admin_auth
 from src.infra.config.configs import rate_limit_config
 from src.infra.messaging.redis_client import get_redis_client
+from src.infra.rate_limit import RateLimitExceededError, enforce_fixed_window_rate_limit
 from src.infra.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -109,38 +110,20 @@ def _enforce_rate_limit_for_limits(
     per_hour_limit: int,
 ) -> None:
     """Core limiter logic with explicit fixed-window budgets."""
-    # Use fixed buckets instead of token buckets to keep enforcement simple and
-    # easy to reason about in operational incidents (how many hits landed in the
-    # current minute/hour window).
-    now = int(time.time())
-    minute_window = 60
-    hour_window = 3600
-
-    minute_bucket = now // minute_window
-    hour_bucket = now // hour_window
-
-    # Keys scoped per subject and category to allow distinct budgets (e.g., write/read)
-    minute_key = f"rl:{subject_kind}:{subject_id}:cat:{category}:m:{minute_bucket}"
-    hour_key = f"rl:{subject_kind}:{subject_id}:cat:{category}:h:{hour_bucket}"
-
-    minute_count = _incr_with_ttl(minute_key, minute_window)
-    hour_count = _incr_with_ttl(hour_key, hour_window)
-
-    if minute_count and minute_count > per_minute_limit:
-        retry_after = _ttl_seconds(minute_key) or minute_window
+    try:
+        enforce_fixed_window_rate_limit(
+            subject_kind,
+            subject_id,
+            category,
+            per_minute_limit=per_minute_limit,
+            per_hour_limit=per_hour_limit,
+        )
+    except RateLimitExceededError as exc:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many requests (per-minute limit exceeded)",
-            headers={"Retry-After": str(retry_after)},
-        )
-
-    if hour_count and hour_count > per_hour_limit:
-        retry_after = _ttl_seconds(hour_key) or hour_window
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many requests (per-hour limit exceeded)",
-            headers={"Retry-After": str(retry_after)},
-        )
+            detail=f"Too many requests (per-{exc.window} limit exceeded)",
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
 
 
 def _enforce_daily_rate_limit_for_limit(
