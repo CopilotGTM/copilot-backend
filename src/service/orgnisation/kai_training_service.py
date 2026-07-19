@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
-from src.api.schemas.kai_training_models import (
+from src.domain.models.kai_training_models import (
     KaiTrainingFieldName,
     KaiTrainingFields,
     KaiTrainingResponse,

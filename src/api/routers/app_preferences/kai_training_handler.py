@@ -8,8 +8,8 @@ from src.api.dependencies.master_dependencies import get_master_async_session
 from src.api.dependencies.organisation_dependencies import UserIDs, get_current_user
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
 from src.api.schemas.base_models import GenericResponse
-from src.api.schemas.kai_training_models import KaiTrainingResponse, UpdateKaiTrainingRequest
 from src.api.utils.http_response import Response
+from src.domain.models.kai_training_models import KaiTrainingResponse, UpdateKaiTrainingRequest
 from src.domain.models.master_tables import UserAppRole
 from src.infra.rate_limit import RateLimitExceededError
 from src.service.orgnisation.kai_training_service import (
