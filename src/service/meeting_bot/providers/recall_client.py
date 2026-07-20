@@ -86,7 +86,7 @@ class RecallMeetingRecordingProvider:
         self,
         *,
         meeting_url: str,
-        join_at: datetime,
+        join_at: datetime | None,
         metadata: dict[str, Any],
         bot_name: str = "Notetaker",
         recording_config: dict[str, Any] | None = None,
@@ -99,11 +99,14 @@ class RecallMeetingRecordingProvider:
         payload = {
             "meeting_url": meeting_url,
             "bot_name": bot_name,
-            "join_at": join_at.isoformat(),
             "metadata": metadata,
             "recording_config": recording_config or self._recording_config(),
             "automatic_leave": self._automatic_leave_config(),
         }
+        # Recall dispatches immediately when join_at is omitted. This is its
+        # documented ad-hoc path for meetings discovered less than ten minutes out.
+        if join_at is not None:
+            payload["join_at"] = join_at.isoformat()
         async with httpx.AsyncClient(timeout=self.timeout, headers=self._headers()) as client:
             # Use a short-lived client per call to avoid carrying shared TCP state
             # across unrelated dispatch tasks and keep retries safe.
@@ -159,6 +162,7 @@ class RecallMeetingRecordingProvider:
         *,
         join_at_after: datetime | None = None,
         meeting_url: str | None = None,
+        metadata: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         """List Recall bots for reconciliation and manual dedupe/adoption."""
         params: dict[str, str] = {}
@@ -166,6 +170,8 @@ class RecallMeetingRecordingProvider:
             params["join_at_after"] = join_at_after.isoformat()
         if meeting_url:
             params["meeting_url"] = meeting_url
+        for key, value in (metadata or {}).items():
+            params[f"metadata__{key}"] = value
 
         bots: list[dict[str, Any]] = []
         next_url: str | None = f"{self.base_url}/bot/"

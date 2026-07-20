@@ -379,7 +379,8 @@ async def test_dispatch_event_skips_internal_meeting_under_external_only_policy(
 
 
 @pytest.mark.asyncio
-async def test_dispatch_event_can_bypass_policy_for_manual_invite(monkeypatch):
+async def test_manual_late_join_bypasses_policy_and_dispatches_ad_hoc(monkeypatch):
+    """A manual recovery request sends an immediate bot during the grace period."""
     organisation_id = uuid4()
     event_id = uuid4()
     session_id = uuid4()
@@ -388,7 +389,7 @@ async def test_dispatch_event_can_bypass_policy_for_manual_invite(monkeypatch):
         event_id=event_id,
         status="confirmed",
         conference_link="https://meet.google.com/abc-defg-hij",
-        start_at=datetime.now(UTC) + timedelta(hours=2),
+        start_at=datetime.now(UTC) - timedelta(minutes=2),
         attendees=[SimpleNamespace(email="seller@acme.com")],
     )
     pending_session = SimpleNamespace(
@@ -411,6 +412,11 @@ async def test_dispatch_event_can_bypass_policy_for_manual_invite(monkeypatch):
     monkeypatch.setattr(service, "_has_active_calendar_integration", AsyncGet(True))
     monkeypatch.setattr(
         service._session_service,
+        "get_by_event",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        service._session_service,
         "get_or_create_pending_session",
         AsyncMock(return_value=pending_session),
     )
@@ -420,14 +426,13 @@ async def test_dispatch_event_can_bypass_policy_for_manual_invite(monkeypatch):
         AsyncMock(return_value=queued_session),
     )
     monkeypatch.setattr(service._session_service, "mark_sent", AsyncMock())
+    provider = SimpleNamespace(
+        create_session=AsyncMock(return_value={"id": "bot_123", "status": "joining_call"})
+    )
     monkeypatch.setattr(
         service,
         "_build_provider",
-        AsyncMock(
-            return_value=SimpleNamespace(
-                create_session=AsyncMock(return_value={"id": "bot_123", "status": "scheduled"})
-            )
-        ),
+        AsyncMock(return_value=provider),
     )
     monkeypatch.setattr(service, "_resolve_bot_name", AsyncMock(return_value="Acme Notetaker"))
 
@@ -435,6 +440,7 @@ async def test_dispatch_event_can_bypass_policy_for_manual_invite(monkeypatch):
 
     assert result["status"] == "sent"
     service._session_service.get_or_create_pending_session.assert_awaited_once()  # noqa: SLF001
+    assert provider.create_session.await_args.kwargs["join_at"] is None
 
 
 @pytest.mark.asyncio

@@ -248,10 +248,13 @@ async def invite_bot(
     """Manually invite Recall bot to a current-user calendar event."""
     try:
         data = await service.invite_bot(event_id)
-        if data.get("reason") == "meeting_already_started":
+        if data.get("reason") in {
+            "meeting_already_started",
+            "meeting_late_join_window_elapsed",
+        }:
             return Response.error_response(
                 status_code=409,
-                message="Meeting already started",
+                message="The 15-minute late-join window has elapsed",
                 response=response,
             )
         return Response.success_response("Bot invite processed", data)

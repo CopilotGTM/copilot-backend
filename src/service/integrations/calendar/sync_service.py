@@ -756,17 +756,15 @@ class CalendarSyncService:
         await self._writer.batch_upsert_user_states(rows)
 
     def _queue_recording_dispatch_if_eligible(self, event: CalendarEvent) -> None:
-        """Record changed future meetings that can be safely enqueued after commit."""
+        """Record changed meetings inside the scheduled or ad-hoc dispatch window."""
         start_at = normalize_utc(event.start_at)
         now = datetime.now(UTC)
-        if start_at <= now:
+        if not is_within_recording_dispatch_window(start_at, now):
             return
         if (getattr(event, "status", None) or "").lower() == "cancelled":
             # Cancellations still need the dispatch task: it re-reads the event and
             # cancels any scheduled Recall bot for this calendar event.
             self._pending_recording_event_ids.add(event.event_id)
-            return
-        if not is_within_recording_dispatch_window(start_at, now):
             return
         if not getattr(event, "conference_link", None):
             return

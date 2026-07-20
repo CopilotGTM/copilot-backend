@@ -22,6 +22,7 @@ from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.infra.utils.task_lock import acquire_task_lock, release_task_lock
 from src.service.meeting_bot.lifecycle_service import MeetingRecordingLifecycleService
+from src.service.meeting_bot.providers import RecallProviderError
 from src.service.meeting_bot.webhook_service import RecallMeetingRecordingWebhookService
 from src.workers.deal_worker.celery_app import app
 
@@ -172,7 +173,17 @@ def send_meeting_recording_task(
         )
 
         if self.request.retries < self.max_retries:
-            raise self.retry(exc=exc, countdown=60 * (2**self.request.retries)) from exc
+            # Recall recommends 30-second retries when its warm ad-hoc pool returns
+            # 507; other provider and transport failures keep the existing cadence.
+            retry_base = (
+                30
+                if isinstance(exc, RecallProviderError) and exc.status_code == 507
+                else 60
+            )
+            raise self.retry(
+                exc=exc,
+                countdown=retry_base * (2**self.request.retries),
+            ) from exc
 
         return {
             "status": "failed",

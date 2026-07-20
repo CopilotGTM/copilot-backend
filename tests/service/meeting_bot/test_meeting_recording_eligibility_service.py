@@ -28,7 +28,10 @@ def _event(**overrides):
         (_event(status="cancelled"), "calendar_event_cancelled"),
         (_event(conference_link=None), "missing_meeting_url"),
         (_event(start_at=None), "missing_start_at"),
-        (_event(start_at=datetime.now(UTC) - timedelta(minutes=1)), "meeting_already_started"),
+        (
+            _event(start_at=datetime.now(UTC) - timedelta(minutes=16)),
+            "meeting_late_join_window_elapsed",
+        ),
         (
             _event(start_at=datetime.now(UTC) + timedelta(days=4)),
             "meeting_outside_recording_window",
@@ -54,6 +57,19 @@ def test_event_state_takes_precedence_over_inactive_integration():
 
     assert result.allowed is False
     assert result.reason == "calendar_event_cancelled"
+
+
+def test_meeting_started_within_fifteen_minutes_is_ad_hoc_eligible():
+    """Late calendar sync may still dispatch during the bounded recovery window."""
+    service = MeetingRecordingEligibilityService()
+
+    result = service.evaluate_for_scheduling(
+        _event(start_at=datetime.now(UTC) - timedelta(minutes=14)),
+        active_calendar_integration=True,
+    )
+
+    assert result.allowed is True
+    assert result.reason is None
 
 
 def test_scheduling_requires_active_calendar_integration_for_automatic_flow():

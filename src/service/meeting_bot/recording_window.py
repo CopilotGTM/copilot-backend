@@ -10,6 +10,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 RECORDING_DISPATCH_WINDOW = timedelta(days=3)
+# Recall treats bots created after the scheduled start as ad-hoc capacity. Keep
+# this recovery window short so late calendar syncs can still record useful calls.
+RECORDING_LATE_JOIN_WINDOW = timedelta(minutes=15)
 
 
 def normalize_utc(value: datetime) -> datetime:
@@ -24,8 +27,18 @@ def recording_window_end(now: datetime) -> datetime:
     return normalize_utc(now) + RECORDING_DISPATCH_WINDOW
 
 
+def recording_window_start(now: datetime) -> datetime:
+    """Return the exclusive lower bound for ad-hoc late-join dispatch."""
+    return normalize_utc(now) - RECORDING_LATE_JOIN_WINDOW
+
+
 def is_within_recording_dispatch_window(start_at: datetime, now: datetime) -> bool:
-    """Return whether a meeting can have a recording bot scheduled now."""
+    """Return whether a meeting can receive a scheduled or ad-hoc bot now."""
     start_at_utc = normalize_utc(start_at)
     now_utc = normalize_utc(now)
-    return now_utc < start_at_utc < recording_window_end(now_utc)
+    return recording_window_start(now_utc) < start_at_utc < recording_window_end(now_utc)
+
+
+def is_late_join_expired(start_at: datetime, now: datetime) -> bool:
+    """Return whether a meeting is past the manual and automatic recovery window."""
+    return normalize_utc(start_at) <= recording_window_start(now)

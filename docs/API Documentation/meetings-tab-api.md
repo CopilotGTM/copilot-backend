@@ -406,7 +406,10 @@ Possible success payload examples:
 }
 ```
 
-If the existing dispatch service determines the bot cannot join late, the API returns `409`.
+Meetings discovered after their scheduled start use Recall's ad-hoc bot path. Automatic dispatch
+and the manual invite action remain available for the first 15 minutes; recordings begin only when
+the bot actually joins. At or after the 15-minute boundary, the API returns `409`. If Recall's
+ad-hoc capacity is temporarily exhausted, manual invite returns retryable `503` copy.
 
 Bot status mapping for the list and drawer:
 
@@ -417,7 +420,7 @@ Bot status mapping for the list and drawer:
 | `failed` | Use `bot.display_status` for the exact failure copy. |
 | `cancelled` | Bot removed/cancelled state. |
 | `auto_invite_eligible` | "Bot auto-invite eligible" or "Invite bot" action. |
-| `invite_available` | Show "Invite bot" if meeting has a join link and is not past. |
+| `invite_available` | Show "Invite bot" if the meeting has a join link and started less than 15 minutes ago. |
 
 Display status mapping:
 

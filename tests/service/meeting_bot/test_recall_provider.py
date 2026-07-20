@@ -70,6 +70,31 @@ class TestRecallMeetingRecordingProvider:
             "recording_permission_denied_timeout": 30,
         }
 
+    async def test_create_session_omits_join_at_for_ad_hoc_bot(self) -> None:
+        """A missing join time tells Recall to dispatch an on-demand bot immediately."""
+        provider = RecallMeetingRecordingProvider(api_key="test-key", region="us-east-1")
+        response = _json_response(
+            "POST",
+            "https://us-east-1.recall.ai/api/v1/bot/",
+            {"id": "bot_adhoc", "status": "joining_call"},
+            status_code=201,
+        )
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = response
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = False
+            mock_client_cls.return_value = mock_client
+
+            await provider.create_session(
+                meeting_url="https://teams.example/live",
+                join_at=None,
+                metadata={"calendar_event_id": str(uuid4())},
+            )
+
+        assert "join_at" not in mock_client.post.call_args.kwargs["json"]
+
     async def test_get_session_retrieves_bot(self) -> None:
         provider = RecallMeetingRecordingProvider(api_key="test-key", region="us-east-1")
         response = _json_response(
@@ -184,10 +209,17 @@ class TestRecallMeetingRecordingProvider:
             mock_client.__aexit__.return_value = False
             mock_client_cls.return_value = mock_client
 
-            result = await provider.list_sessions(join_at_after=datetime.now(UTC))
+            result = await provider.list_sessions(
+                join_at_after=datetime.now(UTC),
+                metadata={"dedupe_key": "meeting-recording-key"},
+            )
 
         assert result == [{"id": "bot_1"}, {"id": "bot_2"}]
         assert mock_client.get.await_count == 2
+        assert (
+            mock_client.get.await_args_list[0].kwargs["params"]["metadata__dedupe_key"]
+            == "meeting-recording-key"
+        )
 
     async def test_extract_transcript_download_url_from_bot_payload(self) -> None:
         provider = RecallMeetingRecordingProvider(api_key="test-key", region="us-east-1")

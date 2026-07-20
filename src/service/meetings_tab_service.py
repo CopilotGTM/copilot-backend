@@ -71,7 +71,8 @@ from src.service.integrations.calendar.integration_types import (
 from src.service.meeting_bot.display_status import meeting_recording_display_status
 from src.service.meeting_bot.lifecycle_service import MeetingRecordingLifecycleService
 from src.service.meeting_bot.policy import evaluate_bot_join_policy
-from src.service.meeting_bot.providers import RecallMeetingRecordingProvider
+from src.service.meeting_bot.providers import RecallMeetingRecordingProvider, RecallProviderError
+from src.service.meeting_bot.recording_window import is_late_join_expired
 from src.service.orgnisation.organisation_preferences import (
     BOT_JOIN_POLICY_ALL,
     normalize_organisation_preferences,
@@ -337,12 +338,25 @@ class MeetingsTabService:
             raise MeetingsTabServiceError(exc.message, exc.status_code) from exc
         if cleanup_result is not None and cleanup_result.get("status") != "cancelled":
             return cleanup_result
-        return await MeetingRecordingLifecycleService(self.organisation_id).schedule_for_event(
-            event_id,
-            source="meetings_tab_manual_invite",
-            allow_cancelled_reinvite=True,
-            enforce_policy=enforce_policy,
-        )
+        try:
+            return await MeetingRecordingLifecycleService(
+                self.organisation_id
+            ).schedule_for_event(
+                event_id,
+                source="meetings_tab_manual_invite",
+                allow_cancelled_reinvite=True,
+                enforce_policy=enforce_policy,
+            )
+        except RecallProviderError as exc:
+            # Recall can exhaust its warm ad-hoc bot pool during demand spikes.
+            # Keep this retryable so the UI can offer another attempt while live.
+            if exc.status_code == 507:
+                raise MeetingsTabServiceError(
+                    "Recall bot capacity is temporarily unavailable. Please try again.",
+                    503,
+                    code="recall_ad_hoc_capacity_unavailable",
+                ) from exc
+            raise
 
     async def cancel_bot(self, event_id: UUID) -> dict[str, Any]:
         """Cancel a scheduled Recall bot after proving current-user event ownership."""
@@ -988,7 +1002,7 @@ class MeetingsTabService:
         start_at = event.start_at
         if start_at.tzinfo is None:
             start_at = start_at.replace(tzinfo=UTC)
-        if start_at <= datetime.now(UTC):
+        if is_late_join_expired(start_at, datetime.now(UTC)):
             return False
         if recording is None:
             return True

@@ -44,6 +44,7 @@ from src.service.meeting_bot.recording_window import (
     is_within_recording_dispatch_window,
     normalize_utc,
     recording_window_end,
+    recording_window_start,
 )
 from src.service.meeting_bot.session_service import MeetingRecordingSessionService
 
@@ -186,14 +187,7 @@ class MeetingRecordingLifecycleService:
         join_at = normalize_utc(join_at)
         now = datetime.now(UTC)
 
-        if not is_within_recording_dispatch_window(join_at, now):
-            if join_at > now:
-                return {
-                    "status": "skipped",
-                    "reason": "meeting_outside_recording_window",
-                    "calendar_event_id": str(calendar_event_id),
-                }
-
+        if join_at <= now:
             existing_session = await self._session_service.get_by_event(calendar_event_id)
             if existing_session and existing_session.sent_to_provider_at is not None:
                 existing_provider = await self._build_provider()
@@ -210,12 +204,19 @@ class MeetingRecordingLifecycleService:
                         "calendar_event_id": str(calendar_event_id),
                     }
 
-            # Already-started meetings are intentionally skipped to avoid late-join
-            # failures. We check an existing provider bot first so manual "send bot"
-            # requests can still report that the bot is already active.
+        if not is_within_recording_dispatch_window(join_at, now):
+            if join_at > now:
+                return {
+                    "status": "skipped",
+                    "reason": "meeting_outside_recording_window",
+                    "calendar_event_id": str(calendar_event_id),
+                }
+
+            # The 15-minute ad-hoc window has elapsed. Check Recall first so a
+            # delayed repeat request still reports an already-active bot correctly.
             return {
                 "status": "skipped",
-                "reason": "meeting_already_started",
+                "reason": "meeting_late_join_window_elapsed",
                 "calendar_event_id": str(calendar_event_id),
             }
 
@@ -412,6 +413,7 @@ class MeetingRecordingLifecycleService:
                 calendar_event_id=calendar_event_id,
                 meeting_url=meeting_url,
                 join_at=join_at,
+                join_immediately=join_at <= now,
                 attempt_adopt_before_create=attempt_adopt_before_create,
             )
         except RecallProviderError:
@@ -721,12 +723,14 @@ class MeetingRecordingLifecycleService:
         *,
         calendar_event_id: UUID,
         dedupe_key: str,
+        scheduled_start_at: datetime,
     ) -> dict[str, str]:
         """Build Recall metadata used later to recover tenant and event scope."""
         return {
             "organisation_id": str(self.organisation_id),
             "calendar_event_id": str(calendar_event_id),
             "dedupe_key": dedupe_key,
+            "scheduled_start_at": normalize_utc(scheduled_start_at).isoformat(),
         }
 
     async def _update_provider_session_for_reschedule(
@@ -751,6 +755,7 @@ class MeetingRecordingLifecycleService:
                 metadata=self._provider_metadata(
                     calendar_event_id=calendar_event_id,
                     dedupe_key=session_record.dedupe_key,
+                    scheduled_start_at=join_at,
                 ),
             )
         except RecallProviderError as error:
@@ -858,6 +863,7 @@ class MeetingRecordingLifecycleService:
         calendar_event_id: UUID,
         meeting_url: str,
         join_at: datetime,
+        join_immediately: bool = False,
         attempt_adopt_before_create: bool = False,
     ) -> dict[str, Any]:
         """Create a Recall bot, adopting an existing matching one when found."""
@@ -881,11 +887,12 @@ class MeetingRecordingLifecycleService:
         try:
             return await provider.create_session(
                 meeting_url=meeting_url,
-                join_at=join_at,
+                join_at=None if join_immediately else join_at,
                 bot_name=await self._resolve_bot_name(),
                 metadata=self._provider_metadata(
                     calendar_event_id=calendar_event_id,
                     dedupe_key=session_record.dedupe_key,
+                    scheduled_start_at=join_at,
                 ),
             )
         except RecallProviderError as error:
@@ -1059,9 +1066,27 @@ class MeetingRecordingLifecycleService:
         calendar_event_id: UUID,
         dedupe_key: str | None,
     ) -> dict[str, Any] | None:
-        """Find an upcoming Recall bot for the same meeting URL and start time."""
-        window_start = self._normalize_utc(join_at) - timedelta(minutes=15)
-        bots = await provider.list_sessions(join_at_after=window_start, meeting_url=meeting_url)
+        """Find a Recall bot created before an uncertain provider response."""
+        metadata = self._provider_metadata(
+            calendar_event_id=calendar_event_id,
+            dedupe_key=dedupe_key
+            or self._session_service.build_dedupe_key(
+                self.organisation_id,
+                calendar_event_id,
+            ),
+            scheduled_start_at=join_at,
+        )
+        # Ad-hoc bots can lose their join_at and meeting_url as soon as they enter
+        # the call, so stable metadata is the primary duplicate-recovery key.
+        bots = await provider.list_sessions(metadata=metadata)
+        if not bots:
+            # Bots created before scheduled_start_at metadata was introduced still
+            # need the legacy URL/time lookup during a rolling deployment.
+            window_start = self._normalize_utc(join_at) - timedelta(minutes=15)
+            bots = await provider.list_sessions(
+                join_at_after=window_start,
+                meeting_url=meeting_url,
+            )
         for bot_payload in bots:
             if self._bot_matches(
                 bot_payload,
@@ -1172,6 +1197,7 @@ class MeetingRecordingLifecycleService:
     async def _list_unsent_upcoming_event_ids(self) -> list[UUID]:
         """Return ordered upcoming integration events that are missing send completion."""
         now = datetime.now(UTC)
+        window_start = recording_window_start(now)
         window_end = recording_window_end(now)
 
         async for session in acquire_org_async_session(self.organisation_id):
@@ -1201,7 +1227,7 @@ class MeetingRecordingLifecycleService:
                 )
                 .where(
                     col(CalendarEvent.organisation_id) == self.organisation_id,
-                    col(CalendarEvent.start_at) > now,
+                    col(CalendarEvent.start_at) > window_start,
                     col(CalendarEvent.start_at) < window_end,
                     col(CalendarEvent.conference_link).is_not(None),
                     col(CalendarEventUserState.is_deleted).is_(False),
@@ -1377,6 +1403,23 @@ class MeetingRecordingLifecycleService:
         fetched_by_provider_id: bool,
     ) -> bool:
         """Compare Recall bot identity without relying on Teams URL formatting."""
+        metadata = bot_payload.get("metadata")
+        if isinstance(metadata, dict) and metadata:
+            identity_matches = (
+                metadata.get("organisation_id") == str(self.organisation_id)
+                and metadata.get("calendar_event_id") == str(calendar_event_id)
+                and (dedupe_key is None or metadata.get("dedupe_key") == dedupe_key)
+            )
+            scheduled_start_at = self._parse_provider_datetime(
+                metadata.get("scheduled_start_at")
+            )
+            if scheduled_start_at is not None:
+                return identity_matches and self._normalize_utc(scheduled_start_at).replace(
+                    microsecond=0
+                ) == self._normalize_utc(join_at).replace(microsecond=0)
+
+        # Legacy scheduled bots lack scheduled_start_at metadata, so retain the
+        # original timestamp comparison until those provider sessions age out.
         bot_join_at = self._parse_provider_datetime(bot_payload.get("join_at"))
         if bot_join_at is None:
             return False
@@ -1384,14 +1427,8 @@ class MeetingRecordingLifecycleService:
             join_at
         ).replace(microsecond=0):
             return False
-
-        metadata = bot_payload.get("metadata")
         if isinstance(metadata, dict) and metadata:
-            return (
-                metadata.get("organisation_id") == str(self.organisation_id)
-                and metadata.get("calendar_event_id") == str(calendar_event_id)
-                and (dedupe_key is None or metadata.get("dedupe_key") == dedupe_key)
-            )
+            return identity_matches
 
         bot_url = bot_payload.get("meeting_url")
         if isinstance(bot_url, str):
