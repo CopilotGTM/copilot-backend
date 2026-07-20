@@ -430,9 +430,7 @@ async def test_email_then_linkedin_lookup_keeps_email_only_facts() -> None:
         )
 
     fact_pack = build_contact_research_fact_pack(contact.profile_enrichment)
-    assert fact_pack["education"] == [
-        {"degree": "BSc", "school_name": "Example University"}
-    ]
+    assert fact_pack["education"] == [{"degree": "BSc", "school_name": "Example University"}]
     assert fact_pack["employment_history"] == [
         {
             "title": "VP Engineering",
@@ -506,9 +504,7 @@ async def test_successful_refresh_replaces_prior_not_found_marker() -> None:
         None,
     )
 
-    await ContactResearchService(
-        _WriteSession(contact), organisation_id
-    ).persist_provider_result(
+    await ContactResearchService(_WriteSession(contact), organisation_id).persist_provider_result(
         contact.contact_id,
         ContactProviderResearchResult(
             status="found",
@@ -584,7 +580,9 @@ async def test_cumulative_evidence_rejects_different_apollo_people() -> None:
         profile = _profile_enrichment(
             {
                 "apollo_id": apollo_id,
-                "identity_kind": "email-only" if fingerprint == "email-fingerprint" else "email+linkedin",
+                "identity_kind": "email-only"
+                if fingerprint == "email-fingerprint"
+                else "email+linkedin",
                 "identity_fingerprint": fingerprint,
                 "raw": {"id": apollo_id, "name": "Ada Buyer"},
             },
@@ -645,7 +643,9 @@ async def test_legacy_raw_payload_is_wrapped_on_next_successful_refresh() -> Non
 
 
 @pytest.mark.asyncio
-async def test_cumulative_raw_envelope_keeps_richest_payload_when_combined_limit_is_crossed() -> None:
+async def test_cumulative_raw_envelope_keeps_richest_payload_when_combined_limit_is_crossed() -> (
+    None
+):
     """Oversized cumulative raw data falls back without dropping either bounded fact pack."""
     organisation_id = uuid4()
     contact = CRMContact(

@@ -298,9 +298,7 @@ async def test_force_refresh_summarizes_persisted_cumulative_evidence(monkeypatc
             profile_enrichment={
                 "provider": "apollo",
                 "apollo_id": "person_123",
-                "employment_history": [
-                    {"title": "VP Engineering", "organization_name": "Acme"}
-                ],
+                "employment_history": [{"title": "VP Engineering", "organization_name": "Acme"}],
                 "_metadata": {
                     "payload_hash": "combined-hash",
                     "identity_kind": "email+linkedin",
@@ -312,9 +310,7 @@ async def test_force_refresh_summarizes_persisted_cumulative_evidence(monkeypatc
     async def summary_generator(profile_enrichment):  # noqa: ANN001
         """Verify orchestration reloads the merged profile before model synthesis."""
         fact_pack = service_module.build_contact_research_fact_pack(profile_enrichment)
-        assert fact_pack["education"] == [
-            {"degree": "BSc", "school_name": "Example University"}
-        ]
+        assert fact_pack["education"] == [{"degree": "BSc", "school_name": "Example University"}]
         assert fact_pack["employment_history"] == [
             {"title": "VP Engineering", "organization_name": "Acme"}
         ]

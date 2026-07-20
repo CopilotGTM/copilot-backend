@@ -619,11 +619,7 @@ def build_contact_research_fact_pack(profile: dict[str, Any]) -> dict[str, Any]:
         return _build_single_contact_research_fact_pack(profile)
 
     entries = [entry for entry in evidence.values() if isinstance(entry, dict)]
-    apollo_ids = {
-        str(apollo_id)
-        for entry in entries
-        if (apollo_id := entry.get("apollo_id"))
-    }
+    apollo_ids = {str(apollo_id) for entry in entries if (apollo_id := entry.get("apollo_id"))}
     if len(apollo_ids) > 1:
         # Combining two Apollo people would create a plausible but false career history.
         # Preserve both evidence entries for review, but refuse to generate mixed prose.
