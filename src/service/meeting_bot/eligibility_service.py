@@ -54,9 +54,7 @@ class MeetingRecordingEligibilityService:
 
         if not is_within_recording_dispatch_window(join_at, now_utc):
             if join_at <= now_utc:
-                return MeetingRecordingEligibilityResult(
-                    False, "meeting_late_join_window_elapsed"
-                )
+                return MeetingRecordingEligibilityResult(False, "meeting_late_join_window_elapsed")
             return MeetingRecordingEligibilityResult(False, "meeting_outside_recording_window")
 
         return MeetingRecordingEligibilityResult(True)
