@@ -176,9 +176,7 @@ def send_meeting_recording_task(
             # Recall recommends 30-second retries when its warm ad-hoc pool returns
             # 507; other provider and transport failures keep the existing cadence.
             retry_base = (
-                30
-                if isinstance(exc, RecallProviderError) and exc.status_code == 507
-                else 60
+                30 if isinstance(exc, RecallProviderError) and exc.status_code == 507 else 60
             )
             raise self.retry(
                 exc=exc,
