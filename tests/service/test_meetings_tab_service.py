@@ -28,7 +28,12 @@ from src.service.integrations.calendar.integration_types import (
     DISPATCH_CALENDAR_INTEGRATION_TYPES,
     PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPES,
 )
-from src.service.meetings_tab_service import CALENDAR_INTEGRATION_TYPES, MeetingsTabService
+from src.service.meeting_bot.providers import RecallProviderError
+from src.service.meetings_tab_service import (
+    CALENDAR_INTEGRATION_TYPES,
+    MeetingsTabService,
+    MeetingsTabServiceError,
+)
 
 
 def _service() -> MeetingsTabService:
@@ -277,8 +282,12 @@ def test_bot_action_flags_are_time_and_state_scoped() -> None:
         start_at=datetime.now(UTC) + timedelta(hours=1),
         conference_link="https://meet.google.com/abc-defg-hij",
     )
+    late_event = SimpleNamespace(
+        start_at=datetime.now(UTC) - timedelta(minutes=14),
+        conference_link="https://meet.google.com/abc-defg-hij",
+    )
     past_event = SimpleNamespace(
-        start_at=datetime.now(UTC) - timedelta(minutes=1),
+        start_at=datetime.now(UTC) - timedelta(minutes=16),
         conference_link="https://meet.google.com/abc-defg-hij",
     )
     sent_recording = SimpleNamespace(
@@ -298,6 +307,7 @@ def test_bot_action_flags_are_time_and_state_scoped() -> None:
     )
 
     assert service._can_invite_bot(event=future_event, recording=None) is True  # noqa: SLF001
+    assert service._can_invite_bot(event=late_event, recording=None) is True  # noqa: SLF001
     assert service._can_invite_bot(event=past_event, recording=None) is False  # noqa: SLF001
     assert service._can_invite_bot(event=future_event, recording=sent_recording) is False  # noqa: SLF001
     assert service._can_invite_bot(event=future_event, recording=cancelled_recording) is True  # noqa: SLF001
@@ -345,7 +355,7 @@ def test_bot_status_projects_permission_denied_display_status() -> None:
     recording = SimpleNamespace(
         status=MeetingRecordingStatus.FAILED,
         transcript_status=MeetingTranscriptStatus.FAILED,
-        provider_payload={},
+        provider_payload={"first_in_call_at": now.isoformat()},
         provider_session_id="bot_123",
         sent_to_provider_at=now,
         status_message="host_denied",
@@ -433,8 +443,42 @@ async def test_manual_invite_uses_lifecycle_schedule_with_reinvite(monkeypatch) 
         event_id,
         source="meetings_tab_manual_invite",
         allow_cancelled_reinvite=True,
+        allow_prejoin_reinvite=True,
         enforce_policy=False,
     )
+
+
+@pytest.mark.asyncio
+async def test_manual_invite_maps_ad_hoc_capacity_failure_to_retryable_error(monkeypatch) -> None:
+    """Recall warm-pool exhaustion should ask the live user to retry, not return 500."""
+    service = _service()
+    event_id = uuid4()
+    service.session.rollback = AsyncMock()
+    monkeypatch.setattr(
+        service,
+        "_ensure_user_calendar_event",
+        AsyncMock(return_value=SimpleNamespace(event_id=event_id)),
+    )
+    monkeypatch.setattr(service, "_retry_cancel_cleanup_if_needed", AsyncMock(return_value=None))
+
+    class _LifecycleService:
+        def __init__(self, _organisation_id):
+            pass
+
+        async def schedule_for_event(self, *_args, **_kwargs):
+            """Simulate Recall exhausting its ad-hoc worker pool."""
+            raise RecallProviderError("warm pool empty", status_code=507)
+
+    monkeypatch.setattr(
+        "src.service.meetings_tab_service.MeetingRecordingLifecycleService",
+        _LifecycleService,
+    )
+
+    with pytest.raises(MeetingsTabServiceError) as exc_info:
+        await service.invite_bot(event_id)
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.code == "recall_ad_hoc_capacity_unavailable"
 
 
 @pytest.mark.asyncio

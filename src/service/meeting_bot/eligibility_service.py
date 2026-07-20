@@ -28,6 +28,7 @@ class MeetingRecordingEligibilityService:
         require_active_calendar_integration: bool = True,
         now: datetime | None = None,
     ) -> MeetingRecordingEligibilityResult:
+        """Evaluate shared calendar, integration, and dispatch-window requirements."""
         if event is None:
             return MeetingRecordingEligibilityResult(False, "event_not_found")
 
@@ -53,7 +54,9 @@ class MeetingRecordingEligibilityService:
 
         if not is_within_recording_dispatch_window(join_at, now_utc):
             if join_at <= now_utc:
-                return MeetingRecordingEligibilityResult(False, "meeting_already_started")
+                return MeetingRecordingEligibilityResult(
+                    False, "meeting_late_join_window_elapsed"
+                )
             return MeetingRecordingEligibilityResult(False, "meeting_outside_recording_window")
 
         return MeetingRecordingEligibilityResult(True)

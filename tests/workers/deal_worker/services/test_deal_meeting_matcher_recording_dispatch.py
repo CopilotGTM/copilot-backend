@@ -89,14 +89,30 @@ class TestMeetingRecordingQueueing:
         assert session.statements == []
 
     @pytest.mark.asyncio
-    async def test_past_meeting_does_not_queue_recording(self) -> None:
-        """Past meetings are skipped so providers are not asked to join late."""
+    async def test_recently_started_meeting_queues_ad_hoc_recording(self) -> None:
+        """Matcher queues an ad-hoc bot when calendar data arrives five minutes late."""
         matcher = DealMeetingMatcher(uuid4())
         session = _FakeSession(rowcount=1)
         event = SimpleNamespace(
             event_id=uuid4(),
             conference_link="https://meet.google.com/abc-defg-hij",
             start_at=datetime.now(UTC) - timedelta(minutes=5),
+        )
+
+        created = await matcher._enqueue_meeting_recording(session, event)  # noqa: SLF001
+
+        assert created is True
+        assert matcher._pending_recording_event_ids == {event.event_id}  # noqa: SLF001
+
+    @pytest.mark.asyncio
+    async def test_meeting_past_late_join_window_does_not_queue_recording(self) -> None:
+        """Meetings older than 15 minutes cannot consume ad-hoc Recall capacity."""
+        matcher = DealMeetingMatcher(uuid4())
+        session = _FakeSession(rowcount=1)
+        event = SimpleNamespace(
+            event_id=uuid4(),
+            conference_link="https://meet.google.com/abc-defg-hij",
+            start_at=datetime.now(UTC) - timedelta(minutes=16),
         )
 
         created = await matcher._enqueue_meeting_recording(session, event)  # noqa: SLF001

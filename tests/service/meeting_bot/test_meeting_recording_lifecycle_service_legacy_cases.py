@@ -1183,7 +1183,7 @@ class TestMeetingRecordingLifecycleService:
             "provider_session_id": "bot_new",
         }
         provider.fetch_session.assert_awaited_once_with("bot_missing")
-        provider.list_sessions.assert_awaited_once()
+        assert provider.list_sessions.await_count == 2
         provider.create_session.assert_awaited_once()
         service._session_service.reset_for_resend_if_current.assert_awaited_once_with(  # noqa: SLF001
             session_id,

@@ -13,6 +13,9 @@ from typing import Any
 
 import httpx
 
+RECALL_RECONCILIATION_MAX_PAGES = 2
+RECALL_RECONCILIATION_MAX_BOTS = 100
+
 
 class RecallProviderError(RuntimeError):
     """Raised when a Recall API request fails."""
@@ -73,20 +76,48 @@ class RecallMeetingRecordingProvider:
         }
 
     @staticmethod
-    def _automatic_leave_config() -> dict[str, int]:
-        """Keep failed joins from staying in processing for Recall's longer defaults."""
+    def _automatic_leave_config() -> dict[str, Any]:
+        """Keep empty and bot-only calls from consuming recording capacity.
+
+        Recall treats another notetaker as a participant, so `noone_joined_timeout`
+        alone cannot end a call containing two bots. Name and activity heuristics
+        complement one another because participant events are less reliable on Meet.
+        """
         return {
             "waiting_room_timeout": 600,
             "noone_joined_timeout": 600,
             "in_call_not_recording_timeout": 300,
             "recording_permission_denied_timeout": 30,
+            "bot_detection": {
+                "using_participant_events": {
+                    "activate_after": 0,
+                    "timeout": 600,
+                },
+                "using_participant_names": {
+                    "matches": [
+                        "notetaker",
+                        "note taker",
+                        "recorder",
+                        "copilot",
+                        "otter",
+                        "fireflies",
+                        "fathom",
+                        "read.ai",
+                        "grain",
+                        "fellow",
+                        "tl;dv",
+                    ],
+                    "activate_after": 0,
+                    "timeout": 600,
+                },
+            },
         }
 
     async def create_session(
         self,
         *,
         meeting_url: str,
-        join_at: datetime,
+        join_at: datetime | None,
         metadata: dict[str, Any],
         bot_name: str = "Notetaker",
         recording_config: dict[str, Any] | None = None,
@@ -99,11 +130,14 @@ class RecallMeetingRecordingProvider:
         payload = {
             "meeting_url": meeting_url,
             "bot_name": bot_name,
-            "join_at": join_at.isoformat(),
             "metadata": metadata,
             "recording_config": recording_config or self._recording_config(),
             "automatic_leave": self._automatic_leave_config(),
         }
+        # Recall dispatches immediately when join_at is omitted. This is its
+        # documented ad-hoc path for meetings discovered less than ten minutes out.
+        if join_at is not None:
+            payload["join_at"] = join_at.isoformat()
         async with httpx.AsyncClient(timeout=self.timeout, headers=self._headers()) as client:
             # Use a short-lived client per call to avoid carrying shared TCP state
             # across unrelated dispatch tasks and keep retries safe.
@@ -159,6 +193,7 @@ class RecallMeetingRecordingProvider:
         *,
         join_at_after: datetime | None = None,
         meeting_url: str | None = None,
+        metadata: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         """List Recall bots for reconciliation and manual dedupe/adoption."""
         params: dict[str, str] = {}
@@ -166,11 +201,17 @@ class RecallMeetingRecordingProvider:
             params["join_at_after"] = join_at_after.isoformat()
         if meeting_url:
             params["meeting_url"] = meeting_url
+        for key, value in (metadata or {}).items():
+            params[f"metadata__{key}"] = value
 
         bots: list[dict[str, Any]] = []
+        pages_read = 0
         next_url: str | None = f"{self.base_url}/bot/"
         async with httpx.AsyncClient(timeout=self.timeout, headers=self._headers()) as client:
-            while next_url:
+            # Reconciliation is a safety lookup, not a workspace export. Bound the
+            # provider walk so a broad legacy query cannot pin a worker indefinitely.
+            while next_url and pages_read < RECALL_RECONCILIATION_MAX_PAGES:
+                pages_read += 1
                 response = await client.get(
                     next_url, params=params if next_url.endswith("/bot/") else None
                 )
@@ -179,9 +220,17 @@ class RecallMeetingRecordingProvider:
                     bots.extend(item for item in data if isinstance(item, dict))
                     break
                 bots.extend(item for item in data.get("results", []) if isinstance(item, dict))
-                next_url = data.get("next")
+                candidate_next_url = data.get("next")
+                next_url = (
+                    candidate_next_url
+                    if isinstance(candidate_next_url, str)
+                    and candidate_next_url.startswith(f"{self.base_url}/bot/")
+                    else None
+                )
                 params = {}
-        return bots
+                if len(bots) >= RECALL_RECONCILIATION_MAX_BOTS:
+                    break
+        return bots[:RECALL_RECONCILIATION_MAX_BOTS]
 
     async def fetch_transcript(self, download_url: str) -> list[dict[str, Any]]:
         """Download transcript artifact JSON from a Recall-provided URL."""

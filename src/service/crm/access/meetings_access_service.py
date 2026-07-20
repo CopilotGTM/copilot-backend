@@ -33,12 +33,17 @@ from src.service.integrations.calendar.integration_types import (
     PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPES as CALENDAR_INTEGRATION_TYPES,
 )
 from src.service.meeting_bot.display_status import meeting_recording_display_status
-from src.service.meeting_bot.lifecycle_service import MeetingRecordingLifecycleService
+from src.service.meeting_bot.lifecycle_service import (
+    MeetingRecordingLifecycleService,
+    can_reinvite_prejoin_locally,
+)
 from src.service.meeting_bot.policy import (
+    MEETING_RECORDING_POLICY_NEVER_REASON,
     evaluate_bot_join_policy,
     load_meeting_recording_policy_context,
 )
 from src.service.meeting_bot.providers import RecallProviderError
+from src.service.meeting_bot.recording_window import is_late_join_expired
 from src.service.meeting_bot.session_service import MeetingRecordingSessionService
 from src.service.orgnisation.organisation_preferences import BOT_JOIN_POLICY_ALL
 
@@ -339,15 +344,23 @@ class CRMMeetingsAccessService:
         *,
         policy_denial_reason: str | None = None,
     ) -> bool:
-        _ = policy_denial_reason
-        if (
-            session is not None
-            and _status_value(session.status) != MeetingRecordingStatus.FAILED.value
-        ):
-            return False
         if not event.conference_link:
             return False
-        return (event.status or "").lower() != "cancelled"
+        if policy_denial_reason == MEETING_RECORDING_POLICY_NEVER_REASON:
+            return False
+        if (event.status or "").lower() == "cancelled":
+            return False
+        now = datetime.now(UTC)
+        end_at = (
+            event.end_at.astimezone(UTC)
+            if event.end_at.tzinfo
+            else event.end_at.replace(tzinfo=UTC)
+        )
+        if end_at <= now:
+            return False
+        if session is None:
+            return not is_late_join_expired(event.start_at, now)
+        return can_reinvite_prejoin_locally(session)
 
     @staticmethod
     def _bot_policy_denial_reason(
@@ -390,6 +403,7 @@ class CRMMeetingRecordingControlService:
         return await self._lifecycle_service.schedule_for_event(
             event_id,
             source="crm_manual_invite",
+            allow_prejoin_reinvite=True,
             enforce_policy=False,
         )
 

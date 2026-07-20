@@ -69,9 +69,16 @@ from src.service.integrations.calendar.integration_types import (
     PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPES as CALENDAR_INTEGRATION_TYPES,
 )
 from src.service.meeting_bot.display_status import meeting_recording_display_status
-from src.service.meeting_bot.lifecycle_service import MeetingRecordingLifecycleService
-from src.service.meeting_bot.policy import evaluate_bot_join_policy
-from src.service.meeting_bot.providers import RecallMeetingRecordingProvider
+from src.service.meeting_bot.lifecycle_service import (
+    MeetingRecordingLifecycleService,
+    can_reinvite_prejoin_locally,
+)
+from src.service.meeting_bot.policy import (
+    MEETING_RECORDING_POLICY_NEVER_REASON,
+    evaluate_bot_join_policy,
+)
+from src.service.meeting_bot.providers import RecallMeetingRecordingProvider, RecallProviderError
+from src.service.meeting_bot.recording_window import is_late_join_expired
 from src.service.orgnisation.organisation_preferences import (
     BOT_JOIN_POLICY_ALL,
     normalize_organisation_preferences,
@@ -337,12 +344,24 @@ class MeetingsTabService:
             raise MeetingsTabServiceError(exc.message, exc.status_code) from exc
         if cleanup_result is not None and cleanup_result.get("status") != "cancelled":
             return cleanup_result
-        return await MeetingRecordingLifecycleService(self.organisation_id).schedule_for_event(
-            event_id,
-            source="meetings_tab_manual_invite",
-            allow_cancelled_reinvite=True,
-            enforce_policy=enforce_policy,
-        )
+        try:
+            return await MeetingRecordingLifecycleService(self.organisation_id).schedule_for_event(
+                event_id,
+                source="meetings_tab_manual_invite",
+                allow_cancelled_reinvite=True,
+                allow_prejoin_reinvite=True,
+                enforce_policy=enforce_policy,
+            )
+        except RecallProviderError as exc:
+            # Recall can exhaust its warm ad-hoc bot pool during demand spikes.
+            # Keep this retryable so the UI can offer another attempt while live.
+            if exc.status_code == 507:
+                raise MeetingsTabServiceError(
+                    "Recall bot capacity is temporarily unavailable. Please try again.",
+                    503,
+                    code="recall_ad_hoc_capacity_unavailable",
+                ) from exc
+            raise
 
     async def cancel_bot(self, event_id: UUID) -> dict[str, Any]:
         """Cancel a scheduled Recall bot after proving current-user event ownership."""
@@ -982,14 +1001,21 @@ class MeetingsTabService:
         recording: MeetingRecordingSession | None,
         policy_denial_reason: str | None = None,
     ) -> bool:
-        _ = policy_denial_reason
         if not event.conference_link:
+            return False
+        if policy_denial_reason == MEETING_RECORDING_POLICY_NEVER_REASON:
             return False
         start_at = event.start_at
         if start_at.tzinfo is None:
             start_at = start_at.replace(tzinfo=UTC)
-        if start_at <= datetime.now(UTC):
-            return False
+        now = datetime.now(UTC)
+        if is_late_join_expired(start_at, now):
+            end_at = getattr(event, "end_at", None)
+            if not isinstance(end_at, datetime):
+                return False
+            if end_at.tzinfo is None:
+                end_at = end_at.replace(tzinfo=UTC)
+            return end_at > now and can_reinvite_prejoin_locally(recording)
         if recording is None:
             return True
         status = MeetingsTabService._enum_value(recording.status)
@@ -997,7 +1023,8 @@ class MeetingsTabService:
             return not bool((recording.provider_payload or {}).get("last_cancel_error"))
         return status in {
             MeetingRecordingStatus.FAILED.value,
-        }
+            MeetingRecordingStatus.COMPLETED.value,
+        } and can_reinvite_prejoin_locally(recording)
 
     @staticmethod
     def _is_external_meeting(event: CalendarEvent, org_domains: set[str]) -> bool:

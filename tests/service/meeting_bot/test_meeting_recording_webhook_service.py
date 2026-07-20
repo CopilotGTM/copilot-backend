@@ -67,6 +67,8 @@ async def test_bot_in_call_recording_updates_session_status(monkeypatch) -> None
     assert kwargs["status"] == MeetingRecordingStatus.IN_CALL
     assert kwargs["transcript_status"] is None
     assert kwargs["provider_status"] == "in_call_recording"
+    assert kwargs["provider_payload"]["first_in_call_at"] == "2026-04-23T12:00:00+00:00"
+    assert kwargs["provider_payload"]["first_recording_started_at"] == ("2026-04-23T12:00:00+00:00")
 
 
 @pytest.mark.asyncio
