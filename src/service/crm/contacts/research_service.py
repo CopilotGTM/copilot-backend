@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.service.crm.utils.account import normalize_linkedin_url
 from src.service.crm.utils.identity import normalize_email
 from src.service.enrichment.apollo import apollo_enrich_person
 
@@ -37,6 +38,9 @@ ContactProviderLookup = Callable[
 
 PROFILE_RAW_KEY = "_raw"
 PROFILE_METADATA_KEY = "_metadata"
+RAW_EVIDENCE_KEY = "evidence_by_identity"
+CUMULATIVE_EVIDENCE_HASH_KEY = "cumulative_evidence_hash"
+RAW_ENVELOPE_SCHEMA_VERSION = 1
 PROFILE_SCHEMA_VERSION = 2
 CONTACT_RESEARCH_PROMPT_VERSION = "contact_career_v1"
 CONTACT_RESEARCH_JOB_STALE_AFTER = timedelta(minutes=5)
@@ -91,6 +95,10 @@ class ContactResearchEvidenceError(ValueError):
 
 class ContactResearchEvidenceTooLargeError(ContactResearchEvidenceError):
     """Raised before an oversized provider fact pack can reach the model."""
+
+
+class ContactResearchIdentityConflictError(ContactResearchEvidenceError):
+    """Raised when cumulative evidence resolves to more than one Apollo person."""
 
 
 class ContactProfileEnrichmentTooLargeError(ValueError):
@@ -166,7 +174,8 @@ class ContactResearchService:
             contact.profile_enriched_at = now
             contact.profile_enrichment_source = result.enrichment_source or "apollo"
             existing = dict(contact.profile_enrichment or {})
-            metadata = dict(existing.get(PROFILE_METADATA_KEY) or {})
+            existing_metadata = existing.get(PROFILE_METADATA_KEY)
+            metadata = dict(existing_metadata) if isinstance(existing_metadata, dict) else {}
             metadata["last_attempt"] = {
                 "status": "not_found",
                 "attempted_at": now.isoformat(),
@@ -184,7 +193,6 @@ class ContactResearchService:
                     "error_detail": result.error_detail,
                     PROFILE_METADATA_KEY: metadata,
                 }
-                contact.contact_research = None
             if commit:
                 await self.session.commit()
             else:
@@ -194,19 +202,16 @@ class ContactResearchService:
         if result.status != "found":
             return False
 
-        previous_payload_hash = profile_payload_hash(contact.profile_enrichment)
         new_enrichment = dict(result.profile_enrichment or {})
-        new_payload_hash = profile_payload_hash(new_enrichment)
 
         contact.profile_enriched_at = now
         contact.profile_enrichment_source = result.enrichment_source or "apollo"
-        contact.profile_enrichment = new_enrichment
-
-        if contact.contact_research and new_payload_hash != previous_payload_hash:
-            # A summary is evidence-derived, so a changed provider object makes
-            # the old markdown unsafe for cards and downstream stakeholder agents.
-            contact.contact_research = None
-            contact.last_researched_at = None
+        # Keep the last good summary visible until the workflow successfully synthesizes the
+        # complete evidence set. Provider or model failures must not regress the contact card.
+        contact.profile_enrichment = _merge_profile_enrichment(
+            contact.profile_enrichment,
+            new_enrichment,
+        )
 
         if self._should_fill(contact.full_name, result.name):
             contact.full_name = result.name
@@ -334,6 +339,11 @@ async def research_contact_with_apollo(
 
     job_title = _resolve_job_title(result)
     result["match_source"] = _match_source(payload)
+    result["identity_kind"] = _identity_kind(payload.email, payload.linkedin_url)
+    result["identity_fingerprint"] = _identity_fingerprint(
+        payload.email,
+        payload.linkedin_url,
+    )
     try:
         profile_enrichment = _profile_enrichment(result, job_title)
     except ContactProfileEnrichmentTooLargeError:
@@ -388,6 +398,8 @@ def _profile_enrichment(profile: dict[str, Any], job_title: str | None) -> dict[
     enrichment[PROFILE_METADATA_KEY] = {
         "captured_at": datetime.now(UTC).isoformat(),
         "match_source": profile.get("match_source"),
+        "identity_kind": profile.get("identity_kind"),
+        "identity_fingerprint": profile.get("identity_fingerprint"),
         **raw_metadata,
     }
     if _json_size(enrichment) > PROFILE_ENRICHMENT_MAX_BYTES:
@@ -402,6 +414,170 @@ def _profile_enrichment(profile: dict[str, Any], job_title: str | None) -> dict[
     return enrichment
 
 
+def _merge_profile_enrichment(
+    existing_profile: dict[str, Any] | None,
+    new_profile: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist the latest compatibility fields plus cumulative private evidence.
+
+    Contact APIs continue reading the flat normalized fields. The summary agent reads the
+    private per-identity fact packs, so lookup order cannot erase a richer earlier result.
+    """
+    existing = dict(existing_profile or {})
+    merged = public_profile_enrichment(existing)
+    merged.pop("status", None)
+    merged.pop("error_detail", None)
+    for key, value in public_profile_enrichment(new_profile).items():
+        if value not in (None, "", [], {}):
+            merged[key] = value
+
+    evidence = _evidence_entries(existing)
+    new_entry = _evidence_entry(new_profile)
+    if new_entry:
+        fingerprint, entry = new_entry
+        previous = evidence.get(fingerprint)
+        if isinstance(previous, dict):
+            entry["fact_pack"] = _merge_fact_packs(
+                previous.get("fact_pack") if isinstance(previous.get("fact_pack"), dict) else {},
+                entry["fact_pack"],
+            )
+        evidence[fingerprint] = entry
+
+    existing_metadata = existing.get(PROFILE_METADATA_KEY)
+    new_metadata = new_profile.get(PROFILE_METADATA_KEY)
+    retained_metadata = dict(existing_metadata) if isinstance(existing_metadata, dict) else {}
+    if retained_metadata.get("raw_omitted_reason") == "combined_profile_too_large":
+        retained_metadata.pop("raw_omitted_reason")
+    retained_metadata.pop("raw_omitted_fingerprints", None)
+    metadata = {
+        **retained_metadata,
+        **(new_metadata if isinstance(new_metadata, dict) else {}),
+        RAW_EVIDENCE_KEY: evidence,
+        CUMULATIVE_EVIDENCE_HASH_KEY: _cumulative_evidence_hash(evidence),
+    }
+    merged[PROFILE_METADATA_KEY] = metadata
+
+    raw_entries = _raw_evidence_entries(existing)
+    raw_entries.update(_raw_evidence_entries(new_profile))
+    if raw_entries:
+        merged[PROFILE_RAW_KEY] = {
+            "schema_version": RAW_ENVELOPE_SCHEMA_VERSION,
+            RAW_EVIDENCE_KEY: raw_entries,
+        }
+    return _fit_profile_enrichment_limit(merged)
+
+
+def _evidence_entries(profile: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Read cumulative evidence or lazily wrap one legacy provider profile."""
+    metadata = profile.get(PROFILE_METADATA_KEY)
+    stored = metadata.get(RAW_EVIDENCE_KEY) if isinstance(metadata, dict) else None
+    if isinstance(stored, dict):
+        return {key: dict(value) for key, value in stored.items() if isinstance(value, dict)}
+    if not profile or profile.get("status") == "not_found":
+        return {}
+    entry = _evidence_entry(profile)
+    return {entry[0]: entry[1]} if entry else {}
+
+
+def _evidence_entry(profile: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    """Build one bounded evidence record from a successful normalized provider profile."""
+    if not profile or profile.get("status") == "not_found":
+        return None
+    fact_pack = _build_single_contact_research_fact_pack(profile)
+    metadata = profile.get(PROFILE_METADATA_KEY)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    payload_hash = metadata.get("payload_hash")
+    if not isinstance(payload_hash, str):
+        payload_hash = hashlib.sha256(_canonical_json(fact_pack)).hexdigest()
+    fingerprint = metadata.get("identity_fingerprint")
+    if not isinstance(fingerprint, str) or not fingerprint:
+        fingerprint = f"legacy:{payload_hash}"
+    identity_kind = metadata.get("identity_kind")
+    if not isinstance(identity_kind, str) or not identity_kind:
+        identity_kind = _identity_kind_from_match_source(profile.get("match_source"))
+    apollo_id = profile.get("apollo_id")
+    return fingerprint, {
+        "identity_kind": identity_kind,
+        "captured_at": metadata.get("captured_at") or datetime.now(UTC).isoformat(),
+        "payload_hash": payload_hash,
+        "apollo_id": str(apollo_id) if apollo_id else None,
+        "fact_pack": fact_pack,
+    }
+
+
+def _raw_evidence_entries(profile: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return raw evidence in the new envelope shape, wrapping legacy `_raw` once."""
+    raw = profile.get(PROFILE_RAW_KEY)
+    if not isinstance(raw, dict):
+        return {}
+    stored = raw.get(RAW_EVIDENCE_KEY)
+    if raw.get("schema_version") == RAW_ENVELOPE_SCHEMA_VERSION and isinstance(stored, dict):
+        return {key: dict(value) for key, value in stored.items() if isinstance(value, dict)}
+
+    entry = _evidence_entry(profile)
+    if not entry:
+        return {}
+    fingerprint, evidence = entry
+    return {
+        fingerprint: {
+            "identity_kind": evidence["identity_kind"],
+            "captured_at": evidence["captured_at"],
+            "payload_hash": evidence["payload_hash"],
+            "payload": raw,
+        }
+    }
+
+
+def _cumulative_evidence_hash(evidence: dict[str, dict[str, Any]]) -> str:
+    """Hash summary-relevant evidence so stale workers cannot overwrite newer prose."""
+    stable_evidence = {
+        fingerprint: {
+            "identity_kind": entry.get("identity_kind"),
+            "payload_hash": entry.get("payload_hash"),
+            "apollo_id": entry.get("apollo_id"),
+            "fact_pack": entry.get("fact_pack"),
+        }
+        for fingerprint, entry in evidence.items()
+    }
+    return hashlib.sha256(_canonical_json(stable_evidence)).hexdigest()
+
+
+def _fit_profile_enrichment_limit(profile: dict[str, Any]) -> dict[str, Any]:
+    """Keep the richest raw payload when the cumulative envelope crosses the row guard."""
+    if _json_size(profile) <= PROFILE_ENRICHMENT_MAX_BYTES:
+        return profile
+
+    metadata = dict(profile.get(PROFILE_METADATA_KEY) or {})
+    evidence = metadata.get(RAW_EVIDENCE_KEY)
+    raw = profile.get(PROFILE_RAW_KEY)
+    raw_entries = raw.get(RAW_EVIDENCE_KEY) if isinstance(raw, dict) else None
+    if isinstance(evidence, dict) and isinstance(raw_entries, dict) and raw_entries:
+        richest = max(
+            raw_entries,
+            key=lambda fingerprint: len(
+                _canonical_json((evidence.get(fingerprint) or {}).get("fact_pack") or {})
+            ),
+        )
+        omitted = sorted(set(raw_entries) - {richest})
+        profile[PROFILE_RAW_KEY] = {
+            "schema_version": RAW_ENVELOPE_SCHEMA_VERSION,
+            RAW_EVIDENCE_KEY: {richest: raw_entries[richest]},
+        }
+        metadata["raw_omitted_reason"] = "combined_profile_too_large"
+        metadata["raw_omitted_fingerprints"] = omitted
+        profile[PROFILE_METADATA_KEY] = metadata
+
+    if _json_size(profile) > PROFILE_ENRICHMENT_MAX_BYTES:
+        profile.pop(PROFILE_RAW_KEY, None)
+        metadata["raw_omitted_reason"] = "combined_profile_too_large"
+        profile[PROFILE_METADATA_KEY] = metadata
+    if _json_size(profile) > PROFILE_ENRICHMENT_MAX_BYTES:
+        raise ContactProfileEnrichmentTooLargeError(
+            f"Cumulative profile exceeds {PROFILE_ENRICHMENT_MAX_BYTES} bytes"
+        )
+    return profile
+
+
 def public_profile_enrichment(profile: dict[str, Any] | None) -> dict[str, Any]:
     """Return the stable enrichment contract without backend-only evidence keys."""
     return {key: value for key, value in (profile or {}).items() if not key.startswith("_")}
@@ -413,7 +589,7 @@ def profile_payload_hash(profile: dict[str, Any] | None) -> str | None:
         return None
     metadata = profile.get(PROFILE_METADATA_KEY)
     if isinstance(metadata, dict):
-        value = metadata.get("payload_hash")
+        value = metadata.get(CUMULATIVE_EVIDENCE_HASH_KEY) or metadata.get("payload_hash")
         if isinstance(value, str):
             return value
 
@@ -432,7 +608,47 @@ def profile_payload_hash(profile: dict[str, Any] | None) -> str | None:
 
 
 def build_contact_research_fact_pack(profile: dict[str, Any]) -> dict[str, Any]:
-    """Select career-complete provider facts for the summary agent.
+    """Combine every successful identity lookup into one bounded summary input.
+
+    New profiles keep fact packs per identity fingerprint in private metadata. Legacy
+    profiles still use the original single-payload path until their next successful refresh.
+    """
+    metadata = profile.get(PROFILE_METADATA_KEY)
+    evidence = metadata.get(RAW_EVIDENCE_KEY) if isinstance(metadata, dict) else None
+    if not isinstance(evidence, dict) or not evidence:
+        return _build_single_contact_research_fact_pack(profile)
+
+    entries = [entry for entry in evidence.values() if isinstance(entry, dict)]
+    apollo_ids = {
+        str(apollo_id)
+        for entry in entries
+        if (apollo_id := entry.get("apollo_id"))
+    }
+    if len(apollo_ids) > 1:
+        # Combining two Apollo people would create a plausible but false career history.
+        # Preserve both evidence entries for review, but refuse to generate mixed prose.
+        raise ContactResearchIdentityConflictError(
+            "Cumulative contact evidence resolved to multiple Apollo people"
+        )
+
+    ordered_entries = sorted(
+        entries,
+        key=lambda entry: (
+            _identity_strength(str(entry.get("identity_kind") or "legacy")),
+            str(entry.get("captured_at") or ""),
+        ),
+    )
+    combined: dict[str, Any] = {}
+    for entry in ordered_entries:
+        fact_pack = entry.get("fact_pack")
+        if isinstance(fact_pack, dict):
+            combined = _merge_fact_packs(combined, fact_pack)
+    _validate_fact_pack_size(combined)
+    return combined
+
+
+def _build_single_contact_research_fact_pack(profile: dict[str, Any]) -> dict[str, Any]:
+    """Select career-complete facts from one legacy or newly normalized provider profile.
 
     The full provider object stays durable in JSONB, while this bounded view
     keeps unrelated Apollo internals and verbose nested objects out of model input.
@@ -499,28 +715,69 @@ def build_contact_research_fact_pack(profile: dict[str, Any]) -> dict[str, Any]:
             source.get("certifications"),
             _CERTIFICATION_FACT_KEYS,
         ),
+        "professional_links": [
+            {"platform": "linkedin", "url": linkedin_url}
+            for linkedin_url in [source.get("linkedin_url")]
+            if isinstance(linkedin_url, str) and linkedin_url.startswith("https://")
+        ],
     }
     fact_pack = {key: value for key, value in fact_pack.items() if value}
+    _validate_fact_pack_size(fact_pack)
+    return fact_pack
+
+
+def _validate_fact_pack_size(fact_pack: dict[str, Any]) -> None:
+    """Reject unsafe or oversized model evidence without truncating career history."""
     try:
-        encoded = json.dumps(
-            fact_pack,
-            allow_nan=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
+        encoded = _canonical_json(fact_pack)
     except (TypeError, ValueError) as exc:
         raise ContactResearchEvidenceError("Contact research evidence is not safe JSON") from exc
-    if len(encoded) > RESEARCH_FACT_PACK_MAX_BYTES:
-        # Do not truncate career history: an incomplete profile would violate
-        # the user-facing contract. Keep the raw evidence and fail only summary generation.
-        logger.warning(
-            "Contact research fact pack exceeds recommended size",
-            extra={"event": "contact_research_fact_pack_large", "payload_bytes": len(encoded)},
-        )
-        raise ContactResearchEvidenceTooLargeError(
-            f"Contact research evidence exceeds {RESEARCH_FACT_PACK_MAX_BYTES} bytes"
-        )
-    return fact_pack
+    if len(encoded) <= RESEARCH_FACT_PACK_MAX_BYTES:
+        return
+    # An incomplete history is worse than no refreshed summary. Durable evidence and the last
+    # good summary remain available when the bounded model input cannot be produced safely.
+    logger.warning(
+        "Contact research fact pack exceeds recommended size",
+        extra={"event": "contact_research_fact_pack_large", "payload_bytes": len(encoded)},
+    )
+    raise ContactResearchEvidenceTooLargeError(
+        f"Contact research evidence exceeds {RESEARCH_FACT_PACK_MAX_BYTES} bytes"
+    )
+
+
+def _merge_fact_packs(existing: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+    """Union two bounded fact packs while letting the higher-priority pack win scalars."""
+    merged = dict(existing)
+    for key in ("person", "organization"):
+        old_value = merged.get(key)
+        new_value = new.get(key)
+        if isinstance(old_value, dict) or isinstance(new_value, dict):
+            merged[key] = {
+                **(old_value if isinstance(old_value, dict) else {}),
+                **(new_value if isinstance(new_value, dict) else {}),
+            }
+
+    list_keys = (
+        "employment_history",
+        "education",
+        "affiliations",
+        "volunteer_experiences",
+        "certifications",
+        "professional_links",
+    )
+    for key in list_keys:
+        records = [
+            *(_list_value(merged.get(key))),
+            *(_list_value(new.get(key))),
+        ]
+        if records:
+            # Canonical JSON keeps dedupe stable across provider key ordering and worker retries.
+            merged[key] = list({_canonical_json(record): record for record in records}.values())
+    return {key: value for key, value in merged.items() if value}
+
+
+def _list_value(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
 
 
 def _prepare_raw_payload(raw: Any) -> tuple[dict[str, Any] | None, dict[str, Any]]:
@@ -559,16 +816,19 @@ def _prepare_raw_payload(raw: Any) -> tuple[dict[str, Any] | None, dict[str, Any
 def _json_size(value: Any) -> int:
     """Return canonical UTF-8 size for values already validated as provider JSON."""
     try:
-        return len(
-            json.dumps(
-                value,
-                allow_nan=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        )
+        return len(_canonical_json(value))
     except (TypeError, ValueError) as exc:
         raise ContactProfileEnrichmentTooLargeError("Provider profile is not valid JSON") from exc
+
+
+def _canonical_json(value: Any) -> bytes:
+    """Encode provider evidence deterministically for hashes, dedupe, and size checks."""
+    return json.dumps(
+        value,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
 
 
 def _select_non_empty(source: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
@@ -645,6 +905,47 @@ def _match_source(payload: ContactProviderResearchInput) -> str | None:
     if payload.name:
         return "name"
     return None
+
+
+def _identity_kind(email: str | None, linkedin_url: str | None) -> str:
+    """Name the provider-input combination without storing identity PII in metadata."""
+    if email and linkedin_url:
+        return "email+linkedin"
+    if linkedin_url:
+        return "linkedin-only"
+    if email:
+        return "email-only"
+    return "name-only"
+
+
+def _identity_fingerprint(email: str | None, linkedin_url: str | None) -> str:
+    """Return a stable opaque key for one set-once contact identity combination."""
+    normalized = {
+        "email": normalize_email(email),
+        "linkedin_url": normalize_linkedin_url(linkedin_url),
+    }
+    return hashlib.sha256(_canonical_json(normalized)).hexdigest()
+
+
+def _identity_kind_from_match_source(match_source: Any) -> str:
+    if match_source == "linkedin_url":
+        return "linkedin-only"
+    if match_source == "email":
+        return "email-only"
+    if match_source == "name":
+        return "name-only"
+    return "legacy"
+
+
+def _identity_strength(identity_kind: str) -> int:
+    """Rank evidence for scalar conflicts while list-shaped career facts remain cumulative."""
+    return {
+        "legacy": 0,
+        "name-only": 0,
+        "email-only": 1,
+        "linkedin-only": 2,
+        "email+linkedin": 3,
+    }.get(identity_kind, 0)
 
 
 def _is_current_role(role: dict[str, Any]) -> bool:

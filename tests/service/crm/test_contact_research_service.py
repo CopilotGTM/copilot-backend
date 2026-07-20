@@ -12,16 +12,19 @@ from uuid import uuid4
 import pytest
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.service.crm.contacts.research_service import (
+    CUMULATIVE_EVIDENCE_HASH_KEY,
     MAX_CONTACT_RESEARCH_CHARS,
     PROFILE_ENRICHMENT_MAX_BYTES,
     PROFILE_METADATA_KEY,
     PROFILE_RAW_KEY,
+    RAW_EVIDENCE_KEY,
     RAW_PAYLOAD_MAX_BYTES,
     RESEARCH_FACT_PACK_MAX_BYTES,
     ContactProfileEnrichmentTooLargeError,
     ContactProviderResearchInput,
     ContactProviderResearchResult,
     ContactResearchEvidenceTooLargeError,
+    ContactResearchIdentityConflictError,
     ContactResearchService,
     ContactResearchSummaryResult,
     _profile_enrichment,
@@ -297,6 +300,424 @@ def test_fact_pack_rejects_oversized_model_input_without_truncating_career() -> 
 
 
 @pytest.mark.asyncio
+async def test_successive_identity_lookups_preserve_both_raw_payloads_and_facts() -> None:
+    """A weaker email refresh must not erase career facts captured from LinkedIn first."""
+    organisation_id = uuid4()
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        linkedin_url="https://linkedin.com/in/ada-buyer",
+    )
+    service = ContactResearchService(_WriteSession(contact), organisation_id)
+    linkedin_profile = _profile_enrichment(
+        {
+            "apollo_id": "person_123",
+            "match_source": "linkedin_url",
+            "identity_kind": "linkedin-only",
+            "identity_fingerprint": "linkedin-fingerprint",
+            "raw": {
+                "id": "person_123",
+                "name": "Ada Buyer",
+                "linkedin_url": "https://linkedin.com/in/ada-buyer",
+                "employment_history": [
+                    {
+                        "title": "Engineer",
+                        "organization_name": "Early Co",
+                        "start_date": "2010",
+                    }
+                ],
+            },
+        },
+        "Engineer",
+    )
+    combined_profile = _profile_enrichment(
+        {
+            "apollo_id": "person_123",
+            "match_source": "linkedin_url",
+            "identity_kind": "email+linkedin",
+            "identity_fingerprint": "combined-fingerprint",
+            "raw": {
+                "id": "person_123",
+                "name": "Ada Buyer",
+                "organization": {"name": "Acme"},
+            },
+        },
+        None,
+    )
+
+    await service.persist_provider_result(
+        contact.contact_id,
+        ContactProviderResearchResult(
+            status="found",
+            enrichment_source="apollo",
+            profile_enrichment=linkedin_profile,
+        ),
+    )
+    await service.persist_provider_result(
+        contact.contact_id,
+        ContactProviderResearchResult(
+            status="found",
+            enrichment_source="apollo",
+            profile_enrichment=combined_profile,
+        ),
+    )
+
+    raw_entries = contact.profile_enrichment[PROFILE_RAW_KEY][RAW_EVIDENCE_KEY]
+    evidence = contact.profile_enrichment[PROFILE_METADATA_KEY][RAW_EVIDENCE_KEY]
+    fact_pack = build_contact_research_fact_pack(contact.profile_enrichment)
+    assert set(raw_entries) == {"linkedin-fingerprint", "combined-fingerprint"}
+    assert set(evidence) == {"linkedin-fingerprint", "combined-fingerprint"}
+    assert fact_pack["employment_history"] == [
+        {"title": "Engineer", "organization_name": "Early Co", "start_date": "2010"}
+    ]
+    assert fact_pack["organization"] == {"name": "Acme"}
+    assert len(contact.profile_enrichment[PROFILE_METADATA_KEY][CUMULATIVE_EVIDENCE_HASH_KEY]) == 64
+
+
+@pytest.mark.asyncio
+async def test_email_then_linkedin_lookup_keeps_email_only_facts() -> None:
+    """Adding stronger LinkedIn evidence later must extend, not replace, email research."""
+    organisation_id = uuid4()
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="ada@acme.com",
+    )
+    service = ContactResearchService(_WriteSession(contact), organisation_id)
+    profiles = [
+        _profile_enrichment(
+            {
+                "apollo_id": "person_123",
+                "identity_kind": "email-only",
+                "identity_fingerprint": "email-fingerprint",
+                "raw": {
+                    "id": "person_123",
+                    "education": [{"degree": "BSc", "school_name": "Example University"}],
+                },
+            },
+            None,
+        ),
+        _profile_enrichment(
+            {
+                "apollo_id": "person_123",
+                "identity_kind": "email+linkedin",
+                "identity_fingerprint": "combined-fingerprint",
+                "raw": {
+                    "id": "person_123",
+                    "employment_history": [
+                        {
+                            "title": "VP Engineering",
+                            "organization_name": "Acme",
+                            "start_date": "2022",
+                        }
+                    ],
+                },
+            },
+            "VP Engineering",
+        ),
+    ]
+
+    for profile in profiles:
+        await service.persist_provider_result(
+            contact.contact_id,
+            ContactProviderResearchResult(
+                status="found",
+                enrichment_source="apollo",
+                profile_enrichment=profile,
+            ),
+        )
+
+    fact_pack = build_contact_research_fact_pack(contact.profile_enrichment)
+    assert fact_pack["education"] == [
+        {"degree": "BSc", "school_name": "Example University"}
+    ]
+    assert fact_pack["employment_history"] == [
+        {
+            "title": "VP Engineering",
+            "organization_name": "Acme",
+            "start_date": "2022",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_provider_miss_preserves_successful_raw_evidence_and_summary() -> None:
+    """A miss for a newly added identity cannot regress the last successful research."""
+    organisation_id = uuid4()
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        contact_research="Existing LinkedIn research",
+    )
+    service = ContactResearchService(_WriteSession(contact), organisation_id)
+    profile = _profile_enrichment(
+        {
+            "apollo_id": "person_123",
+            "identity_kind": "linkedin-only",
+            "identity_fingerprint": "linkedin-fingerprint",
+            "raw": {"id": "person_123", "name": "Ada Buyer"},
+        },
+        None,
+    )
+    await service.persist_provider_result(
+        contact.contact_id,
+        ContactProviderResearchResult(
+            status="found",
+            enrichment_source="apollo",
+            profile_enrichment=profile,
+        ),
+    )
+    raw_before = contact.profile_enrichment[PROFILE_RAW_KEY]
+
+    await service.persist_provider_result(
+        contact.contact_id,
+        ContactProviderResearchResult(
+            status="not_found",
+            enrichment_source="apollo",
+            error_detail="No matching person found",
+        ),
+    )
+
+    assert contact.contact_research == "Existing LinkedIn research"
+    assert contact.profile_enrichment[PROFILE_RAW_KEY] == raw_before
+    assert contact.profile_enrichment[PROFILE_METADATA_KEY]["last_attempt"]["status"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_successful_refresh_replaces_prior_not_found_marker() -> None:
+    """A later match must become cacheable after an earlier provider miss."""
+    organisation_id = uuid4()
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        profile_enrichment={"provider": "apollo", "status": "not_found"},
+    )
+    profile = _profile_enrichment(
+        {
+            "apollo_id": "person_123",
+            "identity_kind": "email+linkedin",
+            "identity_fingerprint": "combined-fingerprint",
+            "raw": {"id": "person_123", "name": "Ada Buyer"},
+        },
+        None,
+    )
+
+    await ContactResearchService(
+        _WriteSession(contact), organisation_id
+    ).persist_provider_result(
+        contact.contact_id,
+        ContactProviderResearchResult(
+            status="found",
+            enrichment_source="apollo",
+            profile_enrichment=profile,
+        ),
+    )
+
+    assert "status" not in contact.profile_enrichment
+    assert "error_detail" not in contact.profile_enrichment
+
+
+@pytest.mark.asyncio
+async def test_repeated_identity_lookup_deduplicates_cumulative_history() -> None:
+    """Retrying one identity combination may add facts but must not duplicate old records."""
+    organisation_id = uuid4()
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="ada@acme.com",
+    )
+    service = ContactResearchService(_WriteSession(contact), organisation_id)
+
+    for suffix in ("first", "second"):
+        profile = _profile_enrichment(
+            {
+                "apollo_id": "person_123",
+                "identity_kind": "email-only",
+                "identity_fingerprint": "email-fingerprint",
+                "raw": {
+                    "id": "person_123",
+                    "employment_history": [
+                        {
+                            "title": "Engineer",
+                            "organization_name": "Acme",
+                            "start_date": "2020",
+                        }
+                    ],
+                    "request_marker": suffix,
+                },
+            },
+            "Engineer",
+        )
+        await service.persist_provider_result(
+            contact.contact_id,
+            ContactProviderResearchResult(
+                status="found",
+                enrichment_source="apollo",
+                profile_enrichment=profile,
+            ),
+        )
+
+    evidence = contact.profile_enrichment[PROFILE_METADATA_KEY][RAW_EVIDENCE_KEY]
+    fact_pack = build_contact_research_fact_pack(contact.profile_enrichment)
+    assert list(evidence) == ["email-fingerprint"]
+    assert len(fact_pack["employment_history"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_cumulative_evidence_rejects_different_apollo_people() -> None:
+    """Email and LinkedIn matches for different people must never become one biography."""
+    organisation_id = uuid4()
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        email="ada@acme.com",
+    )
+    service = ContactResearchService(_WriteSession(contact), organisation_id)
+
+    for fingerprint, apollo_id in (("email-fingerprint", "person_1"), ("both", "person_2")):
+        profile = _profile_enrichment(
+            {
+                "apollo_id": apollo_id,
+                "identity_kind": "email-only" if fingerprint == "email-fingerprint" else "email+linkedin",
+                "identity_fingerprint": fingerprint,
+                "raw": {"id": apollo_id, "name": "Ada Buyer"},
+            },
+            None,
+        )
+        await service.persist_provider_result(
+            contact.contact_id,
+            ContactProviderResearchResult(
+                status="found",
+                enrichment_source="apollo",
+                profile_enrichment=profile,
+            ),
+        )
+
+    with pytest.raises(ContactResearchIdentityConflictError):
+        build_contact_research_fact_pack(contact.profile_enrichment)
+
+
+@pytest.mark.asyncio
+async def test_legacy_raw_payload_is_wrapped_on_next_successful_refresh() -> None:
+    """Existing schema-v2 profiles migrate lazily without a database backfill."""
+    organisation_id = uuid4()
+    legacy_raw = {"id": "person_123", "name": "Ada Buyer"}
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+        profile_enrichment={
+            "provider": "apollo",
+            "apollo_id": "person_123",
+            PROFILE_RAW_KEY: legacy_raw,
+            PROFILE_METADATA_KEY: {"payload_hash": "legacy-hash"},
+        },
+    )
+    service = ContactResearchService(_WriteSession(contact), organisation_id)
+    refreshed = _profile_enrichment(
+        {
+            "apollo_id": "person_123",
+            "identity_kind": "linkedin-only",
+            "identity_fingerprint": "linkedin-fingerprint",
+            "raw": {"id": "person_123", "name": "Ada Buyer", "headline": "Builder"},
+        },
+        None,
+    )
+
+    await service.persist_provider_result(
+        contact.contact_id,
+        ContactProviderResearchResult(
+            status="found",
+            enrichment_source="apollo",
+            profile_enrichment=refreshed,
+        ),
+    )
+
+    raw_entries = contact.profile_enrichment[PROFILE_RAW_KEY][RAW_EVIDENCE_KEY]
+    assert raw_entries["legacy:legacy-hash"]["payload"] == legacy_raw
+    assert raw_entries["linkedin-fingerprint"]["payload"]["headline"] == "Builder"
+
+
+@pytest.mark.asyncio
+async def test_cumulative_raw_envelope_keeps_richest_payload_when_combined_limit_is_crossed() -> None:
+    """Oversized cumulative raw data falls back without dropping either bounded fact pack."""
+    organisation_id = uuid4()
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=uuid4(),
+    )
+    service = ContactResearchService(_WriteSession(contact), organisation_id)
+    for fingerprint, biography_size, history in (
+        ("email-fingerprint", 700_000, []),
+        (
+            "combined-fingerprint",
+            700_000,
+            [{"title": "VP Engineering", "organization_name": "Acme"}],
+        ),
+    ):
+        profile = _profile_enrichment(
+            {
+                "apollo_id": "person_123",
+                "identity_kind": (
+                    "email-only" if fingerprint == "email-fingerprint" else "email+linkedin"
+                ),
+                "identity_fingerprint": fingerprint,
+                "raw": {
+                    "id": "person_123",
+                    "biography": "x" * biography_size,
+                    "employment_history": history,
+                },
+            },
+            "VP Engineering" if history else None,
+        )
+        await service.persist_provider_result(
+            contact.contact_id,
+            ContactProviderResearchResult(
+                status="found",
+                enrichment_source="apollo",
+                profile_enrichment=profile,
+            ),
+        )
+
+    metadata = contact.profile_enrichment[PROFILE_METADATA_KEY]
+    raw_entries = contact.profile_enrichment[PROFILE_RAW_KEY][RAW_EVIDENCE_KEY]
+    assert list(raw_entries) == ["combined-fingerprint"]
+    assert metadata["raw_omitted_fingerprints"] == ["email-fingerprint"]
+    assert set(metadata[RAW_EVIDENCE_KEY]) == {"email-fingerprint", "combined-fingerprint"}
+
+    smaller_email_profile = _profile_enrichment(
+        {
+            "apollo_id": "person_123",
+            "identity_kind": "email-only",
+            "identity_fingerprint": "email-fingerprint",
+            "raw": {"id": "person_123", "name": "Ada Buyer"},
+        },
+        None,
+    )
+    await service.persist_provider_result(
+        contact.contact_id,
+        ContactProviderResearchResult(
+            status="found",
+            enrichment_source="apollo",
+            profile_enrichment=smaller_email_profile,
+        ),
+    )
+
+    metadata = contact.profile_enrichment[PROFILE_METADATA_KEY]
+    raw_entries = contact.profile_enrichment[PROFILE_RAW_KEY][RAW_EVIDENCE_KEY]
+    assert set(raw_entries) == {"email-fingerprint", "combined-fingerprint"}
+    assert "raw_omitted_reason" not in metadata
+    assert "raw_omitted_fingerprints" not in metadata
+
+
+@pytest.mark.asyncio
 async def test_provider_result_does_not_overwrite_existing_job_title() -> None:
     """Existing CRM titles win over researched titles because they may be user-entered."""
     organisation_id = uuid4()
@@ -477,8 +898,8 @@ async def test_stale_summary_cannot_overwrite_research_for_newer_provider_eviden
 
 
 @pytest.mark.asyncio
-async def test_provider_change_invalidates_old_summary_before_regeneration() -> None:
-    """Cards and stakeholder agents must not see prose derived from replaced evidence."""
+async def test_provider_change_preserves_old_summary_until_regeneration() -> None:
+    """A failed cumulative refresh must leave the last good contact summary visible."""
     organisation_id = uuid4()
     contact_id = uuid4()
     contact = CRMContact(
@@ -508,8 +929,8 @@ async def test_provider_change_invalidates_old_summary_before_regeneration() -> 
     )
 
     assert persisted is True
-    assert contact.contact_research is None
-    assert contact.last_researched_at is None
+    assert contact.contact_research == "Old summary"
+    assert contact.last_researched_at is not None
 
 
 @pytest.mark.asyncio

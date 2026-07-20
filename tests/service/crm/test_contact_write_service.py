@@ -920,6 +920,7 @@ async def test_update_contact_stores_linkedin_url_in_profile_column_without_comm
     )
 
     assert result.contact.linkedin_url == "https://linkedin.com/in/jane"
+    assert result.identity_changed is True
     assert session.flush.await_count == 2
     session.refresh.assert_awaited_once_with(contact)
     session.commit.assert_not_called()
@@ -949,6 +950,7 @@ async def test_update_contact_invalidates_a_provider_miss_after_identity_additio
     )
 
     assert result.contact.profile_enrichment == {}
+    assert result.identity_changed is True
     assert result.contact.profile_enriched_at is None
     assert result.contact.profile_enrichment_source is None
 

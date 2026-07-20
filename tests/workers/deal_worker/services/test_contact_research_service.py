@@ -260,6 +260,84 @@ async def test_provider_success_persists_enrichment_when_summary_fails(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_force_refresh_summarizes_persisted_cumulative_evidence(monkeypatch) -> None:
+    """The summary phase must receive both earlier and newly fetched identity facts."""
+    workflow_module = import_module(
+        "src.workers.deal_worker.services.deal_insight_services.contact_research_service"
+    )
+    service_module = import_module("src.service.crm.contacts.research_service")
+
+    organisation_id = uuid4()
+    contact_id = uuid4()
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=contact_id,
+        email="buyer@acme.com",
+        linkedin_url="https://linkedin.com/in/buyer",
+        profile_enrichment={
+            "provider": "apollo",
+            "apollo_id": "person_123",
+            "education": [{"degree": "BSc", "school_name": "Example University"}],
+            "_metadata": {"payload_hash": "email-hash"},
+        },
+    )
+    load_session = _LoadSession(contact)
+    provider_session = _WriteSession(contact)
+    summary_session = _WriteSession(contact)
+    monkeypatch.setattr(
+        workflow_module,
+        "acquire_org_async_session",
+        _SessionFactory(load_session, provider_session, summary_session),
+    )
+
+    async def fake_provider(_payload):  # noqa: ANN001
+        """Return complementary career history from the newly complete identity set."""
+        return service_module.ContactProviderResearchResult(
+            status="found",
+            profile_enrichment={
+                "provider": "apollo",
+                "apollo_id": "person_123",
+                "employment_history": [
+                    {"title": "VP Engineering", "organization_name": "Acme"}
+                ],
+                "_metadata": {
+                    "payload_hash": "combined-hash",
+                    "identity_kind": "email+linkedin",
+                    "identity_fingerprint": "combined-fingerprint",
+                },
+            },
+        )
+
+    async def summary_generator(profile_enrichment):  # noqa: ANN001
+        """Verify orchestration reloads the merged profile before model synthesis."""
+        fact_pack = service_module.build_contact_research_fact_pack(profile_enrichment)
+        assert fact_pack["education"] == [
+            {"degree": "BSc", "school_name": "Example University"}
+        ]
+        assert fact_pack["employment_history"] == [
+            {"title": "VP Engineering", "organization_name": "Acme"}
+        ]
+        return service_module.ContactResearchSummaryResult(
+            status="generated",
+            summary_markdown="## Buyer\nCumulative career summary.",
+        )
+
+    workflow = workflow_module.ContactResearchWorkflowService(
+        organisation_id,
+        provider_lookup=fake_provider,
+        summary_generator=summary_generator,
+    )
+
+    result = await workflow.research_contact(contact_id, force_refresh=True)
+
+    assert result.summary_status == "generated"
+    assert contact.contact_research == "## Buyer\nCumulative career summary."
+    assert provider_session.commits == 1
+    assert summary_session.commits == 1
+
+
+@pytest.mark.asyncio
 async def test_provider_not_found_marks_attempt_without_summary(monkeypatch) -> None:
     """A no-match provider response should stop retries without fabricating summary text."""
     workflow_module = import_module(
