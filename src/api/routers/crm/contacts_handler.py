@@ -657,7 +657,6 @@ async def update_contact(
     """Patch allowed contact fields and return the updated contact projection."""
     try:
         updates = body.model_dump(exclude_unset=True)
-        identity_added = bool(updates.get("email") or updates.get("linkedin_url"))
         result = await service.update_contact(
             contact_id,
             updates,
@@ -679,7 +678,9 @@ async def update_contact(
         ).resolve_source_for_contact(contact.integration_id)
 
         data = _map_contact_mutation_item(contact, source=source)
-        if identity_added and not contact.contact_research:
+        if result.identity_changed:
+            # A newly added identity is new provider evidence even when an earlier lookup
+            # produced a summary. The research service combines both successful attempts.
             background_tasks.add_task(
                 _dispatch_contact_research_background,
                 organisation_id=user_ids.organisation_id,

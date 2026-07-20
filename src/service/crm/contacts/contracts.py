@@ -50,6 +50,7 @@ class ContactWriteResult:
     created: bool
     matched_by: ContactMatchedBy
     created_account_id: UUID | None = None
+    identity_changed: bool = False
 
 
 @dataclass(frozen=True)

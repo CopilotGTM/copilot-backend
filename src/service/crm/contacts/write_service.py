@@ -643,7 +643,12 @@ class ContactWriteService:
             changed_fields=changed_fields,
             context=context,
         )
-        return ContactWriteResult(contact, False, "explicit_id")
+        return ContactWriteResult(
+            contact,
+            False,
+            "explicit_id",
+            identity_changed=bool({"email", "linkedin_url"}.intersection(changed_fields)),
+        )
 
     async def delete_contact(
         self,

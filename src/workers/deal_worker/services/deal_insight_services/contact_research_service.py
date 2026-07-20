@@ -86,7 +86,7 @@ class ContactResearchWorkflowService:
         job_id: UUID | None = None,
         force_refresh: bool = False,
     ) -> ContactResearchWorkflowResult:
-        """Research one contact, optionally bypassing provider evidence from an older identity."""
+        """Research one contact and summarize all successful identity combinations."""
         snapshot = await self._load_snapshot(contact_id)
         if snapshot is None:
             raise ContactResearchWorkflowError("Contact not found", retryable=False)
@@ -124,14 +124,18 @@ class ContactResearchWorkflowService:
             # Persist provider result before summary generation. A model failure
             # should not discard durable fields from Apollo/provider enrichment.
             async for session in acquire_org_async_session(self.organisation_id):
-                await ContactResearchService(session, self.organisation_id).persist_provider_result(
+                research_service = ContactResearchService(session, self.organisation_id)
+                await research_service.persist_provider_result(
                     snapshot.contact_id,
                     provider_result,
+                )
+                persisted_contact = await session.get(CRMContact, snapshot.contact_id)
+                profile_enrichment = dict(
+                    persisted_contact.profile_enrichment if persisted_contact else {}
                 )
                 break
 
             provider_status = provider_result.status
-            profile_enrichment = provider_result.profile_enrichment or {}
 
         if provider_status not in {"found", "cached"} or not profile_enrichment:
             await self._record_completion_activity(

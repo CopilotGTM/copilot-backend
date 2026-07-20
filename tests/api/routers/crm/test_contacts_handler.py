@@ -101,9 +101,18 @@ class _FakeContactWriteService:
     async def update_contact(self, contact_id, updates, **kwargs):
         """Apply explicit update fields so route tests can inspect background follow-up work."""
         self.calls.append({"contact_id": contact_id, "updates": dict(updates), **kwargs})
+        identity_changed = any(
+            field in updates and updates[field] and not getattr(self.contact, field)
+            for field in ("email", "linkedin_url")
+        )
         for field, value in updates.items():
             setattr(self.contact, field, value)
-        return ContactWriteResult(contact=self.contact, created=False, matched_by="explicit_id")
+        return ContactWriteResult(
+            contact=self.contact,
+            created=False,
+            matched_by="explicit_id",
+            identity_changed=identity_changed,
+        )
 
 
 class _AsyncCall:
@@ -280,6 +289,7 @@ async def test_create_contact_handler_dispatches_activity_backfill_after_commit(
     await create_contact(
         body=CreateContactRequest(email="buyer@example.com"),
         response=FastAPIResponse(),
+        background_tasks=BackgroundTasks(),
         service=service,  # type: ignore[arg-type]
         user_ids=SimpleNamespace(user_id=uuid4(), organisation_id=org_id),
         _crm_write_guard=None,
@@ -763,7 +773,7 @@ async def test_identity_addition_forces_research_after_update(
     expected_email,
     expected_linkedin,
 ) -> None:
-    """Either newly supplied identity should retry a contact that still lacks research."""
+    """A newly supplied identity must refresh even when earlier research exists."""
     org_id = uuid4()
     user_id = uuid4()
     contact = CRMContact(
@@ -772,7 +782,7 @@ async def test_identity_addition_forces_research_after_update(
         contact_id=uuid4(),
         email=None,
         linkedin_url=None,
-        contact_research=None,
+        contact_research="Existing summary from the first identity",
     )
     service = _FakeContactWriteService(contact)
     calls: list[dict] = []
