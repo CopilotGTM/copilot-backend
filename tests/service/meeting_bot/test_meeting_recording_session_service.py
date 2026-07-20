@@ -450,6 +450,33 @@ class TestStatusTransitions:
         session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_mark_send_queued_flags_stale_worker_recovery(self, monkeypatch) -> None:
+        """A reclaimed queue row tells dispatch to reconcile before another create."""
+        service = _make_service()
+        existing = MeetingRecordingSession(
+            organisation_id=service.organisation_id,
+            calendar_event_id=uuid4(),
+            provider=MeetingRecordingProvider.RECALL_AI,
+            dedupe_key="key",
+            meeting_url="https://example/join",
+            join_at=datetime.now(UTC),
+            status=MeetingRecordingStatus.SEND_QUEUED,
+            transcript_status=MeetingTranscriptStatus.NOT_REQUESTED,
+            updated_at=datetime.now(UTC) - timedelta(minutes=5),
+        )
+        _session, fake_gen = _fake_session_gen_with_scalar(existing)
+        monkeypatch.setattr(
+            "src.service.meeting_bot.session_service.acquire_org_async_session",
+            fake_gen,
+        )
+
+        result = await service.mark_send_queued(existing.session_id)
+
+        assert result is existing
+        assert result.__dict__["_send_claimed"] is True
+        assert result.__dict__["_recovered_stale_claim"] is True
+
+    @pytest.mark.asyncio
     async def test_mark_sent_sets_provider_state(self, monkeypatch) -> None:
         """Provider acceptance stores bot metadata and starts transcript waiting."""
         service = _make_service()

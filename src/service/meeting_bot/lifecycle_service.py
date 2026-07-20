@@ -25,6 +25,7 @@ from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingRecordingProvider,
     MeetingRecordingSession,
     MeetingRecordingStatus,
+    MeetingTranscriptStatus,
 )
 from src.infra.config.configs import recall_config
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
@@ -33,6 +34,7 @@ from src.service.integrations.calendar.integration_types import (
     DISPATCH_CALENDAR_INTEGRATION_TYPES as ACTIVE_CALENDAR_INTEGRATION_TYPES,
 )
 from src.service.meeting_bot.policy import (
+    MEETING_RECORDING_POLICY_NEVER_REASON,
     evaluate_bot_join_policy,
     load_meeting_recording_policy_context,
 )
@@ -66,6 +68,43 @@ _PROVIDER_TERMINAL_STATUSES = {
     "recording_failed",
     "recording_deleted",
 }
+_PROVIDER_IN_CALL_STATUSES = {
+    "in_call_not_recording",
+    "recording_permission_allowed",
+    "recording_permission_denied",
+    "in_call_recording",
+}
+
+
+def can_reinvite_prejoin_locally(session: MeetingRecordingSession | None) -> bool:
+    """Return whether local state can safely reuse the one-recording session.
+
+    This powers the UI hint only; the mutation path also fetches Recall's complete
+    `status_changes` history before clearing the old provider id.
+    """
+    if session is None or _value(session.status) not in {
+        MeetingRecordingStatus.FAILED.value,
+        MeetingRecordingStatus.COMPLETED.value,
+    }:
+        return False
+    payload = dict(session.provider_payload or {})
+    if payload.get("first_in_call_at") or payload.get("first_recording_started_at"):
+        return False
+    if payload.get("transcript_artifact") or payload.get("video_artifact"):
+        return False
+    if (
+        getattr(session, "transcript_ready_at", None)
+        or getattr(session, "video_blob_path", None)
+        or getattr(session, "video_artifact_id", None)
+    ):
+        return False
+    return _value(session.transcript_status) != MeetingTranscriptStatus.READY.value
+
+
+def _value(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value.value) if hasattr(value, "value") else str(value)
 
 
 class MeetingRecordingLifecycleService:
@@ -112,6 +151,7 @@ class MeetingRecordingLifecycleService:
         *,
         source: str = "single_event_task",
         allow_cancelled_reinvite: bool = False,
+        allow_prejoin_reinvite: bool = False,
         enforce_policy: bool = True,
         event: CalendarEvent | None = None,
     ) -> dict[str, str]:
@@ -120,6 +160,7 @@ class MeetingRecordingLifecycleService:
         return await self.dispatch_event(
             calendar_event_id,
             allow_cancelled_reinvite=allow_cancelled_reinvite,
+            allow_prejoin_reinvite=allow_prejoin_reinvite,
             enforce_policy=enforce_policy,
         )
 
@@ -138,6 +179,7 @@ class MeetingRecordingLifecycleService:
         calendar_event_id: UUID,
         *,
         allow_cancelled_reinvite: bool = False,
+        allow_prejoin_reinvite: bool = False,
         enforce_policy: bool = True,
     ) -> dict[str, str]:
         """Resolve an event and attempt one provider create call if it is eligible.
@@ -187,24 +229,96 @@ class MeetingRecordingLifecycleService:
         join_at = normalize_utc(join_at)
         now = datetime.now(UTC)
 
+        # Manual surfaces may bypass `external_only`, but the org-wide privacy
+        # switch is final and must be enforced before any Recall read or write.
+        policy_context = await load_meeting_recording_policy_context(self.organisation_id)
+        policy_result = evaluate_bot_join_policy(
+            bot_join_policy=policy_context.bot_join_policy,
+            event=event,
+            internal_domains=policy_context.internal_domains,
+        )
+        if policy_result.reason == MEETING_RECORDING_POLICY_NEVER_REASON or (
+            enforce_policy and not policy_result.allowed
+        ):
+            return {
+                "status": "skipped",
+                "reason": policy_result.reason or "meeting_recording_policy_denied",
+                "calendar_event_id": str(calendar_event_id),
+            }
+
+        existing_session: MeetingRecordingSession | None = None
+        reinvite_provider_payload: dict[str, Any] | None = None
+        pending_reinvite_provider_session_id: str | None = None
         if join_at <= now:
             existing_session = await self._session_service.get_by_event(calendar_event_id)
+            pending_reinvite = (
+                (getattr(existing_session, "provider_payload", None) or {}).get("prejoin_reinvite")
+                if existing_session is not None
+                else None
+            )
+            if isinstance(pending_reinvite, dict):
+                previous_id = pending_reinvite.get("previous_provider_session_id")
+                if not allow_prejoin_reinvite:
+                    return {
+                        "status": "skipped",
+                        "reason": "prejoin_reinvite_requires_manual_action",
+                        "calendar_event_id": str(calendar_event_id),
+                    }
+                if self._event_has_not_ended(event, now) and isinstance(previous_id, str):
+                    # A prior manual request completed provider verification and the
+                    # row-locked reset, then crashed before create. Resume that intent
+                    # without making automatic workers eligible to replace the bot.
+                    pending_reinvite_provider_session_id = previous_id
+            existing_status = _value(getattr(existing_session, "status", None))
+            if (
+                existing_status
+                in {
+                    MeetingRecordingStatus.FAILED.value,
+                    MeetingRecordingStatus.COMPLETED.value,
+                }
+                and not allow_prejoin_reinvite
+            ):
+                return {
+                    "status": "skipped",
+                    "reason": "terminal_bot_requires_manual_action",
+                    "calendar_event_id": str(calendar_event_id),
+                }
             if existing_session and existing_session.sent_to_provider_at is not None:
                 existing_provider = await self._build_provider()
-                if await self._provider_session_matches(
+                matching_provider_bot = await self._fetch_matching_provider_session(
                     provider=existing_provider,
                     provider_session_id=existing_session.provider_session_id,
                     meeting_url=meeting_url,
                     join_at=join_at,
                     calendar_event_id=calendar_event_id,
                     dedupe_key=getattr(existing_session, "dedupe_key", None),
-                ):
+                )
+                if matching_provider_bot is not None:
+                    if (
+                        allow_prejoin_reinvite
+                        and self._event_has_not_ended(event, now)
+                        and can_reinvite_prejoin_locally(existing_session)
+                        and self._provider_bot_allows_prejoin_reinvite(matching_provider_bot)
+                    ):
+                        reinvite_provider_payload = matching_provider_bot
+                    else:
+                        return {
+                            "status": "already_sent",
+                            "calendar_event_id": str(calendar_event_id),
+                        }
+                elif existing_status in {
+                    MeetingRecordingStatus.FAILED.value,
+                    MeetingRecordingStatus.COMPLETED.value,
+                }:
+                    # A missing or mismatched provider response is not evidence that
+                    # the terminal bot stayed outside the call. Manual retry fails closed.
                     return {
                         "status": "already_sent",
                         "calendar_event_id": str(calendar_event_id),
                     }
 
-        if not is_within_recording_dispatch_window(join_at, now):
+        within_dispatch_window = is_within_recording_dispatch_window(join_at, now)
+        if not within_dispatch_window:
             if join_at > now:
                 return {
                     "status": "skipped",
@@ -212,27 +326,21 @@ class MeetingRecordingLifecycleService:
                     "calendar_event_id": str(calendar_event_id),
                 }
 
-            # The 15-minute ad-hoc window has elapsed. Check Recall first so a
-            # delayed repeat request still reports an already-active bot correctly.
-            return {
-                "status": "skipped",
-                "reason": "meeting_late_join_window_elapsed",
-                "calendar_event_id": str(calendar_event_id),
-            }
-
-        if enforce_policy:
-            policy_context = await load_meeting_recording_policy_context(self.organisation_id)
-            policy_result = evaluate_bot_join_policy(
-                bot_join_policy=policy_context.bot_join_policy,
-                event=event,
-                internal_domains=policy_context.internal_domains,
-            )
-            if not policy_result.allowed:
+            # Automatic work remains bounded to 15 minutes. A user may recover a
+            # never-admitted terminal bot later, but only through this explicit path.
+            if reinvite_provider_payload is None and pending_reinvite_provider_session_id is None:
                 return {
                     "status": "skipped",
-                    "reason": policy_result.reason or "meeting_recording_policy_denied",
+                    "reason": "meeting_late_join_window_elapsed",
                     "calendar_event_id": str(calendar_event_id),
                 }
+
+        if allow_prejoin_reinvite and join_at <= now and not self._event_has_not_ended(event, now):
+            return {
+                "status": "skipped",
+                "reason": "meeting_ended",
+                "calendar_event_id": str(calendar_event_id),
+            }
 
         # Persist the intent first so retries/fallback scans can reason about a durable
         # state row instead of trying to recreate provider state from scratch. Sent rows
@@ -268,6 +376,33 @@ class MeetingRecordingLifecycleService:
                 }
             session_record = reset_record
 
+        excluded_provider_session_id = pending_reinvite_provider_session_id
+        if reinvite_provider_payload is not None:
+            previous_provider_session_id = getattr(session_record, "provider_session_id", None)
+            if not isinstance(previous_provider_session_id, str):
+                return {
+                    "status": "skipped",
+                    "reason": "prejoin_reinvite_provider_session_missing",
+                    "calendar_event_id": str(calendar_event_id),
+                }
+            reset_record = await self._session_service.reset_prejoin_for_manual_reinvite(
+                session_record.session_id,
+                expected_provider_session_id=previous_provider_session_id,
+                meeting_url=meeting_url,
+                join_at=join_at,
+            )
+            if reset_record is None or not bool(
+                reset_record.__dict__.get("_prejoin_reset_claimed")
+            ):
+                return {
+                    "status": "already_sent",
+                    "calendar_event_id": str(calendar_event_id),
+                }
+            # The previous terminal bot uses the same stable event metadata. Exclude
+            # its id so create-error reconciliation can adopt only the replacement.
+            excluded_provider_session_id = previous_provider_session_id
+            session_record = reset_record
+
         if not await self._has_active_calendar_integration(calendar_event_id):
             return {
                 "status": "skipped",
@@ -275,8 +410,15 @@ class MeetingRecordingLifecycleService:
                 "calendar_event_id": str(calendar_event_id),
             }
 
-        dispatch_status = "sent"
-        attempt_adopt_before_create = False
+        dispatch_status = (
+            "reinvited"
+            if reinvite_provider_payload is not None
+            or pending_reinvite_provider_session_id is not None
+            else "sent"
+        )
+        # A manual retry always reconciles first. This catches a replacement created
+        # before a worker crash and prevents a second active bot for the same event.
+        attempt_adopt_before_create = excluded_provider_session_id is not None
         provider: RecallMeetingRecordingProvider | None = None
         if session_record.sent_to_provider_at is not None:
             # A sent row is only reusable when its stored provider target still matches
@@ -400,6 +542,9 @@ class MeetingRecordingLifecycleService:
                 "reason": "send_in_progress",
                 "calendar_event_id": str(calendar_event_id),
             }
+        attempt_adopt_before_create = attempt_adopt_before_create or bool(
+            queued_record.__dict__.get("_recovered_stale_claim")
+        )
 
         try:
             if provider is None:
@@ -407,7 +552,7 @@ class MeetingRecordingLifecycleService:
             # Provider session creation is the only external side effect here. We keep this
             # call behind a short-lived session row so retries can be reconciled without
             # creating duplicate org/event state.
-            bot_payload = await self._create_or_adopt_provider_session(
+            bot_payload, adopted_existing = await self._create_or_adopt_provider_session(
                 provider=provider,
                 session_record=session_record,
                 calendar_event_id=calendar_event_id,
@@ -415,6 +560,7 @@ class MeetingRecordingLifecycleService:
                 join_at=join_at,
                 join_immediately=join_at <= now,
                 attempt_adopt_before_create=attempt_adopt_before_create,
+                excluded_provider_session_id=excluded_provider_session_id,
             )
         except RecallProviderError:
             raise
@@ -425,6 +571,16 @@ class MeetingRecordingLifecycleService:
         provider_session_id = bot_payload.get("id")
         if not provider_session_id:
             raise RuntimeError("Recall create bot response missing id")
+
+        if (
+            adopted_existing
+            and self._provider_bot_status_code(bot_payload) in _PROVIDER_TERMINAL_STATUSES
+        ):
+            return {
+                "status": "already_sent",
+                "calendar_event_id": str(calendar_event_id),
+                "provider_session_id": str(provider_session_id),
+            }
 
         sent_record = await self._session_service.mark_sent(
             session_record.session_id,
@@ -865,7 +1021,8 @@ class MeetingRecordingLifecycleService:
         join_at: datetime,
         join_immediately: bool = False,
         attempt_adopt_before_create: bool = False,
-    ) -> dict[str, Any]:
+        excluded_provider_session_id: str | None = None,
+    ) -> tuple[dict[str, Any], bool]:
         """Create a Recall bot, adopting an existing matching one when found."""
         if attempt_adopt_before_create:
             matching_bot = await self._find_matching_provider_session(
@@ -874,6 +1031,7 @@ class MeetingRecordingLifecycleService:
                 join_at=join_at,
                 calendar_event_id=calendar_event_id,
                 dedupe_key=session_record.dedupe_key,
+                excluded_provider_session_id=excluded_provider_session_id,
             )
             if matching_bot:
                 await self._adopt_provider_session(
@@ -882,10 +1040,10 @@ class MeetingRecordingLifecycleService:
                     join_at=join_at,
                     bot_payload=matching_bot,
                 )
-                return matching_bot
+                return matching_bot, True
 
         try:
-            return await provider.create_session(
+            created_bot = await provider.create_session(
                 meeting_url=meeting_url,
                 join_at=None if join_immediately else join_at,
                 bot_name=await self._resolve_bot_name(),
@@ -895,6 +1053,7 @@ class MeetingRecordingLifecycleService:
                     scheduled_start_at=join_at,
                 ),
             )
+            return created_bot, False
         except RecallProviderError as error:
             logger.warning(
                 "Meeting recording provider create failed; checking for adoptable bot",
@@ -914,6 +1073,7 @@ class MeetingRecordingLifecycleService:
                 join_at=join_at,
                 calendar_event_id=calendar_event_id,
                 dedupe_key=session_record.dedupe_key,
+                excluded_provider_session_id=excluded_provider_session_id,
             )
             if matching_bot:
                 await self._adopt_provider_session(
@@ -922,7 +1082,7 @@ class MeetingRecordingLifecycleService:
                     join_at=join_at,
                     bot_payload=matching_bot,
                 )
-                return matching_bot
+                return matching_bot, True
             await self._record_provider_failure(session_record, "create", error)
             raise
 
@@ -973,6 +1133,26 @@ class MeetingRecordingLifecycleService:
         provider_session_id = bot_payload.get("id")
         if not provider_session_id:
             raise RuntimeError("Recall matching bot response missing id")
+        provider_status_code = self._provider_bot_status_code(bot_payload)
+        terminal = provider_status_code in _PROVIDER_TERMINAL_STATUSES
+        entered_call = self._provider_bot_entered_call(bot_payload)
+        status = (
+            MeetingRecordingStatus.COMPLETED
+            if terminal and entered_call
+            else MeetingRecordingStatus.FAILED
+            if terminal
+            else MeetingRecordingStatus.SENT
+        )
+        transcript_status = (
+            MeetingTranscriptStatus.PENDING
+            if not terminal or entered_call
+            else MeetingTranscriptStatus.FAILED
+        )
+        kwargs: dict[str, Any] = {}
+        if terminal:
+            # A recovered terminal create is durable evidence that provider work
+            # happened. Persist it instead of opening another automatic send.
+            kwargs = {"status": status, "transcript_status": transcript_status}
         await self._session_service.update_provider_registration(
             session_record.session_id,
             meeting_url=meeting_url,
@@ -981,6 +1161,7 @@ class MeetingRecordingLifecycleService:
             provider_status=bot_payload.get("status"),
             provider_payload=bot_payload,
             status_message="Provider session adopted during reconciliation",
+            **kwargs,
         )
 
     async def _provider_session_matches(
@@ -994,8 +1175,31 @@ class MeetingRecordingLifecycleService:
         dedupe_key: str | None,
     ) -> bool:
         """Verify the local provider id still points at the expected Recall bot."""
+        return (
+            await self._fetch_matching_provider_session(
+                provider=provider,
+                provider_session_id=provider_session_id,
+                meeting_url=meeting_url,
+                join_at=join_at,
+                calendar_event_id=calendar_event_id,
+                dedupe_key=dedupe_key,
+            )
+            is not None
+        )
+
+    async def _fetch_matching_provider_session(
+        self,
+        *,
+        provider: RecallMeetingRecordingProvider,
+        provider_session_id: str | None,
+        meeting_url: str,
+        join_at: datetime,
+        calendar_event_id: UUID,
+        dedupe_key: str | None,
+    ) -> dict[str, Any] | None:
+        """Fetch and tenant-validate a stored Recall bot before acting on it."""
         if not provider_session_id:
-            return False
+            return None
         try:
             bot_payload = await provider.fetch_session(provider_session_id)
         except RecallProviderError as error:
@@ -1008,16 +1212,18 @@ class MeetingRecordingLifecycleService:
                         "provider_session_id": provider_session_id,
                     },
                 )
-                return False
+                return None
             raise
-        return self._bot_matches(
+        if not self._bot_matches(
             bot_payload,
             meeting_url=meeting_url,
             join_at=join_at,
             calendar_event_id=calendar_event_id,
             dedupe_key=dedupe_key,
             fetched_by_provider_id=True,
-        )
+        ):
+            return None
+        return bot_payload
 
     async def _provider_session_status(
         self,
@@ -1065,6 +1271,7 @@ class MeetingRecordingLifecycleService:
         join_at: datetime,
         calendar_event_id: UUID,
         dedupe_key: str | None,
+        excluded_provider_session_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Find a Recall bot created before an uncertain provider response."""
         metadata = self._provider_metadata(
@@ -1088,6 +1295,8 @@ class MeetingRecordingLifecycleService:
                 meeting_url=meeting_url,
             )
         for bot_payload in bots:
+            if str(bot_payload.get("id") or "") == excluded_provider_session_id:
+                continue
             if self._bot_matches(
                 bot_payload,
                 meeting_url=meeting_url,
@@ -1376,6 +1585,39 @@ class MeetingRecordingLifecycleService:
             return code if isinstance(code, str) else None
         return None
 
+    @classmethod
+    def _provider_bot_entered_call(cls, bot_payload: dict[str, Any]) -> bool:
+        """Use Recall's authoritative lifecycle history to detect admission."""
+        status_changes = bot_payload.get("status_changes")
+        if not isinstance(status_changes, list):
+            return False
+        for change in status_changes:
+            code = change.get("code") if isinstance(change, dict) else None
+            if isinstance(code, str) and (
+                code.startswith("in_call_") or code in _PROVIDER_IN_CALL_STATUSES
+            ):
+                return True
+        return False
+
+    @classmethod
+    def _provider_bot_allows_prejoin_reinvite(cls, bot_payload: dict[str, Any]) -> bool:
+        """Fail closed unless Recall proves a terminal bot never entered the call."""
+        if cls._provider_bot_status_code(bot_payload) not in _PROVIDER_TERMINAL_STATUSES:
+            return False
+        status_changes = bot_payload.get("status_changes")
+        if not isinstance(status_changes, list):
+            return False
+        if cls._provider_bot_entered_call(bot_payload):
+            return False
+        recordings = bot_payload.get("recordings")
+        return isinstance(recordings, list) and not recordings
+
+    @staticmethod
+    def _event_has_not_ended(event: CalendarEvent, now: datetime) -> bool:
+        """Allow manual pre-join recovery only during the scheduled meeting."""
+        end_at = getattr(event, "end_at", None)
+        return isinstance(end_at, datetime) and normalize_utc(end_at) > now
+
     @staticmethod
     def _is_cancelled_recording_status(value: Any) -> bool:
         """Return true for enum or string-backed cancelled session values."""
@@ -1410,9 +1652,7 @@ class MeetingRecordingLifecycleService:
                 and metadata.get("calendar_event_id") == str(calendar_event_id)
                 and (dedupe_key is None or metadata.get("dedupe_key") == dedupe_key)
             )
-            scheduled_start_at = self._parse_provider_datetime(
-                metadata.get("scheduled_start_at")
-            )
+            scheduled_start_at = self._parse_provider_datetime(metadata.get("scheduled_start_at"))
             if scheduled_start_at is not None:
                 return identity_matches and self._normalize_utc(scheduled_start_at).replace(
                     microsecond=0

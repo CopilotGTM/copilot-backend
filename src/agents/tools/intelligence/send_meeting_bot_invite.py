@@ -80,6 +80,7 @@ async def send_meeting_bot_invite(
     dispatch_result = await lifecycle_service.schedule_for_event(
         event.event_id,
         source="agent_tool_manual_invite",
+        allow_prejoin_reinvite=True,
         enforce_policy=False,
     )
     return {

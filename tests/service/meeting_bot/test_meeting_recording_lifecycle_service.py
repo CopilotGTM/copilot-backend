@@ -10,7 +10,10 @@ from uuid import uuid4
 import pytest
 import src.service.meeting_bot.lifecycle_service as lifecycle_module
 import src.service.meeting_bot.policy as policy_module
-from src.domain.models.organisation_tables.sync.meeting_recording import MeetingRecordingStatus
+from src.domain.models.organisation_tables.sync.meeting_recording import (
+    MeetingRecordingStatus,
+    MeetingTranscriptStatus,
+)
 from src.service.meeting_bot.lifecycle_service import MeetingRecordingLifecycleService
 from src.service.meeting_bot.providers import RecallProviderError
 
@@ -380,7 +383,7 @@ async def test_dispatch_event_skips_internal_meeting_under_external_only_policy(
 
 @pytest.mark.asyncio
 async def test_manual_late_join_bypasses_policy_and_dispatches_ad_hoc(monkeypatch):
-    """A manual recovery request sends an immediate bot during the grace period."""
+    """Manual recovery bypasses external-only but still reaches the shared policy gate."""
     organisation_id = uuid4()
     event_id = uuid4()
     session_id = uuid4()
@@ -410,6 +413,12 @@ async def test_manual_late_join_bypasses_policy_and_dispatches_ad_hoc(monkeypatc
 
     monkeypatch.setattr(service, "_get_calendar_event", fake_get_calendar_event)
     monkeypatch.setattr(service, "_has_active_calendar_integration", AsyncGet(True))
+    monkeypatch.setattr(
+        "src.service.meeting_bot.lifecycle_service.load_meeting_recording_policy_context",
+        AsyncMock(
+            return_value=SimpleNamespace(bot_join_policy="external_only", internal_domains=set())
+        ),
+    )
     monkeypatch.setattr(
         service._session_service,
         "get_by_event",
@@ -441,6 +450,255 @@ async def test_manual_late_join_bypasses_policy_and_dispatches_ad_hoc(monkeypatc
     assert result["status"] == "sent"
     service._session_service.get_or_create_pending_session.assert_awaited_once()  # noqa: SLF001
     assert provider.create_session.await_args.kwargs["join_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_manual_invite_reopens_terminal_bot_that_never_entered_call(monkeypatch) -> None:
+    """A user may retry one terminal waiting-room bot until the event ends."""
+    organisation_id = uuid4()
+    event_id = uuid4()
+    session_id = uuid4()
+    now = datetime.now(UTC)
+    service = MeetingRecordingLifecycleService(organisation_id)
+    event = SimpleNamespace(
+        event_id=event_id,
+        status="confirmed",
+        conference_link="https://meet.google.com/abc-defg-hij",
+        start_at=now - timedelta(minutes=20),
+        end_at=now + timedelta(minutes=10),
+        attendees=[],
+    )
+    existing = SimpleNamespace(
+        session_id=session_id,
+        dedupe_key="meeting-recording-key",
+        meeting_url=event.conference_link,
+        join_at=event.start_at,
+        status=MeetingRecordingStatus.FAILED,
+        transcript_status=MeetingTranscriptStatus.FAILED,
+        provider_session_id="bot_old",
+        provider_status="call_ended",
+        provider_payload={},
+        sent_to_provider_at=now - timedelta(minutes=19),
+        transcript_ready_at=None,
+        video_blob_path=None,
+        video_artifact_id=None,
+    )
+    reset = SimpleNamespace(
+        session_id=session_id,
+        dedupe_key="meeting-recording-key",
+        status=MeetingRecordingStatus.PENDING_SEND,
+        sent_to_provider_at=None,
+    )
+    reset.__dict__["_prejoin_reset_claimed"] = True
+    queued = SimpleNamespace(
+        session_id=session_id,
+        dedupe_key="meeting-recording-key",
+        status=MeetingRecordingStatus.SEND_QUEUED,
+        sent_to_provider_at=None,
+    )
+    queued.__dict__["_send_claimed"] = True
+    provider_bot = {
+        "id": "bot_old",
+        "status": "done",
+        "metadata": {
+            "organisation_id": str(organisation_id),
+            "calendar_event_id": str(event_id),
+            "dedupe_key": "meeting-recording-key",
+            "scheduled_start_at": event.start_at.isoformat(),
+        },
+        "status_changes": [
+            {"code": "joining_call"},
+            {"code": "in_waiting_room"},
+            {"code": "call_ended", "sub_code": "bot_kicked_from_waiting_room"},
+        ],
+        "recordings": [],
+    }
+    provider = SimpleNamespace(
+        fetch_session=AsyncMock(return_value=provider_bot),
+        list_sessions=AsyncMock(return_value=[]),
+        create_session=AsyncMock(return_value={"id": "bot_new", "status": "joining_call"}),
+    )
+
+    monkeypatch.setattr(service, "_get_calendar_event", AsyncMock(return_value=event))
+    monkeypatch.setattr(service, "_has_active_calendar_integration", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        lifecycle_module,
+        "load_meeting_recording_policy_context",
+        AsyncMock(return_value=SimpleNamespace(bot_join_policy="all", internal_domains=set())),
+    )
+    monkeypatch.setattr(service._session_service, "get_by_event", AsyncMock(return_value=existing))
+    monkeypatch.setattr(
+        service._session_service,
+        "get_or_create_pending_session",
+        AsyncMock(return_value=existing),
+    )
+    reset_mock = AsyncMock(return_value=reset)
+    monkeypatch.setattr(
+        service._session_service,
+        "reset_prejoin_for_manual_reinvite",
+        reset_mock,
+    )
+    monkeypatch.setattr(
+        service._session_service, "mark_send_queued", AsyncMock(return_value=queued)
+    )
+    monkeypatch.setattr(
+        service._session_service,
+        "mark_sent",
+        AsyncMock(return_value=SimpleNamespace(status=MeetingRecordingStatus.SENT)),
+    )
+    monkeypatch.setattr(service, "_build_provider", AsyncMock(return_value=provider))
+    monkeypatch.setattr(service, "_resolve_bot_name", AsyncMock(return_value="Acme Notetaker"))
+
+    result = await service.dispatch_event(
+        event_id,
+        allow_prejoin_reinvite=True,
+        enforce_policy=False,
+    )
+
+    assert result["status"] == "reinvited"
+    reset_mock.assert_awaited_once_with(
+        session_id,
+        expected_provider_session_id="bot_old",
+        meeting_url=event.conference_link,
+        join_at=event.start_at,
+    )
+    assert provider.create_session.await_args.kwargs["join_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_manual_invite_does_not_reopen_bot_that_entered_call(monkeypatch) -> None:
+    """Provider admission history closes the one-recording session even without artifacts."""
+    organisation_id = uuid4()
+    event_id = uuid4()
+    now = datetime.now(UTC)
+    service = MeetingRecordingLifecycleService(organisation_id)
+    event = SimpleNamespace(
+        event_id=event_id,
+        status="confirmed",
+        conference_link="https://meet.google.com/abc-defg-hij",
+        start_at=now - timedelta(minutes=5),
+        end_at=now + timedelta(minutes=25),
+        attendees=[],
+    )
+    existing = SimpleNamespace(
+        dedupe_key="meeting-recording-key",
+        meeting_url=event.conference_link,
+        join_at=event.start_at,
+        status=MeetingRecordingStatus.FAILED,
+        transcript_status=MeetingTranscriptStatus.FAILED,
+        provider_session_id="bot_old",
+        provider_payload={},
+        sent_to_provider_at=now - timedelta(minutes=4),
+        transcript_ready_at=None,
+        video_blob_path=None,
+        video_artifact_id=None,
+    )
+    provider = SimpleNamespace(
+        fetch_session=AsyncMock(
+            return_value={
+                "id": "bot_old",
+                "status": "done",
+                "metadata": {
+                    "organisation_id": str(organisation_id),
+                    "calendar_event_id": str(event_id),
+                    "dedupe_key": "meeting-recording-key",
+                    "scheduled_start_at": event.start_at.isoformat(),
+                },
+                "status_changes": [
+                    {"code": "in_waiting_room"},
+                    {"code": "in_call_not_recording"},
+                    {"code": "call_ended"},
+                ],
+                "recordings": [],
+            }
+        )
+    )
+    monkeypatch.setattr(service, "_get_calendar_event", AsyncMock(return_value=event))
+    monkeypatch.setattr(service, "_has_active_calendar_integration", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        lifecycle_module,
+        "load_meeting_recording_policy_context",
+        AsyncMock(return_value=SimpleNamespace(bot_join_policy="all", internal_domains=set())),
+    )
+    monkeypatch.setattr(service._session_service, "get_by_event", AsyncMock(return_value=existing))
+    reset_mock = AsyncMock()
+    monkeypatch.setattr(
+        service._session_service,
+        "reset_prejoin_for_manual_reinvite",
+        reset_mock,
+    )
+    monkeypatch.setattr(service, "_build_provider", AsyncMock(return_value=provider))
+
+    result = await service.dispatch_event(
+        event_id,
+        allow_prejoin_reinvite=True,
+        enforce_policy=False,
+    )
+
+    assert result["status"] == "already_sent"
+    reset_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_automatic_dispatch_never_replaces_terminal_bot(monkeypatch) -> None:
+    """Terminal outcomes remain manual-only even inside the late-join window."""
+    event_id = uuid4()
+    service = MeetingRecordingLifecycleService(uuid4())
+    event = SimpleNamespace(
+        status="confirmed",
+        conference_link="https://meet.google.com/abc-defg-hij",
+        start_at=datetime.now(UTC) - timedelta(minutes=5),
+        end_at=datetime.now(UTC) + timedelta(minutes=25),
+        attendees=[],
+    )
+    existing = SimpleNamespace(
+        status=MeetingRecordingStatus.FAILED,
+        provider_payload={},
+        sent_to_provider_at=datetime.now(UTC) - timedelta(minutes=4),
+    )
+    monkeypatch.setattr(service, "_get_calendar_event", AsyncMock(return_value=event))
+    monkeypatch.setattr(service, "_has_active_calendar_integration", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        lifecycle_module,
+        "load_meeting_recording_policy_context",
+        AsyncMock(return_value=SimpleNamespace(bot_join_policy="all", internal_domains=set())),
+    )
+    monkeypatch.setattr(service._session_service, "get_by_event", AsyncMock(return_value=existing))
+    build_provider = AsyncMock()
+    monkeypatch.setattr(service, "_build_provider", build_provider)
+
+    result = await service.dispatch_event(event_id)
+
+    assert result["reason"] == "terminal_bot_requires_manual_action"
+    build_provider.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_never_policy_blocks_manual_invite_before_provider_work(monkeypatch) -> None:
+    """The org privacy switch cannot be bypassed by a manual lifecycle caller."""
+    event_id = uuid4()
+    service = MeetingRecordingLifecycleService(uuid4())
+    event = SimpleNamespace(
+        status="confirmed",
+        conference_link="https://meet.google.com/abc-defg-hij",
+        start_at=datetime.now(UTC) + timedelta(hours=1),
+        end_at=datetime.now(UTC) + timedelta(hours=2),
+        attendees=[],
+    )
+    monkeypatch.setattr(service, "_get_calendar_event", AsyncMock(return_value=event))
+    monkeypatch.setattr(service, "_has_active_calendar_integration", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        lifecycle_module,
+        "load_meeting_recording_policy_context",
+        AsyncMock(return_value=SimpleNamespace(bot_join_policy="never", internal_domains=set())),
+    )
+    create_intent = AsyncMock()
+    monkeypatch.setattr(service._session_service, "get_or_create_pending_session", create_intent)
+
+    result = await service.dispatch_event(event_id, enforce_policy=False)
+
+    assert result["reason"] == "meeting_recording_policy_never"
+    create_intent.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -509,6 +767,59 @@ async def test_dispatch_event_allows_external_meeting_under_external_only_policy
 
     assert result["status"] == "sent"
     service._session_service.get_or_create_pending_session.assert_awaited_once()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_stale_send_reconciliation_persists_terminal_bot_without_recreating() -> None:
+    """A worker crash after Recall create adopts its terminal bot and stops."""
+    organisation_id = uuid4()
+    event_id = uuid4()
+    join_at = datetime.now(UTC) - timedelta(minutes=2)
+    service = MeetingRecordingLifecycleService(organisation_id)
+    session_record = SimpleNamespace(
+        session_id=uuid4(),
+        dedupe_key="meeting-recording-key",
+    )
+    terminal_bot = {
+        "id": "bot_created_before_crash",
+        "status": "done",
+        "metadata": {
+            "organisation_id": str(organisation_id),
+            "calendar_event_id": str(event_id),
+            "dedupe_key": session_record.dedupe_key,
+            "scheduled_start_at": join_at.isoformat(),
+        },
+        "status_changes": [
+            {"code": "joining_call"},
+            {"code": "in_waiting_room"},
+            {"code": "fatal", "sub_code": "timeout_exceeded_waiting_room"},
+        ],
+        "recordings": [],
+    }
+    provider = SimpleNamespace(
+        list_sessions=AsyncMock(return_value=[terminal_bot]),
+        create_session=AsyncMock(),
+    )
+    update_registration = AsyncMock()
+    service._session_service.update_provider_registration = update_registration  # type: ignore[method-assign]  # noqa: SLF001
+
+    payload, adopted = await service._create_or_adopt_provider_session(  # noqa: SLF001
+        provider=provider,
+        session_record=session_record,
+        calendar_event_id=event_id,
+        meeting_url="https://meet.google.com/abc-defg-hij",
+        join_at=join_at,
+        join_immediately=True,
+        attempt_adopt_before_create=True,
+    )
+
+    assert adopted is True
+    assert payload is terminal_bot
+    provider.create_session.assert_not_awaited()
+    assert update_registration.await_args.kwargs["status"] == MeetingRecordingStatus.FAILED
+    assert (
+        update_registration.await_args.kwargs["transcript_status"] == MeetingTranscriptStatus.FAILED
+    )
 
 
 class AsyncGet:

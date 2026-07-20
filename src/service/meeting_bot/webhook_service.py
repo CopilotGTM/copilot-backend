@@ -26,6 +26,10 @@ from src.service.meeting_bot.summary_trigger_service import MeetingSummaryTrigge
 
 TRANSCRIPT_ARTIFACT_READY_EVENTS = {"transcript.done"}
 VIDEO_ARTIFACT_READY_EVENTS = {"video_mixed.done"}
+BOT_ENTERED_CALL_PERMISSION_EVENTS = {
+    "bot.recording_permission_allowed",
+    "bot.recording_permission_denied",
+}
 
 logger = get_logger(__name__)
 
@@ -95,6 +99,15 @@ class RecallMeetingRecordingWebhookService:
         merged_payload = dict(existing.provider_payload or {})
         merged_payload["last_webhook_event_name"] = event_name
         merged_payload["last_webhook_event"] = payload
+        if event_name.startswith("bot.in_call_") or event_name in (
+            BOT_ENTERED_CALL_PERMISSION_EVENTS
+        ):
+            # This fact is monotonic: a later call-ended webhook must not make an
+            # admitted bot look eligible for the single-session pre-join retry.
+            merged_payload.setdefault(
+                "first_in_call_at",
+                (updated_at or datetime.now(UTC)).isoformat(),
+            )
         if event_name == "bot.in_call_recording":
             merged_payload.setdefault(
                 "first_recording_started_at",

@@ -355,7 +355,7 @@ def test_bot_status_projects_permission_denied_display_status() -> None:
     recording = SimpleNamespace(
         status=MeetingRecordingStatus.FAILED,
         transcript_status=MeetingTranscriptStatus.FAILED,
-        provider_payload={},
+        provider_payload={"first_in_call_at": now.isoformat()},
         provider_session_id="bot_123",
         sent_to_provider_at=now,
         status_message="host_denied",
@@ -443,6 +443,7 @@ async def test_manual_invite_uses_lifecycle_schedule_with_reinvite(monkeypatch) 
         event_id,
         source="meetings_tab_manual_invite",
         allow_cancelled_reinvite=True,
+        allow_prejoin_reinvite=True,
         enforce_policy=False,
     )
 

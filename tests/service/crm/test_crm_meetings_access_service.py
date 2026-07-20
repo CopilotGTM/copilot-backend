@@ -101,7 +101,14 @@ def test_can_invite_bot_keeps_user_action_available_for_already_started_meeting(
     assert CRMMeetingsAccessService._can_invite_bot(event, None) is True
 
 
-def test_policy_denial_does_not_hide_manual_crm_invite() -> None:
+def test_crm_initial_manual_invite_expires_after_late_join_window() -> None:
+    event = _calendar_event(start_at=datetime.now(UTC) - timedelta(minutes=20))
+
+    assert CRMMeetingsAccessService._can_invite_bot(event, None) is False
+
+
+def test_never_policy_hides_manual_crm_invite() -> None:
+    """The organisation privacy switch applies to user-triggered invites too."""
     event = _calendar_event(start_at=datetime.now(UTC) + timedelta(hours=1))
 
     assert (
@@ -110,13 +117,13 @@ def test_policy_denial_does_not_hide_manual_crm_invite() -> None:
             None,
             policy_denial_reason="meeting_recording_policy_never",
         )
-        is True
+        is False
     )
 
 
 @pytest.mark.asyncio
-async def test_invite_bot_bypasses_org_policy_for_manual_crm_action() -> None:
-    """CRM invite is already user-authorized, so org policy only applies to automation."""
+async def test_manual_crm_invite_requests_prejoin_recovery() -> None:
+    """CRM manual sends may retry a terminal bot but still use central policy enforcement."""
     event_id = uuid4()
     service, _session_service, lifecycle_service = _control_service_with_session(None)
     lifecycle_service.schedule_for_event.return_value = {
@@ -130,6 +137,7 @@ async def test_invite_bot_bypasses_org_policy_for_manual_crm_action() -> None:
     lifecycle_service.schedule_for_event.assert_awaited_once_with(
         event_id,
         source="crm_manual_invite",
+        allow_prejoin_reinvite=True,
         enforce_policy=False,
     )
 

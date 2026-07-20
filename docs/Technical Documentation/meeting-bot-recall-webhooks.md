@@ -24,10 +24,10 @@ The worker finds the org-scoped `meeting_recording_sessions` row by Recall bot i
 | --- | --- |
 | `bot.joining_call` | `recording_status=JOINING` |
 | `bot.in_waiting_room` | `recording_status=JOINING` |
-| `bot.in_call_not_recording` | `recording_status=IN_CALL` |
-| `bot.recording_permission_allowed` | `recording_status=IN_CALL` |
-| `bot.recording_permission_denied` | `recording_status=FAILED`, `transcript_status=FAILED` |
-| `bot.in_call_recording` | `recording_status=IN_CALL`, records first recording timestamp |
+| `bot.in_call_not_recording` | `recording_status=IN_CALL`, records the first in-call timestamp |
+| `bot.recording_permission_allowed` | `recording_status=IN_CALL`, records the first in-call timestamp |
+| `bot.recording_permission_denied` | Records the first in-call timestamp, then sets `recording_status=FAILED`, `transcript_status=FAILED` |
+| `bot.in_call_recording` | `recording_status=IN_CALL`, records the first in-call and recording timestamps |
 | `bot.call_ended` | `COMPLETED` only if recording had started; otherwise `FAILED` |
 | `bot.done` | `COMPLETED` only if recording had started; preserves pre-join failure |
 | `bot.fatal` | `recording_status=FAILED`, `transcript_status=FAILED` |
@@ -117,3 +117,16 @@ Use:
 `transcript_status=FAILED` means transcript output is not available. It does not
 by itself explain whether the bot failed to join, was denied permission, was
 removed, or had a transcription provider error.
+
+## Manual pre-join retry
+
+The Meetings Invite action can reuse the single session until the calendar event
+ends only when Recall confirms the previous bot is terminal and its complete
+`status_changes` history contains no in-call event. The persisted
+`provider_payload.first_in_call_at` and `first_recording_started_at` values are
+monotonic guards: later terminal webhooks never clear them.
+
+A waiting-room timeout or removal from the waiting room is retryable. Once Recall
+reports `in_call_not_recording`, recording permission, or `in_call_recording`, the
+meeting has consumed its one supported recording attempt and cannot be reinvited.
+Automatic workers never resume a pre-join retry; a user must explicitly invite it.

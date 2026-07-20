@@ -407,9 +407,11 @@ Possible success payload examples:
 ```
 
 Meetings discovered after their scheduled start use Recall's ad-hoc bot path. Automatic dispatch
-and the manual invite action remain available for the first 15 minutes; recordings begin only when
-the bot actually joins. At or after the 15-minute boundary, the API returns `409`. If Recall's
-ad-hoc capacity is temporarily exhausted, manual invite returns retryable `503` copy.
+and an initial manual invite remain available for the first 15 minutes. After that boundary, Invite
+is available until the scheduled end only when the previous bot terminated without ever entering
+the call or producing an artifact. The backend revalidates Recall's lifecycle history before
+reusing the session. If Recall's ad-hoc capacity is temporarily exhausted, manual invite returns
+retryable `503` copy.
 
 Bot status mapping for the list and drawer:
 
@@ -420,7 +422,7 @@ Bot status mapping for the list and drawer:
 | `failed` | Use `bot.display_status` for the exact failure copy. |
 | `cancelled` | Bot removed/cancelled state. |
 | `auto_invite_eligible` | "Bot auto-invite eligible" or "Invite bot" action. |
-| `invite_available` | Show "Invite bot" if the meeting has a join link and started less than 15 minutes ago. |
+| `invite_available` | Show "Invite bot" during the initial 15-minute window or for an eligible pre-join retry before meeting end. |
 
 Display status mapping:
 

@@ -64,10 +64,14 @@ class MeetingRecordingSessionService:
             if existing:
                 if self._is_cancelled_status(existing.status):
                     return existing
-                if existing.sent_to_provider_at is None:
+                existing_status = _status_value(existing.status)
+                if existing.sent_to_provider_at is None and existing_status in {
+                    MeetingRecordingStatus.PENDING_SEND.value,
+                    MeetingRecordingStatus.FAILED.value,
+                }:
                     # Matcher reruns should refresh pending rows with the latest
-                    # join time/link, but once a provider send succeeded we keep
-                    # the sent state until an explicit follow-up action changes it.
+                    # join time/link. A queued row is preserved because it may represent
+                    # a provider create that succeeded immediately before a worker crash.
                     existing.meeting_url = meeting_url
                     existing.join_at = join_at
                     existing.status = MeetingRecordingStatus.PENDING_SEND
@@ -113,6 +117,16 @@ class MeetingRecordingSessionService:
             now = datetime.now(UTC)
             stale_after_seconds = getattr(self, "send_queue_stale_after_seconds", 120)
             stale_before = now - timedelta(seconds=stale_after_seconds)
+            before_claim = await self._get_by_session_id(session, session_id)
+            before_claim_updated_at = (
+                getattr(before_claim, "updated_at", None) if before_claim else None
+            )
+            recovered_stale_claim = bool(
+                before_claim
+                and _status_value(before_claim.status) == MeetingRecordingStatus.SEND_QUEUED.value
+                and isinstance(before_claim_updated_at, datetime)
+                and _as_utc(before_claim_updated_at) < stale_before
+            )
             stmt = (
                 update(MeetingRecordingSession)
                 .where(
@@ -138,8 +152,62 @@ class MeetingRecordingSessionService:
             record = await self._get_by_session_id(session, session_id)
             if record is not None:
                 record.__dict__["_send_claimed"] = claimed_session_id is not None
+                record.__dict__["_recovered_stale_claim"] = bool(
+                    claimed_session_id is not None and recovered_stale_claim
+                )
                 if claimed_session_id is not None:
                     record.status = MeetingRecordingStatus.SEND_QUEUED
+            return record
+        return None
+
+    async def reset_prejoin_for_manual_reinvite(
+        self,
+        session_id: UUID,
+        *,
+        expected_provider_session_id: str,
+        meeting_url: str,
+        join_at: datetime,
+    ) -> MeetingRecordingSession | None:
+        """Atomically reopen a terminal bot that never entered the meeting.
+
+        The row lock serializes repeat clicks. Provider revalidation happens before
+        this call, while the local checks below ensure stale UI state cannot erase a
+        recording or a monotonic in-call fact written by a concurrent webhook.
+        """
+        async for session in acquire_org_async_session(self.organisation_id):
+            stmt = (
+                select(MeetingRecordingSession)
+                .where(
+                    col(MeetingRecordingSession.organisation_id) == self.organisation_id,
+                    col(MeetingRecordingSession.session_id) == session_id,
+                    col(MeetingRecordingSession.provider_session_id)
+                    == expected_provider_session_id,
+                )
+                .with_for_update()
+            )
+            record = (await session.execute(stmt)).scalar_one_or_none()
+            if record is None or not _is_prejoin_terminal_without_artifacts(record):
+                return record
+
+            record.meeting_url = meeting_url
+            record.join_at = join_at
+            record.status = MeetingRecordingStatus.PENDING_SEND
+            record.status_message = "Session reset after explicit pre-join re-invite"
+            record.sent_to_provider_at = None
+            record.provider_session_id = None
+            record.provider_status = None
+            record.provider_payload = {
+                "prejoin_reinvite": {
+                    "previous_provider_session_id": expected_provider_session_id,
+                    "verified_at": datetime.now(UTC).isoformat(),
+                }
+            }
+            record.last_webhook_at = None
+            record.transcript_ready_at = None
+            record.transcript_status = MeetingTranscriptStatus.NOT_REQUESTED
+            session.add(record)
+            await session.commit()
+            record.__dict__["_prejoin_reset_claimed"] = True
             return record
         return None
 
@@ -208,6 +276,8 @@ class MeetingRecordingSessionService:
         provider_status: str | None,
         provider_payload: dict[str, Any],
         status_message: str | None = None,
+        status: MeetingRecordingStatus = MeetingRecordingStatus.SENT,
+        transcript_status: MeetingTranscriptStatus = MeetingTranscriptStatus.PENDING,
     ) -> MeetingRecordingSession | None:
         """Store a verified provider bot without clearing the org/event identity.
 
@@ -224,8 +294,8 @@ class MeetingRecordingSessionService:
             now = datetime.now(UTC)
             record.meeting_url = meeting_url
             record.join_at = join_at
-            record.status = MeetingRecordingStatus.SENT
-            record.transcript_status = MeetingTranscriptStatus.PENDING
+            record.status = status
+            record.transcript_status = transcript_status
             record.provider_session_id = provider_session_id
             record.provider_status = provider_status
             record.provider_payload = provider_payload
@@ -571,3 +641,34 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _status_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value.value) if hasattr(value, "value") else str(value)
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def _is_prejoin_terminal_without_artifacts(record: MeetingRecordingSession) -> bool:
+    """Protect the one-recording model while allowing a never-admitted bot retry."""
+    if _status_value(record.status) not in {
+        MeetingRecordingStatus.FAILED.value,
+        MeetingRecordingStatus.COMPLETED.value,
+    }:
+        return False
+    payload = dict(record.provider_payload or {})
+    if payload.get("first_in_call_at") or payload.get("first_recording_started_at"):
+        return False
+    if payload.get("transcript_artifact") or payload.get("video_artifact"):
+        return False
+    if (
+        getattr(record, "transcript_ready_at", None)
+        or getattr(record, "video_blob_path", None)
+        or getattr(record, "video_artifact_id", None)
+    ):
+        return False
+    return _status_value(record.transcript_status) != MeetingTranscriptStatus.READY.value

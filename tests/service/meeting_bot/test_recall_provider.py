@@ -68,6 +68,26 @@ class TestRecallMeetingRecordingProvider:
             "noone_joined_timeout": 600,
             "in_call_not_recording_timeout": 300,
             "recording_permission_denied_timeout": 30,
+            "bot_detection": {
+                "using_participant_events": {"activate_after": 0, "timeout": 600},
+                "using_participant_names": {
+                    "matches": [
+                        "notetaker",
+                        "note taker",
+                        "recorder",
+                        "copilot",
+                        "otter",
+                        "fireflies",
+                        "fathom",
+                        "read.ai",
+                        "grain",
+                        "fellow",
+                        "tl;dv",
+                    ],
+                    "activate_after": 0,
+                    "timeout": 600,
+                },
+            },
         }
 
     async def test_create_session_omits_join_at_for_ad_hoc_bot(self) -> None:
@@ -220,6 +240,30 @@ class TestRecallMeetingRecordingProvider:
             mock_client.get.await_args_list[0].kwargs["params"]["metadata__dedupe_key"]
             == "meeting-recording-key"
         )
+
+    async def test_list_sessions_does_not_follow_untrusted_pagination_url(self) -> None:
+        """Recall credentials must never be forwarded to a response-controlled host."""
+        provider = RecallMeetingRecordingProvider(api_key="test-key", region="us-east-1")
+        response = _json_response(
+            "GET",
+            "https://us-east-1.recall.ai/api/v1/bot/",
+            {
+                "results": [{"id": "bot_1"}],
+                "next": "https://attacker.example/steal-recall-key",
+            },
+        )
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = response
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = False
+            mock_client_cls.return_value = mock_client
+
+            result = await provider.list_sessions(metadata={"calendar_event_id": "event-1"})
+
+        assert result == [{"id": "bot_1"}]
+        mock_client.get.assert_awaited_once()
 
     async def test_extract_transcript_download_url_from_bot_payload(self) -> None:
         provider = RecallMeetingRecordingProvider(api_key="test-key", region="us-east-1")
