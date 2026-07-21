@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -163,6 +164,7 @@ async def test_create_account_records_account_created_mutation_event() -> None:
     actor_id = uuid4()
     session = _AccountSession(_FakeResult(all_rows=[]), _FakeResult(first=integration))
     service = AccountWriteService(session, org_id)
+    service._mutation_events._activation = AsyncMock()
 
     result = await service.create_account(
         AccountCreateCommand(
@@ -193,6 +195,7 @@ async def test_create_account_records_normalized_domain_not_raw_input() -> None:
     integration = _integration(org_id)
     session = _AccountSession(_FakeResult(all_rows=[]), _FakeResult(first=integration))
     service = AccountWriteService(session, org_id)
+    service._mutation_events._activation = AsyncMock()
 
     await service.create_account(
         AccountCreateCommand(name=None, domain="HTTPS://WWW.Acme.COM/path"),

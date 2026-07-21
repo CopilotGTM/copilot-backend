@@ -25,6 +25,7 @@ config = ChatWorkerConfig()
 # Keep task registration explicit so importing the package does not pull in the
 # full chat worker graph during lightweight import checks.
 tasks_module = [
+    "src.workers.chat_worker.tasks.agent_run_tasks",
     "src.workers.chat_worker.tasks.bot_message_processing",
     "src.workers.chat_worker.tasks.message_processing",
     "src.workers.chat_worker.tasks.post_upload",

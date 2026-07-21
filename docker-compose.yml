@@ -24,6 +24,8 @@
 # Usage:
 #   docker-compose up -d              # Start all services
 #   docker-compose up api redis       # Start only API and Redis
+#   docker-compose --profile chat up  # Start chat worker without scheduled jobs
+#   docker-compose --profile scheduled up chat-beat  # Explicitly start chat schedules
 #   docker-compose logs -f api        # Follow API logs
 #   docker-compose down               # Stop all services
 # =============================================================================
@@ -403,7 +405,7 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
-    profiles: ["chat"]
+    profiles: ["scheduled"]
 
   # ---------------------------------------------------------------------------
   # Integrations Worker (handles CRM/third-party sync)

@@ -59,6 +59,7 @@ dependencies = [
     "opentelemetry-instrumentation-sqlalchemy>=0.64b0",
     "opentelemetry-instrumentation-redis>=0.64b0",
     "pypdf>=6.13.3",
+    "jsonschema>=4.25.1",
     "google-auth>=2.38.0",
     "pyasn1>=0.6.4",
     "python-multipart>=0.0.27",

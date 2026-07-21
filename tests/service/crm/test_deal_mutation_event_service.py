@@ -39,6 +39,14 @@ class _FakeSession:
         return None
 
 
+class _FakeActivationService:
+    def __init__(self) -> None:
+        self.event_ids: list[object] = []
+
+    async def activate_crm_event(self, event_id: object) -> None:
+        self.event_ids.append(event_id)
+
+
 def _deal() -> SimpleNamespace:
     return SimpleNamespace(deal_id=uuid4(), integration_id=uuid4())
 
@@ -89,7 +97,8 @@ async def test_record_event_skips_empty_changed_fields() -> None:
 @pytest.mark.asyncio
 async def test_record_event_persists_one_event_for_multi_field_update() -> None:
     """A multi-field deal update must be stored as one mutation event row."""
-    service = DealMutationEventService(_FakeSession(), uuid4())
+    activation = _FakeActivationService()
+    service = DealMutationEventService(_FakeSession(), uuid4(), activation_service=activation)
 
     result = await service.record_event(
         deal=_deal(),
@@ -111,6 +120,27 @@ async def test_record_event_persists_one_event_for_multi_field_update() -> None:
     assert set(event.changed_fields) == {"amount", "stage_id"}
     assert event.semantic_event_types == ["crm.deal.amount_changed", "crm.deal.stage_changed"]
     assert service.session.added == [event]
+    assert activation.event_ids == [event.event_id]
+
+
+@pytest.mark.asyncio
+async def test_record_event_does_not_activate_unrelated_semantic_event() -> None:
+    """Only the supported stage-change semantic event enters trigger activation."""
+    activation = _FakeActivationService()
+    service = DealMutationEventService(_FakeSession(), uuid4(), activation_service=activation)
+
+    result = await service.record_event(
+        deal=_deal(),
+        event_type="crm.deal.updated",
+        operation="update_deal",
+        changed_fields={"amount": {"old": 100, "new": 200}},
+        semantic_event_types=["crm.deal.amount_changed"],
+        context=_context(),
+        summary="Updated deal",
+    )
+
+    assert result.changed is True
+    assert activation.event_ids == []
 
 
 def test_record_event_does_not_store_workflow_runtime_state() -> None:

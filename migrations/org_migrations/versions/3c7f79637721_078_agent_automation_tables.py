@@ -12,7 +12,6 @@ evolving JSON shapes, catalog validation, and lifecycle policy.
 """
 
 from collections.abc import Sequence
-from typing import Any
 
 import sqlalchemy as sa
 from alembic import op
@@ -24,184 +23,8 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
-_EXPECTED_COLUMNS = {
-    "user_agents": {
-        "agent_id",
-        "organisation_id",
-        "owner_user_id",
-        "source_type",
-        "source_agent_id",
-        "source_version",
-        "revision",
-        "visibility",
-        "status",
-        "agent_type",
-        "name",
-        "description",
-        "prompt",
-        "model_name",
-        "model_config",
-        "allowed_tools",
-        "allowed_skills",
-        "max_turns",
-        "input_schema",
-        "output_mode",
-        "output_schema",
-        "created_at",
-        "updated_at",
-    },
-    "automation_triggers": {
-        "trigger_id",
-        "organisation_id",
-        "owner_user_id",
-        "name",
-        "target_type",
-        "target_id",
-        "target_revision",
-        "target_snapshot",
-        "trigger_type",
-        "source_domain",
-        "event_type",
-        "config_schema_version",
-        "trigger_config",
-        "filter_config",
-        "scope_type",
-        "scope_config",
-        "task_config",
-        "delivery_config",
-        "config_hash",
-        "status",
-        "next_trigger_at",
-        "last_triggered_at",
-        "trigger_count",
-        "consecutive_failures",
-        "last_error",
-        "created_at",
-        "updated_at",
-    },
-    "agent_runs": {
-        "run_id",
-        "organisation_id",
-        "owner_user_id",
-        "agent_id",
-        "trigger_id",
-        "agent_revision",
-        "status",
-        "idempotency_key",
-        "source_domain",
-        "event_type",
-        "source_event_id",
-        "scheduled_for",
-        "trigger_snapshot",
-        "agent_snapshot",
-        "input_snapshot",
-        "output_text",
-        "output_json",
-        "error_code",
-        "error_message",
-        "attempt_count",
-        "claimed_at",
-        "claimed_by",
-        "model_name",
-        "token_usage",
-        "cost",
-        "latency_ms",
-        "created_at",
-        "started_at",
-        "completed_at",
-    },
-}
-
-
-def _reconcile_preexisting_schema() -> bool:
-    """Upgrade the retired workflow agent table or accept a fully provisioned schema."""
-    inspector = sa.inspect(op.get_bind())
-    present = set(_EXPECTED_COLUMNS).intersection(inspector.get_table_names())
-    if not present:
-        return False
-
-    if present == set(_EXPECTED_COLUMNS):
-        missing = {
-            table: expected
-            - {column["name"] for column in inspector.get_columns(table)}
-            for table, expected in _EXPECTED_COLUMNS.items()
-        }
-        missing = {table: columns for table, columns in missing.items() if columns}
-        if missing:
-            raise RuntimeError(
-                f"Existing agent automation tables do not match revision 078: {missing}"
-            )
-        return True
-
-    if present != {"user_agents"}:
-        raise RuntimeError(
-            "Existing agent automation tables do not match revision 078: "
-            f"partial tables {sorted(present)}"
-        )
-
-    columns = {column["name"] for column in inspector.get_columns("user_agents")}
-    legacy_columns = _EXPECTED_COLUMNS["user_agents"] - {
-        "source_type",
-        "source_agent_id",
-        "source_version",
-        "revision",
-        "visibility",
-    }
-    if not legacy_columns.issubset(columns):
-        raise RuntimeError(
-            "Existing agent automation tables do not match revision 078: "
-            f"user_agents is missing {sorted(legacy_columns - columns)}"
-        )
-
-    # copilotgtm: A retired workflow migration created this table without provenance.
-    # Keep its foreign keys and rows intact; remove this bridge after all tenants reach 078.
-    new_columns: dict[str, sa.Column[Any]] = {
-        "source_type": sa.Column(
-            "source_type", sa.Text(), nullable=False, server_default=sa.text("'user'")
-        ),
-        "source_agent_id": sa.Column("source_agent_id", sa.UUID(), nullable=True),
-        "source_version": sa.Column("source_version", sa.Integer(), nullable=True),
-        "revision": sa.Column(
-            "revision", sa.Integer(), nullable=False, server_default=sa.text("1")
-        ),
-        "visibility": sa.Column(
-            "visibility", sa.Text(), nullable=False, server_default=sa.text("'private'")
-        ),
-    }
-    for name, column in new_columns.items():
-        if name not in columns:
-            op.add_column("user_agents", column)
-
-    existing_checks = {
-        constraint["name"] for constraint in inspector.get_check_constraints("user_agents")
-    }
-    checks = {
-        "ck_user_agents_revision": "revision >= 1",
-        "ck_user_agents_source_type": "source_type IN ('user', 'system')",
-        "ck_user_agents_visibility": "visibility IN ('private', 'organisation')",
-        "ck_user_agents_status": "status IN ('active', 'paused', 'archived')",
-        "ck_user_agents_output_mode": "output_mode IN ('text', 'json')",
-    }
-    for name, condition in checks.items():
-        if name not in existing_checks:
-            op.create_check_constraint(name, "user_agents", condition)
-
-    existing_indexes = {index["name"] for index in inspector.get_indexes("user_agents")}
-    for name in (
-        "ix_user_agents_organisation_id",
-        "ix_user_agents_owner_user_id",
-        "ix_user_agents_org_owner_status",
-    ):
-        if name in existing_indexes:
-            op.drop_index(name, table_name="user_agents")
-    return False
-
-
 def upgrade() -> None:
     """Create agent definitions, reusable triggers, and immutable run history."""
-    if _reconcile_preexisting_schema():
-        return
-
     op.create_table(
         "user_agents",
         sa.Column(
@@ -316,7 +139,6 @@ def upgrade() -> None:
             name="ck_user_agents_output_mode",
         ),
         sa.PrimaryKeyConstraint("agent_id"),
-        if_not_exists=True,
     )
     op.create_index(
         "ix_user_agents_owner_status_updated",
@@ -327,7 +149,6 @@ def upgrade() -> None:
             "status",
             sa.text("updated_at DESC"),
         ],
-        if_not_exists=True,
     )
 
     op.create_table(

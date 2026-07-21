@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import Enum
@@ -61,6 +62,14 @@ class _FakeSession:
     async def flush(self) -> None:
         """Match AsyncSession.flush without touching a database."""
         return None
+
+
+class _FakeActivationService:
+    def __init__(self) -> None:
+        self.event_ids: list[object] = []
+
+    async def activate_crm_event(self, event_id: object) -> None:
+        self.event_ids.append(event_id)
 
 
 def _command(
@@ -161,6 +170,27 @@ async def test_record_event_persists_generic_crm_event() -> None:
 
 
 @pytest.mark.asyncio
+async def test_supported_semantic_event_activates_once_from_shared_recorder() -> None:
+    activation = _FakeActivationService()
+    service = CRMMutationEventService(_FakeSession(), uuid4(), activation_service=activation)
+    command = replace(_command(), semantic_event_types=["crm.contact.created"])
+
+    result = await service.record_event(command)
+
+    assert activation.event_ids == [result.event_id]
+
+
+@pytest.mark.asyncio
+async def test_unsupported_semantic_event_remains_audit_only() -> None:
+    activation = _FakeActivationService()
+    service = CRMMutationEventService(_FakeSession(), uuid4(), activation_service=activation)
+
+    await service.record_event(_command())
+
+    assert activation.event_ids == []
+
+
+@pytest.mark.asyncio
 async def test_record_event_returns_existing_event_for_same_scoped_idempotency_payload() -> None:
     """Safe retries with the same scoped payload should return the original event id."""
     session = _FakeSession()
@@ -174,6 +204,30 @@ async def test_record_event_returns_existing_event_for_same_scoped_idempotency_p
 
     assert second.event_id == first.event_id
     assert retry_session.added == []
+
+
+@pytest.mark.asyncio
+async def test_supported_idempotent_retry_replays_activation() -> None:
+    """A retry must repair a missing run left by an older producer deployment."""
+    session = _FakeSession()
+    command = replace(
+        _command(idempotency_key="req-123"),
+        semantic_event_types=["crm.contact.created"],
+    )
+    first_service = CRMMutationEventService(
+        session, uuid4(), activation_service=_FakeActivationService()
+    )
+    await first_service.record_event(command)
+
+    activation = _FakeActivationService()
+    retry_service = CRMMutationEventService(
+        _FakeSession(existing=session.added[0]),
+        first_service.organisation_id,
+        activation_service=activation,
+    )
+    result = await retry_service.record_event(command)
+
+    assert activation.event_ids == [result.event_id]
 
 
 @pytest.mark.asyncio

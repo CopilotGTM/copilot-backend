@@ -1,4 +1,4 @@
-"""Default model-tier contracts for the built-in agents."""
+"""Agent-model configuration contracts for built-in and user-configured runtimes."""
 
 from src.infra.config.agent_config import AgentConfig
 
@@ -22,4 +22,16 @@ def test_agent_defaults_assign_gpt_5_6_tiers_by_workload() -> None:
         "transcript_compression_agent": "gpt-5.6-luna",
         "contact_research_summary_agent": "gpt-5-mini",
         "account_research_summary_agent": "gpt-5-mini",
+        "user_configured_agent": "gpt-5.6-terra",
     }
+
+
+def test_user_configured_agent_has_a_dedicated_config_key() -> None:
+    """Keep triggered user agents independently configurable from interactive chat."""
+
+    config = AgentConfig.get_config("user_configured_agent")
+
+    assert "user_configured_agent" in AgentConfig.list_agents()
+    assert config.model == AgentConfig.USER_CONFIGURED_MODEL
+    assert config.debug_mode == AgentConfig.USER_CONFIGURED_DEBUG
+    assert config.timeout_seconds == AgentConfig.USER_CONFIGURED_TIMEOUT

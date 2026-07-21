@@ -2,7 +2,7 @@
 
 Called by CRM write services after they mutate the entity row and compute the
 field-level diff. This module owns the append-only audit insert, idempotent retry
-behavior, and tenant-scoped lookup; it deliberately does not dispatch workflows.
+behavior, tenant-scoped lookup, and activation of supported agent triggers.
 """
 
 from __future__ import annotations
@@ -10,18 +10,31 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime
+from typing import Protocol
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealMutationEvent
+from src.service.automation.errors import AutomationServiceError
+from src.service.automation.triggers.activation import AutomationTriggerActivationService
+from src.service.automation.triggers.crm_events import CRM_AGENT_EVENT_SCHEMAS
 from src.service.crm.mutations.contracts import (
     CRMMutationEventServiceError,
     CRMMutationRecordCommand,
     CRMMutationRecordResult,
 )
 from src.service.crm.mutations.json_safe import normalize_changed_fields
+
+
+class CRMEventActivation(Protocol):
+    """Agent-trigger activation called after the durable source event is flushed."""
+
+    async def activate_crm_event(self, event_id: UUID) -> object:
+        """Create replay-safe pending runs for one supported CRM event."""
+
+        ...
 
 
 class CRMMutationEventService:
@@ -32,9 +45,18 @@ class CRMMutationEventService:
     row change and its audit event, keeping the ledger consistent.
     """
 
-    def __init__(self, session: AsyncSession, organisation_id: UUID):
+    def __init__(
+        self,
+        session: AsyncSession,
+        organisation_id: UUID,
+        *,
+        activation_service: CRMEventActivation | None = None,
+    ):
         self.session = session
         self.organisation_id = organisation_id
+        self._activation = activation_service or AutomationTriggerActivationService(
+            session, organisation_id
+        )
 
     async def record_event(self, command: CRMMutationRecordCommand) -> CRMMutationRecordResult:
         """Persist one mutation event when the command contains real field changes.
@@ -62,12 +84,16 @@ class CRMMutationEventService:
             existing = await self._get_existing_idempotency_event(scoped_idempotency_key)
             if existing:
                 if existing.payload_hash == payload_hash:
-                    return CRMMutationRecordResult(
+                    result = CRMMutationRecordResult(
                         event_id=existing.event_id,
                         changed=True,
                         changed_fields=existing.changed_fields,
                         semantic_event_types=existing.semantic_event_types,
                     )
+                    # Replay activation as well as the source event. Agent-run idempotency makes
+                    # this harmless and repairs events written before a trigger producer upgrade.
+                    await self._activate_supported_event(result)
+                    return result
                 raise CRMMutationEventServiceError(
                     "Idempotency key was already used for a different CRM mutation",
                     status_code=409,
@@ -102,12 +128,28 @@ class CRMMutationEventService:
         )
         self.session.add(event)
         await self.session.flush()
-        return CRMMutationRecordResult(
+        result = CRMMutationRecordResult(
             event_id=event.event_id,
             changed=True,
             changed_fields=changed_fields,
             semantic_event_types=event.semantic_event_types,
         )
+        await self._activate_supported_event(result)
+        return result
+
+    async def _activate_supported_event(self, result: CRMMutationRecordResult) -> None:
+        if result.event_id and any(
+            event_type in CRM_AGENT_EVENT_SCHEMAS for event_type in result.semantic_event_types
+        ):
+            # copilotgtm: V1 activates inside the CRM transaction so a committed source event can
+            # never exist without its pending runs. Move this to a replaying outbox consumer if
+            # activation query latency becomes material; AgentRun idempotency already supports it.
+            try:
+                await self._activation.activate_crm_event(result.event_id)
+            except AutomationServiceError as exc:
+                raise CRMMutationEventServiceError(
+                    "Failed to activate CRM agent automation", status_code=500
+                ) from exc
 
     async def _get_existing_idempotency_event(
         self, scoped_idempotency_key: str
