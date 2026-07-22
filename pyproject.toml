@@ -60,6 +60,7 @@ dependencies = [
     "opentelemetry-instrumentation-redis>=0.64b0",
     "pypdf>=6.13.3",
     "google-auth>=2.38.0",
+    "pyasn1>=0.6.4",
     "python-multipart>=0.0.27",
     "setuptools>=78.1.1",
     "wheel>=0.46.2",
