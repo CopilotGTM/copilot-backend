@@ -49,7 +49,6 @@ from src.infra.utils.logger import get_logger
 from src.service.integrations.messaging_sync_service import MessagingSyncService
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 from src.service.integrations.sync_health import (
-    CIRCUIT_BREAKER_THRESHOLD,
     record_sync_failure,
     record_sync_success,
 )
@@ -179,7 +178,6 @@ def sync_messaging_channels_org_task(
                 col(KnowledgeIntegration.integration_type).in_(MESSAGING_INTEGRATION_TYPES),
                 col(KnowledgeIntegration.is_active) == True,  # noqa: E712
                 col(KnowledgeIntegration.connection_id).isnot(None),
-                col(KnowledgeIntegration.consecutive_sync_failures) < CIRCUIT_BREAKER_THRESHOLD,
             )
             result = await session.execute(stmt)
             integrations = result.scalars().all()

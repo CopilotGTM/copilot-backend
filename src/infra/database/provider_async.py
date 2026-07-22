@@ -106,6 +106,7 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                 self._master_engine = create_async_engine(
                     url,
                     echo=False,
+                    hide_parameters=True,
                     pool_size=_POOL_SIZE,
                     max_overflow=_MAX_OVERFLOW,
                     pool_timeout=_POOL_TIMEOUT,
@@ -143,6 +144,7 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
         return create_async_engine(
             self._build_tenant_url(user, password),
             echo=False,
+            hide_parameters=True,
             pool_size=_POOL_SIZE,
             max_overflow=_MAX_OVERFLOW,
             pool_timeout=_POOL_TIMEOUT,

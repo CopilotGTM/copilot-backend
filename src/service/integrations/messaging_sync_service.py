@@ -92,6 +92,7 @@ class MessagingSyncService:
             Dictionary with sync statistics
         """
         sync_history = await self._sync_history.start(integration.integration_id)
+        records_committed = 0
 
         try:
             channel_list = list(channels)
@@ -144,6 +145,7 @@ class MessagingSyncService:
 
                     # Commit after each channel
                     await self.db.commit()
+                    records_committed = records_processed
 
                 except Exception as e:
                     logger.error(
@@ -162,6 +164,7 @@ class MessagingSyncService:
 
             # Final commit
             await self.db.commit()
+            records_committed = records_processed
 
             # Update sync history
             await self._sync_history.complete(
@@ -214,19 +217,13 @@ class MessagingSyncService:
                 exc_info=True,
             )
 
-            await self._sync_history.complete(
+            await self._sync_history.fail(
                 sync_history,
-                status=SyncStatus.FAILED,
-                records_processed=0,
+                integration_id=integration.integration_id,
+                records_processed=records_committed,
                 records_failed=len(channel_list),
-                error_details={"error": str(e), "error_type": type(e).__name__},
+                error=e,
             )
-
-            # Update integration sync status
-            integration.last_sync_status = SyncStatus.FAILED.value
-            integration.last_sync_error = str(e)[:500]
-            self.db.add(integration)
-            await self.db.commit()
 
             raise
 
@@ -263,6 +260,7 @@ class MessagingSyncService:
         """
         sync_history = await self._sync_history.start(integration.integration_id)
         action_counts = SyncActionCounts()
+        records_committed = 0
 
         try:
             channel_list = list(channels)
@@ -412,6 +410,7 @@ class MessagingSyncService:
 
                 # Commit after each batch
                 await self.db.commit()
+                records_committed = records_processed
 
             # Update sync history
             await self._sync_history.complete(
@@ -471,21 +470,13 @@ class MessagingSyncService:
                 exc_info=True,
             )
 
-            await self._sync_history.complete(
+            await self._sync_history.fail(
                 sync_history,
-                status=SyncStatus.FAILED,
-                records_processed=0,
+                integration_id=integration.integration_id,
+                records_processed=records_committed,
                 records_failed=len(channel_list),
-                error_details={
-                    "error": str(e),
-                    "error_type": type(e).__name__,
-                },
+                error=e,
             )
-
-            integration.last_sync_status = SyncStatus.FAILED.value
-            integration.last_sync_error = str(e)[:500]
-            self.db.add(integration)
-            await self.db.commit()
 
             raise
 
@@ -517,6 +508,7 @@ class MessagingSyncService:
             Dictionary with sync statistics
         """
         sync_history = await self._sync_history.start(integration.integration_id)
+        records_committed = 0
 
         try:
             message_list = list(messages)
@@ -580,6 +572,7 @@ class MessagingSyncService:
 
                     # Commit after each message
                     await self.db.commit()
+                    records_committed = records_processed
 
                 except Exception as e:
                     logger.error(
@@ -598,6 +591,7 @@ class MessagingSyncService:
 
             # Final commit
             await self.db.commit()
+            records_committed = records_processed
 
             # Update sync history
             await self._sync_history.complete(
@@ -651,19 +645,13 @@ class MessagingSyncService:
                 exc_info=True,
             )
 
-            await self._sync_history.complete(
+            await self._sync_history.fail(
                 sync_history,
-                status=SyncStatus.FAILED,
-                records_processed=0,
+                integration_id=integration.integration_id,
+                records_processed=records_committed,
                 records_failed=len(message_list),
-                error_details={"error": str(e), "error_type": type(e).__name__},
+                error=e,
             )
-
-            # Update integration sync status
-            integration.last_sync_status = SyncStatus.FAILED.value
-            integration.last_sync_error = str(e)[:500]
-            self.db.add(integration)
-            await self.db.commit()
 
             raise
 

@@ -112,7 +112,7 @@ async def test_refresh_single_token_updates_credentials_and_preserves_refresh_to
 
 
 @pytest.mark.asyncio
-async def test_refresh_single_token_reactivates_reauth_integration_on_success() -> None:
+async def test_refresh_single_token_skips_reauth_integration_until_user_reconnects() -> None:
     organisation_id = uuid4()
     integration = _make_integration(
         is_active=False,
@@ -148,14 +148,13 @@ async def test_refresh_single_token_reactivates_reauth_integration_on_success() 
     ):
         result = await service.refresh_single_token_async(integration.integration_id)
 
-    assert result["success"] is True
-    assert integration.is_active is True
-    assert integration.requires_reauth is False
-    assert integration.last_sync_status == "success"
-    assert integration.last_sync_error is None
-    assert integration.consecutive_sync_failures == 0
-    assert "token_refresh_failures" not in integration.connection_metadata
-    session.commit.assert_awaited_once()
+    assert result["success"] is False
+    assert result["handled"] is True
+    assert result["reason"] == "requires_reauth"
+    assert integration.is_active is False
+    assert integration.requires_reauth is True
+    provider.refresh_token.assert_not_awaited()
+    session.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -188,7 +187,8 @@ async def test_refresh_single_token_fails_when_refresh_token_missing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_refresh_single_token_deactivates_after_max_failures() -> None:
+async def test_refresh_single_token_keeps_transient_failures_active() -> None:
+    """Repeated internal/provider failures remain eligible for scheduled recovery."""
     organisation_id = uuid4()
     integration = _make_integration(connection_metadata={"token_refresh_failures": 2})
     session = _make_session(FakeResult(scalar=integration))
@@ -212,11 +212,92 @@ async def test_refresh_single_token_deactivates_after_max_failures() -> None:
 
     assert result["success"] is False
     assert result["failure_count"] == 3
-    assert result["deactivated"] is True
-    assert integration.is_active is False
-    assert integration.last_sync_status == "FAILED"
+    assert result["deactivated"] is False
+    assert integration.is_active is True
+    assert integration.last_sync_status == "internal_error"
     assert integration.connection_metadata["token_refresh_failures"] == 3
     session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "payload", "expected_type"),
+    [
+        (429, {"error": "rate_limited"}, "rate_limited"),
+        (500, {"error": "provider_down"}, "provider_error"),
+        (401, {"error": "unauthorized"}, "provider_error"),
+        (400, {"error": "invalid_client"}, "internal_error"),
+    ],
+)
+async def test_refresh_http_failures_without_revoked_grant_stay_active(
+    status_code: int,
+    payload: dict[str, str],
+    expected_type: str,
+) -> None:
+    """Provider/app failures must not turn into terminal user reconnect state."""
+    organisation_id = uuid4()
+    integration = _make_integration(connection_metadata={"token_refresh_failures": 8})
+    session = _make_session(FakeResult(scalar=integration))
+    response = httpx.Response(
+        status_code,
+        json=payload,
+        request=httpx.Request("POST", "https://provider.example/token"),
+    )
+    provider = AsyncMock()
+    provider.provider_key = "provider"
+    provider.refresh_token.side_effect = httpx.HTTPStatusError(
+        str(status_code),
+        request=response.request,
+        response=response,
+    )
+
+    with (
+        patch(
+            "src.service.integrations.custom_token_refresh_service.acquire_org_async_session",
+            side_effect=_session_generator([session]),
+        ),
+        patch(
+            "src.service.integrations.custom_token_refresh_service.ProviderFactory.get_provider",
+            return_value=provider,
+        ),
+    ):
+        result = await CustomTokenRefreshService(
+            organisation_id
+        ).refresh_single_token_async(integration.integration_id)
+
+    assert result["failure_type"] == expected_type
+    assert result["deactivated"] is False
+    assert integration.is_active is True
+    assert integration.requires_reauth is False
+
+
+@pytest.mark.asyncio
+async def test_refresh_timeout_stays_active() -> None:
+    """A provider timeout remains retryable even after many earlier attempts."""
+    organisation_id = uuid4()
+    integration = _make_integration(connection_metadata={"token_refresh_failures": 8})
+    session = _make_session(FakeResult(scalar=integration))
+    provider = AsyncMock()
+    provider.provider_key = "google"
+    provider.refresh_token.side_effect = httpx.ReadTimeout("provider timeout")
+
+    with (
+        patch(
+            "src.service.integrations.custom_token_refresh_service.acquire_org_async_session",
+            side_effect=_session_generator([session]),
+        ),
+        patch(
+            "src.service.integrations.custom_token_refresh_service.ProviderFactory.get_provider",
+            return_value=provider,
+        ),
+    ):
+        result = await CustomTokenRefreshService(
+            organisation_id
+        ).refresh_single_token_async(integration.integration_id)
+
+    assert result["failure_type"] == "provider_error"
+    assert result["deactivated"] is False
+    assert integration.is_active is True
 
 
 @pytest.mark.asyncio
@@ -258,6 +339,7 @@ async def test_refresh_single_token_marks_invalid_grant_as_reauth_required() -> 
     assert integration.requires_reauth is True
     assert integration.is_active is False
     assert integration.last_sync_status == "auth_failed"
+    assert integration.last_sync_error.startswith("invalid_grant:")
     assert "token_refresh_failures" not in integration.connection_metadata
     session.commit.assert_awaited_once()
 
@@ -349,7 +431,7 @@ async def test_refresh_org_tokens_counts_reauth_as_handled_action_required() -> 
 
 
 @pytest.mark.asyncio
-async def test_refresh_org_tokens_includes_reauth_integrations_for_recovery() -> None:
+async def test_refresh_org_tokens_processes_integrations_returned_by_active_query() -> None:
     organisation_id = uuid4()
     integration_id = uuid4()
     query_session = _make_session(FakeResult(rows=[(integration_id,)]))
@@ -376,5 +458,6 @@ async def test_refresh_org_tokens_includes_reauth_integrations_for_recovery() ->
         result = await service.refresh_org_tokens_async(buffer_hours=2)
 
     executed_stmt = query_session.execute.await_args.args[0]
+    assert "is_active" in str(executed_stmt)
     assert "requires_reauth" in str(executed_stmt)
     assert result["summary"]["successful"] == 1

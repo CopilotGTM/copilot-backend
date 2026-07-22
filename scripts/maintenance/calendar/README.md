@@ -25,6 +25,8 @@ Fetches full event details from provider APIs (Google Calendar API / Microsoft G
 
 ### `trigger_initial_integrations_sync.py`
 Resets sync cursors (delta tokens, sync tokens, last_synced_at) and dispatches manual integration sync tasks. Supports `--family` flag to limit to specific integration types (calendar, email, messaging, crm).
+For provider-parent Google/Microsoft rows, calendar mode resets the enabled calendar capability state; disabled capabilities are intentionally skipped until scopes and user intent are verified.
+Use `--integration-id <uuid> --enable-calendar-capability` to allowlist recovery of a disabled/missing calendar capability. Execute mode validates the stored scopes and refresh token before enabling; broad production execution requires `--all-orgs --yes`.
 
 ```powershell
 # Calendar only

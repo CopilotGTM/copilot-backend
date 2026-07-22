@@ -1,4 +1,4 @@
-"""Tests for sync health module — error classification, circuit breaker, auth revocation."""
+"""Tests for sync health classification, retry counters, and auth revocation."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from src.domain.models.organisation_tables.sync import IntegrationType
 from src.service.integrations.sync_health import (
     CIRCUIT_BREAKER_THRESHOLD,
     AuthTokenRevokedError,
@@ -28,9 +29,10 @@ class TestClassifySyncError:
         assert classify_sync_error(exc) == SyncFailureType.AUTH_FAILED
 
     def test_http_401(self):
+        """A raw 401 lacks proof that the user's refresh grant was revoked."""
         response = httpx.Response(401, request=httpx.Request("GET", "https://x.com"))
         exc = httpx.HTTPStatusError("401", request=response.request, response=response)
-        assert classify_sync_error(exc) == SyncFailureType.AUTH_FAILED
+        assert classify_sync_error(exc) == SyncFailureType.PROVIDER_ERROR
 
     def test_http_403(self):
         response = httpx.Response(403, request=httpx.Request("GET", "https://x.com"))
@@ -208,10 +210,7 @@ async def test_record_sync_failure_increments_counter():
 
 @pytest.mark.asyncio
 async def test_record_sync_failure_circuit_breaker_does_not_deactivate():
-    """At threshold, counter increments but is_active stays True.
-
-    Org tasks skip by counter, not by is_active — so recovery is automatic.
-    """
+    """At the alert threshold, scheduled retries remain eligible."""
     mock_integration = _make_mock_integration(
         consecutive_failures=CIRCUIT_BREAKER_THRESHOLD - 1,
     )
@@ -228,7 +227,43 @@ async def test_record_sync_failure_circuit_breaker_does_not_deactivate():
         )
 
     assert mock_integration.consecutive_sync_failures == CIRCUIT_BREAKER_THRESHOLD
-    assert mock_integration.is_active is True  # Still active — just skipped by counter
+    assert mock_integration.is_active is True
+
+
+@pytest.mark.asyncio
+async def test_record_sync_failure_targets_capability_without_overwriting_parent_health():
+    """A calendar outage must not replace email/connection health on the provider parent."""
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    integration = _make_mock_integration(last_sync_status="email_success")
+    state = MagicMock()
+    state.consecutive_sync_failures = 2
+    integration_result = MagicMock()
+    integration_result.scalar_one_or_none.return_value = integration
+    state_result = MagicMock()
+    state_result.scalar_one_or_none.return_value = state
+    session = AsyncMock()
+    session.execute = AsyncMock(side_effect=[integration_result, state_result])
+    session.commit = AsyncMock()
+    session.add = MagicMock()
+
+    async def mock_acquire(*args, **kwargs):
+        yield session
+
+    with patch(
+        "src.service.integrations.sync_health.acquire_org_async_session",
+        side_effect=mock_acquire,
+    ):
+        await record_sync_failure(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            capability=IntegrationType.GOOGLE_CALENDAR,
+            error=httpx.ReadTimeout("timeout"),
+        )
+
+    assert state.last_sync_status == "provider_error"
+    assert state.consecutive_sync_failures == 3
+    assert integration.last_sync_status == "email_success"
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +380,7 @@ class TestIsPermanentAuthError:
         assert self.fn(exc) is True
 
     def test_google_invalid_client(self):
-        """Client secret rotated — credentials no longer valid."""
+        """A rotated application secret is operational, not a user reconnect issue."""
         response = httpx.Response(
             400,
             json={
@@ -355,7 +390,7 @@ class TestIsPermanentAuthError:
             request=httpx.Request("POST", "https://oauth2.googleapis.com/token"),
         )
         exc = httpx.HTTPStatusError("400", request=response.request, response=response)
-        assert self.fn(exc) is True
+        assert self.fn(exc) is False
 
     # -- Microsoft errors --
 

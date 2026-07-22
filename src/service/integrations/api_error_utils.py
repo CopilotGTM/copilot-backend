@@ -63,6 +63,11 @@ def _response_error_message(response: httpx.Response) -> str:
             message = error.get("message")
             if isinstance(message, str):
                 return message
+        if isinstance(error, str):
+            description = payload.get("error_description")
+            if isinstance(description, str) and description:
+                return f"{error}: {description}"
+            return error
         message = payload.get("message")
         if isinstance(message, str):
             return message

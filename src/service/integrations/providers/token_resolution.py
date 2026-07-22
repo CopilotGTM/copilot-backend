@@ -133,7 +133,8 @@ def _is_permanent_auth_error(exc: Exception) -> bool:
     - invalid_grant: user revoked access, 6-month inactivity, password change,
       max token limit, admin policy, suspicious activity
     - admin_policy_enforced: Workspace admin restricted app scopes
-    - invalid_client: client secret rotated (unrecoverable without redeploy)
+    OAuth-app failures such as invalid_client remain operational errors. A
+    user reconnect cannot repair our rotated or misconfigured client secret.
 
     Microsoft (all return HTTP 400 with AADSTS codes):
     - 50173/70008/700082/700084: token expired or revoked
@@ -150,10 +151,6 @@ def _is_permanent_auth_error(exc: Exception) -> bool:
         # Google Workspace: admin restricted app scopes
         if "admin_policy_enforced" in body:
             return True
-        # Google: client credentials invalid (secret rotated)
-        if "invalid_client" in body:
-            return True
-
         # Microsoft: check AADSTS error codes in response body
         # Response contains "error_codes": [70008] array
         if "aadsts" in body or "error_codes" in body:
@@ -316,8 +313,8 @@ async def _refresh_and_persist_token(token_info: IntegrationTokenInfo) -> str:
                 session.add(integration)
                 await session.commit()
 
-        # Update in-memory so subsequent pagination pages in the same sync
-        # use the new token without another DB round-trip
+        # Pagination reuses this object; keeping it current avoids refreshing
+        # every remaining page after the persisted token has already rotated.
         token_info.access_token = new_access_token
         if "refresh_token" in new_tokens:
             token_info.refresh_token = new_tokens["refresh_token"]

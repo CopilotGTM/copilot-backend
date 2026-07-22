@@ -26,7 +26,6 @@ from src.domain.models.organisation_tables.sync.meeting_recording import (
 from src.service.calendar_invites.models import CalendarInviteAttendee
 from src.service.integrations.calendar.integration_types import (
     DISPATCH_CALENDAR_INTEGRATION_TYPES,
-    PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPES,
 )
 from src.service.meeting_bot.providers import RecallProviderError
 from src.service.meetings_tab_service import (
@@ -46,10 +45,9 @@ def _service() -> MeetingsTabService:
     )
 
 
-def test_meetings_tab_uses_provider_parent_calendar_integrations() -> None:
-    """Meetings tab must query provider-parent auth integrations, not dispatch-only children."""
-    assert CALENDAR_INTEGRATION_TYPES == PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPES
-    assert CALENDAR_INTEGRATION_TYPES != DISPATCH_CALENDAR_INTEGRATION_TYPES
+def test_meetings_tab_keeps_legacy_calendar_integrations_readable() -> None:
+    """Active direct rows remain visible while provider-parent reconciliation completes."""
+    assert CALENDAR_INTEGRATION_TYPES == DISPATCH_CALENDAR_INTEGRATION_TYPES
 
 
 def test_existing_deal_association_is_used_as_link_fallback() -> None:
@@ -77,8 +75,20 @@ def test_meetings_query_does_not_depend_on_removed_link_tables() -> None:
 
     assert "meeting_record_links" not in compiled
     assert "meeting_bot_preferences" not in compiled
-    assert "'outlook_calendar'" not in compiled
     assert "calendar_event_deal_associations" in compiled
+
+
+def test_meetings_query_requires_enabled_provider_calendar_capability() -> None:
+    """Active email-only parents must not expose stale calendar rows in Meetings."""
+    compiled = str(
+        _service()._meeting_rows_stmt().compile(compile_kwargs={"literal_binds": True})  # noqa: SLF001
+    )
+
+    assert "integration_sync_states" in compiled
+    assert "EXISTS" in compiled
+    assert "integration_sync_states.enabled IS true" in compiled
+    assert "google_calendar" in compiled
+    assert "outlook_calendar" in compiled
 
 
 def test_deal_association_surfaces_deal_summary_state() -> None:

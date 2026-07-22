@@ -21,6 +21,7 @@ from src.domain.models.organisation_tables.sync import (
 )
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.integrations.api_error_utils import extract_api_error_details
 from src.service.integrations.providers.provider_factory import ProviderFactory
 from src.service.integrations.providers.salesforce_provider import (
     resolve_salesforce_oauth_base_url,
@@ -33,10 +34,6 @@ from src.service.integrations.sync_health import (
 )
 
 logger = get_logger(__name__)
-
-# Maximum consecutive refresh failures before deactivating an integration
-TOKEN_REFRESH_MAX_FAILURES = 3
-
 
 class CustomTokenRefreshService:
     """
@@ -54,10 +51,12 @@ class CustomTokenRefreshService:
         """
         Refresh tokens that need refreshing for the organization.
 
-        Refreshes tokens that:
+        Refreshes active tokens that:
         1. Have no expiry set (NULL)
         2. Are expiring within buffer_hours
-        3. Are marked requires_reauth but still have a refresh token to try
+
+        Integrations marked ``requires_reauth`` are terminal until the OAuth
+        callback stores a fresh user grant, so scheduled work excludes them.
         """
         expiry_threshold = datetime.utcnow() + timedelta(hours=buffer_hours)
 
@@ -71,15 +70,12 @@ class CustomTokenRefreshService:
         async for session in acquire_org_async_session(self.organisation_id):
             stmt = select(col(KnowledgeIntegration.integration_id)).where(
                 and_(
-                    or_(
-                        col(KnowledgeIntegration.is_active) == True,  # noqa: E712
-                        col(KnowledgeIntegration.requires_reauth) == True,  # noqa: E712
-                    ),
+                    col(KnowledgeIntegration.is_active) == True,  # noqa: E712
+                    col(KnowledgeIntegration.requires_reauth) == False,  # noqa: E712
                     col(KnowledgeIntegration.connection_id).isnot(None),
                     col(KnowledgeIntegration.integration_type)
                     != IntegrationType.INTERNAL_CRM.value,
                     or_(
-                        col(KnowledgeIntegration.requires_reauth) == True,  # noqa: E712
                         col(KnowledgeIntegration.access_token_expires_at).is_(None),
                         col(KnowledgeIntegration.access_token_expires_at) <= expiry_threshold,
                     ),
@@ -182,6 +178,18 @@ class CustomTokenRefreshService:
                     "integration_id": str(integration_id),
                     "error": "Integration not found",
                     "deactivated": False,
+                }
+
+            # User-disconnected and action-required integrations cannot recover
+            # through retries. Only the OAuth callback may reactivate them.
+            if not integration.is_active or integration.requires_reauth:
+                return {
+                    "success": False,
+                    "handled": True,
+                    "skipped": True,
+                    "integration_id": str(integration_id),
+                    "reason": "requires_reauth" if integration.requires_reauth else "inactive",
+                    "deactivated": not integration.is_active,
                 }
 
             integration_type = integration.integration_type
@@ -289,19 +297,10 @@ class CustomTokenRefreshService:
                 )
 
                 failure_count = self._increment_failure_count(integration)
-                integration.last_sync_status = "FAILED"
-                integration.last_sync_error = f"Token refresh failed: {str(e)[:200]}"
+                error_details = extract_api_error_details(e)
+                integration.last_sync_status = failure_type.value
+                integration.last_sync_error = error_details.summary
                 integration.updated_at = datetime.utcnow()
-
-                was_deactivated = False
-                if failure_count >= TOKEN_REFRESH_MAX_FAILURES:
-                    integration.is_active = False
-                    was_deactivated = True
-                    logger.warning(
-                        "Deactivated integration %s after %d consecutive failures",
-                        integration_id,
-                        failure_count,
-                    )
 
                 session.add(integration)
                 await session.commit()
@@ -309,10 +308,10 @@ class CustomTokenRefreshService:
                 return {
                     "success": False,
                     "integration_id": str(integration_id),
-                    "error": str(e)[:200],
+                    "error": error_details.summary,
                     "failure_count": failure_count,
                     "failure_type": failure_type.value,
-                    "deactivated": was_deactivated,
+                    "deactivated": False,
                 }
 
         return {
@@ -368,7 +367,7 @@ class CustomTokenRefreshService:
         error: Exception,
         failure_type: SyncFailureType,
     ) -> dict[str, Any]:
-        error_msg = str(error)[:500]
+        error_msg = extract_api_error_details(error).summary
 
         integration.last_sync_status = failure_type.value
         integration.last_sync_error = error_msg

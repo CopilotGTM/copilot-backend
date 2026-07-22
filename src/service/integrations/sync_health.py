@@ -10,11 +10,9 @@ Two separate mechanisms for two separate problems:
    invalid (revoked, expired, password change). Sets requires_reauth=True
    and is_active=False. Only cleared when user re-authenticates.
 
-2. Circuit breaker (consecutive_sync_failures): Transient failures (network,
-   provider outage, 500s) increment a counter. Org tasks skip integrations
-   where counter >= CIRCUIT_BREAKER_THRESHOLD. Counter resets to 0 on the
-   next success — so when the provider recovers, sync resumes automatically.
-   Does NOT touch is_active — the integration remains "active" but skipped.
+2. Health counter (consecutive_sync_failures): Transient failures (network,
+   provider outage, 500s) increment a counter for alerting. Scheduled work
+   continues trying the integration and the next success resets the counter.
 """
 
 from __future__ import annotations
@@ -25,7 +23,11 @@ from uuid import UUID
 import httpx
 from sqlalchemy import select
 from sqlmodel import col
-from src.domain.models.organisation_tables.sync import KnowledgeIntegration
+from src.domain.models.organisation_tables.sync import (
+    IntegrationSyncState,
+    IntegrationType,
+    KnowledgeIntegration,
+)
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.api_error_utils import (
@@ -35,8 +37,8 @@ from src.service.integrations.api_error_utils import (
 
 logger = get_logger(__name__)
 
-# Org tasks skip integrations with this many consecutive transient failures.
-# The counter resets on the next success, so recovery is automatic.
+# Emit a stronger health warning after this many consecutive transient failures.
+# Scheduling continues so the integration can recover without user action.
 CIRCUIT_BREAKER_THRESHOLD = 5
 
 
@@ -79,8 +81,11 @@ def classify_sync_error(exc: Exception) -> SyncFailureType:
         status = exc.response.status_code
         if status == 400 and _is_permanent_oauth_error_response(exc):
             return SyncFailureType.AUTH_FAILED
+        # A bare 401 does not prove that the user's grant is revoked. Token
+        # resolution raises AuthTokenRevokedError when refresh diagnostics do
+        # prove that; other 401s may be provider or OAuth-app configuration.
         if status == 401:
-            return SyncFailureType.AUTH_FAILED
+            return SyncFailureType.PROVIDER_ERROR
         if status == 403 and is_insufficient_scope_error(exc):
             return SyncFailureType.PERMISSION_REQUIRED
         if status == 403:
@@ -108,7 +113,6 @@ def _is_permanent_oauth_error_response(exc: httpx.HTTPStatusError) -> bool:
     return (
         "invalid_grant" in body
         or "admin_policy_enforced" in body
-        or "invalid_client" in body
         or "interaction_required" in body
     )
 
@@ -176,6 +180,7 @@ async def record_sync_failure(
     integration_id: UUID,
     error: Exception,
     failure_type: SyncFailureType | None = None,
+    capability: IntegrationType | None = None,
 ) -> SyncFailureType:
     """Record a failed sync — increment counter, possibly flag for re-auth.
 
@@ -185,9 +190,8 @@ async def record_sync_failure(
     The user must re-authenticate — no amount of retrying will fix this.
 
     Transient failures: increment consecutive_sync_failures only. Do NOT
-    touch is_active. Org tasks skip integrations where the counter exceeds
-    CIRCUIT_BREAKER_THRESHOLD, but the counter resets to 0 on the next
-    success — so recovery is fully automatic.
+    touch is_active or stop scheduled attempts; the counter resets to 0 on
+    the next success, so recovery is automatic.
     """
     if failure_type is None:
         failure_type = classify_sync_error(error)
@@ -206,15 +210,32 @@ async def record_sync_failure(
         if not integration:
             return failure_type
 
-        integration.last_sync_status = failure_type.value
-        integration.last_sync_error = error_msg
-        new_count = (integration.consecutive_sync_failures or 0) + 1
-        integration.consecutive_sync_failures = new_count
+        state = None
+        if capability is not None:
+            state_result = await session.execute(
+                select(IntegrationSyncState).where(
+                    col(IntegrationSyncState.organisation_id) == organisation_id,
+                    col(IntegrationSyncState.integration_id) == integration_id,
+                    col(IntegrationSyncState.capability) == capability,
+                )
+            )
+            state = state_result.scalar_one_or_none()
+
+        # Capability failures stay isolated from sibling email/calendar health
+        # on provider parents. Legacy rows have no state and retain the existing
+        # integration-level behavior.
+        health_target = state or integration
+        health_target.last_sync_status = failure_type.value
+        health_target.last_sync_error = error_msg
+        new_count = (health_target.consecutive_sync_failures or 0) + 1
+        health_target.consecutive_sync_failures = new_count
 
         if failure_type == SyncFailureType.AUTH_FAILED:
             # Permanent auth failure — flag for re-auth and deactivate
             integration.requires_reauth = True
             integration.is_active = False
+            integration.last_sync_status = failure_type.value
+            integration.last_sync_error = error_msg
             logger.warning(
                 "Auth failure — requires_reauth set, integration deactivated: "
                 "integration=%s org=%s error=%s",
@@ -230,18 +251,18 @@ async def record_sync_failure(
                 error_msg[:200],
             )
         elif new_count >= CIRCUIT_BREAKER_THRESHOLD:
-            # Circuit breaker threshold reached — log but do NOT deactivate.
-            # Org tasks will skip this integration based on the counter.
-            # When the provider recovers, the next scheduled sync attempt
-            # that slips through will succeed and reset the counter.
+            # The threshold is observability-only. Scheduled work keeps
+            # probing so a provider recovery can reset the counter.
             logger.warning(
-                "Circuit breaker threshold reached (%d consecutive failures), "
-                "sync will be skipped until recovery: integration=%s org=%s",
+                "Sync health threshold reached (%d consecutive failures), "
+                "scheduled retries will continue: integration=%s org=%s",
                 new_count,
                 integration_id,
                 organisation_id,
             )
 
+        if state is not None:
+            session.add(state)
         session.add(integration)
         await session.commit()
 

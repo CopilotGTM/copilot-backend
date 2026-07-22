@@ -82,6 +82,7 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
                 self._master_engine = create_engine(
                     url,
                     echo=False,
+                    hide_parameters=True,
                     pool_size=_POOL_SIZE,
                     max_overflow=_MAX_OVERFLOW,
                     pool_recycle=_POOL_RECYCLE,
@@ -198,6 +199,7 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
         return create_engine(
             url,
             echo=False,
+            hide_parameters=True,
             pool_size=_POOL_SIZE,
             max_overflow=_MAX_OVERFLOW,
             pool_recycle=_POOL_RECYCLE,

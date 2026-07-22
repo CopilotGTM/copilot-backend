@@ -20,9 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.integration_models import (
     IntegrationSyncHistory,
+    KnowledgeIntegration,
     SyncStatus,
 )
 from src.infra.utils.logger import get_logger
+from src.service.integrations.api_error_utils import extract_api_error_details
 
 logger = get_logger(__name__)
 
@@ -104,6 +106,77 @@ class SyncHistoryManager:
             records_processed,
             records_failed,
         )
+
+    async def fail(
+        self,
+        sync_history: IntegrationSyncHistory,
+        *,
+        integration_id: UUID,
+        records_processed: int = 0,
+        records_failed: int,
+        error: Exception,
+        update_integration: bool = True,
+    ) -> None:
+        """Persist terminal failure state after discarding a poisoned transaction.
+
+        Database write errors leave SQLAlchemy sessions unusable until rollback.
+        This method captures stable IDs first, rolls back, then reloads both rows
+        so the original exception cannot strand history in ``in_progress``.
+        """
+        assert self._session is not None, "fail() requires a session"
+        sync_id = sync_history.sync_id
+        details = extract_api_error_details(error)
+        error_details = {
+            "error": details.summary,
+            "error_type": type(error).__name__,
+            "status_code": details.status_code,
+        }
+
+        try:
+            await self._session.rollback()
+
+            history_result = await self._session.execute(
+                select(IntegrationSyncHistory).where(
+                    col(IntegrationSyncHistory.sync_id) == sync_id,
+                )
+            )
+            record = history_result.scalar_one_or_none()
+            if record is not None:
+                record.completed_at = datetime_now_naive()
+                record.status = SyncStatus.FAILED
+                record.records_processed = records_processed
+                record.records_failed = records_failed
+                record.error_details = error_details
+                self._session.add(record)
+
+            if update_integration:
+                integration_result = await self._session.execute(
+                    select(KnowledgeIntegration).where(
+                        col(KnowledgeIntegration.integration_id) == integration_id,
+                    )
+                )
+                integration = integration_result.scalar_one_or_none()
+                if integration is not None:
+                    integration.last_sync_status = SyncStatus.FAILED.value
+                    integration.last_sync_error = details.summary
+                    self._session.add(integration)
+
+            await self._session.commit()
+            logger.warning(
+                "Persisted failed sync after transaction rollback: sync_id=%s integration=%s",
+                sync_id,
+                integration_id,
+            )
+        except Exception:
+            # Failure reporting is best-effort. Callers are already handling a
+            # more useful provider/database exception, which must remain the
+            # one seen by retry classification and error monitoring.
+            logger.error(
+                "Could not persist terminal sync failure: sync_id=%s integration=%s",
+                sync_id,
+                integration_id,
+                exc_info=True,
+            )
 
     # ── Pattern 2: Fresh-session (task files) ───────────────────────────
 
