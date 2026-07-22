@@ -597,8 +597,7 @@ class MeetingsTabService:
                         integration_c.integration_type == IntegrationType.GOOGLE.value,
                         exists(
                             select(1).where(
-                                col(IntegrationSyncState.organisation_id)
-                                == self.organisation_id,
+                                col(IntegrationSyncState.organisation_id) == self.organisation_id,
                                 col(IntegrationSyncState.integration_id)
                                 == integration_c.integration_id,
                                 col(IntegrationSyncState.capability)
@@ -611,8 +610,7 @@ class MeetingsTabService:
                         integration_c.integration_type == IntegrationType.MICROSOFT.value,
                         exists(
                             select(1).where(
-                                col(IntegrationSyncState.organisation_id)
-                                == self.organisation_id,
+                                col(IntegrationSyncState.organisation_id) == self.organisation_id,
                                 col(IntegrationSyncState.integration_id)
                                 == integration_c.integration_id,
                                 col(IntegrationSyncState.capability)

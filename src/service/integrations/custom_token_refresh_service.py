@@ -35,6 +35,7 @@ from src.service.integrations.sync_health import (
 
 logger = get_logger(__name__)
 
+
 class CustomTokenRefreshService:
     """
     Service for managing OAuth token refresh operations with custom providers.

@@ -261,9 +261,9 @@ async def test_refresh_http_failures_without_revoked_grant_stay_active(
             return_value=provider,
         ),
     ):
-        result = await CustomTokenRefreshService(
-            organisation_id
-        ).refresh_single_token_async(integration.integration_id)
+        result = await CustomTokenRefreshService(organisation_id).refresh_single_token_async(
+            integration.integration_id
+        )
 
     assert result["failure_type"] == expected_type
     assert result["deactivated"] is False
@@ -291,9 +291,9 @@ async def test_refresh_timeout_stays_active() -> None:
             return_value=provider,
         ),
     ):
-        result = await CustomTokenRefreshService(
-            organisation_id
-        ).refresh_single_token_async(integration.integration_id)
+        result = await CustomTokenRefreshService(organisation_id).refresh_single_token_async(
+            integration.integration_id
+        )
 
     assert result["failure_type"] == "provider_error"
     assert result["deactivated"] is False

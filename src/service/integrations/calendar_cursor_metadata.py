@@ -109,9 +109,7 @@ def apply_calendar_sync_outcome(
     """
     status = str(sync_result.get("status") or "failed")
     failed_record_ids = [
-        str(value)[:200]
-        for value in sync_result.get("failed_record_ids", [])
-        if value is not None
+        str(value)[:200] for value in sync_result.get("failed_record_ids", []) if value is not None
     ][:CALENDAR_FAILED_ID_LIMIT]
     health_metadata = dict(
         state.sync_metadata if state is not None else integration.connection_metadata or {}
@@ -125,9 +123,8 @@ def apply_calendar_sync_outcome(
     if status == "partial":
         fingerprint = _partial_fingerprint(input_cursor, failed_record_ids)
         previous = (
-            (state.sync_metadata if state is not None else integration.connection_metadata or {})
-            .get(CALENDAR_PARTIAL_RETRY_KEY, {})
-        )
+            state.sync_metadata if state is not None else integration.connection_metadata or {}
+        ).get(CALENDAR_PARTIAL_RETRY_KEY, {})
         previous_attempts = (
             int(previous.get("attempts", 0))
             if isinstance(previous, dict) and previous.get("fingerprint") == fingerprint

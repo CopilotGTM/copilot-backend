@@ -81,9 +81,7 @@ def test_partial_sync_quarantines_third_identical_page() -> None:
         "next-cursor"
     )
     assert CALENDAR_PARTIAL_RETRY_KEY not in state.sync_metadata
-    assert state.sync_metadata[CALENDAR_LAST_QUARANTINE_KEY]["failed_record_ids"] == [
-        "bad-event"
-    ]
+    assert state.sync_metadata[CALENDAR_LAST_QUARANTINE_KEY]["failed_record_ids"] == ["bad-event"]
     assert state.last_sync_status == "partial"
 
 

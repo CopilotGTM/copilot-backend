@@ -111,9 +111,7 @@ def _is_permanent_oauth_error_response(exc: httpx.HTTPStatusError) -> bool:
     """Detect OAuth refresh failures that cannot succeed through retry."""
     body = exc.response.text.lower()
     return (
-        "invalid_grant" in body
-        or "admin_policy_enforced" in body
-        or "interaction_required" in body
+        "invalid_grant" in body or "admin_policy_enforced" in body or "interaction_required" in body
     )
 
 
