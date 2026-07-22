@@ -1,6 +1,6 @@
 """Stale job cleanup and durable queue recovery for the chat worker.
 
-Seven passes run with fresh organization sessions:
+Eight passes run with fresh organization sessions:
 
 1. WEB CHAT PENDING - republish unclaimed jobs older than two minutes. The web
    worker claims jobs under a row lock, so duplicate broker deliveries are safe.
@@ -13,13 +13,16 @@ Seven passes run with fresh organization sessions:
 4. WHATSAPP ORDERING - release the oldest waiting message when no predecessor
    remains active. This repairs a crash between terminal commit and queue advance.
 
-5. OTHER CHAT JOBS - fail channels without a durable recovery contract when
+5. ATTACHMENTS - republish post-upload work left in PROCESSING after the
+   producer or worker lost the original task.
+
+6. OTHER CHAT JOBS - fail channels without a durable recovery contract when
    PENDING for 60 minutes or IN_PROGRESS for 30 minutes.
 
-6. STUCK TRIGGERED REMINDERS - reset recoverable reminders to ACTIVE or fail
+7. STUCK TRIGGERED REMINDERS - reset recoverable reminders to ACTIVE or fail
    them after the retry ceiling. This covers crashes after the TRIGGERED commit.
 
-7. STALE REMINDER RUNS - mark runs stuck IN_PROGRESS for 30 minutes as FAILED.
+8. STALE REMINDER RUNS - mark runs stuck IN_PROGRESS for 30 minutes as FAILED.
 """
 
 from __future__ import annotations
@@ -31,6 +34,10 @@ from uuid import UUID
 from sqlalchemy import and_, or_, select, update
 from sqlmodel import col
 
+from src.domain.models.organisation_tables.chat_message_models import (
+    Attachment,
+    AttachmentStatus,
+)
 from src.domain.models.organisation_tables.job_models import (
     ChatMessageJob,
     JobStatus,
@@ -73,6 +80,11 @@ WHATSAPP_MAX_SEND_ATTEMPTS = 3
 WHATSAPP_RECOVERY_BATCH_SIZE = 500
 _WHATSAPP_QUEUE_PUBLISH_TIMEOUT_SECONDS = 4
 _PERSISTED_ERROR_LIMIT = 1000
+# Post-upload tasks have a 10-minute hard limit. Waiting two extra minutes keeps
+# legitimate long processing from being duplicated while still repairing lost work.
+ATTACHMENT_PROCESSING_REQUEUE_AFTER_MINUTES = 12
+ATTACHMENT_RECOVERY_BATCH_SIZE = 100
+_ATTACHMENT_QUEUE_PUBLISH_TIMEOUT_SECONDS = 4
 _WHATSAPP_STATIC_FAILURE_MESSAGE = (
     "I'm sorry, something went wrong while processing your request. "
     "Please try again or use the CopilotGTM web app."
@@ -112,6 +124,24 @@ async def enqueue_whatsapp_delivery_resume(organisation_id: UUID, job_id: UUID) 
     )
 
 
+async def enqueue_attachment_post_upload(
+    organisation_id: UUID,
+    attachment_id: UUID,
+) -> str:
+    """Republish one attachment through the existing post-upload queue."""
+    from src.workers.chat_worker.client import send_chat_task_async
+
+    return await asyncio.wait_for(
+        send_chat_task_async(
+            "attachments.post_upload",
+            args=[str(organisation_id), str(attachment_id)],
+            queue="attachments",
+            routing_key="attachments",
+        ),
+        timeout=_ATTACHMENT_QUEUE_PUBLISH_TIMEOUT_SECONDS,
+    )
+
+
 class ChatStaleJobCleanupService:
     """Cleans up stuck chat jobs and reminders for one organisation.
 
@@ -145,6 +175,8 @@ class ChatStaleJobCleanupService:
             "whatsapp_send_resume_failed": 0,
             "whatsapp_agent_failed": 0,
             "whatsapp_waiting_released": 0,
+            "attachments_requeued": 0,
+            "attachment_requeue_failed": 0,
             "stale_chat_jobs": 0,
             "stuck_triggered_reminders": 0,
             "stale_reminder_runs": 0,
@@ -167,6 +199,10 @@ class ChatStaleJobCleanupService:
 
         counts["whatsapp_waiting_released"] = await self._recover_waiting_whatsapp_session_jobs()
 
+        attachment_counts = await self._recover_stale_attachments(now)
+        counts["attachments_requeued"] = attachment_counts["requeued"]
+        counts["attachment_requeue_failed"] = attachment_counts["requeue_failed"]
+
         # WhatsApp rows have stage-aware recovery and must never enter the generic
         # bulk failure pass used by non-durable bot channels.
         counts["stale_chat_jobs"] = await self._cleanup_stale_chat_jobs(now)
@@ -178,14 +214,71 @@ class ChatStaleJobCleanupService:
         counts["stale_reminder_runs"] = await self._cleanup_stale_reminder_runs(now)
 
         logger.info(
-            "Cleanup done for org=%s: stale_chat_jobs=%d, stuck_reminders=%d, stale_runs=%d",
+            "Cleanup done for org=%s: attachments_requeued=%d, "
+            "attachment_requeue_failed=%d, stale_chat_jobs=%d, "
+            "stuck_reminders=%d, stale_runs=%d",
             self.organisation_id,
+            counts["attachments_requeued"],
+            counts["attachment_requeue_failed"],
             counts["stale_chat_jobs"],
             counts["stuck_triggered_reminders"],
             counts["stale_reminder_runs"],
         )
 
         return {"organisation_id": str(self.organisation_id), **counts}
+
+    async def _recover_stale_attachments(self, now: datetime) -> dict[str, int]:
+        """Lease and republish attachments whose post-upload work disappeared."""
+        attachment_ids = await self._lease_stale_attachments(now)
+        counts = {"requeued": 0, "requeue_failed": 0}
+
+        for attachment_id in attachment_ids:
+            try:
+                await enqueue_attachment_post_upload(self.organisation_id, attachment_id)
+            except Exception:
+                # The lease expires through updated_at, so a broker outage retries
+                # on a later sweep without holding this cleanup task open.
+                counts["requeue_failed"] += 1
+                logger.error(
+                    "Failed to republish attachment post-upload task attachment=%s",
+                    attachment_id,
+                    exc_info=True,
+                )
+                continue
+            counts["requeued"] += 1
+
+        return counts
+
+    async def _lease_stale_attachments(self, now: datetime) -> list[UUID]:
+        """Claim one bounded batch before broker I/O so cleanup workers cannot race."""
+        cutoff = now - timedelta(minutes=ATTACHMENT_PROCESSING_REQUEUE_AFTER_MINUTES)
+
+        async for session in acquire_org_async_session(self.organisation_id):
+            statement = (
+                select(Attachment)
+                .where(
+                    col(Attachment.status) == AttachmentStatus.PROCESSING,
+                    col(Attachment.is_deleted).is_(False),
+                    col(Attachment.storage_path) != "",
+                    col(Attachment.updated_at) < cutoff,
+                )
+                .order_by(col(Attachment.updated_at))
+                .limit(ATTACHMENT_RECOVERY_BATCH_SIZE)
+                .with_for_update(skip_locked=True)
+            )
+            attachments = list((await session.execute(statement)).scalars().all())
+            if not attachments:
+                return []
+
+            # Commit the lease before touching Redis. A failed publication becomes
+            # eligible again after the same bounded recovery interval.
+            for attachment in attachments:
+                attachment.updated_at = now
+                session.add(attachment)
+            await session.commit()
+            return [attachment.attachment_id for attachment in attachments]
+
+        return []
 
     async def _recover_waiting_whatsapp_session_jobs(self) -> int:
         """Release session heads left waiting after a terminal worker crash."""

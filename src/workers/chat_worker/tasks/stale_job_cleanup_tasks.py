@@ -7,6 +7,7 @@ Two-tier task pattern:
 Runs every 15 seconds via Celery Beat. Recovers durable chat jobs and cleans up:
 - Web and WhatsApp pending jobs (>15sec), plus response-ready WhatsApp jobs (>2min)
 - WhatsApp agent executions with unknown outcomes (>12min)
+- Attachment processing whose post-upload task was lost (>12min)
 - Other stale ChatMessageJobs (PENDING >60min, IN_PROGRESS >30min)
 - Stuck TRIGGERED reminders (>30min), reset to ACTIVE or FAILED
 - Stale UserReminderRuns (IN_PROGRESS >30min)
@@ -42,6 +43,7 @@ logger = get_logger("chat_stale_job_cleanup_tasks")
     bind=False,
     max_retries=0,
     acks_late=True,
+    ignore_result=True,
     soft_time_limit=300,
     time_limit=360,
 )
@@ -117,6 +119,7 @@ def cleanup_stale_chat_jobs_all_orgs_task() -> dict[str, Any]:
     max_retries=2,
     default_retry_delay=60,
     acks_late=True,
+    ignore_result=True,
     soft_time_limit=300,
     time_limit=360,
 )
@@ -138,8 +141,11 @@ def cleanup_stale_chat_jobs_org_task(
 
         logger.info(
             "Chat stale cleanup completed for org=%s: "
+            "attachments_requeued=%d, attachment_requeue_failed=%d, "
             "stale_chat_jobs=%d, stuck_reminders=%d, stale_runs=%d",
             organisation_id,
+            result.get("attachments_requeued", 0),
+            result.get("attachment_requeue_failed", 0),
             result.get("stale_chat_jobs", 0),
             result.get("stuck_triggered_reminders", 0),
             result.get("stale_reminder_runs", 0),
