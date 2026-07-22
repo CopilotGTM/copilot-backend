@@ -197,8 +197,7 @@ class MicrosoftWebhookIngestionService:
                 "provider": "microsoft",
                 "capability": kind.value,
                 "provider_notification_id": (
-                    f"{subscription_metadata.subscription_id}:"
-                    f"{','.join(sorted(lifecycle_events))}"
+                    f"{subscription_metadata.subscription_id}:{','.join(sorted(lifecycle_events))}"
                 ),
                 "provider_lifecycle_events": sorted(lifecycle_events),
             }

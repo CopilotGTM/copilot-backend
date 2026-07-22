@@ -235,9 +235,7 @@ class RecallMeetingRecordingWebhookService:
         )
         bot_snapshot = await provider.fetch_session(provider_session_id)
         raw_status = bot_snapshot.get("status")
-        provider_status = (
-            raw_status.get("code") if isinstance(raw_status, dict) else raw_status
-        )
+        provider_status = raw_status.get("code") if isinstance(raw_status, dict) else raw_status
         if not isinstance(provider_status, str):
             return {"status": "retry", "reason": "provider_status_missing"}
 
@@ -249,10 +247,7 @@ class RecallMeetingRecordingWebhookService:
         }
         entered_call = any(
             isinstance(code, str)
-            and (
-                code.startswith("in_call_")
-                or code == "recording_permission_allowed"
-            )
+            and (code.startswith("in_call_") or code == "recording_permission_allowed")
             for code in status_codes
         ) or _enum_value(existing.status) in {
             MeetingRecordingStatus.IN_CALL.value,

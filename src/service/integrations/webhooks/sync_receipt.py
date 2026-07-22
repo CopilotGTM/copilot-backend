@@ -103,10 +103,10 @@ async def update_webhook_sync_receipt(
         # A terminal action-required failure is intentionally closed until the
         # user reconnects; the watchdog must not turn it back into queued work.
         existing_metadata = dict(receipt.sync_metadata or {})
-        if (
-            existing_metadata.get("terminal") is True
-            and status in {SyncStatus.QUEUED, SyncStatus.IN_PROGRESS}
-        ):
+        if existing_metadata.get("terminal") is True and status in {
+            SyncStatus.QUEUED,
+            SyncStatus.IN_PROGRESS,
+        }:
             return False
 
         if status is not None:
