@@ -336,10 +336,15 @@ async def _audit_organisation(
                     subscription_status=subscription_status,
                     now=now,
                 )
-                provider = "google" if capability in {
-                    IntegrationType.GOOGLE_CALENDAR,
-                    IntegrationType.GMAIL,
-                } else "microsoft"
+                provider = (
+                    "google"
+                    if capability
+                    in {
+                        IntegrationType.GOOGLE_CALENDAR,
+                        IntegrationType.GMAIL,
+                    }
+                    else "microsoft"
+                )
                 integration_impacts.append(
                     IntegrationImpact(
                         organisation_id=str(target.organisation_id),

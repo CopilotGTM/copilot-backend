@@ -226,9 +226,9 @@ def reconcile_meeting_recording_task(
         return {"status": "skipped", "reason": "already_running"}
     try:
         result = run_async(
-            RecallMeetingRecordingWebhookService(
-                UUID(organisation_id)
-            ).reconcile_provider_session(UUID(calendar_event_id))
+            RecallMeetingRecordingWebhookService(UUID(organisation_id)).reconcile_provider_session(
+                UUID(calendar_event_id)
+            )
         )
         if result.get("status") == "retry" and self.request.retries < self.max_retries:
             raise self.retry(countdown=300)

@@ -619,7 +619,9 @@ async def test_gmail_target_lookup_uses_master_email_candidates(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_gmail_target_lookup_propagates_tenant_failure_for_provider_retry(monkeypatch) -> None:
+async def test_gmail_target_lookup_propagates_tenant_failure_for_provider_retry(
+    monkeypatch,
+) -> None:
     """A transient tenant lookup failure must make the Pub/Sub delivery retry."""
     service = GoogleWebhookIngestionService()
     broken_org_id = uuid4()
