@@ -16,6 +16,26 @@ PUBLISH_CONTRACTS = [
 ]
 
 
+def test_task_client_reuses_health_checked_redis_connections(monkeypatch):
+    """API publication should reuse TLS connections without trusting stale sockets."""
+
+    class _Config:
+        broker_url = "redis://localhost:6379/0"
+        backend_url = broker_url
+        redis_password = ""
+        ssl_config = None
+
+    from src.workers.base import worker_config
+
+    monkeypatch.setattr(worker_config, "BaseWorkerConfig", _Config)
+
+    client = task_dispatcher._create_task_client()
+
+    assert client.conf.broker_pool_limit == 4
+    assert client.conf.broker_transport_options["health_check_interval"] == 30
+    assert client.conf.task_publish_retry is False
+
+
 def _assert_publish_event(call, *, task_name: str, queue: str, outcome: str) -> None:
     extra = call.kwargs["extra"]
     assert extra["event"] == "celery_publish"

@@ -29,6 +29,8 @@ _generation_inflight: dict[int, int] = {}
 _retired_generations: set[int] = set()
 
 DEFAULT_TASK_PUBLISH_TIMEOUT_SECONDS = 3.0
+_PRODUCER_POOL_LIMIT = 4
+_PRODUCER_HEALTH_CHECK_SECONDS = 30
 
 
 class TaskPublishTimeoutError(TimeoutError):
@@ -109,8 +111,8 @@ def _create_task_client() -> Celery:
         client.conf.broker_use_ssl = config.ssl_config
         client.conf.redis_backend_use_ssl = config.ssl_config
 
-    # Durable chat jobs own retries. API producers make one short attempt and use
-    # fresh Redis connections so sparse traffic cannot reuse an idle socket.
+    # Durable jobs own retries, while a small health-checked pool avoids paying
+    # for a new Azure Redis TLS connection on every API publication.
     client.conf.update(
         task_serializer="json",
         accept_content=["json"],
@@ -121,13 +123,14 @@ def _create_task_client() -> Celery:
         broker_connection_retry=False,
         broker_connection_max_retries=0,
         broker_connection_timeout=2,
-        broker_pool_limit=0,
+        broker_pool_limit=_PRODUCER_POOL_LIMIT,
         task_publish_retry=False,
         broker_transport_options={
             "socket_timeout": 2,
             "socket_connect_timeout": 2,
             "socket_keepalive": True,
             "retry_on_timeout": False,
+            "health_check_interval": _PRODUCER_HEALTH_CHECK_SECONDS,
         },
         worker_hijack_root_logger=False,
     )
