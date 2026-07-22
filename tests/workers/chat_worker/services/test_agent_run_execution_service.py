@@ -93,6 +93,8 @@ def build_service(events: list[str], *, failure: Exception | None = None):
         return AgentContext(
             organisation_id=item.organisation_id,
             deal_id=item.deal_id,
+            subject_type=item.subject_type,
+            subject_id=item.subject_id,
             user_id=item.owner_user_id,
         )
 

@@ -1,3 +1,5 @@
+"""Configure the chat worker's Celery application and process lifecycle hooks."""
+
 from celery.signals import (
     worker_ready,
     worker_shutdown,
@@ -26,6 +28,7 @@ config = ChatWorkerConfig()
 # full chat worker graph during lightweight import checks.
 tasks_module = [
     "src.workers.chat_worker.tasks.agent_run_tasks",
+    "src.workers.chat_worker.tasks.automation_event_tasks",
     "src.workers.chat_worker.tasks.bot_message_processing",
     "src.workers.chat_worker.tasks.message_processing",
     "src.workers.chat_worker.tasks.post_upload",
@@ -35,7 +38,6 @@ tasks_module = [
     "src.workers.chat_worker.tasks.voice_realtime",
 ]
 
-# Create the Celery app for the Chat Worker
 app = create_celery_app("chat_worker", config, tasks_module)
 
 # Add debug configuration

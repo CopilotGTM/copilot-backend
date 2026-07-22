@@ -113,6 +113,10 @@ class AgentRunExecutor:
             raise ValueError("context organisation does not match agent run")
         if context.user_id != envelope.owner_user_id:
             raise ValueError("context user does not match agent run")
+        if context.subject_type != envelope.subject_type:
+            raise ValueError("context subject type does not match agent run")
+        if context.subject_id != envelope.subject_id:
+            raise ValueError("context subject id does not match agent run")
         if context.deal_id != envelope.deal_id:
             raise ValueError("context deal does not match agent run")
 

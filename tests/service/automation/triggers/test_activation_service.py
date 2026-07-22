@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
+from src.agents.context import AgentContext
 from src.domain.models.organisation_tables import (
     AgentRun,
     AgentRunStatus,
     AutomationTrigger,
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealMutationEvent
+from src.service.automation.errors import AutomationServiceError
+from src.service.automation.runs.runtime_executor import AgentRunExecutor
 from src.service.automation.triggers.activation import AutomationTriggerActivationService
+from src.service.automation.triggers.runtime import map_agent_run_runtime
 
 
 class FakeAccess:
@@ -44,9 +49,10 @@ class FakeAccess:
         return None
 
     async def list_crm_event_candidates(
-        self, *, owner_user_id: UUID, event_type: str
+        self, *, owner_user_id: UUID, source_domain: str, event_type: str
     ) -> list[AutomationTrigger]:
         assert owner_user_id == self.deal.owner_id
+        assert source_domain == "crm"
         assert event_type == self.event.semantic_event_types[0]
         return self.triggers
 
@@ -148,8 +154,60 @@ async def test_activation_creates_complete_pending_run_without_commit_or_publish
         "stage_id": str(deal.stage_id),
         "outcome": "open",
     }
-    assert run.idempotency_key == f"trigger:{trigger.trigger_id}:crm-event:{event.event_id}"
+    assert run.input_snapshot["subject"] == {
+        "type": "deal",
+        "id": str(deal.deal_id),
+    }
+    assert run.idempotency_key == (
+        f"trigger:{trigger.trigger_id}:crm:crm.deal.stage_changed:{event.event_id}"
+    )
     session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_generic_activation_routes_crm_event_by_persisted_identity() -> None:
+    """The worker entry point must select exactly the semantic type in its dispatch row."""
+
+    event, deal, trigger = fixtures()
+    access = FakeAccess(event, deal, [trigger])
+    service = AutomationTriggerActivationService(
+        AsyncMock(),
+        event.organisation_id,
+        access=access,  # type: ignore[arg-type]
+    )
+
+    result = await service.activate_event(
+        source_domain="crm",
+        source_event_id=str(event.event_id),
+        event_type="crm.deal.stage_changed",
+    )
+
+    assert result.created_run_ids == (access.runs[0].run_id,)
+
+
+@pytest.mark.asyncio
+async def test_generic_activation_rejects_unknown_domain_and_semantic_mismatch() -> None:
+    """A forged dispatch cannot route to another domain or semantic on the source row."""
+
+    event, deal, trigger = fixtures()
+    service = AutomationTriggerActivationService(
+        AsyncMock(),
+        event.organisation_id,
+        access=FakeAccess(event, deal, [trigger]),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(AutomationServiceError, match="Unsupported automation source domain"):
+        await service.activate_event(
+            source_domain="gmail",
+            source_event_id="message-1",
+            event_type="gmail.message.received",
+        )
+    with pytest.raises(AutomationServiceError, match="does not contain dispatched event type"):
+        await service.activate_event(
+            source_domain="crm",
+            source_event_id=str(event.event_id),
+            event_type="crm.contact.created",
+        )
 
 
 @pytest.mark.asyncio
@@ -218,7 +276,20 @@ async def test_activation_creates_run_for_supported_crm_lifecycle_event(
         name="Lifecycle agent",
         target_id=agent_id,
         target_revision=1,
-        target_snapshot={"agent_id": str(agent_id), "revision": 1},
+        target_snapshot={
+            "agent_id": str(agent_id),
+            "revision": 1,
+            "agent_type": "general",
+            "prompt": "Handle the CRM lifecycle event.",
+            "model_name": None,
+            "model_config": {},
+            "allowed_tools": [],
+            "allowed_skills": [],
+            "max_turns": None,
+            "input_schema": None,
+            "output_mode": "text",
+            "output_schema": None,
+        },
         trigger_type="event",
         source_domain="crm",
         event_type=event_type,
@@ -239,3 +310,34 @@ async def test_activation_creates_run_for_supported_crm_lifecycle_event(
     assert run.event_type == event_type
     assert run.input_snapshot["schema_key"] == f"{event_type}.v1"
     assert run.input_snapshot[entity_type][identity_field] == str(entity_id)
+    run.attempt_count = 1
+    run.claimed_by = "test-worker"
+
+    envelope = map_agent_run_runtime(run)
+
+    assert envelope.subject_type == entity_type
+    assert envelope.subject_id == str(entity_id)
+    assert envelope.deal_id == (entity_id if entity_type == "deal" else None)
+
+    if event_type == "crm.contact.created":
+        messages: list[str] = []
+
+        class ContactAgent:
+            model_name = "test-model"
+
+            async def run(self, message: str) -> SimpleNamespace:
+                messages.append(message)
+                return SimpleNamespace(content="contact handled", metrics=None, model=None)
+
+        execution = await AgentRunExecutor(agent_factory=lambda **_kwargs: ContactAgent()).execute(
+            envelope,
+            context=AgentContext(
+                organisation_id=organisation_id,
+                user_id=owner_id,
+                subject_type="contact",
+                subject_id=str(entity_id),
+            ),
+        )
+
+        assert execution.output_text == "contact handled"
+        assert json.loads(messages[0])["event"]["contact"]["contact_id"] == str(entity_id)

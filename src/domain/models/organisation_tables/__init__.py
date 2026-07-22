@@ -27,6 +27,7 @@ from .agent_models import (
     AgentSourceType,
     AgentStatus,
     AgentVisibility,
+    AutomationEventDispatch,
     AutomationScopeType,
     AutomationTargetType,
     AutomationTrigger,
@@ -126,6 +127,7 @@ __all__ = [
     # Agent Automation Models
     "UserAgent",
     "AutomationTrigger",
+    "AutomationEventDispatch",
     "AgentRun",
     "AgentSourceType",
     "AgentVisibility",

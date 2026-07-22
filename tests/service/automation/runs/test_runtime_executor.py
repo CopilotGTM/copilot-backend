@@ -31,6 +31,8 @@ def envelope() -> AgentRunRuntimeEnvelope:
         source_domain="crm",
         event_type="crm.deal.stage_changed",
         source_event_id=str(uuid4()),
+        subject_type="deal",
+        subject_id=str(uuid4()),
         deal_id=uuid4(),
         agent_type="general",
         prompt="Act as a deal coach.",
@@ -89,6 +91,8 @@ async def test_executor_passes_pinned_snapshot_to_user_configured_agent() -> Non
     context = AgentContext(
         organisation_id=item.organisation_id,
         deal_id=item.deal_id,
+        subject_type=item.subject_type,
+        subject_id=item.subject_id,
         user_id=item.owner_user_id,
     )
 
@@ -117,6 +121,8 @@ async def test_executor_rejects_context_outside_pinned_org_boundary() -> None:
     context = AgentContext(
         organisation_id=uuid4(),
         deal_id=item.deal_id,
+        subject_type=item.subject_type,
+        subject_id=item.subject_id,
         user_id=item.owner_user_id,
     )
 
@@ -153,12 +159,42 @@ async def test_executor_validates_json_output_against_pinned_schema() -> None:
     context = AgentContext(
         organisation_id=item.organisation_id,
         deal_id=item.deal_id,
+        subject_type=item.subject_type,
+        subject_id=item.subject_id,
         user_id=item.owner_user_id,
     )
 
     result = await runtime.execute(item, context=context)
 
     assert result.output_json == {"next_step": "Call buyer"}
+
+
+@pytest.mark.asyncio
+async def test_executor_runs_contact_subject_without_deal() -> None:
+    """Contact-triggered agents preserve subject security without fake deal context."""
+
+    contact_id = uuid4()
+    item = replace(
+        envelope(),
+        subject_type="contact",
+        subject_id=str(contact_id),
+        deal_id=None,
+        event_type="crm.contact.created",
+        allowed_tools=(),
+        allowed_skills=(),
+        input_snapshot={"subject": {"type": "contact", "id": str(contact_id)}},
+    )
+    runtime = AgentRunExecutor(agent_factory=FakeUserConfiguredAgent)
+    context = AgentContext(
+        organisation_id=item.organisation_id,
+        subject_type="contact",
+        subject_id=str(contact_id),
+        user_id=item.owner_user_id,
+    )
+
+    result = await runtime.execute(item, context=context)
+
+    assert result.output_text == "Call the buyer"
 
 
 def test_jsonschema_is_installed_in_every_runtime_image() -> None:

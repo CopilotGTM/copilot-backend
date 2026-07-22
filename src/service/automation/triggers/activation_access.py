@@ -74,7 +74,7 @@ class TriggerActivationAccess:
         return (await self.session.execute(statement)).scalars().first()
 
     async def list_crm_event_candidates(
-        self, *, owner_user_id: UUID, event_type: str
+        self, *, owner_user_id: UUID, source_domain: str, event_type: str
     ) -> list[AutomationTrigger]:
         """Return active owner triggers whose mutable target agent is still active."""
 
@@ -91,7 +91,7 @@ class TriggerActivationAccess:
                 trigger_columns.owner_user_id == owner_user_id,
                 trigger_columns.target_type == AutomationTargetType.AGENT.value,
                 trigger_columns.trigger_type == AutomationTriggerType.EVENT.value,
-                trigger_columns.source_domain == "crm",
+                trigger_columns.source_domain == source_domain,
                 trigger_columns.event_type == event_type,
                 trigger_columns.status == AutomationTriggerStatus.ACTIVE.value,
                 agent_columns.organisation_id == self.organisation_id,

@@ -38,6 +38,7 @@ def run() -> AgentRun:
         },
         input_snapshot={
             "schema_key": "crm.deal.stage_changed.v1",
+            "subject": {"type": "deal", "id": str(deal_id)},
             "deal": {"deal_id": str(deal_id)},
             "event": {"event_id": str(uuid4())},
         },
@@ -62,6 +63,8 @@ def test_runtime_mapper_uses_only_pinned_run_snapshots() -> None:
     assert envelope.source_domain == "crm"
     assert envelope.event_type == "crm.deal.stage_changed"
     assert envelope.source_event_id == agent_run.source_event_id
+    assert envelope.subject_type == "deal"
+    assert envelope.subject_id == agent_run.input_snapshot["subject"]["id"]
     assert str(envelope.deal_id) == agent_run.input_snapshot["deal"]["deal_id"]
     assert envelope.prompt == "Act as a deal coach."
     assert envelope.allowed_tools == ("search_deals",)
@@ -85,4 +88,34 @@ def test_runtime_mapper_fails_closed_on_inconsistent_snapshot(
     agent_run.agent_snapshot = {**agent_run.agent_snapshot, **snapshot_change}
 
     with pytest.raises(ValueError, match=message):
+        map_agent_run_runtime(agent_run)
+
+
+def test_runtime_mapper_accepts_contact_subject_without_deal() -> None:
+    """A contact lifecycle trigger must reach execution without inventing deal scope."""
+
+    agent_run = run()
+    contact_id = uuid4()
+    agent_run.event_type = "crm.contact.created"
+    agent_run.input_snapshot = {
+        "schema_key": "crm.contact.created.v1",
+        "subject": {"type": "contact", "id": str(contact_id)},
+        "contact": {"contact_id": str(contact_id), "company_id": None},
+        "event": {"semantic_event_type": "crm.contact.created"},
+    }
+
+    envelope = map_agent_run_runtime(agent_run)
+
+    assert envelope.subject_type == "contact"
+    assert envelope.subject_id == str(contact_id)
+    assert envelope.deal_id is None
+
+
+def test_runtime_mapper_rejects_deal_subject_identity_mismatch() -> None:
+    """Pinned subject and deal boundaries cannot point to different CRM records."""
+
+    agent_run = run()
+    agent_run.input_snapshot["subject"]["id"] = str(uuid4())
+
+    with pytest.raises(ValueError, match="subject id does not match deal_id"):
         map_agent_run_runtime(agent_run)

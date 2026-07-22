@@ -67,7 +67,9 @@ async def test_candidates_require_owner_event_active_trigger_and_active_agent() 
     access = TriggerActivationAccess(session, uuid4())  # type: ignore[arg-type]
 
     await access.list_crm_event_candidates(
-        owner_user_id=uuid4(), event_type="crm.deal.stage_changed"
+        owner_user_id=uuid4(),
+        source_domain="crm",
+        event_type="crm.deal.stage_changed",
     )
 
     statement_sql = sql(session.statements[0])

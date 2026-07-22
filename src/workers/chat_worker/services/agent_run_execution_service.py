@@ -215,6 +215,8 @@ class AgentRunExecutionService:
         return AgentContext(
             organisation_id=envelope.organisation_id,
             deal_id=envelope.deal_id,
+            subject_type=envelope.subject_type,
+            subject_id=envelope.subject_id,
             org_name=org_name,
             user_id=envelope.owner_user_id,
             user_email=user_email,

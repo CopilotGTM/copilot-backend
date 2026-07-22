@@ -2,7 +2,7 @@
 
 Called by CRM write services after they mutate the entity row and compute the
 field-level diff. This module owns the append-only audit insert, idempotent retry
-behavior, tenant-scoped lookup, and activation of supported agent triggers.
+behavior, tenant-scoped lookup, and durable dispatch of supported agent events.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealMutationEvent
 from src.service.automation.errors import AutomationServiceError
-from src.service.automation.triggers.activation import AutomationTriggerActivationService
+from src.service.automation.events.service import AutomationEventDispatchService
 from src.service.automation.triggers.crm_events import CRM_AGENT_EVENT_SCHEMAS
 from src.service.crm.mutations.contracts import (
     CRMMutationEventServiceError,
@@ -28,11 +28,11 @@ from src.service.crm.mutations.contracts import (
 from src.service.crm.mutations.json_safe import normalize_changed_fields
 
 
-class CRMEventActivation(Protocol):
-    """Agent-trigger activation called after the durable source event is flushed."""
+class AutomationEventEnqueuer(Protocol):
+    """Transaction-local outbox registration for supported source events."""
 
-    async def activate_crm_event(self, event_id: UUID) -> object:
-        """Create replay-safe pending runs for one supported CRM event."""
+    async def enqueue(self, *, source_domain: str, source_event_id: str, event_type: str) -> object:
+        """Append one source occurrence without committing or publishing."""
 
         ...
 
@@ -50,11 +50,11 @@ class CRMMutationEventService:
         session: AsyncSession,
         organisation_id: UUID,
         *,
-        activation_service: CRMEventActivation | None = None,
+        event_enqueuer: AutomationEventEnqueuer | None = None,
     ):
         self.session = session
         self.organisation_id = organisation_id
-        self._activation = activation_service or AutomationTriggerActivationService(
+        self._automation_events = event_enqueuer or AutomationEventDispatchService(
             session, organisation_id
         )
 
@@ -90,9 +90,9 @@ class CRMMutationEventService:
                         changed_fields=existing.changed_fields,
                         semantic_event_types=existing.semantic_event_types,
                     )
-                    # Replay activation as well as the source event. Agent-run idempotency makes
-                    # this harmless and repairs events written before a trigger producer upgrade.
-                    await self._activate_supported_event(result)
+                    # Replay outbox registration too. Its source identity is unique, so this
+                    # repairs a missing dispatch without duplicating worker activation.
+                    await self._enqueue_supported_events(result)
                     return result
                 raise CRMMutationEventServiceError(
                     "Idempotency key was already used for a different CRM mutation",
@@ -134,22 +134,28 @@ class CRMMutationEventService:
             changed_fields=changed_fields,
             semantic_event_types=event.semantic_event_types,
         )
-        await self._activate_supported_event(result)
+        await self._enqueue_supported_events(result)
         return result
 
-    async def _activate_supported_event(self, result: CRMMutationRecordResult) -> None:
-        if result.event_id and any(
-            event_type in CRM_AGENT_EVENT_SCHEMAS for event_type in result.semantic_event_types
-        ):
-            # copilotgtm: V1 activates inside the CRM transaction so a committed source event can
-            # never exist without its pending runs. Move this to a replaying outbox consumer if
-            # activation query latency becomes material; AgentRun idempotency already supports it.
-            try:
-                await self._activation.activate_crm_event(result.event_id)
-            except AutomationServiceError as exc:
-                raise CRMMutationEventServiceError(
-                    "Failed to activate CRM agent automation", status_code=500
-                ) from exc
+    async def _enqueue_supported_events(self, result: CRMMutationRecordResult) -> None:
+        """Append supported semantics before the source transaction can commit."""
+
+        if result.event_id is None:
+            return
+        try:
+            for event_type in result.semantic_event_types:
+                if event_type in CRM_AGENT_EVENT_SCHEMAS:
+                    # Mutation and dispatch share this session. A rollback removes both,
+                    # so recovery can never activate an event whose CRM write failed.
+                    await self._automation_events.enqueue(
+                        source_domain="crm",
+                        source_event_id=str(result.event_id),
+                        event_type=event_type,
+                    )
+        except AutomationServiceError as exc:
+            raise CRMMutationEventServiceError(
+                "Failed to enqueue CRM agent automation", status_code=500
+            ) from exc
 
     async def _get_existing_idempotency_event(
         self, scoped_idempotency_key: str

@@ -69,7 +69,7 @@ class ActivationAccess(Protocol):
         ...
 
     async def list_crm_event_candidates(
-        self, *, owner_user_id: UUID, event_type: str
+        self, *, owner_user_id: UUID, source_domain: str, event_type: str
     ) -> list[AutomationTrigger]:
         """Return active event and target pairs for one owner."""
 
@@ -111,7 +111,7 @@ def matches_crm_deal_stage_trigger(filter_config: dict[str, Any], event: CRMDeal
 
 
 class AutomationTriggerActivationService:
-    """Create idempotent pending agent runs for one persisted CRM mutation event."""
+    """Create idempotent pending runs from a persisted source event dispatch."""
 
     def __init__(
         self,
@@ -124,8 +124,25 @@ class AutomationTriggerActivationService:
         self.organisation_id = organisation_id
         self.access = access or TriggerActivationAccess(session, organisation_id)
 
+    async def activate_event(
+        self, *, source_domain: str, source_event_id: str, event_type: str
+    ) -> TriggerActivationResult:
+        """Route one durable dispatch without committing or publishing worker work."""
+
+        match source_domain:
+            case "crm":
+                try:
+                    event_id = UUID(source_event_id)
+                except ValueError as exc:
+                    raise AutomationServiceError("CRM source_event_id must be a UUID") from exc
+                return await self._activate_crm_event(event_id, expected_event_type=event_type)
+            case _:
+                raise AutomationServiceError(
+                    f"Unsupported automation source domain: {source_domain}"
+                )
+
     async def activate_crm_event(self, event_id: UUID) -> TriggerActivationResult:
-        """Match one durable deal event without committing or publishing worker work."""
+        """Retain the CRM-only entry point for internal replay callers during rollout."""
 
         source_event = await self.access.get_crm_event(event_id)
         if source_event is None:
@@ -144,6 +161,29 @@ class AutomationTriggerActivationService:
                 matched_count=0,
                 skipped_reason="unsupported_event",
             )
+        return await self._activate_crm_event(
+            event_id,
+            expected_event_type=event_type,
+            source_event=source_event,
+        )
+
+    async def _activate_crm_event(
+        self,
+        event_id: UUID,
+        *,
+        expected_event_type: str,
+        source_event: Any | None = None,
+    ) -> TriggerActivationResult:
+        """Match the exact CRM semantic selected by the durable dispatch row."""
+
+        source_event = source_event or await self.access.get_crm_event(event_id)
+        if source_event is None:
+            raise AutomationServiceError("CRM mutation event not found", status_code=404)
+        if expected_event_type not in CRM_AGENT_EVENT_SCHEMAS:
+            raise AutomationServiceError("Unsupported CRM automation event type")
+        if expected_event_type not in source_event.semantic_event_types:
+            raise AutomationServiceError("CRM source event does not contain dispatched event type")
+        event_type = expected_event_type
         expected_entity_type = event_type.split(".")[1]
         if source_event.entity_type != expected_entity_type:
             raise AutomationServiceError("CRM event entity does not match its semantic event type")
@@ -159,6 +199,7 @@ class AutomationTriggerActivationService:
 
         candidates = await self.access.list_crm_event_candidates(
             owner_user_id=entity.owner_id,
+            source_domain="crm",
             event_type=event_type,
         )
         if event_type == "crm.deal.stage_changed":
@@ -181,7 +222,13 @@ class AutomationTriggerActivationService:
         created_run_ids: list[UUID] = []
         replayed_run_ids: list[UUID] = []
         for trigger in matched:
-            run = self._build_run(trigger, source_event, event_type, entity)
+            run = self._build_run(
+                trigger,
+                source_event,
+                source_domain="crm",
+                event_type=event_type,
+                entity=entity,
+            )
             if await self.access.insert_run_if_absent(run):
                 created_run_ids.append(run.run_id)
                 continue
@@ -226,9 +273,17 @@ class AutomationTriggerActivationService:
         )
 
     def _build_run(
-        self, trigger: AutomationTrigger, source_event: Any, event_type: str, entity: Any
+        self,
+        trigger: AutomationTrigger,
+        source_event: Any,
+        *,
+        source_domain: str,
+        event_type: str,
+        entity: Any,
     ) -> AgentRun:
-        idempotency_key = f"trigger:{trigger.trigger_id}:crm-event:{source_event.event_id}"
+        idempotency_key = (
+            f"trigger:{trigger.trigger_id}:{source_domain}:{event_type}:{source_event.event_id}"
+        )
         return AgentRun(
             organisation_id=self.organisation_id,
             owner_user_id=trigger.owner_user_id,
@@ -237,7 +292,7 @@ class AutomationTriggerActivationService:
             agent_revision=trigger.target_revision,
             status=AgentRunStatus.PENDING,
             idempotency_key=idempotency_key,
-            source_domain="crm",
+            source_domain=source_domain,
             event_type=event_type,
             source_event_id=str(source_event.event_id),
             scheduled_for=None,
@@ -245,6 +300,10 @@ class AutomationTriggerActivationService:
             agent_snapshot=dict(trigger.target_snapshot),
             input_snapshot={
                 "schema_key": CRM_AGENT_EVENT_SCHEMAS[event_type],
+                "subject": {
+                    "type": source_event.entity_type,
+                    "id": str(source_event.entity_id),
+                },
                 "event": {
                     "event_id": str(source_event.event_id),
                     "event_type": source_event.event_type,

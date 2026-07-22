@@ -13,6 +13,7 @@ from src.domain.models.organisation_tables import (
     AgentSourceType,
     AgentStatus,
     AgentVisibility,
+    AutomationEventDispatch,
     AutomationScopeType,
     AutomationTargetType,
     AutomationTrigger,
@@ -69,6 +70,7 @@ def test_agent_automation_tables_and_enums_match_the_product_contract() -> None:
     assert UserAgent.__tablename__ == "user_agents"
     assert AutomationTrigger.__tablename__ == "automation_triggers"
     assert AgentRun.__tablename__ == "agent_runs"
+    assert AutomationEventDispatch.__tablename__ == "automation_event_dispatches"
 
     assert _enum_values(AgentSourceType) == {"user", "system"}
     assert _enum_values(AgentVisibility) == {"private", "organisation"}
@@ -87,6 +89,42 @@ def test_agent_automation_tables_and_enums_match_the_product_contract() -> None:
         "validation_failed",
         "cancelled",
     }
+
+
+def test_automation_event_dispatch_database_rules_keep_recovery_idempotent() -> None:
+    """Persist one terminal activation outcome per semantic source occurrence."""
+
+    assert _column_names(AutomationEventDispatch) == {
+        "dispatch_id",
+        "organisation_id",
+        "source_domain",
+        "source_event_id",
+        "event_type",
+        "attempt_count",
+        "last_attempted_at",
+        "processed_at",
+        "failed_at",
+        "last_error",
+        "created_at",
+    }
+    assert _check_names(AutomationEventDispatch) == {
+        "ck_automation_event_dispatch_attempts",
+        "ck_automation_event_dispatch_terminal_state",
+    }
+
+    unique = _index(AutomationEventDispatch, "uq_automation_event_dispatch_source")
+    assert unique.unique is True
+    assert _index_columns(unique) == (
+        "organisation_id",
+        "source_domain",
+        "source_event_id",
+        "event_type",
+    )
+
+    pending = _index(AutomationEventDispatch, "ix_automation_event_dispatch_pending")
+    assert pending.unique is False
+    assert _index_columns(pending) == ("created_at", "dispatch_id")
+    assert _postgresql_where(pending) == "processed_at IS NULL AND failed_at IS NULL"
 
 
 def test_user_agent_database_rules_stop_at_stable_definition_invariants() -> None:

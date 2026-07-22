@@ -28,7 +28,9 @@ class AgentRunRuntimeEnvelope:
     source_domain: str
     event_type: str
     source_event_id: str
-    deal_id: UUID
+    subject_type: str
+    subject_id: str
+    deal_id: UUID | None
     agent_type: str
     prompt: str
     model_name: str | None
@@ -68,10 +70,34 @@ def map_agent_run_runtime(run: AgentRun) -> AgentRunRuntimeEnvelope:
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("agent_snapshot prompt must be a non-empty string")
 
+    source_domain = _required_run_string(run.source_domain, "source_domain")
+    subject = run.input_snapshot.get("subject")
+    if not isinstance(subject, dict):
+        raise ValueError("input_snapshot subject must be an object")
+    subject_type = _required_string(subject, "type")
+    subject_id = _required_string(subject, "id")
+
     deal = run.input_snapshot.get("deal")
-    if not isinstance(deal, dict):
-        raise ValueError("input_snapshot deal must be an object")
-    deal_id = _required_uuid(deal, "deal_id")
+    if deal is None:
+        deal_id = None
+    elif isinstance(deal, dict):
+        deal_id = _required_uuid(deal, "deal_id")
+    else:
+        raise ValueError("input_snapshot deal must be null or an object")
+    if subject_type == "deal" and str(deal_id) != subject_id:
+        raise ValueError("input_snapshot subject id does not match deal_id")
+
+    if source_domain == "crm":
+        identity_key = {
+            "deal": "deal_id",
+            "contact": "contact_id",
+            "account": "account_id",
+        }.get(subject_type)
+        entity = run.input_snapshot.get(subject_type)
+        if identity_key is None or not isinstance(entity, dict):
+            raise ValueError("CRM input_snapshot subject type is not supported")
+        if _required_string(entity, identity_key) != subject_id:
+            raise ValueError("CRM input_snapshot subject identity does not match entity snapshot")
 
     task_config = run.trigger_snapshot.get("task_config", {})
     if not isinstance(task_config, dict):
@@ -89,9 +115,11 @@ def map_agent_run_runtime(run: AgentRun) -> AgentRunRuntimeEnvelope:
         agent_id=run.agent_id,
         agent_revision=run.agent_revision,
         trigger_id=run.trigger_id,
-        source_domain=_required_run_string(run.source_domain, "source_domain"),
+        source_domain=source_domain,
         event_type=_required_run_string(run.event_type, "event_type"),
         source_event_id=_required_run_string(run.source_event_id, "source_event_id"),
+        subject_type=subject_type,
+        subject_id=subject_id,
         deal_id=deal_id,
         agent_type=_required_string(snapshot, "agent_type"),
         prompt=prompt.strip(),

@@ -35,6 +35,10 @@ class ChatWorkerConfig(BaseWorkerConfig):
         )
 
         self.task_routes = {
+            "chat.activate_automation_event": {
+                "queue": "chat_processing",
+                "routing_key": "chat_processing",
+            },
             "chat.execute_agent_run": {
                 "queue": "chat_messages",
                 "routing_key": "chat_messages",

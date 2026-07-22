@@ -475,6 +475,75 @@ class AutomationTrigger(SQLModel, table=True):
     )
 
 
+class AutomationEventDispatch(SQLModel, table=True):
+    """Durable activation state for one semantic source-event occurrence.
+
+    Producers write this row in the source transaction. Chat-worker recovery
+    may publish it repeatedly; the unique source identity and idempotent agent
+    runs make duplicate delivery safe.
+    """
+
+    __tablename__ = "automation_event_dispatches"
+    __table_args__ = (
+        Index(
+            "uq_automation_event_dispatch_source",
+            "organisation_id",
+            "source_domain",
+            "source_event_id",
+            "event_type",
+            unique=True,
+        ),
+        Index(
+            "ix_automation_event_dispatch_pending",
+            "created_at",
+            "dispatch_id",
+            postgresql_where=text("processed_at IS NULL AND failed_at IS NULL"),
+        ),
+        CheckConstraint(
+            "attempt_count >= 0",
+            name="ck_automation_event_dispatch_attempts",
+        ),
+        CheckConstraint(
+            "NOT (processed_at IS NOT NULL AND failed_at IS NOT NULL)",
+            name="ck_automation_event_dispatch_terminal_state",
+        ),
+    )
+
+    dispatch_id: UUID = Field(default_factory=uuid4, primary_key=True)
+    organisation_id: UUID = Field(description="Tenant boundary of the source event.")
+    source_domain: str = Field(sa_column=Column(Text, nullable=False))
+    source_event_id: str = Field(sa_column=Column(Text, nullable=False))
+    event_type: str = Field(sa_column=Column(Text, nullable=False))
+    attempt_count: int = Field(
+        default=0,
+        sa_column=Column(Integer, nullable=False, server_default=_ZERO_DEFAULT),
+    )
+    last_attempted_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    processed_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    failed_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    last_error: str | None = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+    )
+    created_at: datetime = Field(
+        default_factory=utcnow,
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=func.now(),
+        ),
+    )
+
+
 class AgentRun(SQLModel, table=True):
     """Durable execution attempt and immutable audit record for one agent run."""
 

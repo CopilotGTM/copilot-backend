@@ -14,7 +14,10 @@ from src.service.crm.mutations.contracts import (
     CRMMutationRecordCommand,
     CRMMutationRecordResult,
 )
-from src.service.crm.mutations.event_service import CRMEventActivation, CRMMutationEventService
+from src.service.crm.mutations.event_service import (
+    AutomationEventEnqueuer,
+    CRMMutationEventService,
+)
 from src.service.crm.mutations.json_safe import changed_field
 
 __all__ = ["DealMutationEventService", "changed_field"]
@@ -28,12 +31,12 @@ class DealMutationEventService:
         session: AsyncSession,
         organisation_id: UUID,
         *,
-        activation_service: CRMEventActivation | None = None,
+        event_enqueuer: AutomationEventEnqueuer | None = None,
     ):
         self.session = session
         self.organisation_id = organisation_id
         self._events = CRMMutationEventService(
-            session, organisation_id, activation_service=activation_service
+            session, organisation_id, event_enqueuer=event_enqueuer
         )
 
     async def record_event(
@@ -47,7 +50,7 @@ class DealMutationEventService:
         context: DealWriteContext,
         summary: str | None,
     ) -> CRMMutationRecordResult:
-        """Persist one deal mutation and activate supported semantics atomically."""
+        """Persist one deal mutation and enqueue supported semantics atomically."""
 
         command = CRMMutationRecordCommand(
             entity_type="deal",

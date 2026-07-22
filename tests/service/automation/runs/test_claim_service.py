@@ -43,6 +43,7 @@ def agent_run() -> AgentRun:
         },
         input_snapshot={
             "schema_key": "crm.deal.stage_changed.v1",
+            "subject": {"type": "deal", "id": str(deal_id)},
             "deal": {"deal_id": str(deal_id)},
             "event": {"event_id": str(uuid4())},
         },
@@ -99,6 +100,8 @@ async def test_claim_returns_pinned_runtime_envelope_and_exact_stale_cutoff() ->
     assert envelope is not None
     assert envelope.run_id == run.run_id
     assert envelope.prompt == "Act as a deal coach."
+    assert envelope.subject_type == "deal"
+    assert envelope.subject_id == str(run.input_snapshot["deal"]["deal_id"])
     assert access.calls == [
         {
             "run_id": run.run_id,

@@ -134,31 +134,36 @@ for rate limiting.
 Saving an active trigger does not itself create an `agent_runs` row, publish Redis work, or run the
 agent. A supported source event creates the run.
 
-## CRM Event Activation
+## Event Activation
 
-Contact, account, and deal writes pass supported persisted CRM mutation events through the shared
-activation service. The service:
+A supported CRM write stores its immutable mutation event and one automation dispatch in the same
+organization transaction. After that transaction commits, the producer immediately publishes the
+dispatch identity to the chat worker with bounded exponential retries. Trigger matching remains
+asynchronous, keeping trigger queries and Redis work out of the CRM transaction.
 
-1. Loads the source event and its owner-bearing entity inside the same organization.
-2. Uses the entity's canonical `owner_id` to select that user's active event triggers.
+For each dispatch, activation:
+
+1. Loads the exact source event and owner-bearing entity inside the same organization.
+2. Uses the entity's canonical `owner_id` to select that user's active matching triggers.
 3. Excludes triggers whose current target agent is paused or archived.
 4. Applies the event-specific pipeline or stage filters when present.
 5. Creates one pending `agent_runs` row per match using the trigger's pinned agent snapshot.
+6. Marks the dispatch processed in the same commit as the new runs, then publishes the runs with
+   bounded exponential retries.
 
-Each run uses `trigger:{trigger_id}:crm-event:{event_id}` as its idempotency key. PostgreSQL conflict
-handling against the existing organization/idempotency unique index makes mutation-event replay
-return the existing run instead of creating duplicate work.
+Zero matches is a successful terminal activation. One source event may create several runs. Dispatch
+and run uniqueness make broker redelivery safe, while terminal failures stop endlessly reprocessing
+malformed events. A future low-frequency recovery relay will repair dispatches left pending when a
+producer process exits or exhausts all direct broker publication retries.
 
-Activation currently shares the CRM write transaction. This guarantees that a committed mutation
-event cannot exist without its matching pending runs. If activation fanout later adds measurable CRM
-write latency, the durable mutation ledger can be consumed asynchronously; the run idempotency
-contract already supports replay.
+Each run uses
+`trigger:{trigger_id}:{source_domain}:{event_type}:{source_event_id}` as its idempotency key. The run
+contains exact trigger, agent, input, and subject snapshots. Subject IDs are opaque strings so CRM
+UUIDs and future provider IDs use the same contract; `deal_id` is present only for deal-scoped runs.
 
-The persisted run contains exact trigger, agent, and input snapshots. The chat worker's recovery
-task publishes committed pending runs to `chat.execute_agent_run`. The execution task atomically
-claims the run, commits and releases the tenant session, resolves only the pinned tools and skills,
-runs the model, then stores a fenced terminal result. Duplicate messages are harmless, and a stale
-worker cannot overwrite a newer attempt.
+The execution task atomically claims a committed run, releases the tenant session before model/tool
+work, resolves only pinned capabilities, and stores a fenced terminal result. If post-commit Redis
+publication fails, `chat.recover_agent_runs` republishes the durable pending run.
 
 Run state and captured metadata are available through `GET /users/v1/agent-runs` and
 `GET /users/v1/agent-runs/{run_id}`.
