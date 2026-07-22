@@ -53,6 +53,31 @@ DEFAULT_TASK_LIST_COLUMNS = [
     "has_reminder",
 ]
 
+DEFAULT_NAVIGATION_EXPANDED_SECTIONS = {
+    "workspace": True,
+    "records": True,
+    "analytics": True,
+    "settings_workspace_setup": True,
+    "settings_data": True,
+    "settings_automation": True,
+    "settings_library": True,
+    "settings_account": True,
+    "settings_crm_fields": False,
+}
+
+SETTINGS_ITEMS = {
+    "integrations",
+    "forms",
+    "crm_fields",
+    "pipelines",
+    "import_data",
+    "agent_actions",
+    "reminders",
+    "shared_chats",
+    "audio",
+    "password",
+}
+
 
 def _normalize_preferred_deal_currency(currency: Any) -> str | None:
     if not isinstance(currency, str):
@@ -76,6 +101,40 @@ def set_preferred_deal_currency(
     deals["preferred_currency"] = normalized
     crm["deals"] = deals
     root["crm"] = crm
+    return root
+
+
+def normalize_navigation_preferences(preferences: Any) -> dict[str, Any]:
+    branch = preferences if isinstance(preferences, dict) else {}
+    raw_sections = branch.get("expanded_sections")
+    raw_sections = raw_sections if isinstance(raw_sections, dict) else {}
+    expanded_sections = {
+        key: raw_sections.get(key) if isinstance(raw_sections.get(key), bool) else default
+        for key, default in DEFAULT_NAVIGATION_EXPANDED_SECTIONS.items()
+    }
+    last_settings_item = branch.get("last_settings_item")
+    crm_fields_entity = branch.get("crm_fields_entity")
+    return {
+        "expanded_sections": expanded_sections,
+        "last_settings_item": (
+            last_settings_item
+            if isinstance(last_settings_item, str) and last_settings_item in SETTINGS_ITEMS
+            else "integrations"
+        ),
+        "crm_fields_entity": (
+            crm_fields_entity
+            if isinstance(crm_fields_entity, str) and crm_fields_entity in {"lead", "deal"}
+            else "deal"
+        ),
+    }
+
+
+def merge_navigation_preferences(
+    preferences: dict[str, Any] | None,
+    navigation: dict[str, Any],
+) -> dict[str, Any]:
+    root = dict(preferences or {})
+    root["navigation"] = normalize_navigation_preferences(navigation)
     return root
 
 
@@ -135,4 +194,5 @@ def normalize_user_preferences(preferences: dict[str, Any] | None) -> dict[str, 
     tasks["list"] = task_list
     crm["tasks"] = tasks
     root["crm"] = crm
+    root["navigation"] = normalize_navigation_preferences(root.get("navigation"))
     return root

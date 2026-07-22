@@ -36,6 +36,7 @@ from src.api.routers.app_preferences.kai_training_handler import kai_training_ro
 from src.api.routers.app_preferences.meeting_recording_policy_handler import (
     meeting_recording_policy_router,
 )
+from src.api.routers.app_preferences.navigation_handler import navigation_preferences_router
 from src.api.routers.bots import bots_router
 from src.api.routers.chat.messages_handler import router as chat_messages_router
 from src.api.routers.chat.sessions_handler import router as chat_sessions_router
@@ -253,6 +254,11 @@ def create_fastapi_app():
     )
     fastapp.include_router(
         kai_training_router,
+        prefix="/users/preference",
+        tags=["user-preferences"],
+    )
+    fastapp.include_router(
+        navigation_preferences_router,
         prefix="/users/preference",
         tags=["user-preferences"],
     )

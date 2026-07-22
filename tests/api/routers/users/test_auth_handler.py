@@ -102,6 +102,11 @@ async def test_login_success_returns_default_contact_list_columns(user_auth_test
         "status",
         "has_reminder",
     ]
+    assert result.data.user_preferences["navigation"]["last_settings_item"] == "integrations"
+    assert (
+        result.data.user_preferences["navigation"]["expanded_sections"]["settings_crm_fields"]
+        is False
+    )
 
 
 def test_login_success_updates_last_login_at(client_with_user_auth):
