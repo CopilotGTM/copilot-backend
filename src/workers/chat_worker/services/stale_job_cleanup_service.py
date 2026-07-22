@@ -1,6 +1,6 @@
 """Stale job cleanup and durable queue recovery for the chat worker.
 
-Six passes run with fresh organization sessions:
+Seven passes run with fresh organization sessions:
 
 1. WEB CHAT PENDING - republish unclaimed jobs older than two minutes. The web
    worker claims jobs under a row lock, so duplicate broker deliveries are safe.
@@ -10,13 +10,16 @@ Six passes run with fresh organization sessions:
 3. WHATSAPP DELIVERY - resume stored responses after two minutes; fail unknown
    agent executions after twelve minutes without rerunning their tools.
 
-4. OTHER CHAT JOBS - fail channels without a durable recovery contract when
+4. WHATSAPP ORDERING - release the oldest waiting message when no predecessor
+   remains active. This repairs a crash between terminal commit and queue advance.
+
+5. OTHER CHAT JOBS - fail channels without a durable recovery contract when
    PENDING for 60 minutes or IN_PROGRESS for 30 minutes.
 
-5. STUCK TRIGGERED REMINDERS - reset recoverable reminders to ACTIVE or fail
+6. STUCK TRIGGERED REMINDERS - reset recoverable reminders to ACTIVE or fail
    them after the retry ceiling. This covers crashes after the TRIGGERED commit.
 
-6. STALE REMINDER RUNS - mark runs stuck IN_PROGRESS for 30 minutes as FAILED.
+7. STALE REMINDER RUNS - mark runs stuck IN_PROGRESS for 30 minutes as FAILED.
 """
 
 from __future__ import annotations
@@ -141,6 +144,7 @@ class ChatStaleJobCleanupService:
             "whatsapp_send_resumed": 0,
             "whatsapp_send_resume_failed": 0,
             "whatsapp_agent_failed": 0,
+            "whatsapp_waiting_released": 0,
             "stale_chat_jobs": 0,
             "stuck_triggered_reminders": 0,
             "stale_reminder_runs": 0,
@@ -161,6 +165,8 @@ class ChatStaleJobCleanupService:
         counts["whatsapp_send_resume_failed"] = delivery_counts["send_resume_failed"]
         counts["whatsapp_agent_failed"] = delivery_counts["agent_failed"]
 
+        counts["whatsapp_waiting_released"] = await self._recover_waiting_whatsapp_session_jobs()
+
         # WhatsApp rows have stage-aware recovery and must never enter the generic
         # bulk failure pass used by non-durable bot channels.
         counts["stale_chat_jobs"] = await self._cleanup_stale_chat_jobs(now)
@@ -180,6 +186,40 @@ class ChatStaleJobCleanupService:
         )
 
         return {"organisation_id": str(self.organisation_id), **counts}
+
+    async def _recover_waiting_whatsapp_session_jobs(self) -> int:
+        """Release session heads left waiting after a terminal worker crash."""
+        from src.domain.models.organisation_tables.chat_message_models import ChatMessage
+        from src.service.bots.whatsapp_bot_service import WhatsAppBotService
+
+        enqueue_status = ChatMessageJob.job_metadata["enqueue_status"].as_string()
+        session_ids: list[UUID] = []
+        async for session in acquire_org_async_session(self.organisation_id):
+            statement = (
+                select(col(ChatMessage.session_id))
+                .join(
+                    ChatMessageJob,
+                    col(ChatMessageJob.message_id) == col(ChatMessage.message_id),
+                )
+                .where(
+                    col(ChatMessageJob.chat_type) == "WHATSAPP_CHAT",
+                    col(ChatMessageJob.status) == JobStatus.PENDING,
+                    enqueue_status == "waiting_for_predecessor",
+                )
+                .distinct()
+                .limit(WHATSAPP_RECOVERY_BATCH_SIZE)
+            )
+            session_ids = list((await session.execute(statement)).scalars().all())
+            break
+
+        released = 0
+        whatsapp = WhatsAppBotService()
+        for session_id in session_ids:
+            # enqueue_next_session_job rechecks the full ordered queue under the
+            # ChatSession lock, so this discovery scan cannot skip an active head.
+            if await whatsapp.enqueue_next_session_job(self.organisation_id, session_id):
+                released += 1
+        return released
 
     async def _recover_stale_web_chat_pending_jobs(self, now: datetime) -> dict[str, int]:
         leased, exhausted = await self._lease_stale_web_chat_pending_jobs(now)

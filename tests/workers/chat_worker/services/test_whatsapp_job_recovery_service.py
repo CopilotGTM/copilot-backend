@@ -42,6 +42,39 @@ class _LeaseSession:
         self.commits += 1
 
 
+@pytest.mark.asyncio
+async def test_recovery_releases_waiting_session_head_after_terminal_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crash after terminal commit must not leave later WhatsApp messages waiting forever."""
+    from src.service.bots import whatsapp_bot_service
+
+    organisation_id = uuid4()
+    chat_session_id = uuid4()
+    service = ChatStaleJobCleanupService(organisation_id)
+    session = _LeaseSession([chat_session_id])
+    advance_mock = AsyncMock(return_value=True)
+
+    async def sessions(_org_id):
+        yield session
+
+    class FakeWhatsAppBotService:
+        """Expose the queue-advance call without constructing provider dependencies."""
+
+        enqueue_next_session_job = advance_mock
+
+    monkeypatch.setattr(
+        "src.workers.chat_worker.services.stale_job_cleanup_service.acquire_org_async_session",
+        sessions,
+    )
+    monkeypatch.setattr(whatsapp_bot_service, "WhatsAppBotService", FakeWhatsAppBotService)
+
+    released = await service._recover_waiting_whatsapp_session_jobs()
+
+    assert released == 1
+    advance_mock.assert_awaited_once_with(organisation_id, chat_session_id)
+
+
 def _pending_job(*, attempts: int = 1, enqueue_status: str = "failed"):
     now = datetime.now(UTC)
     return SimpleNamespace(

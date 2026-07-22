@@ -669,15 +669,18 @@ def test_whatsapp_send_only_recovery_skips_accepted_chunks(
 
 def test_accepted_whatsapp_chunk_renews_send_lease(service) -> None:
     job_id = uuid4()
+    assistant_message_id = uuid4()
     old_lease = "2026-07-10T00:00:00+00:00"
     job = SimpleNamespace(
         job_metadata={
             "send_lease_at": old_lease,
+            "assistant_message_id": str(assistant_message_id),
             "outbound_chunks": [{"index": 0, "text": "answer", "provider_message_id": None}],
         }
     )
+    assistant_message = SimpleNamespace(extra={})
     session = MagicMock()
-    session.get.return_value = job
+    session.get.side_effect = [job, assistant_message]
 
     with patch(_PATCH_SESSION, return_value=_fake_session(session)):
         service._record_whatsapp_chunk_accepted(
@@ -688,6 +691,8 @@ def test_accepted_whatsapp_chunk_renews_send_lease(service) -> None:
 
     assert job.job_metadata["outbound_chunks"][0]["provider_message_id"] == "wamid.accepted"
     assert job.job_metadata["send_lease_at"] != old_lease
+    # Replies to any outbound chunk resolve to the one persisted assistant turn.
+    assert assistant_message.extra["whatsapp_message_ids"] == ["wamid.accepted"]
 
 
 def test_terminal_whatsapp_send_failure_marks_job_failed(service) -> None:

@@ -25,7 +25,7 @@ def _message() -> WhatsAppInboundMessage:
 
 
 def _patch_durable_job(monkeypatch, service: WhatsAppBotService):
-    job = SimpleNamespace(job_id=uuid4())
+    job = SimpleNamespace(job_id=uuid4(), job_metadata={"enqueue_status": "pending"})
     create_mock = AsyncMock(return_value=job)
     enqueue_mock = AsyncMock(return_value=True)
     monkeypatch.setattr(service, "_create_or_get_durable_job", create_mock)
@@ -119,6 +119,32 @@ async def test_linked_user_enqueues_chat_processing(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
+async def test_linked_user_does_not_enqueue_job_waiting_for_predecessor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rapid same-session messages wait durably instead of running in parallel."""
+    service = WhatsAppBotService()
+    user = SimpleNamespace(
+        organisation_id=uuid4(),
+        user_id=uuid4(),
+        email="test@example.com",
+    )
+    job = SimpleNamespace(
+        job_id=uuid4(),
+        job_metadata={"enqueue_status": "waiting_for_predecessor"},
+    )
+    enqueue_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(service, "_get_linked_user", AsyncMock(return_value=(user, {})))
+    monkeypatch.setattr(service, "_create_or_get_durable_job", AsyncMock(return_value=job))
+    monkeypatch.setattr(service, "_enqueue_durable_job", enqueue_mock)
+
+    await service._route_message(_message())
+
+    # The predecessor's terminal path is the only place allowed to release this job.
+    enqueue_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_get_linked_user_records_whatsapp_customer_service_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -193,9 +219,10 @@ async def test_get_linked_user_raises_durability_error_on_lookup_failure(
 
 
 @pytest.mark.asyncio
-async def test_linked_user_sends_typing_indicator_after_durable_enqueue(
+async def test_linked_user_defers_typing_indicator_until_worker_owns_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A queued follow-up must not show typing before it becomes the head job."""
     service = WhatsAppBotService()
     user = SimpleNamespace(
         organisation_id=uuid4(),
@@ -204,26 +231,22 @@ async def test_linked_user_sends_typing_indicator_after_durable_enqueue(
     )
     calls: list[str] = []
 
-    async def send_typing_indicator(**_kwargs):
-        calls.append("typing")
-        return True
-
     async def create_durable_job(**_kwargs):
         calls.append("persist")
-        return SimpleNamespace(job_id=uuid4())
+        return SimpleNamespace(job_id=uuid4(), job_metadata={"enqueue_status": "pending"})
 
     async def enqueue_durable_job(*_args):
         calls.append("enqueue")
         return True
 
     monkeypatch.setattr(service, "_get_linked_user", AsyncMock(return_value=(user, {})))
-    monkeypatch.setattr(service, "send_typing_indicator", send_typing_indicator)
     monkeypatch.setattr(service, "_create_or_get_durable_job", create_durable_job)
     monkeypatch.setattr(service, "_enqueue_durable_job", enqueue_durable_job)
 
     await service._route_message(_message())
 
-    assert calls == ["persist", "enqueue", "typing"]
+    # Waiting messages must not show typing while an earlier session job is active.
+    assert calls == ["persist", "enqueue"]
 
 
 @pytest.mark.asyncio
@@ -464,6 +487,45 @@ def test_extract_inbound_image_message() -> None:
     ]
 
 
+def test_extract_inbound_forward_and_reply_context() -> None:
+    """Meta forwarding and reply fields survive normalization for later safety checks."""
+    service = WhatsAppBotService()
+    payload = {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "metadata": {"phone_number_id": "phone-123"},
+                            "messages": [
+                                {
+                                    "id": "wamid.forwarded",
+                                    "from": "15551234567",
+                                    "type": "text",
+                                    "text": {"body": "Add this to the previous deal"},
+                                    "context": {
+                                        "forwarded": True,
+                                        "frequently_forwarded": True,
+                                        "id": "wamid.replied-to",
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        ],
+    }
+
+    messages = service._extract_inbound_messages(payload)
+
+    # Meta's flags are durable safety inputs, not presentation-only metadata.
+    assert messages[0].is_forwarded is True
+    assert messages[0].is_frequently_forwarded is True
+    assert messages[0].reply_to_message_id == "wamid.replied-to"
+
+
 def test_extract_inbound_contact_card_as_text_context() -> None:
     service = WhatsAppBotService()
     payload = {
@@ -695,7 +757,8 @@ async def test_status_only_payload_is_ignored() -> None:
 
 
 @pytest.mark.asyncio
-async def test_video_message_is_unsupported() -> None:
+async def test_video_message_enters_attachment_pipeline() -> None:
+    """WhatsApp videos use the same durable attachment boundary as images and files."""
     service = WhatsAppBotService()
     payload = {
         "object": "whatsapp_business_account",
@@ -705,7 +768,17 @@ async def test_video_message_is_unsupported() -> None:
                     {
                         "value": {
                             "metadata": {"phone_number_id": "phone-123"},
-                            "messages": [{"id": "wamid.1", "from": "1555", "type": "video"}],
+                            "messages": [
+                                {
+                                    "id": "wamid.1",
+                                    "from": "1555",
+                                    "type": "video",
+                                    "video": {
+                                        "id": "media-video-1",
+                                        "mime_type": "video/mp4",
+                                    },
+                                }
+                            ],
                         }
                     }
                 ]
@@ -716,13 +789,35 @@ async def test_video_message_is_unsupported() -> None:
     messages = service._extract_inbound_messages(payload)
 
     assert len(messages) == 1
-    assert messages[0].unsupported_reason == "video"
+    assert messages[0].message_type == "video"
+    assert messages[0].media_files[0].media_id == "media-video-1"
 
 
 def test_whatsapp_idempotency_key_includes_business_number_sender_and_wamid() -> None:
     assert WhatsAppBotService._idempotency_key(_message()) == (
         "whatsapp:phone-123:15551234567:wamid.1"
     )
+
+
+def test_media_caption_requires_explicit_write_language_for_action_authority() -> None:
+    """A descriptive caption supplies content but cannot silently inherit an old write target."""
+    descriptive = WhatsAppInboundMessage(
+        message_id="wamid.caption",
+        phone_number_id="phone-123",
+        recipient_wa_id="1555",
+        text="Delta storefront",
+        message_type="image",
+    )
+    explicit = WhatsAppInboundMessage(
+        message_id="wamid.command",
+        phone_number_id="phone-123",
+        recipient_wa_id="1555",
+        text="Add this image as a note to Delta",
+        message_type="image",
+    )
+
+    assert WhatsAppBotService._has_direct_instruction_text(descriptive) is False
+    assert WhatsAppBotService._has_direct_instruction_text(explicit) is True
 
 
 @pytest.mark.asyncio
@@ -815,7 +910,7 @@ async def test_durable_job_commits_message_links_and_job_together(
         email="test@example.com",
     )
     attachment_id = uuid4()
-    session = _DurableJobSession([None, None])
+    session = _DurableJobSession([None, None, None])
 
     async def sessions(_org_id):
         yield session
@@ -906,7 +1001,7 @@ async def test_durable_job_unique_race_reloads_winner(
         job_metadata={"idempotency_key": WhatsAppBotService._idempotency_key(_message())},
     )
     losing_session = _DurableJobSession(
-        [None, None],
+        [None, None, None],
         commit_error=IntegrityError("insert", {}, RuntimeError("duplicate")),
     )
     winning_session = _DurableJobSession([winner])
