@@ -65,6 +65,18 @@ class TransparentToolManager:
             return {key: value for key, value in result.items() if not str(key).startswith("_")}
         return result
 
+    @staticmethod
+    def _tool_result_succeeded(result: Any) -> bool:
+        """Classify normal tool returns that encode a handled failure as data."""
+        if not isinstance(result, dict):
+            return True
+        if isinstance(result.get("success"), bool):
+            return result["success"]
+        status = str(result.get("status") or "").lower()
+        if status in {"error", "failed", "failure"}:
+            return False
+        return not bool(result.get("error"))
+
     async def use_tool(
         self,
         tool_name: str,
@@ -130,6 +142,7 @@ class TransparentToolManager:
                     message_id=self.message_id,
                     tool_name=tool_name,
                     status="completed",
+                    succeeded=self._tool_result_succeeded(result),
                     result_summary=(
                         str(public_result)[:200] + "..."
                         if len(str(public_result)) > 200
@@ -152,6 +165,7 @@ class TransparentToolManager:
                     message_id=self.message_id,
                     tool_name=tool_name,
                     status="failed",
+                    succeeded=False,
                     result_summary=f"Error: {str(e)}",
                     duration_ms=duration_ms,
                 ),

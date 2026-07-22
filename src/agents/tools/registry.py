@@ -200,6 +200,45 @@ VOICE_REALTIME_WRITE_EXCLUDED_TOOLS = {
     ToolName.UPDATE_DRAFT_LEAD_FORM,
 }
 
+# WhatsApp payloads can contain forwarded text or attachment-derived content that
+# looks imperative. Hide every mutating tool unless the current turn itself, or a
+# short-lived explicit continuation, supplies authority for a side effect.
+WHATSAPP_MUTATING_TOOLS = {
+    ToolName.CREATE_DEAL,
+    ToolName.CREATE_LEAD,
+    ToolName.CREATE_DRAFT_LEAD_FORM,
+    ToolName.UPDATE_DRAFT_LEAD_FORM,
+    ToolName.ADD_DEAL_NOTE,
+    ToolName.UPDATE_DEAL_NOTE,
+    ToolName.ADD_STAKEHOLDER,
+    ToolName.CREATE_STAKEHOLDER_IF_MISSING,
+    ToolName.UPDATE_DEAL_STAGE,
+    ToolName.UPDATE_DEAL_FIELDS,
+    ToolName.UPDATE_DEAL_LIFECYCLE,
+    ToolName.UPDATE_DEAL_ACCOUNT,
+    ToolName.UPDATE_RISK_BLOCKER,
+    ToolName.DISMISS_RISK_BLOCKER,
+    ToolName.RESOLVE_RISK_BLOCKER,
+    ToolName.SEND_MEETING_BOT_INVITE,
+    ToolName.CREATE_CONTACT,
+    ToolName.CREATE_ACCOUNT,
+    ToolName.UPDATE_CONTACT,
+    ToolName.UPDATE_ACCOUNT,
+    ToolName.SEND_EMAIL,
+    ToolName.SAVE_EMAIL_DRAFT,
+    ToolName.SEND_EMAIL_DRAFT,
+    ToolName.SEND_CALENDAR_INVITE,
+    ToolName.UPDATE_CALENDAR_MEETING,
+    ToolName.CANCEL_CALENDAR_MEETING,
+    ToolName.CREATE_TASK,
+    ToolName.UPDATE_TASK,
+    ToolName.CREATE_DEAL_TASK,
+    ToolName.COMPLETE_DEAL_TASK,
+    ToolName.CREATE_REMINDER,
+    ToolName.UPDATE_REMINDER,
+    ToolName.CANCEL_REMINDER,
+}
+
 
 # =============================================================================
 # CHANNEL-SPECIFIC TOOLS
@@ -1086,6 +1125,12 @@ def get_excluded_tools_for_context(context: AgentContext) -> set[ToolName]:
     if context.metadata.get("source") == "scheduled_alert":
         return REMINDER_MANAGEMENT_TOOLS
 
+    if (
+        context.channel == "whatsapp"
+        and context.metadata.get("whatsapp_action_authority") == "none"
+    ):
+        return WHATSAPP_MUTATING_TOOLS
+
     return set()
 
 
@@ -1119,6 +1164,7 @@ __all__ = [
     "TOOL_CATEGORIES",
     "REMINDER_MANAGEMENT_TOOLS",
     "VOICE_REALTIME_WRITE_EXCLUDED_TOOLS",
+    "WHATSAPP_MUTATING_TOOLS",
     "get_excluded_tools_for_context",
     "get_tools_for_agent",
 ]

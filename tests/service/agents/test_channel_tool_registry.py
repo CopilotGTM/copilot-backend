@@ -1,3 +1,5 @@
+"""Channel and execution-context contracts for the shared agent tool registry."""
+
 from uuid import uuid4
 
 from src.agents.context import AgentContext
@@ -6,6 +8,7 @@ from src.agents.tools.registry import (
     CHANNEL_ONLY_TOOLS,
     REMINDER_MANAGEMENT_TOOLS,
     VOICE_REALTIME_WRITE_EXCLUDED_TOOLS,
+    WHATSAPP_MUTATING_TOOLS,
     ToolName,
     ToolRegistry,
     get_excluded_tools_for_context,
@@ -170,6 +173,33 @@ def test_scheduled_alert_context_excludes_reminder_management_tools() -> None:
     excluded = get_excluded_tools_for_context(context)
 
     assert excluded == REMINDER_MANAGEMENT_TOOLS
+
+
+def test_untrusted_whatsapp_turn_excludes_mutations_but_keeps_reads() -> None:
+    """Forwarded or attachment-only turns retain analysis tools but cannot mutate."""
+    context = AgentContext(
+        organisation_id=uuid4(),
+        channel="whatsapp",
+        metadata={"whatsapp_action_authority": "none"},
+    )
+
+    excluded = get_excluded_tools_for_context(context)
+
+    # A forwarded imperative can still be searched or summarized, but cannot write.
+    assert excluded == WHATSAPP_MUTATING_TOOLS
+    assert ToolName.ADD_DEAL_NOTE in excluded
+    assert ToolName.SEARCH_DEALS not in excluded
+
+
+def test_direct_whatsapp_instruction_keeps_mutation_tools_available() -> None:
+    """A directly authored WhatsApp instruction retains normal write capabilities."""
+    context = AgentContext(
+        organisation_id=uuid4(),
+        channel="whatsapp",
+        metadata={"whatsapp_action_authority": "direct_current_turn"},
+    )
+
+    assert get_excluded_tools_for_context(context) == set()
 
 
 def test_voice_realtime_agent_excludes_unsupported_backend_write_tools() -> None:

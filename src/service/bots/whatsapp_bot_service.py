@@ -18,6 +18,7 @@ Notes:
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -47,6 +48,10 @@ _WHATSAPP_QUEUE_PUBLISH_TIMEOUT_SECONDS = 4
 _WHATSAPP_SEND_TIMEOUT_SECONDS = 30
 _WHATSAPP_TYPING_TIMEOUT_SECONDS = 3
 _PERSISTED_ERROR_LIMIT = 1000
+_WHATSAPP_CAPTION_WRITE_PATTERN = re.compile(
+    r"\b(add|attach|create|update|edit|send|invite|save|log|note)\b",
+    re.IGNORECASE,
+)
 
 
 class WhatsAppInboundDurabilityError(RuntimeError):
@@ -111,10 +116,14 @@ class WhatsAppInboundMessage:
     phone_number_id: str
     recipient_wa_id: str
     text: str
+    message_type: str = "text"
     profile_name: str | None = None
     audio_files: list[dict[str, str]] | None = None
     media_files: list[WhatsAppInboundMedia] | None = None
     unsupported_reason: str | None = None
+    is_forwarded: bool = False
+    is_frequently_forwarded: bool = False
+    reply_to_message_id: str | None = None
 
 
 class WhatsAppBotService:
@@ -180,6 +189,7 @@ class WhatsAppBotService:
 
                 for message in value.get("messages", []):
                     message_type = str(message.get("type") or "")
+                    message_context = message.get("context") or {}
                     recipient_wa_id = str(message.get("from") or "")
                     message_id = str(message.get("id") or "")
                     if not recipient_wa_id or not message_id:
@@ -255,10 +265,20 @@ class WhatsAppBotService:
                             phone_number_id=phone_number_id,
                             recipient_wa_id=recipient_wa_id,
                             text=text,
+                            message_type="audio" if message_type == "voice" else message_type,
                             profile_name=profile_names.get(recipient_wa_id),
                             audio_files=audio_files,
                             media_files=media_files,
                             unsupported_reason=unsupported_reason,
+                            is_forwarded=bool(message_context.get("forwarded")),
+                            is_frequently_forwarded=bool(
+                                message_context.get("frequently_forwarded")
+                            ),
+                            reply_to_message_id=(
+                                str(message_context.get("id"))
+                                if message_context.get("id")
+                                else None
+                            ),
                         )
                     )
         return inbound_messages
@@ -411,16 +431,8 @@ class WhatsAppBotService:
 
         # Queue publication happens only after commit. Failure is recorded on the
         # pending job, which lets the scheduled recovery sweep reconstruct it.
-        await self._enqueue_durable_job(user.organisation_id, job.job_id)
-
-        try:
-            # This UX-only provider call must happen after durable commit and publish.
-            await self.send_typing_indicator(
-                phone_number_id=message.phone_number_id,
-                message_id=message.message_id,
-            )
-        except Exception:
-            logger.warning("Failed to send WhatsApp typing indicator", exc_info=True)
+        if (job.job_metadata or {}).get("enqueue_status") != "waiting_for_predecessor":
+            await self._enqueue_durable_job(user.organisation_id, job.job_id)
 
     @staticmethod
     def _build_reply_context(
@@ -449,6 +461,11 @@ class WhatsAppBotService:
             "external_tenant_id": message.phone_number_id,
             "current_datetime": datetime.now(UTC).isoformat(),
             "whatsapp_message_id": message.message_id,
+            "whatsapp_message_type": message.message_type,
+            "whatsapp_is_forwarded": message.is_forwarded,
+            "whatsapp_is_frequently_forwarded": message.is_frequently_forwarded,
+            "whatsapp_reply_to_message_id": message.reply_to_message_id,
+            "whatsapp_has_direct_text": self._has_direct_instruction_text(message),
             "current_attachments": attachment_refs,
         }
         if getattr(user, "timezone", None):
@@ -467,6 +484,17 @@ class WhatsAppBotService:
             "bot_context": bot_context,
             "user_email": user.email,
         }
+
+    @staticmethod
+    def _has_direct_instruction_text(message: WhatsAppInboundMessage) -> bool:
+        """Distinguish direct commands from labels embedded in media captions."""
+        if message.is_forwarded or not message.text.strip():
+            return False
+        if message.message_type == "text":
+            return True
+        if message.message_type in {"image", "document"}:
+            return bool(_WHATSAPP_CAPTION_WRITE_PATTERN.search(message.text))
+        return False
 
     async def _ingest_media_files(
         self, user: User, media_files: list[WhatsAppInboundMedia]
@@ -513,7 +541,7 @@ class WhatsAppBotService:
     def _unsupported_message_text(unsupported_reason: str) -> str:
         return (
             f"I can't process WhatsApp {unsupported_reason} messages yet. "
-            "Please send text, a document, an image, or an audio note."
+            "Please send text, an image, document, contact, location, or audio note."
         )
 
     async def _get_linked_user(
@@ -625,11 +653,15 @@ class WhatsAppBotService:
                     record_whatsapp_durable_job("reused")
                     return existing
 
-                session_query = select(ChatSession).where(
-                    col(ChatSession.user_id) == user.user_id,
-                    col(ChatSession.organisation_id) == user.organisation_id,
-                    col(ChatSession.chat_type) == ChatType.WHATSAPP_CHAT,
-                    col(ChatSession.is_deleted).is_(False),
+                session_query = (
+                    select(ChatSession)
+                    .where(
+                        col(ChatSession.user_id) == user.user_id,
+                        col(ChatSession.organisation_id) == user.organisation_id,
+                        col(ChatSession.chat_type) == ChatType.WHATSAPP_CHAT,
+                        col(ChatSession.is_deleted).is_(False),
+                    )
+                    .with_for_update()
                 )
                 chat_session = (await db.execute(session_query)).scalars().first()
                 if not chat_session:
@@ -640,12 +672,38 @@ class WhatsAppBotService:
                         title="WhatsApp Chat",
                     )
                     db.add(chat_session)
+                    await db.flush()
+
+                parent_message_id = await self._resolve_reply_parent(
+                    db,
+                    session_id=chat_session.session_id,
+                    provider_message_id=message.reply_to_message_id,
+                )
+                if parent_message_id:
+                    dispatch_envelope["bot_context"]["reply_to_chat_message_id"] = str(
+                        parent_message_id
+                    )
+
+                # The session row serializes intake, so only the oldest unfinished
+                # WhatsApp job can reach Celery while later messages remain durable.
+                has_predecessor = await self._has_unfinished_session_job(
+                    db, chat_session.session_id
+                )
 
                 inbound_message = ChatMessage(
                     session_id=chat_session.session_id,
                     role=ChatMessageRole.USER,
                     message_type=ChatMessageType.GENERAL_MESSAGE,
                     content={"text": message.text},
+                    parent_message_id=parent_message_id,
+                    extra={
+                        "provider": "whatsapp",
+                        "whatsapp_message_id": message.message_id,
+                        "whatsapp_message_type": message.message_type,
+                        "whatsapp_is_forwarded": message.is_forwarded,
+                        "whatsapp_is_frequently_forwarded": message.is_frequently_forwarded,
+                        "whatsapp_reply_to_message_id": message.reply_to_message_id,
+                    },
                 )
                 db.add(inbound_message)
                 await db.flush()
@@ -685,7 +743,9 @@ class WhatsAppBotService:
                         "phone_number_id": message.phone_number_id,
                         "recipient_wa_id": message.recipient_wa_id,
                         "dispatch_envelope": dispatch_envelope,
-                        "enqueue_status": "pending",
+                        "enqueue_status": (
+                            "waiting_for_predecessor" if has_predecessor else "pending"
+                        ),
                         "enqueue_attempts": 0,
                         "celery_task_id": None,
                         "last_enqueue_error": None,
@@ -730,6 +790,55 @@ class WhatsAppBotService:
                 ) from exc
 
         raise WhatsAppInboundDurabilityError("No organization session for WhatsApp job")
+
+    @staticmethod
+    async def _resolve_reply_parent(db, *, session_id: UUID, provider_message_id: str | None):
+        """Resolve Meta's reply ID to one message inside the same chat session."""
+        if not provider_message_id:
+            return None
+
+        from sqlmodel import col, select
+        from src.domain.models.organisation_tables.chat_message_models import ChatMessage
+
+        # copilotgtm: This scans one indexed session because provider IDs currently
+        # live in JSONB. Add a JSON index only if observed session sizes require it.
+        statement = select(ChatMessage).where(col(ChatMessage.session_id) == session_id)
+        for candidate in (await db.execute(statement)).scalars().all():
+            extra = candidate.extra or {}
+            if extra.get("whatsapp_message_id") == provider_message_id:
+                return candidate.message_id
+            if provider_message_id in (extra.get("whatsapp_message_ids") or []):
+                return candidate.message_id
+        return None
+
+    @staticmethod
+    async def _has_unfinished_session_job(db, session_id: UUID) -> bool:
+        """Return whether this session already has a job that must run first."""
+        from sqlalchemy import and_, or_
+        from sqlmodel import col, select
+        from src.domain.models.organisation_tables.chat_message_models import ChatMessage
+        from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
+
+        processing_stage = ChatMessageJob.job_metadata["processing_stage"].as_string()
+        statement = (
+            select(ChatMessageJob.job_id)
+            .join(ChatMessage, col(ChatMessage.message_id) == col(ChatMessageJob.message_id))
+            .where(
+                col(ChatMessage.session_id) == session_id,
+                col(ChatMessageJob.chat_type) == "WHATSAPP_CHAT",
+                or_(
+                    col(ChatMessageJob.status).in_(
+                        [JobStatus.PENDING.value, JobStatus.IN_PROGRESS.value]
+                    ),
+                    and_(
+                        col(ChatMessageJob.status) == JobStatus.FAILED.value,
+                        processing_stage.in_(("response_ready", "sending")),
+                    ),
+                ),
+            )
+            .limit(1)
+        )
+        return (await db.execute(statement)).scalars().first() is not None
 
     async def _load_durable_job_by_key(self, organisation_id: UUID, key: str):
         from sqlmodel import col, select
@@ -781,6 +890,61 @@ class WhatsAppBotService:
             record_whatsapp_enqueue("failed")
             return False
 
+    async def enqueue_next_session_job(self, organisation_id: UUID, session_id: UUID) -> bool:
+        """Enqueue the oldest waiting job after its session predecessor terminates."""
+        from sqlalchemy import and_, or_
+        from sqlmodel import col, select
+        from src.domain.models.organisation_tables.chat_message_models import ChatMessage
+        from src.domain.models.organisation_tables.chat_session_models import ChatSession
+        from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
+        from src.infra.database.sessions import acquire_org_async_session
+
+        next_job_id: UUID | None = None
+        async for db in acquire_org_async_session(organisation_id):
+            # Lock the same row used by intake. This prevents two terminal workers
+            # from advancing past the same head-of-line job.
+            session_statement = (
+                select(ChatSession)
+                .where(col(ChatSession.session_id) == session_id)
+                .with_for_update()
+            )
+            if not (await db.execute(session_statement)).scalars().first():
+                return False
+
+            processing_stage = ChatMessageJob.job_metadata["processing_stage"].as_string()
+            jobs_statement = (
+                select(ChatMessageJob)
+                .join(ChatMessage, col(ChatMessage.message_id) == col(ChatMessageJob.message_id))
+                .where(
+                    col(ChatMessage.session_id) == session_id,
+                    col(ChatMessageJob.chat_type) == "WHATSAPP_CHAT",
+                    or_(
+                        col(ChatMessageJob.status).in_(
+                            [JobStatus.PENDING.value, JobStatus.IN_PROGRESS.value]
+                        ),
+                        and_(
+                            col(ChatMessageJob.status) == JobStatus.FAILED.value,
+                            processing_stage.in_(("response_ready", "sending")),
+                        ),
+                    ),
+                )
+                .order_by(col(ChatMessageJob.created_at), col(ChatMessageJob.job_id))
+            )
+            unfinished = list((await db.execute(jobs_statement)).scalars().all())
+            if not unfinished:
+                return False
+
+            head = unfinished[0]
+            if getattr(head.status, "value", head.status) != JobStatus.PENDING.value:
+                return False
+            if (head.job_metadata or {}).get("enqueue_status") != "waiting_for_predecessor":
+                return False
+            next_job_id = head.job_id
+            await db.commit()
+            break
+
+        return bool(next_job_id and await self._enqueue_durable_job(organisation_id, next_job_id))
+
     async def _claim_job_for_enqueue(
         self, organisation_id: UUID, job_id: UUID
     ) -> tuple[dict[str, Any], int] | None:
@@ -797,7 +961,11 @@ class WhatsAppBotService:
                 return None
 
             metadata = dict(job.job_metadata or {})
-            if metadata.get("enqueue_status") not in {"pending", "failed"}:
+            if metadata.get("enqueue_status") not in {
+                "pending",
+                "failed",
+                "waiting_for_predecessor",
+            }:
                 return None
             attempt = int(metadata.get("enqueue_attempts") or 0) + 1
             if attempt > WHATSAPP_MAX_ENQUEUE_ATTEMPTS:
@@ -808,6 +976,9 @@ class WhatsAppBotService:
                 db.add(job)
                 await db.commit()
                 record_whatsapp_enqueue("exhausted")
+                session_id = self._optional_uuid(metadata.get("session_id"))
+                if session_id:
+                    await self.enqueue_next_session_job(organisation_id, session_id)
                 return None
 
             envelope = metadata.get("dispatch_envelope")
@@ -818,6 +989,9 @@ class WhatsAppBotService:
                 job.job_metadata = metadata
                 db.add(job)
                 await db.commit()
+                session_id = self._optional_uuid(metadata.get("session_id"))
+                if session_id:
+                    await self.enqueue_next_session_job(organisation_id, session_id)
                 return None
 
             metadata.update(
@@ -832,6 +1006,14 @@ class WhatsAppBotService:
             await db.commit()
             return dict(envelope), attempt
         return None
+
+    @staticmethod
+    def _optional_uuid(value: object) -> UUID | None:
+        """Parse durable metadata IDs without turning corrupt jobs into intake failures."""
+        try:
+            return UUID(str(value)) if value else None
+        except (TypeError, ValueError):
+            return None
 
     async def _record_enqueue_result(
         self,
