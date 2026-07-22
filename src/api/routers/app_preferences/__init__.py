@@ -4,5 +4,10 @@ from src.api.routers.app_preferences.agent_actions_handler import (
 from src.api.routers.app_preferences.meeting_recording_policy_handler import (
     meeting_recording_policy_router,
 )
+from src.api.routers.app_preferences.navigation_handler import navigation_preferences_router
 
-__all__ = ["agent_action_approval_router", "meeting_recording_policy_router"]
+__all__ = [
+    "agent_action_approval_router",
+    "meeting_recording_policy_router",
+    "navigation_preferences_router",
+]
