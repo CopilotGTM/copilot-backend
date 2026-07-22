@@ -128,7 +128,10 @@ class MicrosoftCalendarInviteClient:
             headers = {
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json",
-                "Prefer": f'outlook.timezone="{to_outlook_timezone(request.timezone)}"',
+                # Persisted event responses should be UTC even though the request
+                # payload uses the user's wall clock. The normalizer still handles
+                # local responses defensively for delta and legacy callers.
+                "Prefer": 'outlook.timezone="UTC"',
             }
             async with httpx.AsyncClient(headers=headers, timeout=30.0) as client:
                 return await graph_api_post_json(

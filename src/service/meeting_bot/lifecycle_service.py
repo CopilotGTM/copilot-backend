@@ -174,6 +174,18 @@ class MeetingRecordingLifecycleService:
         _ = reason
         return await self._cancel_existing_recording_for_calendar_cancellation(calendar_event_id)
 
+    async def terminal_reconciliation_countdown(self, calendar_event_id: UUID) -> int | None:
+        """Return seconds until the post-meeting provider status safety check."""
+        event = await self._get_calendar_event(calendar_event_id)
+        end_at = getattr(event, "end_at", None) if event is not None else None
+        if not isinstance(end_at, datetime):
+            return None
+        # Webhooks remain the fast path. This one-shot check runs after Recall's
+        # normal leave window so an absent terminal callback cannot leave the UI
+        # in `processing` indefinitely.
+        reconcile_at = normalize_utc(end_at) + timedelta(minutes=15)
+        return max(60, int((reconcile_at - datetime.now(UTC)).total_seconds()))
+
     async def dispatch_event(
         self,
         calendar_event_id: UUID,

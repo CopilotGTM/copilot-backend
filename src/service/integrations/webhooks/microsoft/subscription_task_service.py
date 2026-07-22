@@ -60,6 +60,8 @@ class MicrosoftGraphSubscriptionTaskService:
         *,
         organisation_id: UUID,
         integration_id: UUID,
+        requested_kind: MicrosoftSubscriptionKind | None = None,
+        lifecycle_event: str | None = None,
     ) -> dict[str, Any]:
         """Create or renew subscription metadata for one connected Outlook integration."""
         targets = await self._load_subscription_targets(
@@ -76,11 +78,21 @@ class MicrosoftGraphSubscriptionTaskService:
 
         completed_kinds: list[str] = []
         for integration_snapshot, kind, sync_state_id in targets:
-            metadata = await self._subscription_service.ensure_subscription_metadata(
-                organisation_id=organisation_id,
-                integration=integration_snapshot,
-                kind=kind,
-            )
+            if requested_kind is not None and kind != requested_kind:
+                continue
+            if lifecycle_event:
+                metadata = await self._subscription_service.recover_subscription_metadata(
+                    organisation_id=organisation_id,
+                    integration=integration_snapshot,
+                    kind=kind,
+                    lifecycle_event=lifecycle_event,
+                )
+            else:
+                metadata = await self._subscription_service.ensure_subscription_metadata(
+                    organisation_id=organisation_id,
+                    integration=integration_snapshot,
+                    kind=kind,
+                )
             persisted = await self._persist_metadata(
                 organisation_id=organisation_id,
                 integration_id=integration_id,

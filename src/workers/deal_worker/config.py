@@ -69,6 +69,7 @@ class DealWorkerConfig(BaseWorkerConfig):
             # that belong on `deal_jobs`.
             "deal.process_meeting_recording_webhook",
             "deal.send_meeting_recording",
+            "deal.reconcile_meeting_recording",
             "deal.send_unsent_meeting_recordings_org",
             "deal.trigger_send_unsent_meeting_recordings_all_orgs",
             # Risk/Blocker extraction trigger

@@ -34,6 +34,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from src.infra.utils.logger import get_logger
+from src.service.calendar_invites.timezones import parse_outlook_datetime
 from src.service.integrations.calendar.types import (
     CalendarEventIdentity,
     NormalizedCalendarAttendee,
@@ -533,7 +534,10 @@ class CalendarEventNormalizer:
         if isinstance(start, dict):
             date_time = start.get("dateTime")
             if date_time:
-                fields["start_at"] = cls.parse_iso_datetime(date_time)
+                # Graph's DateTimeTimeZone is a pair: offset-less dateTime is a
+                # wall clock in timeZone, not UTC. Parse the pair at this provider
+                # boundary so every downstream writer receives a real instant.
+                fields["start_at"] = parse_outlook_datetime(date_time, start.get("timeZone"))
             fields["timezone"] = start.get("timeZone")
             # Microsoft puts the all-day flag on the event, not on the start
             # block (Google puts it on `start` by virtue of using `date` vs
@@ -544,7 +548,7 @@ class CalendarEventNormalizer:
         if isinstance(end, dict):
             date_time = end.get("dateTime")
             if date_time:
-                fields["end_at"] = cls.parse_iso_datetime(date_time)
+                fields["end_at"] = parse_outlook_datetime(date_time, end.get("timeZone"))
 
     @staticmethod
     def _apply_microsoft_organizer(fields: dict[str, Any], event_data: dict[str, Any]) -> None:

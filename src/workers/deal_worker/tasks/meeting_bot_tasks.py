@@ -148,6 +148,16 @@ def send_meeting_recording_task(
     async def _run() -> dict[str, Any]:
         service = MeetingRecordingLifecycleService(UUID(organisation_id))
         result = await service.sync_event_lifecycle(UUID(calendar_event_id))
+        if result.get("status") in {"sent", "reinvited", "rescheduled", "already_sent"}:
+            countdown = await service.terminal_reconciliation_countdown(UUID(calendar_event_id))
+            if countdown is not None:
+                reconcile_meeting_recording_task.apply_async(
+                    kwargs={
+                        "organisation_id": organisation_id,
+                        "calendar_event_id": calendar_event_id,
+                    },
+                    countdown=countdown,
+                )
         return {
             **result,
             "organisation_id": organisation_id,
@@ -192,6 +202,41 @@ def send_meeting_recording_task(
             "error": str(exc),
             "error_type": type(exc).__name__,
         }
+    finally:
+        release_task_lock(lock_key)
+
+
+@app.task(
+    bind=True,
+    name="deal.reconcile_meeting_recording",
+    acks_late=True,
+    max_retries=3,
+    default_retry_delay=300,
+    soft_time_limit=180,
+    time_limit=240,
+)
+def reconcile_meeting_recording_task(
+    self: Task,
+    organisation_id: str,
+    calendar_event_id: str,
+) -> dict[str, Any]:
+    """Close a meeting session when Recall's terminal webhook never arrived."""
+    lock_key = f"task_lock:reconcile_meeting_recording:{organisation_id}:{calendar_event_id}"
+    if not acquire_task_lock(lock_key, ttl=240):
+        return {"status": "skipped", "reason": "already_running"}
+    try:
+        result = run_async(
+            RecallMeetingRecordingWebhookService(
+                UUID(organisation_id)
+            ).reconcile_provider_session(UUID(calendar_event_id))
+        )
+        if result.get("status") == "retry" and self.request.retries < self.max_retries:
+            raise self.retry(countdown=300)
+        return result
+    except RecallProviderError as exc:
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc, countdown=300) from exc
+        raise
     finally:
         release_task_lock(lock_key)
 

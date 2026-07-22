@@ -15,6 +15,7 @@ from src.domain.models.organisation_tables.sync.meeting_recording import (
     MeetingRecordingStatus,
     MeetingTranscriptStatus,
 )
+from src.service.meeting_bot import webhook_service
 from src.service.meeting_bot.artifacts_service import MeetingRecordingArtifactService
 from src.service.meeting_bot.webhook_service import RecallMeetingRecordingWebhookService
 
@@ -30,6 +31,52 @@ def _make_service(organisation_id):
     )
     svc.summary_trigger_service = SimpleNamespace(handle_transcript_ready=AsyncMock())
     return svc
+
+
+@pytest.mark.asyncio
+async def test_terminal_reconciliation_marks_never_joined_bot_failed(monkeypatch) -> None:
+    """A missed terminal webhook must not leave a no-show bot processing forever."""
+    organisation_id = uuid4()
+    event_id = uuid4()
+    existing = MeetingRecordingSession(
+        organisation_id=organisation_id,
+        calendar_event_id=event_id,
+        provider=MeetingRecordingProvider.RECALL_AI,
+        dedupe_key="key",
+        meeting_url="https://teams.example/join",
+        join_at=datetime.now(UTC) - timedelta(hours=1),
+        status=MeetingRecordingStatus.SENT,
+        transcript_status=MeetingTranscriptStatus.PENDING,
+        provider_session_id="bot_123",
+        provider_payload={"id": "bot_123"},
+    )
+    updated = MeetingRecordingSession.model_validate(existing.model_dump())
+    updated.status = MeetingRecordingStatus.FAILED
+    updated.transcript_status = MeetingTranscriptStatus.NOT_AVAILABLE
+    service = _make_service(organisation_id)
+    service.session_service.get_by_event.return_value = existing
+    service.session_service.apply_webhook_update.return_value = updated
+    monkeypatch.setattr(webhook_service.recall_config, "get_api_key", AsyncMock(return_value="key"))
+
+    provider = SimpleNamespace(
+        fetch_session=AsyncMock(
+            return_value={"id": "bot_123", "status": {"code": "done"}, "status_changes": []}
+        ),
+        extract_transcript_download=lambda _payload: None,
+        extract_video_mixed_download=lambda _payload: None,
+    )
+    monkeypatch.setattr(
+        webhook_service,
+        "RecallMeetingRecordingProvider",
+        lambda **_kwargs: provider,
+    )
+
+    result = await service.reconcile_provider_session(event_id)
+
+    assert result["normalized_status"] == "FAILED"
+    kwargs = service.session_service.apply_webhook_update.await_args.kwargs
+    assert kwargs["status"] == MeetingRecordingStatus.FAILED
+    assert kwargs["transcript_status"] == MeetingTranscriptStatus.NOT_AVAILABLE
 
 
 @pytest.mark.asyncio

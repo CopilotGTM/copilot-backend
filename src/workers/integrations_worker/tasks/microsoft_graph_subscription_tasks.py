@@ -9,13 +9,18 @@ from uuid import UUID
 from celery import Task
 from celery.exceptions import SoftTimeLimitExceeded
 
+from src.domain.models.organisation_tables.sync import SyncStatus
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
+from src.service.integrations.sync_health import classify_sync_error, is_action_required_failure
+from src.service.integrations.webhooks.microsoft.metadata import MicrosoftSubscriptionKind
 from src.service.integrations.webhooks.microsoft.subscription_task_service import (
     MicrosoftGraphSubscriptionTaskService,
     kind_for_integration_type,
 )
+from src.service.integrations.webhooks.sync_receipt import update_webhook_sync_receipt
 from src.workers.integrations_worker.celery_app import app
+from src.workers.integrations_worker.client import send_integrations_task
 from src.workers.integrations_worker.config import TASK_LIMITS
 
 logger = get_logger(__name__)
@@ -41,21 +46,75 @@ def ensure_microsoft_graph_subscription_task(
     self: Task,
     organisation_id: str,
     integration_id: str,
+    kind: str | None = None,
+    lifecycle_event: str | None = None,
+    sync_after: bool = False,
+    webhook_sync_id: str | None = None,
+    trigger_source: str | None = None,
 ) -> dict[str, Any]:
     """Ensure a Microsoft Graph webhook subscription exists for one integration."""
     # Idempotent task: the service renews an existing subscription or creates a
     # replacement, so retries are safe after worker crashes or Graph 429s.
     started_at = datetime.now(UTC).isoformat()
+    _ = trigger_source
     org_id = UUID(organisation_id)
     int_id = UUID(integration_id)
 
     try:
+        requested_kind = MicrosoftSubscriptionKind(kind) if kind else None
         result = run_async(
             MicrosoftGraphSubscriptionTaskService().ensure_subscription(
                 organisation_id=org_id,
                 integration_id=int_id,
+                requested_kind=requested_kind,
+                lifecycle_event=lifecycle_event,
             )
         )
+        if result.get("status") == "skipped" and webhook_sync_id:
+            run_async(
+                update_webhook_sync_receipt(
+                    organisation_id=org_id,
+                    sync_id=UUID(webhook_sync_id),
+                    status=SyncStatus.FAILED,
+                    metadata={
+                        "failure_stage": "subscription_recovery_result",
+                        "terminal": True,
+                    },
+                    error=str(result.get("reason") or "Integration is unavailable"),
+                    completed=True,
+                )
+            )
+        elif (
+            sync_after
+            and requested_kind is not None
+            and requested_kind.value in result.get("kinds", [])
+        ):
+            task_name = (
+                "integrations.sync_calendar_integration"
+                if requested_kind == MicrosoftSubscriptionKind.CALENDAR
+                else "integrations.sync_email_integration"
+            )
+            send_integrations_task(
+                task_name=task_name,
+                kwargs={
+                    "organisation_id": organisation_id,
+                    "integration_id": integration_id,
+                    "trigger_source": "webhook",
+                    "webhook_sync_id": webhook_sync_id,
+                },
+                queue="integrations_priority",
+                routing_key="integrations_priority",
+            )
+        elif webhook_sync_id:
+            run_async(
+                update_webhook_sync_receipt(
+                    organisation_id=org_id,
+                    sync_id=UUID(webhook_sync_id),
+                    status=SyncStatus.SUCCESS,
+                    metadata={"subscription_recovered": True},
+                    completed=True,
+                )
+            )
         result["started_at"] = started_at
         result["completed_at"] = datetime.now(UTC).isoformat()
         return result
@@ -68,6 +127,20 @@ def ensure_microsoft_graph_subscription_task(
                 "soft_limit_seconds": _ENSURE_LIMITS["soft"],
             },
         )
+        if webhook_sync_id:
+            run_async(
+                update_webhook_sync_receipt(
+                    organisation_id=org_id,
+                    sync_id=UUID(webhook_sync_id),
+                    status=SyncStatus.FAILED,
+                    metadata={
+                        "failure_stage": "subscription_recovery_timeout",
+                        "terminal": False,
+                    },
+                    error="Microsoft Graph subscription recovery timed out",
+                    completed=False,
+                )
+            )
         return {
             "status": "timed_out",
             "organisation_id": organisation_id,
@@ -86,7 +159,9 @@ def ensure_microsoft_graph_subscription_task(
                 "error": str(exc),
             },
         )
-        if self.request.retries < self.max_retries:
+        failure_type = classify_sync_error(exc)
+        terminal = is_action_required_failure(failure_type)
+        if not terminal and self.request.retries < self.max_retries:
             logger.info(
                 "Retrying Microsoft Graph subscription ensure",
                 extra={
@@ -97,6 +172,22 @@ def ensure_microsoft_graph_subscription_task(
                 },
             )
             raise self.retry(exc=exc) from exc
+
+        if webhook_sync_id:
+            run_async(
+                update_webhook_sync_receipt(
+                    organisation_id=org_id,
+                    sync_id=UUID(webhook_sync_id),
+                    status=SyncStatus.FAILED,
+                    metadata={
+                        "failure_stage": "subscription_recovery",
+                        "failure_type": failure_type.value,
+                        "terminal": terminal,
+                    },
+                    error=str(exc),
+                    completed=terminal,
+                )
+            )
 
         return {
             "status": "failed",

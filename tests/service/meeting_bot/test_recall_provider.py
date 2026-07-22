@@ -69,7 +69,7 @@ class TestRecallMeetingRecordingProvider:
             "in_call_not_recording_timeout": 300,
             "recording_permission_denied_timeout": 30,
             "bot_detection": {
-                "using_participant_events": {"activate_after": 0, "timeout": 600},
+                "using_participant_events": {"activate_after": 1, "timeout": 600},
                 "using_participant_names": {
                     "matches": [
                         "notetaker",
@@ -84,7 +84,7 @@ class TestRecallMeetingRecordingProvider:
                         "fellow",
                         "tl;dv",
                     ],
-                    "activate_after": 0,
+                    "activate_after": 1,
                     "timeout": 600,
                 },
             },

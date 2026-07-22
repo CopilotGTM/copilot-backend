@@ -11,6 +11,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException, Request, status
+from src.infra.security.request_body import read_bounded_request_body
 from src.service.integrations.webhooks.microsoft.ingestion_service import (
     MicrosoftWebhookIngestionResult,
     MicrosoftWebhookIngestionService,
@@ -79,38 +80,13 @@ class MicrosoftWebhookRequestService:
             notification_payloads=self._parse_notifications(raw_body),
         )
 
-    def _check_declared_size(self, request: Request) -> None:
-        """Reject oversized webhook bodies from declared Content-Length early."""
-        content_length = request.headers.get("content-length")
-        if not content_length:
-            return
-
-        try:
-            declared_content_length = int(content_length)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid Content-Length header",
-            ) from exc
-
-        if declared_content_length > MICROSOFT_WEBHOOK_MAX_BODY_BYTES:
-            raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail="Microsoft webhook body is too large",
-            )
-
     async def _read_body(self, request: Request) -> bytes:
         """Read the webhook payload while enforcing the body-size guardrail twice."""
-        # Content-Length is caller-controlled, so we also check the bytes we
-        # actually read before handing payload data to JSON parsing.
-        self._check_declared_size(request)
-        raw_body = await request.body()
-        if len(raw_body) > MICROSOFT_WEBHOOK_MAX_BODY_BYTES:
-            raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail="Microsoft webhook body is too large",
-            )
-        return raw_body
+        return await read_bounded_request_body(
+            request,
+            max_bytes=MICROSOFT_WEBHOOK_MAX_BODY_BYTES,
+            label="Microsoft webhook",
+        )
 
     def _parse_notifications(self, raw_body: bytes) -> list[dict[str, Any]]:
         """Parse Graph JSON and require the top-level notification list."""

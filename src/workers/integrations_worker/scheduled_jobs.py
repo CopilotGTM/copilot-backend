@@ -27,6 +27,14 @@ SCHEDULED_JOBS: dict[str, ScheduledJob] = {
         max_lag_seconds=60 * 60 * 6,
         kwargs={"buffer_hours": 2},
     ),
+    "recover-stale-webhook-syncs": ScheduledJob(
+        name="recover-stale-webhook-syncs",
+        task_name="integrations.recover_stale_webhook_syncs",
+        schedule="*/5 * * * *",
+        max_lag_seconds=15 * 60,
+        queue="integrations_priority",
+        routing_key="integrations_priority",
+    ),
     "sync-messaging-channels-all-orgs": ScheduledJob(
         name="sync-messaging-channels-all-orgs",
         task_name="integrations.sync_messaging_channels_all_orgs",

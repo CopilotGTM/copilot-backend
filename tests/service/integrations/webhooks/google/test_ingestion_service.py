@@ -34,6 +34,22 @@ from src.service.integrations.webhooks.google.types import (
     GoogleGmailPubSubNotification,
 )
 
+WEBHOOK_SYNC_ID = UUID("00000000-0000-0000-0000-000000000123")
+
+
+@pytest.fixture(autouse=True)
+def _mock_sync_receipts(monkeypatch):
+    monkeypatch.setattr(
+        ingestion_service,
+        "create_webhook_sync_receipt",
+        AsyncMock(return_value=WEBHOOK_SYNC_ID),
+    )
+    monkeypatch.setattr(
+        ingestion_service,
+        "update_webhook_sync_receipt",
+        AsyncMock(),
+    )
+
 
 def _gmail_integration(email: str = "seller@example.com") -> SimpleNamespace:
     metadata = set_gmail_subscription_metadata(
@@ -193,15 +209,14 @@ async def test_gmail_ingestion_rejects_mismatched_account_email(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_gmail_ingestion_dedupes_pubsub_message_id_and_enqueues_email_sync(
+async def test_gmail_ingestion_replays_queue_idempotent_email_sync(
     monkeypatch,
 ) -> None:
-    """Replayed Gmail Pub/Sub messages must enqueue at most one email sync."""
+    """Replayed Pub/Sub messages retain a durable task for each delivery."""
     service = GoogleWebhookIngestionService()
     organisation_id = uuid4()
     integration_id = uuid4()
     send_task = AsyncMock(return_value="task-123")
-    seen_tokens: set[str] = set()
 
     monkeypatch.setattr(
         service,
@@ -216,25 +231,21 @@ async def test_gmail_ingestion_dedupes_pubsub_message_id_and_enqueues_email_sync
             ]
         ),
     )
-    monkeypatch.setattr(
-        service,
-        "_claim_dedupe",
-        lambda token: False if token in seen_tokens else not seen_tokens.add(token),
-    )
-    monkeypatch.setattr(service, "_claim_sync_pending", lambda *_: True)
     monkeypatch.setattr(ingestion_service, "send_integrations_task_async", send_task)
 
     first = await service.ingest_gmail(notification=_gmail_notification())
     second = await service.ingest_gmail(notification=_gmail_notification())
 
     assert first.queued_count == 1
-    assert second.duplicate_count == 1
-    send_task.assert_awaited_once_with(
+    assert second.queued_count == 1
+    assert send_task.await_count == 2
+    send_task.assert_awaited_with(
         task_name="integrations.sync_email_integration",
         kwargs={
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
             "trigger_source": "webhook",
+            "webhook_sync_id": str(WEBHOOK_SYNC_ID),
         },
         queue="integrations_priority",
         routing_key="integrations_priority",
@@ -263,8 +274,6 @@ async def test_gmail_ingestion_fans_out_to_matching_account_integrations(monkeyp
         "_load_gmail_targets_by_email",
         AsyncMock(return_value=[target_one, target_two]),
     )
-    monkeypatch.setattr(service, "_claim_dedupe", lambda *_: True)
-    monkeypatch.setattr(service, "_claim_sync_pending", lambda *_: True)
     monkeypatch.setattr(ingestion_service, "send_integrations_task_async", send_task)
 
     result = await service.ingest_gmail(notification=_gmail_notification())
@@ -313,8 +322,6 @@ async def test_gmail_ingestion_resolves_provider_parent_capability_state(monkeyp
             )
         ),
     )
-    monkeypatch.setattr(service, "_claim_dedupe", lambda *_: True)
-    monkeypatch.setattr(service, "_claim_sync_pending", lambda *_: True)
     monkeypatch.setattr(ingestion_service, "send_integrations_task_async", send_task)
 
     result = await service.ingest_gmail(notification=_gmail_notification())
@@ -327,6 +334,7 @@ async def test_gmail_ingestion_resolves_provider_parent_capability_state(monkeyp
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
             "trigger_source": "webhook",
+            "webhook_sync_id": str(WEBHOOK_SYNC_ID),
         },
         queue="integrations_priority",
         routing_key="integrations_priority",
@@ -347,8 +355,6 @@ async def test_calendar_ingestion_verifies_channel_id_resource_id_and_token(monk
         "_load_integration",
         AsyncMock(return_value=_calendar_integration()),
     )
-    monkeypatch.setattr(service, "_claim_dedupe", lambda *_: True)
-    monkeypatch.setattr(service, "_claim_sync_pending", lambda *_: True)
     monkeypatch.setattr(ingestion_service, "send_integrations_task_async", send_task)
 
     valid = await service.ingest_calendar(
@@ -370,6 +376,7 @@ async def test_calendar_ingestion_verifies_channel_id_resource_id_and_token(monk
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
             "trigger_source": "webhook",
+            "webhook_sync_id": str(WEBHOOK_SYNC_ID),
         },
         queue="integrations_priority",
         routing_key="integrations_priority",
@@ -406,8 +413,6 @@ async def test_calendar_ingestion_resolves_provider_parent_capability_state(
             )
         ),
     )
-    monkeypatch.setattr(service, "_claim_dedupe", lambda *_: True)
-    monkeypatch.setattr(service, "_claim_sync_pending", lambda *_: True)
     monkeypatch.setattr(ingestion_service, "send_integrations_task_async", send_task)
 
     result = await service.ingest_calendar(
@@ -424,6 +429,7 @@ async def test_calendar_ingestion_resolves_provider_parent_capability_state(
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
             "trigger_source": "webhook",
+            "webhook_sync_id": str(WEBHOOK_SYNC_ID),
         },
         queue="integrations_priority",
         routing_key="integrations_priority",
@@ -613,8 +619,8 @@ async def test_gmail_target_lookup_uses_master_email_candidates(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_gmail_target_lookup_isolates_broken_candidate(monkeypatch) -> None:
-    """One stale tenant route must not block another mailbox target."""
+async def test_gmail_target_lookup_propagates_tenant_failure_for_provider_retry(monkeypatch) -> None:
+    """A transient tenant lookup failure must make the Pub/Sub delivery retry."""
     service = GoogleWebhookIngestionService()
     broken_org_id = uuid4()
     healthy_org_id = uuid4()
@@ -649,6 +655,5 @@ async def test_gmail_target_lookup_isolates_broken_candidate(monkeypatch) -> Non
         AsyncMock(side_effect=[RuntimeError("tenant unavailable"), healthy_parent]),
     )
 
-    targets = await service._load_gmail_targets_by_email("seller@example.com")
-
-    assert [target.integration_id for target in targets] == [healthy_integration_id]
+    with pytest.raises(RuntimeError, match="tenant unavailable"):
+        await service._load_gmail_targets_by_email("seller@example.com")

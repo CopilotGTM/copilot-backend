@@ -33,6 +33,11 @@ TASK_LIMITS: dict[str, dict] = {
         "hard": 180,
         "retries": 0,
     },
+    "integrations.recover_stale_webhook_syncs": {
+        "soft": 240,
+        "hard": 300,
+        "retries": 0,
+    },
     # ── Tier 2: per-org (external API calls, pagination, persistence) ──
     "integrations.sync_messaging_channels_org": {
         "soft": 900,
@@ -324,6 +329,10 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             },
             "integrations.refresh_token": {
                 "queue": "integrations_priority",  # Priority queue for single refresh
+                "routing_key": "integrations_priority",
+            },
+            "integrations.recover_stale_webhook_syncs": {
+                "queue": "integrations_priority",
                 "routing_key": "integrations_priority",
             },
             "integrations.ensure_microsoft_graph_subscription": {

@@ -20,7 +20,7 @@ class MicrosoftGraphWebhookNotification:
     subscription_id: str
     client_state: str
     change_type: str
-    resource: str
+    resource: str | None
     notification_id: str | None
     tenant_id: str | None
     resource_data: dict[str, Any] | None
@@ -44,8 +44,11 @@ class MicrosoftGraphWebhookNotification:
             not isinstance(subscription_id, str)
             or not isinstance(client_state, str)
             or not isinstance(change_type, str)
-            or not isinstance(resource, str)
         ):
+            return None
+        # Lifecycle events describe subscription health rather than one changed
+        # resource, so Graph legitimately omits `resource` from those payloads.
+        if resource is not None and not isinstance(resource, str):
             return None
 
         notification_id = payload.get("id")
@@ -74,7 +77,7 @@ class MicrosoftGraphWebhookNotification:
             [
                 self.subscription_id,
                 self.change_type,
-                self.resource,
+                self.resource or "",
                 raw_payload,
             ]
         )

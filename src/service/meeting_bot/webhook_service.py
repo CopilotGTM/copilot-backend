@@ -138,7 +138,10 @@ class RecallMeetingRecordingWebhookService:
                 )
             if transcript_artifact is not None:
                 merged_payload["transcript_artifact"] = transcript_artifact
-            if event_name in TRANSCRIPT_ARTIFACT_READY_EVENTS and transcript_artifact is not None:
+            if transcript_artifact is not None:
+                # Artifact availability is durable provider truth. Recall may
+                # deliver video_mixed.done without a separate transcript.done,
+                # so gating readiness on the event name strands valid transcripts.
                 transcript_status = MeetingTranscriptStatus.READY
                 transcript_ready_at = updated_at or datetime.now(UTC)
 
@@ -169,7 +172,7 @@ class RecallMeetingRecordingWebhookService:
             "normalized_status": _enum_value(record.status),
             "transcript_status": _enum_value(record.transcript_status),
         }
-        if event_name in TRANSCRIPT_ARTIFACT_READY_EVENTS:
+        if transcript_ready_at is not None:
             result.update(
                 await self.summary_trigger_service.handle_transcript_ready(record.calendar_event_id)
             )
@@ -214,6 +217,114 @@ class RecallMeetingRecordingWebhookService:
         transcript_artifact = provider.extract_transcript_download(bot_snapshot)
         video_artifact = provider.extract_video_mixed_download(bot_snapshot)
         return bot_snapshot, transcript_artifact, video_artifact
+
+    async def reconcile_provider_session(self, calendar_event_id: UUID) -> dict[str, Any]:
+        """Refresh one session from Recall when its terminal webhook was missed."""
+        existing = await self.session_service.get_by_event(calendar_event_id)
+        provider_session_id = getattr(existing, "provider_session_id", None)
+        if existing is None or not isinstance(provider_session_id, str):
+            return {"status": "skipped", "reason": "provider_session_missing"}
+
+        api_key = await recall_config.get_api_key()
+        if not api_key:
+            return {"status": "skipped", "reason": "recall_not_configured"}
+        provider = RecallMeetingRecordingProvider(
+            api_key=api_key,
+            region=recall_config.RECALL_REGION,
+            timeout=recall_config.RECALL_TIMEOUT_SECONDS,
+        )
+        bot_snapshot = await provider.fetch_session(provider_session_id)
+        raw_status = bot_snapshot.get("status")
+        provider_status = (
+            raw_status.get("code") if isinstance(raw_status, dict) else raw_status
+        )
+        if not isinstance(provider_status, str):
+            return {"status": "retry", "reason": "provider_status_missing"}
+
+        status_changes = bot_snapshot.get("status_changes")
+        status_codes = {
+            change.get("code")
+            for change in (status_changes if isinstance(status_changes, list) else [])
+            if isinstance(change, dict)
+        }
+        entered_call = any(
+            isinstance(code, str)
+            and (
+                code.startswith("in_call_")
+                or code == "recording_permission_allowed"
+            )
+            for code in status_codes
+        ) or _enum_value(existing.status) in {
+            MeetingRecordingStatus.IN_CALL.value,
+            MeetingRecordingStatus.COMPLETED.value,
+        }
+        terminal = provider_status in {
+            "done",
+            "fatal",
+            "call_ended",
+            "recording_done",
+            "recording_failed",
+            "recording_deleted",
+        }
+        if not terminal:
+            return {"status": "retry", "reason": "provider_session_active"}
+
+        transcript_artifact = provider.extract_transcript_download(bot_snapshot)
+        video_artifact = provider.extract_video_mixed_download(bot_snapshot)
+        merged_payload = dict(existing.provider_payload or {})
+        merged_payload["bot_snapshot"] = bot_snapshot
+        merged_payload["terminal_reconciled_at"] = datetime.now(UTC).isoformat()
+        if video_artifact is not None:
+            video_artifact = await self.artifact_service.archive_video_artifact(
+                calendar_event_id,
+                video_artifact,
+            )
+            merged_payload["video_artifact"] = video_artifact
+            await self.session_service.mark_video_artifact_archived(
+                existing.session_id,
+                video_artifact,
+            )
+        transcript_status = None
+        transcript_ready_at = None
+        provider_failed = provider_status in {"fatal", "recording_failed"} or (
+            "recording_permission_denied" in status_codes
+        )
+        if transcript_artifact is not None:
+            merged_payload["transcript_artifact"] = transcript_artifact
+            transcript_status = MeetingTranscriptStatus.READY
+            transcript_ready_at = datetime.now(UTC)
+        elif provider_failed:
+            transcript_status = MeetingTranscriptStatus.FAILED
+        elif not entered_call:
+            transcript_status = MeetingTranscriptStatus.NOT_AVAILABLE
+
+        normalized_status = (
+            MeetingRecordingStatus.COMPLETED
+            if entered_call and not provider_failed
+            else MeetingRecordingStatus.FAILED
+        )
+        record = await self.session_service.apply_webhook_update(
+            provider_session_id,
+            provider_status=provider_status,
+            provider_payload=merged_payload,
+            status=normalized_status,
+            transcript_status=transcript_status,
+            status_message=(None if entered_call else "Bot did not enter the meeting"),
+            last_webhook_at=datetime.now(UTC),
+            transcript_ready_at=transcript_ready_at,
+        )
+        if record is None:
+            return {"status": "skipped", "reason": "session_not_found"}
+        result: dict[str, Any] = {
+            "status": "reconciled",
+            "normalized_status": _enum_value(record.status),
+            "transcript_status": _enum_value(record.transcript_status),
+        }
+        if transcript_ready_at is not None:
+            result.update(
+                await self.summary_trigger_service.handle_transcript_ready(calendar_event_id)
+            )
+        return result
 
     @staticmethod
     def _map_status(

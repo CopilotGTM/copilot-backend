@@ -90,7 +90,9 @@ class RecallMeetingRecordingProvider:
             "recording_permission_denied_timeout": 30,
             "bot_detection": {
                 "using_participant_events": {
-                    "activate_after": 0,
+                    # Recall validates this lower bound server-side. One second
+                    # preserves near-immediate bot detection without a rejected bot.
+                    "activate_after": 1,
                     "timeout": 600,
                 },
                 "using_participant_names": {
@@ -107,7 +109,7 @@ class RecallMeetingRecordingProvider:
                         "fellow",
                         "tl;dv",
                     ],
-                    "activate_after": 0,
+                    "activate_after": 1,
                     "timeout": 600,
                 },
             },
