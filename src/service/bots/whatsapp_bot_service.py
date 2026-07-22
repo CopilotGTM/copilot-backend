@@ -221,7 +221,7 @@ class WhatsAppBotService:
                                 message_id=message_id,
                             )
                         ]
-                    elif message_type in {"image", "document", "video"}:
+                    elif message_type in {"image", "document"}:
                         # Documents/images are normalized into Attachment objects and ingested
                         # through the shared external attachment pipeline.
                         media_info = message.get(message_type) or {}
@@ -492,7 +492,7 @@ class WhatsAppBotService:
             return False
         if message.message_type == "text":
             return True
-        if message.message_type in {"image", "document", "video"}:
+        if message.message_type in {"image", "document"}:
             return bool(_WHATSAPP_CAPTION_WRITE_PATTERN.search(message.text))
         return False
 
@@ -541,7 +541,7 @@ class WhatsAppBotService:
     def _unsupported_message_text(unsupported_reason: str) -> str:
         return (
             f"I can't process WhatsApp {unsupported_reason} messages yet. "
-            "Please send text, an image, video, document, contact, location, or audio note."
+            "Please send text, an image, document, contact, location, or audio note."
         )
 
     async def _get_linked_user(

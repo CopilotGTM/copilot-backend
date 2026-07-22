@@ -757,8 +757,8 @@ async def test_status_only_payload_is_ignored() -> None:
 
 
 @pytest.mark.asyncio
-async def test_video_message_enters_attachment_pipeline() -> None:
-    """WhatsApp videos use the same durable attachment boundary as images and files."""
+async def test_video_message_is_reported_as_unsupported() -> None:
+    """Video remains outside the supported WhatsApp modalities until explicitly designed."""
     service = WhatsAppBotService()
     payload = {
         "object": "whatsapp_business_account",
@@ -790,7 +790,8 @@ async def test_video_message_enters_attachment_pipeline() -> None:
 
     assert len(messages) == 1
     assert messages[0].message_type == "video"
-    assert messages[0].media_files[0].media_id == "media-video-1"
+    assert messages[0].media_files is None
+    assert messages[0].unsupported_reason == "video"
 
 
 def test_whatsapp_idempotency_key_includes_business_number_sender_and_wamid() -> None:

@@ -695,6 +695,38 @@ def test_accepted_whatsapp_chunk_renews_send_lease(service) -> None:
     assert assistant_message.extra["whatsapp_message_ids"] == ["wamid.accepted"]
 
 
+def test_whatsapp_response_links_assistant_clarification_to_pending_action(service) -> None:
+    """Reply to an assistant clarification must resolve the same pending action later."""
+    job_id = uuid4()
+    session_id = uuid4()
+    job = SimpleNamespace(
+        message_id=uuid4(),
+        job_metadata={"session_id": str(session_id), "processing_stage": "agent_running"},
+        status=None,
+        error_message=None,
+        token_usage=None,
+        model_name=None,
+        cost=None,
+        latency_ms=None,
+    )
+    session = MagicMock()
+    session.get.return_value = job
+
+    with patch(_PATCH_SESSION, return_value=_fake_session(session)):
+        service._persist_whatsapp_response(
+            job_id,
+            text="Which deal should I use?",
+            assistant_text="Which deal should I use?",
+            frames=[],
+            agent_success=True,
+            error_message=None,
+            pending_action_id="action-1",
+        )
+
+    assistant_message = session.add.call_args_list[0].args[0]
+    assert assistant_message.extra["pending_action_id"] == "action-1"
+
+
 def test_terminal_whatsapp_send_failure_marks_job_failed(service) -> None:
     from src.domain.models.organisation_tables.job_models import JobStatus
 

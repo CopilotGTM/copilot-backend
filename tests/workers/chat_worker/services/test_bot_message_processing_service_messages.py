@@ -1,14 +1,61 @@
 """Bot-worker contracts for prompts, attachments, status, and channel delivery."""
 
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from src.adapters import ChannelPayload
+from src.agents.tools.transparent_tools import TransparentToolManager
 from src.infra.messaging.chat_stream_models import ToolUsage
 from src.workers.chat_worker.services.bot_message_processing_service import (
     BotMessageProcessingService,
 )
+
+_PATCH_SESSION = "src.infra.database.sessions.org_session_scope"
+
+
+@contextmanager
+def _fake_session(fake_session):
+    yield fake_session
+
+
+class _PendingActionSession:
+    """Small identity map for exercising JSON-backed action selection without a database."""
+
+    def __init__(self, *objects):
+        self.objects = {obj.message_id: obj for obj in objects if hasattr(obj, "message_id")}
+        self.objects.update(
+            {obj.session_id: obj for obj in objects if not hasattr(obj, "message_id")}
+        )
+
+    def get(self, _model, object_id):
+        """Return the object keyed like a SQLAlchemy identity-map lookup."""
+        return self.objects.get(object_id)
+
+    def add(self, _object):
+        """Accept writes because test objects are already mutable by reference."""
+        return None
+
+    def commit(self):
+        """Model a successful transaction boundary without external storage."""
+        return None
+
+
+def _pending_action(action_id: str, *, status: str = "suspended", minutes: int = 30) -> dict:
+    now = datetime.now(UTC)
+    return {
+        "action_id": action_id,
+        "kind": "whatsapp_attachment_continuation",
+        "status": status,
+        "expected_payloads": ["image"],
+        "authorizing_text": f"Add image for {action_id}",
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(minutes=minutes)).isoformat(),
+    }
+
 
 # ---------------------------------------------------------------------------
 # _build_messages — system messages by conversation type
@@ -175,6 +222,166 @@ def test_pending_action_requires_future_payload_and_write_language() -> None:
     )
 
 
+def test_whatsapp_reply_selects_one_of_several_suspended_actions() -> None:
+    """Reply must reactivate the referenced action instead of guessing from recent history."""
+    service = BotMessageProcessingService(uuid4())
+    session_id = uuid4()
+    current_id = uuid4()
+    reply_id = uuid4()
+    first = _pending_action("first")
+    second = _pending_action("second")
+    chat_session = SimpleNamespace(
+        session_id=session_id,
+        properties={"pending_actions": [first, second]},
+    )
+    current = SimpleNamespace(message_id=current_id, session_id=session_id, extra={})
+    reply_target = SimpleNamespace(
+        message_id=reply_id,
+        session_id=session_id,
+        extra={"pending_action_id": "first"},
+    )
+    fake_session = _PendingActionSession(chat_session, current, reply_target)
+
+    with patch(_PATCH_SESSION, return_value=_fake_session(fake_session)):
+        selected = service._resolve_whatsapp_pending_action(
+            session_id=session_id,
+            current_message_id=current_id,
+            reply_to_message_id=reply_id,
+            message_text="Use this one",
+            bot_context={"whatsapp_message_type": "text", "whatsapp_has_direct_text": True},
+        )
+
+    assert selected["action_id"] == "first"
+    assert chat_session.properties["pending_actions"][0]["status"] == "active"
+    assert chat_session.properties["pending_actions"][1]["status"] == "suspended"
+    assert current.extra["pending_action_id"] == "first"
+
+
+def test_unrelated_direct_message_suspends_active_whatsapp_action() -> None:
+    """A context switch preserves pending work for Reply but prevents silent auto-application."""
+    service = BotMessageProcessingService(uuid4())
+    session_id = uuid4()
+    current_id = uuid4()
+    active = _pending_action("active", status="active")
+    chat_session = SimpleNamespace(session_id=session_id, properties={"pending_actions": [active]})
+    current = SimpleNamespace(message_id=current_id, session_id=session_id, extra={})
+    fake_session = _PendingActionSession(chat_session, current)
+
+    with patch(_PATCH_SESSION, return_value=_fake_session(fake_session)):
+        selected = service._resolve_whatsapp_pending_action(
+            session_id=session_id,
+            current_message_id=current_id,
+            reply_to_message_id=None,
+            message_text="What meetings do I have today?",
+            bot_context={"whatsapp_message_type": "text", "whatsapp_has_direct_text": True},
+        )
+
+    assert selected is None
+    assert chat_session.properties["pending_actions"][0]["status"] == "suspended"
+    assert "pending_action_id" not in current.extra
+
+
+def test_compatible_captionless_forwarded_image_continues_only_active_action() -> None:
+    """Forwarding can supply promised data, but never creates authority by itself."""
+    service = BotMessageProcessingService(uuid4())
+    session_id = uuid4()
+    current_id = uuid4()
+    active = _pending_action("active", status="active")
+    chat_session = SimpleNamespace(session_id=session_id, properties={"pending_actions": [active]})
+    current = SimpleNamespace(message_id=current_id, session_id=session_id, extra={})
+    fake_session = _PendingActionSession(chat_session, current)
+
+    with patch(_PATCH_SESSION, return_value=_fake_session(fake_session)):
+        selected = service._resolve_whatsapp_pending_action(
+            session_id=session_id,
+            current_message_id=current_id,
+            reply_to_message_id=None,
+            message_text="",
+            bot_context={
+                "whatsapp_message_type": "image",
+                "whatsapp_has_direct_text": False,
+                "whatsapp_is_forwarded": True,
+            },
+        )
+
+    assert selected["action_id"] == "active"
+    assert selected["payload_message_id"] == str(current_id)
+
+
+def test_terminal_and_expired_reply_states_do_not_authorize_replay() -> None:
+    """Reply to old work must explain terminal state rather than exposing write tools."""
+    service = BotMessageProcessingService(uuid4())
+
+    completed = service._build_messages(
+        "do it again",
+        bot_context={"whatsapp_pending_action_state": "completed"},
+        provider="whatsapp",
+    )[0]["content"]
+    expired = service._build_messages(
+        "use this",
+        bot_context={"whatsapp_pending_action_state": "expired"},
+        provider="whatsapp",
+    )[0]["content"]
+
+    assert "Do not repeat it" in completed
+    assert "ask the user to restate" in expired
+
+
+def test_pending_action_completes_only_after_successful_mutating_tool() -> None:
+    """Clarifications, reads, and handled mutation errors keep the action resumable."""
+    service = BotMessageProcessingService(uuid4())
+
+    assert service._has_successful_whatsapp_mutation(
+        [ToolUsage(tool_name="AddDealNote", status="completed", succeeded=True)]
+    )
+    assert not service._has_successful_whatsapp_mutation(
+        [ToolUsage(tool_name="search_deals", status="completed", succeeded=True)]
+    )
+    assert not service._has_successful_whatsapp_mutation(
+        [ToolUsage(tool_name="add_deal_note", status="completed", succeeded=False)]
+    )
+
+
+def test_pending_action_list_drops_old_terminal_state_before_unfinished_work() -> None:
+    """The bounded JSON list preserves resumable actions before replay-protection entries."""
+    service = BotMessageProcessingService(uuid4())
+    actions = [_pending_action("done", status="completed")]
+    actions.extend(_pending_action(f"open-{index}") for index in range(5))
+
+    retained = service._prune_whatsapp_pending_actions(
+        {"pending_actions": actions}, now=datetime.now(UTC)
+    )
+
+    assert len(retained) == 5
+    assert {action["action_id"] for action in retained} == {
+        "open-0",
+        "open-1",
+        "open-2",
+        "open-3",
+        "open-4",
+    }
+
+
+@pytest.mark.asyncio
+async def test_transparent_tool_frame_marks_handled_error_as_unsuccessful() -> None:
+    """A tool that returns an error dictionary must not look like a successful mutation."""
+    frames = []
+
+    async def handled_failure():
+        """Represent a tool that handles its own domain failure as result data."""
+        return {"status": "error", "message": "Deal not found"}
+
+    await TransparentToolManager("message-1").use_tool(
+        "add_deal_note",
+        handled_failure,
+        {},
+        frame_emitter=frames.append,
+    )
+
+    assert frames[-1].status == "completed"
+    assert frames[-1].succeeded is False
+
+
 def test_guess_mimetype_covers_whatsapp_audio_extensions() -> None:
     assert BotMessageProcessingService._guess_mimetype("voice.aac", "aac") == "audio/aac"
     assert BotMessageProcessingService._guess_mimetype("voice.amr", "amr") == "audio/amr"
@@ -261,6 +468,41 @@ def test_exact_reply_target_is_visible_after_history_normalization() -> None:
     )
 
     assert content["text"] == "[Exact WhatsApp reply target]\nInvite Priya for Friday"
+
+
+def test_pending_payload_outside_recent_history_is_loaded_for_reply() -> None:
+    """Reply clarification must recover the action payload even beyond the 20-message window."""
+    service = BotMessageProcessingService(uuid4())
+    session_id = uuid4()
+    current = SimpleNamespace(
+        message_id=uuid4(),
+        session_id=session_id,
+        role="user",
+        content={"text": "Use Delta"},
+        created_at=datetime.now(UTC),
+    )
+    old_payload = SimpleNamespace(
+        message_id=uuid4(),
+        session_id=session_id,
+        role="user",
+        content={"text": ""},
+        created_at=datetime.now(UTC) - timedelta(hours=1),
+    )
+    recent_result = MagicMock()
+    recent_result.scalars.return_value.all.return_value = [current]
+    attachment_result = MagicMock()
+    attachment_result.all.return_value = []
+    fake_session = MagicMock()
+    fake_session.execute.side_effect = [recent_result, attachment_result]
+    fake_session.get.return_value = old_payload
+
+    with patch(_PATCH_SESSION, return_value=_fake_session(fake_session)):
+        history = service._load_history(
+            session_id,
+            related_message_ids=[old_payload.message_id],
+        )
+
+    assert [message["message_id"] for message in history] == [str(old_payload.message_id)]
 
 
 # ---------------------------------------------------------------------------
