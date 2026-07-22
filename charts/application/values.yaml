@@ -426,6 +426,8 @@ integrationsCronJobs:
   jobs:
     - name: refresh-tokens
       schedule: "0 */4 * * *"
+    - name: recover-stale-webhook-syncs
+      schedule: "*/5 * * * *"
     - name: sync-messaging-channels-all-orgs
       schedule: "0 6 * * *"
     - name: sync-deal-messages-all-orgs

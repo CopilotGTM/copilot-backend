@@ -158,6 +158,8 @@ integrationsCronJobs:
   jobs:
     - name: refresh-tokens
       schedule: "0 */4 * * *"
+    - name: recover-stale-webhook-syncs
+      schedule: "*/5 * * * *"
     - name: renew-microsoft-graph-subscriptions
       schedule: "0 */12 * * *"
     - name: renew-google-subscriptions

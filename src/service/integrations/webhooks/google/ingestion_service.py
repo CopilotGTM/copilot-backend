@@ -19,9 +19,9 @@ from src.domain.models.organisation_tables.sync import (
     IntegrationSyncState,
     IntegrationType,
     KnowledgeIntegration,
+    SyncStatus,
 )
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
-from src.infra.messaging.redis_client import get_redis_client
 from src.infra.utils.logger import get_logger
 from src.service.integrations.webhooks.google.metadata import (
     GoogleSubscriptionKind,
@@ -31,18 +31,14 @@ from src.service.integrations.webhooks.google.types import (
     GoogleCalendarChannelNotification,
     GoogleGmailPubSubNotification,
 )
+from src.service.integrations.webhooks.sync_receipt import (
+    create_webhook_sync_receipt,
+    update_webhook_sync_receipt,
+)
 from src.workers.integrations_worker.client import send_integrations_task_async
 
 logger = get_logger(__name__)
 
-# Provider retries can replay the same notification hours later. Keep the
-# dedupe token for a day so replayed Pub/Sub or Calendar deliveries do not fan
-# out redundant sync work.
-GOOGLE_WEBHOOK_DEDUPE_TTL_SECONDS = 24 * 60 * 60
-
-# Coalesce bursts from one provider account into one near-term sync. The sync
-# task still owns cursor correctness; this only reduces queue pressure.
-GOOGLE_WEBHOOK_SYNC_DEBOUNCE_TTL_SECONDS = 45
 GOOGLE_WEBHOOK_SYNC_COUNTDOWN_SECONDS = 15
 
 
@@ -85,9 +81,9 @@ class GoogleWebhookIngestionService:
         Gmail `emailAddress` is the routing signal and every resulting sync is
         still scoped to a concrete org/integration pair.
         """
-        # Resolve targets before touching Redis. Unknown Gmail accounts should
-        # be cheap no-ops, and claiming dedupe first would hide future valid
-        # retries if an integration is created immediately after the callback.
+        # Resolve every matching tenant before acknowledging Pub/Sub. A lookup
+        # error escapes to the route so Google retries instead of silently
+        # delivering only a subset of a shared mailbox notification.
         targets = await self._load_gmail_targets_by_email(notification.email_address)
         if not targets:
             return GoogleWebhookIngestionResult(0, 0, 0, 0, 1)
@@ -113,26 +109,19 @@ class GoogleWebhookIngestionService:
         if not valid_targets:
             return GoogleWebhookIngestionResult(0, 0, 0, 0, invalid_count)
 
-        # Deduping is global by Pub/Sub message id because Pub/Sub retry
-        # semantics replay the same envelope, not one envelope per org.
-        if not self._claim_dedupe(f"gmail:{notification.message_id}"):
-            return GoogleWebhookIngestionResult(1, 0, 1, 0, 0)
-
         queued_count = 0
-        pending_count = 0
         for target in valid_targets:
-            if not self._claim_sync_pending(
-                target.organisation_id,
-                target.integration_id,
-                GoogleSubscriptionKind.GMAIL,
-            ):
-                pending_count += 1
-                continue
-
             await self._enqueue_sync(
                 task_name="integrations.sync_email_integration",
                 organisation_id=target.organisation_id,
                 integration_id=target.integration_id,
+                metadata={
+                    "provider": "google",
+                    "capability": GoogleSubscriptionKind.GMAIL.value,
+                    "provider_notification_id": notification.message_id,
+                    "provider_publish_time": notification.publish_time,
+                    "provider_cursor": notification.history_id,
+                },
             )
             queued_count += 1
 
@@ -140,7 +129,7 @@ class GoogleWebhookIngestionService:
             len(valid_targets),
             queued_count,
             0,
-            pending_count,
+            0,
             invalid_count,
         )
 
@@ -180,21 +169,18 @@ class GoogleWebhookIngestionService:
             # the post-connect sync that establishes the real cursor.
             return GoogleWebhookIngestionResult(1, 0, 0, 0, 0)
 
-        if not self._claim_dedupe(
-            f"calendar:{notification.channel_id}:{notification.message_number}"
-        ):
-            return GoogleWebhookIngestionResult(1, 0, 1, 0, 0)
-        if not self._claim_sync_pending(
-            organisation_id,
-            integration_id,
-            GoogleSubscriptionKind.CALENDAR,
-        ):
-            return GoogleWebhookIngestionResult(1, 0, 0, 1, 0)
-
         await self._enqueue_sync(
             task_name="integrations.sync_calendar_integration",
             organisation_id=organisation_id,
             integration_id=integration_id,
+            metadata={
+                "provider": "google",
+                "capability": GoogleSubscriptionKind.CALENDAR.value,
+                "provider_notification_id": (
+                    f"{notification.channel_id}:{notification.message_number}"
+                ),
+                "provider_resource_state": notification.resource_state,
+            },
         )
         return GoogleWebhookIngestionResult(1, 1, 0, 0, 0)
 
@@ -271,23 +257,14 @@ class GoogleWebhookIngestionService:
 
         targets: list[GoogleWebhookIntegrationTarget] = []
         for mapping in mappings:
-            try:
-                integration = await self._load_integration(
-                    organisation_id=mapping.organisation_id,
-                    integration_id=mapping.integration_id,
-                    integration_type=IntegrationType.GMAIL,
-                )
-            except Exception:
-                # A stale or unavailable tenant route must not suppress another
-                # organisation that connected the same mailbox.
-                logger.exception(
-                    "Skipping unavailable Gmail webhook route",
-                    extra={
-                        "organisation_id": str(mapping.organisation_id),
-                        "integration_id": str(mapping.integration_id),
-                    },
-                )
-                continue
+            # A transient tenant lookup must fail the callback. Skipping it and
+            # returning 204 acknowledges Pub/Sub even though that tenant never
+            # received work; provider redelivery is the safe retry boundary.
+            integration = await self._load_integration(
+                organisation_id=mapping.organisation_id,
+                integration_id=mapping.integration_id,
+                integration_type=IntegrationType.GMAIL,
+            )
             if integration is None:
                 continue
             targets.append(
@@ -343,73 +320,59 @@ class GoogleWebhookIngestionService:
         }
         return not known_emails or email_address.lower() in known_emails
 
-    def _claim_dedupe(self, token: str) -> bool:
-        """Claim a notification token; true means this callback is first-seen."""
-        try:
-            was_set = get_redis_client().set(
-                f"webhook:google:dedupe:{token}",
-                "1",
-                nx=True,
-                ex=GOOGLE_WEBHOOK_DEDUPE_TTL_SECONDS,
-            )
-            return bool(was_set)
-        except Exception:
-            # Redis is an optimization, not the correctness layer. Fail open so
-            # provider notifications still schedule sync; the sync task remains
-            # idempotent through provider cursors and local upserts.
-            logger.debug("Google webhook dedupe claim failed", exc_info=True)
-            return True
-
-    def _claim_sync_pending(
-        self,
-        organisation_id: UUID,
-        integration_id: UUID,
-        kind: GoogleSubscriptionKind,
-    ) -> bool:
-        """Claim a short-lived marker to coalesce bursts into one sync."""
-        try:
-            was_set = get_redis_client().set(
-                f"webhook:google:sync:{organisation_id}:{integration_id}:{kind.value}",
-                "1",
-                nx=True,
-                ex=GOOGLE_WEBHOOK_SYNC_DEBOUNCE_TTL_SECONDS,
-            )
-            return bool(was_set)
-        except Exception:
-            # A Redis outage should increase queue volume, not drop provider
-            # notifications. The downstream sync task is safe to run repeatedly.
-            logger.debug("Google webhook sync pending claim failed", exc_info=True)
-            return True
-
     async def _enqueue_sync(
         self,
         *,
         task_name: str,
         organisation_id: UUID,
         integration_id: UUID,
+        metadata: dict[str, Any],
     ) -> str:
         """Enqueue the existing org/integration sync task.
 
         Webhooks never write emails or events directly; provider cursors and
         upsert idempotency live in the existing sync implementations.
         """
-        return await send_integrations_task_async(
-            task_name=task_name,
-            kwargs={
-                "organisation_id": str(organisation_id),
-                "integration_id": str(integration_id),
-                "trigger_source": "webhook",
-            },
-            queue="integrations_priority",
-            routing_key="integrations_priority",
-            countdown=GOOGLE_WEBHOOK_SYNC_COUNTDOWN_SECONDS,
+        # Commit the receipt before publishing. A publish error then becomes a
+        # non-2xx callback, allowing Pub/Sub to redeliver instead of losing work.
+        sync_id = await create_webhook_sync_receipt(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            metadata=metadata,
         )
+        try:
+            task_id = await send_integrations_task_async(
+                task_name=task_name,
+                kwargs={
+                    "organisation_id": str(organisation_id),
+                    "integration_id": str(integration_id),
+                    "trigger_source": "webhook",
+                    "webhook_sync_id": str(sync_id),
+                },
+                queue="integrations_priority",
+                routing_key="integrations_priority",
+                countdown=GOOGLE_WEBHOOK_SYNC_COUNTDOWN_SECONDS,
+            )
+        except Exception as exc:
+            await update_webhook_sync_receipt(
+                organisation_id=organisation_id,
+                sync_id=sync_id,
+                status=SyncStatus.FAILED,
+                metadata={"failure_stage": "queue_publish"},
+                error=str(exc),
+                completed=False,
+            )
+            raise
+        await update_webhook_sync_receipt(
+            organisation_id=organisation_id,
+            sync_id=sync_id,
+            metadata={"task_id": task_id},
+        )
+        return task_id
 
 
 __all__ = [
-    "GOOGLE_WEBHOOK_DEDUPE_TTL_SECONDS",
     "GOOGLE_WEBHOOK_SYNC_COUNTDOWN_SECONDS",
-    "GOOGLE_WEBHOOK_SYNC_DEBOUNCE_TTL_SECONDS",
     "GoogleWebhookIntegrationTarget",
     "GoogleWebhookIngestionResult",
     "GoogleWebhookIngestionService",

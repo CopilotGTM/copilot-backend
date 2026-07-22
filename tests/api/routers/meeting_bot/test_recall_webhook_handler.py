@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
-import fakeredis
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from src.api.routers.meeting_bot import meeting_bot_router
@@ -35,8 +34,6 @@ def test_recall_webhook_accepts_verified_request(monkeypatch, caplog) -> None:
         "send_deal_task_async",
         AsyncMock(return_value="task-123"),
     )
-    monkeypatch.setattr(recall_webhook_handler, "get_redis_client", lambda: fakeredis.FakeRedis())
-
     client = _client()
     payload = {
         "event": "bot.done",
@@ -110,11 +107,11 @@ def test_recall_webhook_rejects_invalid_signature(monkeypatch) -> None:
     recall_webhook_handler.send_deal_task_async.assert_not_awaited()
 
 
-def test_recall_webhook_dedupes_by_webhook_id(monkeypatch) -> None:
+def test_recall_webhook_redelivery_reaches_idempotent_worker(monkeypatch) -> None:
     from src.api.routers.meeting_bot import recall_webhook_handler
 
-    # fakeredis gives us real NX/EX semantics without depending on a live Redis.
-    redis = fakeredis.FakeRedis()
+    # Ingress must not acknowledge-and-drop a retry when the first worker can
+    # still fail; session-level idempotency owns duplicate processing.
     monkeypatch.setattr(
         recall_webhook_handler.recall_config,
         "get_webhook_secret",
@@ -130,8 +127,6 @@ def test_recall_webhook_dedupes_by_webhook_id(monkeypatch) -> None:
         "send_deal_task_async",
         AsyncMock(return_value="task-123"),
     )
-    monkeypatch.setattr(recall_webhook_handler, "get_redis_client", lambda: redis)
-
     payload = {"event": "bot.done", "data": {"bot": {"id": "bot_123"}}}
     headers = {
         "webhook-id": "msg_123",
@@ -145,13 +140,12 @@ def test_recall_webhook_dedupes_by_webhook_id(monkeypatch) -> None:
 
     assert first.status_code == 200
     assert second.status_code == 200
-    recall_webhook_handler.send_deal_task_async.assert_awaited_once()
+    assert recall_webhook_handler.send_deal_task_async.await_count == 2
 
 
-def test_recall_webhook_releases_dedupe_when_queueing_fails(monkeypatch) -> None:
+def test_recall_webhook_provider_can_retry_when_queueing_fails(monkeypatch) -> None:
     from src.api.routers.meeting_bot import recall_webhook_handler
 
-    redis = fakeredis.FakeRedis()
     monkeypatch.setattr(
         recall_webhook_handler.recall_config,
         "get_webhook_secret",
@@ -167,8 +161,6 @@ def test_recall_webhook_releases_dedupe_when_queueing_fails(monkeypatch) -> None
         "send_deal_task_async",
         AsyncMock(side_effect=[RuntimeError("queue unavailable"), "task-123"]),
     )
-    monkeypatch.setattr(recall_webhook_handler, "get_redis_client", lambda: redis)
-
     payload = {"event": "bot.done", "data": {"bot": {"id": "bot_123"}}}
     headers = {
         "webhook-id": "msg_123",
@@ -183,3 +175,47 @@ def test_recall_webhook_releases_dedupe_when_queueing_fails(monkeypatch) -> None
     assert first.status_code == 502
     assert second.status_code == 200
     assert recall_webhook_handler.send_deal_task_async.await_count == 2
+
+
+def test_recall_webhook_rejects_oversized_body_before_dispatch(monkeypatch) -> None:
+    """Chunked or declared oversized traffic cannot reach JSON parsing or Celery."""
+    from src.api.routers.meeting_bot import recall_webhook_handler
+
+    monkeypatch.setattr(
+        recall_webhook_handler,
+        "send_deal_task_async",
+        AsyncMock(),
+    )
+    client = _client()
+    response = client.post(
+        "/users/meeting-bot/recall/webhook",
+        content=b"x" * (recall_webhook_handler.RECALL_WEBHOOK_MAX_BODY_BYTES + 1),
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 413
+    recall_webhook_handler.send_deal_task_async.assert_not_awaited()
+
+
+def test_recall_webhook_rejects_non_object_json_after_verification(monkeypatch) -> None:
+    from src.api.routers.meeting_bot import recall_webhook_handler
+
+    monkeypatch.setattr(
+        recall_webhook_handler.recall_config,
+        "get_webhook_secret",
+        AsyncMock(return_value="whsec_dGVzdA=="),
+    )
+    monkeypatch.setattr(
+        recall_webhook_handler,
+        "verify_recall_webhook_signature",
+        MagicMock(return_value=True),
+    )
+    monkeypatch.setattr(recall_webhook_handler, "send_deal_task_async", AsyncMock())
+
+    response = _client().post(
+        "/users/meeting-bot/recall/webhook",
+        json=["not", "an", "event"],
+    )
+
+    assert response.status_code == 400
+    recall_webhook_handler.send_deal_task_async.assert_not_awaited()

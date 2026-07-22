@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from tzlocal.windows_tz import win_tz
@@ -36,3 +37,21 @@ def to_outlook_timezone(timezone_name: str) -> str:
     if not windows_name:
         raise ValueError(f"Unsupported calendar timezone: {timezone_name}")
     return windows_name
+
+
+def parse_outlook_datetime(value: str, timezone_name: str | None) -> datetime:
+    """Parse Graph's DateTimeTimeZone pair into one UTC-aware instant.
+
+    Graph often sends a local wall-clock string without an offset and carries
+    its Windows timezone separately. Treating that string as UTC shifts every
+    India meeting by 5:30, so only offset-bearing values may bypass the zone.
+    """
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(UTC)
+
+    cleaned = (timezone_name or "").strip()
+    if not cleaned:
+        raise ValueError("Microsoft dateTime is missing timeZone")
+    iana_name = _WINDOWS_TO_IANA.get(cleaned, _IANA_ALIASES.get(cleaned, cleaned))
+    return parsed.replace(tzinfo=ZoneInfo(iana_name)).astimezone(UTC)

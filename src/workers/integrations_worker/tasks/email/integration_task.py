@@ -1,15 +1,15 @@
 """
 Tier 3: Integration-level email sync task.
 
-Syncs a specific email integration for manual/user-level triggers.
+Syncs a specific email integration for manual and webhook triggers.
 
 This task is used for:
 - Frontend "Refresh" button on integrations page
 - API endpoint for on-demand sync
 - Manual intervention/debugging
 
-NOTE: This task is NOT used by the scheduled sync (Celery Beat).
-The scheduler uses Tier 1 → Tier 2, which handles integrations inline.
+The webhook recovery watchdog may replay this task, but it does not perform
+full scheduled polling; provider cursors remain the source of truth.
 
 Architecture:
     Frontend/API (manual trigger)
@@ -28,10 +28,19 @@ from uuid import UUID
 from celery import Task
 from celery.exceptions import SoftTimeLimitExceeded
 
+from src.domain.models.organisation_tables.sync import SyncStatus
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.integrations.email_delta_sync_service import EmailDeltaSyncService
-from src.service.integrations.sync_health import record_sync_failure
+from src.service.integrations.sync_health import (
+    classify_sync_error,
+    is_action_required_failure,
+    record_sync_failure,
+)
+from src.service.integrations.webhooks.sync_receipt import (
+    is_terminal_webhook_result,
+    update_webhook_sync_receipt,
+)
 from src.workers.deal_worker.services.deal_mapper_services.communication_deal_mapping_trigger_service import (
     CommunicationDealMappingTriggerService,
 )
@@ -61,14 +70,14 @@ def sync_email_integration_task(
     organisation_id: str,
     integration_id: str,
     trigger_source: str = "manual_sync",
+    webhook_sync_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Tier 3: Sync specific email integration.
 
-    Triggered by: Frontend refresh button, API, manual intervention
-    NOT triggered by: Scheduled sync (Tier 1/2)
+    Triggered by: Frontend refresh button, API, webhook delivery/recovery
 
-    This task is for on-demand/manual sync of a single integration.
+    This task syncs one integration and is safe for webhook redelivery.
     It provides immediate feedback to the user.
 
     Args:
@@ -94,6 +103,35 @@ def sync_email_integration_task(
     org_id = UUID(organisation_id)
     int_id = UUID(integration_id)
     communication_trigger_source = "webhook" if trigger_source == "webhook" else "manual_sync"
+    receipt_id = UUID(webhook_sync_id) if webhook_sync_id else None
+
+    def _record_receipt(
+        status: SyncStatus,
+        *,
+        metadata: dict[str, Any] | None = None,
+        error: str | None = None,
+        completed: bool = False,
+    ) -> None:
+        """Update the durable webhook receipt when this task came from ingress."""
+        if receipt_id is None:
+            return
+        run_async(
+            update_webhook_sync_receipt(
+                organisation_id=org_id,
+                sync_id=receipt_id,
+                status=status,
+                metadata=metadata,
+                error=error,
+                completed=completed,
+            )
+        )
+
+    # Webhook retries share this receipt; provider cursors and message upserts
+    # make replay safe even if the broker redelivers the task after a crash.
+    _record_receipt(
+        SyncStatus.IN_PROGRESS,
+        metadata={"sync_attempt": self.request.retries + 1},
+    )
 
     async def _sync_integration() -> dict[str, Any]:
         """Sync the specific integration."""
@@ -154,6 +192,7 @@ def sync_email_integration_task(
                     "messages_synced": result.get("messages_synced", 0),
                 },
             )
+            _record_receipt(SyncStatus.SUCCESS, completed=True)
         else:
             logger.warning(
                 "Manual email sync failed",
@@ -163,6 +202,16 @@ def sync_email_integration_task(
                     "error": result.get("error"),
                 },
             )
+            if trigger_source == "webhook":
+                if is_terminal_webhook_result(result.get("error")):
+                    _record_receipt(
+                        SyncStatus.FAILED,
+                        metadata={"failure_stage": "worker_result", "terminal": True},
+                        error=str(result.get("error") or "Webhook email sync failed"),
+                        completed=True,
+                    )
+                    return result
+                raise RuntimeError(str(result.get("error") or "Webhook email sync failed"))
 
         return result
 
@@ -188,6 +237,12 @@ def sync_email_integration_task(
                 "Failed to record timeout failure",
                 extra={"integration_id": integration_id},
             )
+        _record_receipt(
+            SyncStatus.FAILED,
+            metadata={"failure_stage": "worker_timeout", "terminal": False},
+            error=f"Task exceeded soft time limit of {_L['soft']}s",
+            completed=False,
+        )
         return {
             "status": "timed_out",
             "organisation_id": organisation_id,
@@ -207,9 +262,18 @@ def sync_email_integration_task(
             },
         )
 
+        failure_type = classify_sync_error(e)
+        terminal = is_action_required_failure(failure_type)
+
         # Email sync is retry-safe because message writes are keyed by provider
         # message id; retrying after a transient failure refreshes existing rows.
-        if self.request.retries < self.max_retries:
+        # Authentication and permission failures cannot recover without the user.
+        if not terminal and self.request.retries < self.max_retries:
+            _record_receipt(
+                SyncStatus.IN_PROGRESS,
+                metadata={"retry_scheduled": self.request.retries + 1},
+                error=str(e),
+            )
             logger.info(
                 "Retrying manual email sync",
                 extra={
@@ -221,6 +285,30 @@ def sync_email_integration_task(
             )
             raise self.retry(exc=e) from e
 
+        try:
+            run_async(
+                record_sync_failure(
+                    organisation_id=org_id,
+                    integration_id=int_id,
+                    error=e,
+                )
+            )
+        except Exception:
+            logger.warning(
+                "Failed to record terminal email sync failure",
+                extra={"integration_id": integration_id},
+            )
+
+        _record_receipt(
+            SyncStatus.FAILED,
+            metadata={
+                "failure_stage": "dead_letter",
+                "failure_type": failure_type.value,
+                "terminal": terminal,
+            },
+            error=str(e),
+            completed=terminal,
+        )
         return {
             "status": "failed",
             "organisation_id": organisation_id,

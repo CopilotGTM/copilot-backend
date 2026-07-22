@@ -242,7 +242,6 @@ async def invite_bot(
     event_id: UUID,
     response: FastAPIResponse,
     service: MeetingsTabService = Depends(get_meetings_tab_service),
-    _crm_write_guard: None = Depends(require_crm_write_scope("meetings:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[dict]:
     """Manually invite Recall bot to a current-user calendar event."""
@@ -282,7 +281,6 @@ async def remove_bot(
     event_id: UUID,
     response: FastAPIResponse,
     service: MeetingsTabService = Depends(get_meetings_tab_service),
-    _crm_write_guard: None = Depends(require_crm_write_scope("meetings:update")),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[dict]:
     """Cancel a scheduled Recall bot for a current-user calendar event."""

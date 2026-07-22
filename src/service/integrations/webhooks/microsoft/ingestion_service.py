@@ -1,8 +1,8 @@
 """Microsoft Graph webhook ingestion service.
 
 Called by the public webhook routes after request validation. This service
-enforces tenant-scoped integration lookup, deduplicates provider retries, and
-debounces bursty notifications into a single sync task.
+enforces tenant-scoped integration lookup and durably hands each accepted
+callback to the integrations worker.
 """
 
 from __future__ import annotations
@@ -17,26 +17,23 @@ from src.domain.models.organisation_tables.sync import (
     IntegrationSyncState,
     IntegrationType,
     KnowledgeIntegration,
+    SyncStatus,
 )
 from src.infra.database.sessions import acquire_org_async_session
-from src.infra.messaging.redis_client import get_redis_client
 from src.infra.utils.logger import get_logger
 from src.service.integrations.webhooks.microsoft.metadata import (
     MicrosoftSubscriptionKind,
     get_subscription_metadata,
 )
 from src.service.integrations.webhooks.microsoft.types import MicrosoftGraphWebhookNotification
+from src.service.integrations.webhooks.sync_receipt import (
+    create_webhook_sync_receipt,
+    update_webhook_sync_receipt,
+)
 from src.workers.integrations_worker.client import send_integrations_task_async
 
 logger = get_logger(__name__)
 
-# Graph retries can arrive long after the first callback; keep dedupe tokens for
-# a day so replayed notifications do not create repeated sync fanout.
-MICROSOFT_WEBHOOK_DEDUPE_TTL_SECONDS = 24 * 60 * 60
-
-# A short pending marker turns webhook bursts into one integration sync. The
-# sync itself reads Graph deltas, so coalescing notifications does not lose data.
-MICROSOFT_WEBHOOK_SYNC_DEBOUNCE_TTL_SECONDS = 45
 MICROSOFT_WEBHOOK_SYNC_COUNTDOWN_SECONDS = 15
 
 _TASK_NAMES = {
@@ -73,11 +70,11 @@ class MicrosoftWebhookIngestionService:
         kind: MicrosoftSubscriptionKind,
         notification_payloads: list[dict[str, Any]],
     ) -> MicrosoftWebhookIngestionResult:
-        """Process data-change notifications and schedule one debounced sync.
+        """Process data-change notifications and schedule one sync per callback.
 
         Multiple notifications in a single callback can describe the same
-        underlying change; we dedupe and coalesce them to avoid redundant sync
-        fanout while still acknowledging all valid notifications.
+        underlying change, so one durable cursor-based sync covers that callback.
+        Separate deliveries are intentionally retained for recovery safety.
         """
         integration = await self._load_integration(
             organisation_id=organisation_id,
@@ -118,17 +115,9 @@ class MicrosoftWebhookIngestionService:
                 continue
 
             valid_count += 1
-            if not self._claim_dedupe(subscription_metadata.subscription_id, notification):
-                duplicate_count += 1
-                continue
-
             if sync_queued_in_call:
                 # One callback can contain several notifications; once this
                 # request queued a sync, the rest can be counted as pending.
-                pending_count += 1
-                continue
-
-            if not self._claim_sync_pending(organisation_id, integration_id, kind):
                 pending_count += 1
                 continue
 
@@ -137,6 +126,13 @@ class MicrosoftWebhookIngestionService:
                 integration_id=integration_id,
                 kind=kind,
                 countdown=MICROSOFT_WEBHOOK_SYNC_COUNTDOWN_SECONDS,
+                metadata={
+                    "provider": "microsoft",
+                    "capability": kind.value,
+                    "provider_notification_id": notification.dedupe_token(),
+                    "provider_change_type": notification.change_type,
+                    "provider_subscription_id": notification.subscription_id,
+                },
             )
             queued_count += 1
             sync_queued_in_call = True
@@ -180,6 +176,7 @@ class MicrosoftWebhookIngestionService:
 
         valid_count = 0
         invalid_count = 0
+        lifecycle_events: set[str] = set()
 
         for payload in notification_payloads:
             notification = MicrosoftGraphWebhookNotification.from_payload(payload)
@@ -192,17 +189,47 @@ class MicrosoftWebhookIngestionService:
                 continue
 
             valid_count += 1
+            lifecycle_events.add(notification.change_type)
 
         queued_count = 0
         if valid_count > 0:
-            # Lifecycle notifications mean the subscription needs attention, so
-            # bypass the debounce delay and let the existing sync path refresh.
-            await self._enqueue_sync(
-                organisation_id=organisation_id,
-                integration_id=integration_id,
-                kind=kind,
-                countdown=None,
+            metadata = {
+                "provider": "microsoft",
+                "capability": kind.value,
+                "provider_notification_id": (
+                    f"{subscription_metadata.subscription_id}:"
+                    f"{','.join(sorted(lifecycle_events))}"
+                ),
+                "provider_lifecycle_events": sorted(lifecycle_events),
+            }
+            recovery_event = next(
+                (
+                    event
+                    for event in ("subscriptionRemoved", "reauthorizationRequired")
+                    if event in lifecycle_events
+                ),
+                None,
             )
+            if recovery_event:
+                # Removed and reauthorization callbacks require subscription
+                # repair before the delta sync that closes any delivery gap.
+                await self._enqueue_subscription_recovery(
+                    organisation_id=organisation_id,
+                    integration_id=integration_id,
+                    kind=kind,
+                    lifecycle_event=recovery_event,
+                    metadata=metadata,
+                )
+            else:
+                # `missed` means Graph dropped notifications but the subscription
+                # remains usable; an immediate delta sync is sufficient recovery.
+                await self._enqueue_sync(
+                    organisation_id=organisation_id,
+                    integration_id=integration_id,
+                    kind=kind,
+                    countdown=None,
+                    metadata=metadata,
+                )
             queued_count = 1
 
         return MicrosoftWebhookIngestionResult(
@@ -286,66 +313,6 @@ class MicrosoftWebhookIngestionService:
             }
         )
 
-    def _dedupe_key(
-        self,
-        subscription_id: str,
-        notification: MicrosoftGraphWebhookNotification,
-    ) -> str:
-        """Build Redis key used to dedupe replayed webhook notifications."""
-        return f"webhook:microsoft:dedupe:{subscription_id}:{notification.dedupe_token()}"
-
-    def _sync_pending_key(
-        self,
-        organisation_id: UUID,
-        integration_id: UUID,
-        kind: MicrosoftSubscriptionKind,
-    ) -> str:
-        """Build Redis key that coalesces burst notifications into one sync."""
-        return f"webhook:microsoft:sync:{organisation_id}:{integration_id}:{kind.value}"
-
-    def _claim_dedupe(
-        self,
-        subscription_id: str,
-        notification: MicrosoftGraphWebhookNotification,
-    ) -> bool:
-        """Claim notification dedupe token; true means this is first-seen."""
-        try:
-            redis = get_redis_client()
-            was_set = redis.set(
-                self._dedupe_key(subscription_id, notification),
-                "1",
-                nx=True,
-                ex=MICROSOFT_WEBHOOK_DEDUPE_TTL_SECONDS,
-            )
-            return bool(was_set)
-        except Exception:
-            # Redis outages must not block webhook processing; accepting a small
-            # amount of duplicate fanout is safer than dropping provider changes.
-            logger.debug("Microsoft webhook dedupe claim failed", exc_info=True)
-            return True
-
-    def _claim_sync_pending(
-        self,
-        organisation_id: UUID,
-        integration_id: UUID,
-        kind: MicrosoftSubscriptionKind,
-    ) -> bool:
-        """Claim short-lived pending marker to debounce repeated sync requests."""
-        try:
-            redis = get_redis_client()
-            was_set = redis.set(
-                self._sync_pending_key(organisation_id, integration_id, kind),
-                "1",
-                nx=True,
-                ex=MICROSOFT_WEBHOOK_SYNC_DEBOUNCE_TTL_SECONDS,
-            )
-            return bool(was_set)
-        except Exception:
-            # Debounce is an optimization, not correctness. If Redis is down we
-            # still enqueue so Graph deltas remain the source of truth.
-            logger.debug("Microsoft webhook sync pending claim failed", exc_info=True)
-            return True
-
     async def _enqueue_sync(
         self,
         *,
@@ -353,25 +320,95 @@ class MicrosoftWebhookIngestionService:
         integration_id: UUID,
         kind: MicrosoftSubscriptionKind,
         countdown: int | None,
+        metadata: dict[str, Any],
     ) -> str:
         """Enqueue the org/integration sync task for the webhook subscription kind."""
-        return await send_integrations_task_async(
-            task_name=_TASK_NAMES[kind],
-            kwargs={
-                "organisation_id": str(organisation_id),
-                "integration_id": str(integration_id),
-                "trigger_source": "webhook",
-            },
-            queue="integrations_priority",
-            routing_key="integrations_priority",
-            countdown=countdown,
+        # Graph stops retrying after our 2xx response. Commit the receipt first
+        # and let any broker error escape so the HTTP route returns non-2xx.
+        sync_id = await create_webhook_sync_receipt(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            metadata=metadata,
         )
+        try:
+            task_id = await send_integrations_task_async(
+                task_name=_TASK_NAMES[kind],
+                kwargs={
+                    "organisation_id": str(organisation_id),
+                    "integration_id": str(integration_id),
+                    "trigger_source": "webhook",
+                    "webhook_sync_id": str(sync_id),
+                },
+                queue="integrations_priority",
+                routing_key="integrations_priority",
+                countdown=countdown,
+            )
+        except Exception as exc:
+            await update_webhook_sync_receipt(
+                organisation_id=organisation_id,
+                sync_id=sync_id,
+                status=SyncStatus.FAILED,
+                metadata={"failure_stage": "queue_publish"},
+                error=str(exc),
+                completed=False,
+            )
+            raise
+        await update_webhook_sync_receipt(
+            organisation_id=organisation_id,
+            sync_id=sync_id,
+            metadata={"task_id": task_id},
+        )
+        return task_id
+
+    async def _enqueue_subscription_recovery(
+        self,
+        *,
+        organisation_id: UUID,
+        integration_id: UUID,
+        kind: MicrosoftSubscriptionKind,
+        lifecycle_event: str,
+        metadata: dict[str, Any],
+    ) -> str:
+        """Durably queue subscription repair followed by an immediate delta sync."""
+        sync_id = await create_webhook_sync_receipt(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            metadata={**metadata, "recovery_stage": "subscription"},
+        )
+        try:
+            task_id = await send_integrations_task_async(
+                task_name="integrations.ensure_microsoft_graph_subscription",
+                kwargs={
+                    "organisation_id": str(organisation_id),
+                    "integration_id": str(integration_id),
+                    "kind": kind.value,
+                    "lifecycle_event": lifecycle_event,
+                    "sync_after": True,
+                    "webhook_sync_id": str(sync_id),
+                },
+                queue="integrations_priority",
+                routing_key="integrations_priority",
+            )
+        except Exception as exc:
+            await update_webhook_sync_receipt(
+                organisation_id=organisation_id,
+                sync_id=sync_id,
+                status=SyncStatus.FAILED,
+                metadata={"failure_stage": "queue_publish"},
+                error=str(exc),
+                completed=False,
+            )
+            raise
+        await update_webhook_sync_receipt(
+            organisation_id=organisation_id,
+            sync_id=sync_id,
+            metadata={"task_id": task_id},
+        )
+        return task_id
 
 
 __all__ = [
-    "MICROSOFT_WEBHOOK_DEDUPE_TTL_SECONDS",
     "MICROSOFT_WEBHOOK_SYNC_COUNTDOWN_SECONDS",
-    "MICROSOFT_WEBHOOK_SYNC_DEBOUNCE_TTL_SECONDS",
     "MicrosoftWebhookIngestionResult",
     "MicrosoftWebhookIngestionService",
 ]

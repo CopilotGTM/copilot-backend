@@ -63,12 +63,14 @@ from .token_refresh import (
     refresh_tokens_org_task,
     refresh_tokens_task,
 )
+from .webhook_recovery_tasks import recover_stale_webhook_syncs_task
 
 __all__ = [
     # Token refresh (three-tier architecture)
     "refresh_tokens_task",
     "refresh_tokens_org_task",
     "refresh_token_task",
+    "recover_stale_webhook_syncs_task",
     # Calendar sync (event/post-connect integration dispatch)
     "sync_calendar_integration_task",
     # Messaging channels sync (three-tier architecture)

@@ -80,6 +80,24 @@ def test_microsoft_normalizer_reads_nested_attendee_payload() -> None:
     assert normalized.attendees[0].display_name == "Buyer"
 
 
+def test_microsoft_normalizer_treats_offsetless_india_time_as_local_wall_clock() -> None:
+    """Graph's DateTimeTimeZone pair must not be interpreted as a UTC string."""
+    normalized = CalendarEventNormalizer().normalize(
+        {
+            "id": "ms-india-event",
+            "iCalUId": "shared-ms-india",
+            "subject": "India customer call",
+            "isCancelled": False,
+            "start": {"dateTime": "2026-07-20T16:00:00", "timeZone": "India Standard Time"},
+            "end": {"dateTime": "2026-07-20T16:30:00", "timeZone": "India Standard Time"},
+        },
+        "microsoft",
+    )
+
+    assert normalized.fields["start_at"] == datetime(2026, 7, 20, 10, 30, tzinfo=UTC)
+    assert normalized.fields["end_at"] == datetime(2026, 7, 20, 11, 0, tzinfo=UTC)
+
+
 def test_normalizer_extracts_provider_series_external_id() -> None:
     """Recurring provider series ids stay on per-user state, not canonical identity."""
     google = CalendarEventNormalizer().normalize(

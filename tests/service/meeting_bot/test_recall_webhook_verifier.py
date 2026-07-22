@@ -37,6 +37,7 @@ class TestRecallWebhookVerification:
                 "webhook-signature": signature,
             },
             payload=payload,
+            now=int(timestamp),
         )
 
         assert verified is True
@@ -56,6 +57,7 @@ class TestRecallWebhookVerification:
                 "svix-signature": signature,
             },
             payload=payload,
+            now=int(timestamp),
         )
 
         assert verified is True
@@ -75,6 +77,7 @@ class TestRecallWebhookVerification:
                 "webhook-signature": signature,
             },
             payload=payload,
+            now=int(timestamp),
         )
 
         assert verified is True
@@ -89,6 +92,7 @@ class TestRecallWebhookVerification:
                     "webhook-signature": "v1,invalid",
                 },
                 payload=b'{"event":"transcript.done"}',
+                now=1731705121,
             )
 
     def test_rejects_missing_headers(self) -> None:
@@ -96,5 +100,37 @@ class TestRecallWebhookVerification:
             verify_recall_webhook_signature(
                 secret="whsec_c2lnbmluZy1zZWNyZXQtdmFsdWU=",
                 headers={},
+                payload=b"{}",
+            )
+
+    def test_rejects_timestamp_outside_five_minute_window(self) -> None:
+        """A captured valid delivery must not be replayable after the tolerance."""
+        secret = "whsec_c2lnbmluZy1zZWNyZXQtdmFsdWU="
+        payload = b'{"event":"bot.done"}'
+        timestamp = "1731705121"
+        signature = _build_signature(secret, "msg_old", timestamp, payload)
+
+        with pytest.raises(RecallWebhookVerificationError, match="timestamp_outside_tolerance"):
+            verify_recall_webhook_signature(
+                secret=secret,
+                headers={
+                    "webhook-id": "msg_old",
+                    "webhook-timestamp": timestamp,
+                    "webhook-signature": signature,
+                },
+                payload=payload,
+                now=int(timestamp) + 301,
+            )
+
+    def test_rejects_malformed_timestamp(self) -> None:
+        """Timestamp parsing fails closed before signature comparison."""
+        with pytest.raises(RecallWebhookVerificationError, match="invalid_timestamp"):
+            verify_recall_webhook_signature(
+                secret="whsec_c2lnbmluZy1zZWNyZXQtdmFsdWU=",
+                headers={
+                    "webhook-id": "msg_bad_time",
+                    "webhook-timestamp": "not-a-time",
+                    "webhook-signature": "v1,dGVzdA==",
+                },
                 payload=b"{}",
             )

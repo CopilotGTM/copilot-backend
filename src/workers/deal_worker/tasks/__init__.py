@@ -37,6 +37,7 @@ from .deal_mappers import (
 # so they are exported alongside the other meeting workflows.
 from .meeting_bot_tasks import (
     process_meeting_recording_webhook_task,
+    reconcile_meeting_recording_task,
     send_meeting_recording_task,
     send_unsent_meeting_recordings_org_task,
     trigger_send_unsent_meeting_recordings_all_orgs_task,
@@ -72,6 +73,7 @@ __all__ = [
     "process_meeting_summary",
     "send_meeting_summary_ready_notification_task",
     "process_meeting_recording_webhook_task",
+    "reconcile_meeting_recording_task",
     "send_meeting_recording_task",
     "send_unsent_meeting_recordings_org_task",
     "trigger_send_unsent_meeting_recordings_all_orgs_task",

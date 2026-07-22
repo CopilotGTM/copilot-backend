@@ -11,7 +11,12 @@ import base64
 import binascii
 import hashlib
 import hmac
+import time
 from collections.abc import Mapping
+
+# Recall/Svix recommends rejecting old signed deliveries. Five minutes allows
+# normal proxy and worker clock skew without making captured requests reusable.
+RECALL_WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS = 5 * 60
 
 
 class RecallWebhookVerificationError(ValueError):
@@ -23,6 +28,8 @@ def verify_recall_webhook_signature(
     secret: str,
     headers: Mapping[str, str],
     payload: bytes | None,
+    now: float | None = None,
+    tolerance_seconds: int = RECALL_WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS,
 ) -> bool:
     """Verify Recall webhook signatures for current and legacy header variants.
 
@@ -47,8 +54,19 @@ def verify_recall_webhook_signature(
     if not message_id or not timestamp or not signature_header:
         raise RecallWebhookVerificationError("missing_signature_headers")
 
+    try:
+        signed_at = int(timestamp)
+    except (TypeError, ValueError) as exc:
+        raise RecallWebhookVerificationError("invalid_timestamp") from exc
+    current_time = time.time() if now is None else now
+    if tolerance_seconds < 0 or abs(current_time - signed_at) > tolerance_seconds:
+        raise RecallWebhookVerificationError("timestamp_outside_tolerance")
+
     payload_bytes = payload or b""
-    secret_key = base64.b64decode(secret.removeprefix("whsec_"))
+    try:
+        secret_key = base64.b64decode(secret.removeprefix("whsec_"), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise RecallWebhookVerificationError("invalid_secret_encoding") from exc
     # Recall signs the exact UTF-8 JSON body that was delivered over HTTP, not
     # a parsed/re-serialized payload.
     signed_content = f"{message_id}.{timestamp}.{payload_bytes.decode('utf-8')}".encode()

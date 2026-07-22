@@ -84,9 +84,9 @@ class _FakeRequest:
         self.query_params = query_params or {}
         self._body = body
 
-    async def body(self) -> bytes:
-        """Return the test body through the same awaitable API as FastAPI."""
-        return self._body
+    async def stream(self):
+        """Yield the body through Starlette's bounded streaming interface."""
+        yield self._body
 
 
 @pytest.mark.asyncio

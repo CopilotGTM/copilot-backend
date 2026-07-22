@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import httpx
@@ -114,6 +115,37 @@ def _outlook_calendar_integration(
         connection_id="conn",
         is_active=True,
         connection_metadata=metadata or {},
+    )
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_recovery_bypasses_normal_expiry_shortcuts() -> None:
+    """Removed and reauthorization events must act even when metadata looks fresh."""
+    integration = _outlook_calendar_integration()
+    service = MicrosoftGraphSubscriptionService()
+    service._create_subscription_metadata = AsyncMock(return_value={"created": True})
+    service.renew_subscription_metadata = AsyncMock(return_value={"renewed": True})
+
+    removed = await service.recover_subscription_metadata(
+        organisation_id=integration.organisation_id,
+        integration=integration,
+        kind=MicrosoftSubscriptionKind.CALENDAR,
+        lifecycle_event="subscriptionRemoved",
+    )
+    reauthorized = await service.recover_subscription_metadata(
+        organisation_id=integration.organisation_id,
+        integration=integration,
+        kind=MicrosoftSubscriptionKind.CALENDAR,
+        lifecycle_event="reauthorizationRequired",
+    )
+
+    assert removed == {"created": True}
+    assert reauthorized == {"renewed": True}
+    service.renew_subscription_metadata.assert_awaited_once_with(
+        organisation_id=integration.organisation_id,
+        integration=integration,
+        kind=MicrosoftSubscriptionKind.CALENDAR,
+        force=True,
     )
 
 

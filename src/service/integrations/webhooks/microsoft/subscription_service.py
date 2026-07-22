@@ -135,6 +135,7 @@ class MicrosoftGraphSubscriptionService:
         organisation_id: UUID,
         integration: KnowledgeIntegration,
         kind: MicrosoftSubscriptionKind,
+        force: bool = False,
     ) -> dict:
         """Renew an existing subscription or recreate it when Graph has purged it."""
         self._validate_kind(integration, kind)
@@ -151,7 +152,7 @@ class MicrosoftGraphSubscriptionService:
                 integration=integration,
                 kind=kind,
             )
-        if existing.expires_at > datetime.now(UTC) + MICROSOFT_GRAPH_RENEWAL_BUFFER:
+        if not force and existing.expires_at > datetime.now(UTC) + MICROSOFT_GRAPH_RENEWAL_BUFFER:
             return dict(integration.connection_metadata or {})
 
         token_info = IntegrationTokenInfo.from_integration(integration, organisation_id)
@@ -193,6 +194,37 @@ class MicrosoftGraphSubscriptionService:
             expires_at=expires_at,
             notification_url=existing.notification_url,
             lifecycle_notification_url=existing.lifecycle_notification_url,
+        )
+
+    async def recover_subscription_metadata(
+        self,
+        *,
+        organisation_id: UUID,
+        integration: KnowledgeIntegration,
+        kind: MicrosoftSubscriptionKind,
+        lifecycle_event: str,
+    ) -> dict:
+        """Repair a subscription in the way requested by a Graph lifecycle event."""
+        if lifecycle_event == "subscriptionRemoved":
+            # Graph has already invalidated the old id, even if its persisted
+            # expiry is still in the future. Creation must therefore bypass the
+            # normal expiry-based ensure shortcut.
+            return await self._create_subscription_metadata(
+                organisation_id=organisation_id,
+                integration=integration,
+                kind=kind,
+            )
+        if lifecycle_event == "reauthorizationRequired":
+            return await self.renew_subscription_metadata(
+                organisation_id=organisation_id,
+                integration=integration,
+                kind=kind,
+                force=True,
+            )
+        return await self.ensure_subscription_metadata(
+            organisation_id=organisation_id,
+            integration=integration,
+            kind=kind,
         )
 
     def _build_subscription_payload(

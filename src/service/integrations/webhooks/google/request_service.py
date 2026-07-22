@@ -2,7 +2,7 @@
 
 Called by the FastAPI route before any business validation. This module keeps
 provider envelope parsing separate from ingestion so malformed public traffic
-is rejected before DB lookups, Redis writes, or Celery dispatches.
+is rejected before DB lookups, durable receipts, or Celery dispatches.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from uuid import UUID
 
 from fastapi import HTTPException, Request, status
 from src.infra.config.configs import google_gmail_pubsub_config
+from src.infra.security.request_body import read_bounded_request_body
 from src.service.integrations.webhooks.google.types import (
     GoogleCalendarChannelNotification,
     GoogleGmailPubSubNotification,
@@ -93,28 +94,11 @@ class GoogleWebhookRequestService:
 
     async def _read_body(self, request: Request) -> bytes:
         """Read the request body with a public-route size guardrail."""
-        content_length = request.headers.get("content-length")
-        if content_length:
-            try:
-                declared_content_length = int(content_length)
-            except ValueError as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid Content-Length header",
-                ) from exc
-            if declared_content_length > GOOGLE_WEBHOOK_MAX_BODY_BYTES:
-                raise HTTPException(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    detail="Google webhook body is too large",
-                )
-
-        raw_body = await request.body()
-        if len(raw_body) > GOOGLE_WEBHOOK_MAX_BODY_BYTES:
-            raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail="Google webhook body is too large",
-            )
-        return raw_body
+        return await read_bounded_request_body(
+            request,
+            max_bytes=GOOGLE_WEBHOOK_MAX_BODY_BYTES,
+            label="Google webhook",
+        )
 
     def _parse_json(self, raw_body: bytes) -> dict[str, Any]:
         """Parse a Google webhook JSON envelope into an object payload."""
@@ -216,7 +200,7 @@ class GoogleWebhookRequestService:
 
 
 def _build_default_ingestion_service() -> Any:
-    """Import ingestion lazily so route tests avoid DB and Redis imports."""
+    """Import ingestion lazily so route tests avoid DB and worker imports."""
     from src.service.integrations.webhooks.google.ingestion_service import (
         GoogleWebhookIngestionService,
     )

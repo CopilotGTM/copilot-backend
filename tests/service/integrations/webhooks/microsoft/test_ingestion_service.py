@@ -21,6 +21,22 @@ from src.service.integrations.webhooks.microsoft.metadata import (
     set_subscription_metadata,
 )
 
+WEBHOOK_SYNC_ID = UUID("00000000-0000-0000-0000-000000000123")
+
+
+@pytest.fixture(autouse=True)
+def _mock_sync_receipts(monkeypatch):
+    monkeypatch.setattr(
+        ingestion_service,
+        "create_webhook_sync_receipt",
+        AsyncMock(return_value=WEBHOOK_SYNC_ID),
+    )
+    monkeypatch.setattr(
+        ingestion_service,
+        "update_webhook_sync_receipt",
+        AsyncMock(),
+    )
+
 
 def _integration_with_subscription(
     *,
@@ -139,8 +155,6 @@ async def test_ingest_calendar_notification_enqueues_calendar_sync(monkeypatch) 
             )
         ),
     )
-    monkeypatch.setattr(service, "_claim_dedupe", lambda *_: True)
-    monkeypatch.setattr(service, "_claim_sync_pending", lambda *_: True)
     monkeypatch.setattr(ingestion_service, "send_integrations_task_async", send_task)
 
     result = await service.ingest(
@@ -164,6 +178,7 @@ async def test_ingest_calendar_notification_enqueues_calendar_sync(monkeypatch) 
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
             "trigger_source": "webhook",
+            "webhook_sync_id": str(WEBHOOK_SYNC_ID),
         },
         queue="integrations_priority",
         routing_key="integrations_priority",
@@ -199,8 +214,6 @@ async def test_ingest_calendar_notification_resolves_provider_parent_capability_
             )
         ),
     )
-    monkeypatch.setattr(service, "_claim_dedupe", lambda *_: True)
-    monkeypatch.setattr(service, "_claim_sync_pending", lambda *_: True)
     monkeypatch.setattr(ingestion_service, "send_integrations_task_async", send_task)
 
     result = await service.ingest(
@@ -225,6 +238,7 @@ async def test_ingest_calendar_notification_resolves_provider_parent_capability_
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
             "trigger_source": "webhook",
+            "webhook_sync_id": str(WEBHOOK_SYNC_ID),
         },
         queue="integrations_priority",
         routing_key="integrations_priority",
@@ -250,8 +264,6 @@ async def test_ingest_multiple_valid_notifications_enqueue_one_sync(monkeypatch)
             )
         ),
     )
-    monkeypatch.setattr(service, "_claim_dedupe", lambda *_: True)
-    monkeypatch.setattr(service, "_claim_sync_pending", lambda *_: True)
     monkeypatch.setattr(ingestion_service, "send_integrations_task_async", send_task)
 
     result = await service.ingest(
@@ -308,8 +320,6 @@ async def test_ingest_email_notification_resolves_provider_parent_capability_sta
             )
         ),
     )
-    monkeypatch.setattr(service, "_claim_dedupe", lambda *_: True)
-    monkeypatch.setattr(service, "_claim_sync_pending", lambda *_: True)
     monkeypatch.setattr(ingestion_service, "send_integrations_task_async", send_task)
 
     result = await service.ingest(
@@ -334,6 +344,7 @@ async def test_ingest_email_notification_resolves_provider_parent_capability_sta
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
             "trigger_source": "webhook",
+            "webhook_sync_id": str(WEBHOOK_SYNC_ID),
         },
         queue="integrations_priority",
         routing_key="integrations_priority",
@@ -342,7 +353,7 @@ async def test_ingest_email_notification_resolves_provider_parent_capability_sta
 
 
 @pytest.mark.asyncio
-async def test_ingest_duplicate_notification_does_not_enqueue(monkeypatch) -> None:
+async def test_ingest_replayed_notification_enqueues_idempotent_sync(monkeypatch) -> None:
     service = MicrosoftWebhookIngestionService()
     organisation_id = uuid4()
     integration_id = uuid4()
@@ -359,8 +370,6 @@ async def test_ingest_duplicate_notification_does_not_enqueue(monkeypatch) -> No
             )
         ),
     )
-    monkeypatch.setattr(service, "_claim_dedupe", lambda *_: False)
-    monkeypatch.setattr(service, "_claim_sync_pending", lambda *_: True)
     monkeypatch.setattr(ingestion_service, "send_integrations_task_async", send_task)
 
     result = await service.ingest(
@@ -378,14 +387,14 @@ async def test_ingest_duplicate_notification_does_not_enqueue(monkeypatch) -> No
     )
 
     assert result.valid_count == 1
-    assert result.queued_count == 0
-    assert result.duplicate_count == 1
+    assert result.queued_count == 1
+    assert result.duplicate_count == 0
     assert result.pending_count == 0
-    send_task.assert_not_awaited()
+    send_task.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_ingest_pending_notification_does_not_enqueue(monkeypatch) -> None:
+async def test_ingest_separate_callback_is_not_hidden_by_pending_marker(monkeypatch) -> None:
     service = MicrosoftWebhookIngestionService()
     organisation_id = uuid4()
     integration_id = uuid4()
@@ -402,8 +411,6 @@ async def test_ingest_pending_notification_does_not_enqueue(monkeypatch) -> None
             )
         ),
     )
-    monkeypatch.setattr(service, "_claim_dedupe", lambda *_: True)
-    monkeypatch.setattr(service, "_claim_sync_pending", lambda *_: False)
     monkeypatch.setattr(ingestion_service, "send_integrations_task_async", send_task)
 
     result = await service.ingest(
@@ -421,10 +428,10 @@ async def test_ingest_pending_notification_does_not_enqueue(monkeypatch) -> None
     )
 
     assert result.valid_count == 1
-    assert result.queued_count == 0
+    assert result.queued_count == 1
     assert result.duplicate_count == 0
-    assert result.pending_count == 1
-    send_task.assert_not_awaited()
+    assert result.pending_count == 0
+    send_task.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -445,8 +452,6 @@ async def test_ingest_rejects_client_state_mismatch(monkeypatch) -> None:
             )
         ),
     )
-    monkeypatch.setattr(service, "_claim_dedupe", lambda *_: True)
-    monkeypatch.setattr(service, "_claim_sync_pending", lambda *_: True)
     monkeypatch.setattr(ingestion_service, "send_integrations_task_async", send_task)
 
     result = await service.ingest(
@@ -511,6 +516,7 @@ async def test_ingest_lifecycle_matching_notification_enqueues_immediate_sync(mo
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
             "trigger_source": "webhook",
+            "webhook_sync_id": str(WEBHOOK_SYNC_ID),
         },
         queue="integrations_priority",
         routing_key="integrations_priority",
@@ -571,6 +577,7 @@ async def test_ingest_calendar_lifecycle_resolves_provider_parent_capability_sta
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
             "trigger_source": "webhook",
+            "webhook_sync_id": str(WEBHOOK_SYNC_ID),
         },
         queue="integrations_priority",
         routing_key="integrations_priority",
@@ -631,10 +638,60 @@ async def test_ingest_email_lifecycle_resolves_provider_parent_capability_state(
             "organisation_id": str(organisation_id),
             "integration_id": str(integration_id),
             "trigger_source": "webhook",
+            "webhook_sync_id": str(WEBHOOK_SYNC_ID),
         },
         queue="integrations_priority",
         routing_key="integrations_priority",
         countdown=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_subscription_removed_repairs_subscription_before_delta_sync(monkeypatch) -> None:
+    """Graph removal must recreate the subscription before closing the delta gap."""
+    service = MicrosoftWebhookIngestionService()
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    send_task = AsyncMock(return_value="task-123")
+    monkeypatch.setattr(
+        service,
+        "_load_integration",
+        AsyncMock(
+            return_value=_integration_with_subscription(
+                kind=MicrosoftSubscriptionKind.CALENDAR,
+                subscription_id="sub-calendar",
+                client_state="expected-state",
+            )
+        ),
+    )
+    monkeypatch.setattr(ingestion_service, "send_integrations_task_async", send_task)
+
+    result = await service.ingest_lifecycle(
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        kind=MicrosoftSubscriptionKind.CALENDAR,
+        notification_payloads=[
+            {
+                "subscriptionId": "sub-calendar",
+                "clientState": "expected-state",
+                "lifecycleEvent": "subscriptionRemoved",
+            }
+        ],
+    )
+
+    assert result.queued_count == 1
+    send_task.assert_awaited_once_with(
+        task_name="integrations.ensure_microsoft_graph_subscription",
+        kwargs={
+            "organisation_id": str(organisation_id),
+            "integration_id": str(integration_id),
+            "kind": "calendar",
+            "lifecycle_event": "subscriptionRemoved",
+            "sync_after": True,
+            "webhook_sync_id": str(WEBHOOK_SYNC_ID),
+        },
+        queue="integrations_priority",
+        routing_key="integrations_priority",
     )
 
 
