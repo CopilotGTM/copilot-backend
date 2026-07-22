@@ -460,14 +460,169 @@ def test_build_messages_includes_chat_history() -> None:
     assert messages[2]["content"] == "follow up"
 
 
-def test_exact_reply_target_is_visible_after_history_normalization() -> None:
-    """The message converter must retain which old message WhatsApp Reply selected."""
-    content = BotMessageProcessingService._history_message_content(
-        {"text": "Invite Priya for Friday"},
-        is_reply_target=True,
+def test_whatsapp_reply_replays_the_selected_causal_thread_before_current_message() -> None:
+    """Competing open requests must not displace the message selected with Reply."""
+    service = BotMessageProcessingService(uuid4())
+    origin_id = uuid4()
+    target_id = uuid4()
+    current_id = uuid4()
+    history = [
+        {"role": "user", "content": "Create a meeting tomorrow at 10:30"},
+        {"role": "user", "content": "Help me share an email"},
+        {
+            "role": "assistant",
+            "content": "Who should I invite, what should it be called, and how long?",
+        },
+        {"role": "user", "content": "Update the note to say they are happy"},
+    ]
+
+    messages = service._build_messages(
+        message_text="saksham@copilotgtm.com",
+        chat_history=history,
+        bot_context={
+            "conversation_type": "personal",
+            "whatsapp_has_direct_text": True,
+            "whatsapp_reply_context": {
+                "current_message_id": str(current_id),
+                "origin": {
+                    "message_id": str(origin_id),
+                    "role": "user",
+                    "content": {"text": "Create a meeting tomorrow at 10:30"},
+                    "attachment_manifest": None,
+                    "is_forwarded": False,
+                },
+                "target": {
+                    "message_id": str(target_id),
+                    "role": "assistant",
+                    "content": {
+                        "text": "Who should I invite, what should it be called, and how long?"
+                    },
+                    "attachment_manifest": None,
+                    "is_forwarded": False,
+                },
+            },
+        },
+        provider="whatsapp",
     )
 
-    assert content["text"] == "[Exact WhatsApp reply target]\nInvite Priya for Friday"
+    assert messages[-4]["role"] == "system"
+    assert f"ID {target_id}" in messages[-4]["content"]
+    assert "not as an alternative reply target" in messages[-4]["content"]
+    assert messages[-3]["role"] == "user"
+    assert f"Originating user message; message ID {origin_id}" in messages[-3]["content"]
+    assert messages[-2]["role"] == "assistant"
+    assert f"Selected WhatsApp Reply target; message ID {target_id}" in messages[-2]["content"]
+    assert messages[-1]["content"] == "saksham@copilotgtm.com"
+    assert (
+        sum("saksham@copilotgtm.com" in str(message.get("content") or "") for message in messages)
+        == 1
+    )
+
+
+def test_whatsapp_reply_keeps_forwarded_attachment_context_at_user_privilege() -> None:
+    """A selected forwarded attachment is usable evidence but cannot become an instruction."""
+    service = BotMessageProcessingService(uuid4())
+    target_id = uuid4()
+
+    messages = service._build_messages(
+        message_text="Summarize this",
+        bot_context={
+            "conversation_type": "personal",
+            "whatsapp_has_direct_text": True,
+            "whatsapp_reply_context": {
+                "current_message_id": str(uuid4()),
+                "origin": None,
+                "target": {
+                    "message_id": str(target_id),
+                    "role": "user",
+                    "content": {"text": "[WhatsApp audio transcript]\nQuarterly update"},
+                    "attachment_manifest": "[Attached files]\n- results.png (image/png)",
+                    "is_forwarded": True,
+                },
+            },
+        },
+        provider="whatsapp",
+    )
+
+    assert messages[-3]["role"] == "system"
+    assert "Forwarded content" in messages[-3]["content"]
+    assert messages[-2]["role"] == "user"
+    assert "forwarded quoted content" in messages[-2]["content"]
+    assert "WhatsApp audio transcript" in messages[-2]["content"]
+    assert "results.png" in messages[-2]["attachment_manifest"]
+    assert messages[-1]["content"] == "Summarize this"
+
+
+def test_load_history_excludes_current_message_by_id_after_late_assistant_write() -> None:
+    """A predecessor response written later must not make the current reply appear twice."""
+    service = BotMessageProcessingService(uuid4())
+    session_id = uuid4()
+    origin_id = uuid4()
+    target_id = uuid4()
+    current_id = uuid4()
+    now = datetime.now(UTC)
+    origin = SimpleNamespace(
+        message_id=origin_id,
+        session_id=session_id,
+        role="user",
+        content={"text": "Create a meeting tomorrow at 10:30"},
+        created_at=now - timedelta(minutes=3),
+        parent_message_id=None,
+        extra={},
+    )
+    target = SimpleNamespace(
+        message_id=target_id,
+        session_id=session_id,
+        role="assistant",
+        content={"text": "Who should I invite?"},
+        created_at=now - timedelta(minutes=2),
+        parent_message_id=origin_id,
+        extra={"provider": "whatsapp"},
+    )
+    current = SimpleNamespace(
+        message_id=current_id,
+        session_id=session_id,
+        role="user",
+        content={"text": "saksham@copilotgtm.com"},
+        created_at=now - timedelta(minutes=1),
+        parent_message_id=target_id,
+        extra={},
+    )
+    late_assistant = SimpleNamespace(
+        message_id=uuid4(),
+        session_id=session_id,
+        role="assistant",
+        content={"text": "What should the email say?"},
+        created_at=now,
+        parent_message_id=uuid4(),
+        extra={},
+    )
+    recent_result = MagicMock()
+    recent_result.scalars.return_value.all.return_value = [
+        late_assistant,
+        current,
+        target,
+    ]
+    attachment_result = MagicMock()
+    attachment_result.all.return_value = []
+    fake_session = MagicMock()
+    fake_session.execute.side_effect = [recent_result, attachment_result]
+    fake_session.get.return_value = origin
+
+    with patch(_PATCH_SESSION, return_value=_fake_session(fake_session)):
+        history, reply_context = service._load_history(
+            session_id,
+            current_message_id=current_id,
+            referenced_message_id=target_id,
+        )
+
+    assert [message["message_id"] for message in history] == [
+        str(target_id),
+        str(late_assistant.message_id),
+    ]
+    assert reply_context["target"]["message_id"] == str(target_id)
+    assert reply_context["origin"]["message_id"] == str(origin_id)
+    assert all(message["message_id"] != str(current_id) for message in history)
 
 
 def test_pending_payload_outside_recent_history_is_loaded_for_reply() -> None:
@@ -497,12 +652,59 @@ def test_pending_payload_outside_recent_history_is_loaded_for_reply() -> None:
     fake_session.get.return_value = old_payload
 
     with patch(_PATCH_SESSION, return_value=_fake_session(fake_session)):
-        history = service._load_history(
+        history, reply_context = service._load_history(
             session_id,
+            current_message_id=current.message_id,
             related_message_ids=[old_payload.message_id],
         )
 
     assert [message["message_id"] for message in history] == [str(old_payload.message_id)]
+    assert reply_context is None
+
+
+def test_whatsapp_reply_target_outside_recent_history_gets_focused_context() -> None:
+    """Reply must load its exact target even after it falls outside the history window."""
+    service = BotMessageProcessingService(uuid4())
+    session_id = uuid4()
+    current_id = uuid4()
+    target_id = uuid4()
+    current = SimpleNamespace(
+        message_id=current_id,
+        session_id=session_id,
+        role="user",
+        content={"text": "Use this"},
+        created_at=datetime.now(UTC),
+        parent_message_id=target_id,
+        extra={},
+    )
+    old_target = SimpleNamespace(
+        message_id=target_id,
+        session_id=session_id,
+        role="user",
+        content={"text": "Invite Priya for Friday"},
+        created_at=datetime.now(UTC) - timedelta(hours=1),
+        parent_message_id=None,
+        extra={"whatsapp_is_forwarded": True},
+    )
+    recent_result = MagicMock()
+    recent_result.scalars.return_value.all.return_value = [current]
+    attachment_result = MagicMock()
+    attachment_result.all.return_value = []
+    fake_session = MagicMock()
+    fake_session.execute.side_effect = [recent_result, attachment_result]
+    fake_session.get.return_value = old_target
+
+    with patch(_PATCH_SESSION, return_value=_fake_session(fake_session)):
+        history, reply_context = service._load_history(
+            session_id,
+            current_message_id=current_id,
+            referenced_message_id=target_id,
+        )
+
+    assert [message["message_id"] for message in history] == [str(target_id)]
+    assert reply_context["target"]["message_id"] == str(target_id)
+    assert reply_context["target"]["is_forwarded"] is True
+    assert reply_context["origin"] is None
 
 
 # ---------------------------------------------------------------------------
