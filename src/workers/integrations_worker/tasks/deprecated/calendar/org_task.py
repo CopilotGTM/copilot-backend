@@ -32,14 +32,12 @@ from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.integrations.calendar_cursor_metadata import (
+    apply_calendar_sync_outcome,
     get_calendar_delta_link,
-    set_calendar_delta_link,
 )
 from src.service.integrations.calendar_sync_service import CalendarSyncService
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 from src.service.integrations.sync_health import (
-    CIRCUIT_BREAKER_THRESHOLD,
-    apply_sync_success,
     classify_sync_error,
     is_action_required_failure,
     record_sync_failure,
@@ -152,10 +150,6 @@ def sync_calendar_org_task(
                 ),
                 col(KnowledgeIntegration.is_active).is_(True),
                 col(KnowledgeIntegration.connection_id).isnot(None),
-                # Circuit breaker: skip integrations with too many consecutive
-                # transient failures. Counter resets on success, so recovery
-                # is automatic when the provider comes back.
-                col(KnowledgeIntegration.consecutive_sync_failures) < CIRCUIT_BREAKER_THRESHOLD,
             )
             result = await session.execute(stmt)
             integrations = result.scalars().all()
@@ -285,6 +279,7 @@ def sync_calendar_org_task(
 
         integration_results: list[dict[str, Any]] = []
         successful = 0
+        partial = 0
         failed = 0
         action_required = 0
         total_events = 0
@@ -384,7 +379,7 @@ def sync_calendar_org_task(
                         events=events,
                     )
                     records_synced = sync_result.get("records_processed", 0)
-                    cursor_saved = new_calendar_delta_link is not None
+                    sync_status = str(sync_result.get("status") or "failed")
 
                     state_db = None
                     if fetch_data.sync_state_id:
@@ -394,19 +389,21 @@ def sync_calendar_org_task(
                         state_result = await session.execute(state_stmt)
                         state_db = state_result.scalar_one_or_none()
 
-                    # Save cursor only after successful persist — if we crash
-                    # before commit, the next sync re-fetches from the old cursor.
-                    if state_db is not None:
-                        updated_metadata = dict(state_db.cursor_metadata or {})
-                    else:
-                        updated_metadata = dict(integration_db.connection_metadata or {})
-
-                    if new_calendar_delta_link:
-                        updated_metadata = set_calendar_delta_link(
-                            updated_metadata,
-                            fetch_data.integration_type,
-                            new_calendar_delta_link,
-                        )
+                    # Keep the scheduled path on the same replay/quarantine
+                    # contract as manual sync; divergence here would make the
+                    # production scheduler silently skip partial pages.
+                    persistence = apply_calendar_sync_outcome(
+                        integration=integration_db,
+                        state=state_db,
+                        integration_type=fetch_data.integration_type,
+                        sync_result=sync_result,
+                        input_cursor=fetch_data.calendar_delta_link,
+                        next_cursor=new_calendar_delta_link,
+                    )
+                    cursor_saved = persistence.cursor_advanced
+                    sync_result["cursor_quarantined"] = persistence.quarantined
+                    sync_result["partial_attempts"] = persistence.partial_attempts
+                    if cursor_saved:
                         logger.info(
                             "Calendar cursor saved",
                             extra={
@@ -414,11 +411,6 @@ def sync_calendar_org_task(
                                 "integration_type": fetch_data.integration_type_value,
                             },
                         )
-
-                    if state_db is not None:
-                        state_db.cursor_metadata = updated_metadata
-                    else:
-                        integration_db.connection_metadata = updated_metadata
 
                     logger.info(
                         "Calendar sync persistence diagnostics",
@@ -439,26 +431,15 @@ def sync_calendar_org_task(
                         },
                     )
 
-                    # Strip tzinfo — column is `timestamp without time zone`; asyncpg
-                    # rejects tz-aware datetimes for tz-naive columns.
-                    synced_at = datetime.now(UTC).replace(tzinfo=None)
                     if state_db is not None:
-                        state_db.last_synced_at = synced_at
-                    else:
-                        integration_db.last_synced_at = synced_at
-                    if state_db is not None:
-                        state_db.last_sync_status = "success"
-                        state_db.last_sync_error = None
-                        state_db.consecutive_sync_failures = 0
                         session.add(state_db)
-                    else:
-                        # Legacy rows keep sync health on the integration, while
-                        # capability rows keep it on IntegrationSyncState.
-                        apply_sync_success(integration_db)
                     session.add(integration_db)
                     await session.commit()
 
-                    successful += 1
+                    if sync_status == "success":
+                        successful += 1
+                    else:
+                        partial += 1
                     total_events += records_synced
                     communication_deal_mapping = None
                     if records_synced > 0 or sync_result.get("changed_event_ids"):
@@ -486,7 +467,7 @@ def sync_calendar_org_task(
                         {
                             "integration_id": str(fetch_data.integration_id),
                             "integration_type": fetch_data.integration_type_value,
-                            "status": "success",
+                            "status": sync_status,
                             "events_synced": records_synced,
                             "sync_breakdown": sync_result,
                             "communication_deal_mapping": communication_deal_mapping,
@@ -517,6 +498,7 @@ def sync_calendar_org_task(
                     integration_id=fetch_data.integration_id,
                     error=e,
                     failure_type=failure_type,
+                    capability=fetch_data.integration_type,
                 )
 
                 if is_action_required_failure(failure_type):
@@ -539,9 +521,9 @@ def sync_calendar_org_task(
 
         completed_at = datetime.now(UTC).isoformat()
 
-        if failed == 0:
+        if failed == 0 and partial == 0:
             status = "completed"
-        elif successful == 0:
+        elif successful == 0 and partial == 0:
             status = "failed"
         else:
             status = "partial"
@@ -551,6 +533,7 @@ def sync_calendar_org_task(
             extra={
                 "organisation_id": organisation_id,
                 "successful": successful,
+                "partial": partial,
                 "failed": failed,
                 "action_required": action_required,
                 "total_events_synced": total_events,
@@ -565,6 +548,7 @@ def sync_calendar_org_task(
             "summary": {
                 "total_integrations": len(integration_fetch_list),
                 "successful": successful,
+                "partial": partial,
                 "failed": failed,
                 "action_required": action_required,
                 "total_events_synced": total_events,

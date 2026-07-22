@@ -100,6 +100,7 @@ class EmailSyncService:
         integration_id = integration.integration_id
 
         sync_history = await self._sync_history.start(integration_id)
+        records_committed = 0
 
         try:
             folder_list = list(folders)
@@ -140,6 +141,7 @@ class EmailSyncService:
 
                     if records_processed % 50 == 0:
                         await self.db.commit()
+                        records_committed = records_processed
 
                 except Exception as e:
                     logger.error(
@@ -155,6 +157,7 @@ class EmailSyncService:
                     records_failed += 1
 
             await self.db.commit()
+            records_committed = records_processed
 
             await self._sync_history.complete(
                 sync_history,
@@ -205,19 +208,13 @@ class EmailSyncService:
                 exc_info=True,
             )
 
-            await self._sync_history.complete(
+            await self._sync_history.fail(
                 sync_history,
-                status=SyncStatus.FAILED,
-                records_processed=0,
+                integration_id=integration_id,
+                records_processed=records_committed,
                 records_failed=len(folder_list),
-                error_details={"error": str(e), "error_type": type(e).__name__},
+                error=e,
             )
-
-            # Keep the integration failure state visible for retry handlers.
-            integration.last_sync_status = SyncStatus.FAILED.value
-            integration.last_sync_error = str(e)[:500]
-            self.db.add(integration)
-            await self.db.commit()
 
             raise
 
@@ -250,6 +247,7 @@ class EmailSyncService:
         integration_id = integration.integration_id
 
         sync_history = await self._sync_history.start(integration_id)
+        records_committed = 0
 
         try:
             message_list = list(messages)
@@ -293,6 +291,7 @@ class EmailSyncService:
 
                     if records_processed % 50 == 0:
                         await self.db.commit()
+                        records_committed = records_processed
 
                 except Exception as e:
                     logger.error(
@@ -311,6 +310,7 @@ class EmailSyncService:
 
             # Persist batched changes before emitting terminal run metadata.
             await self.db.commit()
+            records_committed = records_processed
 
             # Persist run outcome and action counts for operational visibility.
             await self._sync_history.complete(
@@ -366,19 +366,13 @@ class EmailSyncService:
                 exc_info=True,
             )
 
-            await self._sync_history.complete(
+            await self._sync_history.fail(
                 sync_history,
-                status=SyncStatus.FAILED,
-                records_processed=0,
+                integration_id=integration_id,
+                records_processed=records_committed,
                 records_failed=len(message_list),
-                error_details={"error": str(e), "error_type": type(e).__name__},
+                error=e,
             )
-
-            # Keep the integration failure state visible for retry handlers.
-            integration.last_sync_status = SyncStatus.FAILED.value
-            integration.last_sync_error = str(e)[:500]
-            self.db.add(integration)
-            await self.db.commit()
 
             raise
 
@@ -619,6 +613,7 @@ class EmailSyncService:
         """
         integration_id = integration.integration_id
         sync_history = await self._sync_history.start(integration_id)
+        records_committed = 0
 
         try:
             folder_list = list(folders)
@@ -719,6 +714,7 @@ class EmailSyncService:
 
             # Persist all folder upserts before final run bookkeeping.
             await self.db.commit()
+            records_committed = records_processed
 
             # Store run metadata so the scheduler can make recovery decisions.
             await self._sync_history.complete(
@@ -776,18 +772,13 @@ class EmailSyncService:
                 exc_info=True,
             )
 
-            await self._sync_history.complete(
+            await self._sync_history.fail(
                 sync_history,
-                status=SyncStatus.FAILED,
-                records_processed=0,
+                integration_id=integration_id,
+                records_processed=records_committed,
                 records_failed=len(folder_list),
-                error_details={"error": str(e), "error_type": type(e).__name__},
+                error=e,
             )
-
-            integration.last_sync_status = SyncStatus.FAILED.value
-            integration.last_sync_error = str(e)[:500]
-            self.db.add(integration)
-            await self.db.commit()
 
             raise
 
@@ -818,6 +809,7 @@ class EmailSyncService:
         """
         integration_id = integration.integration_id
         sync_history = await self._sync_history.start(integration_id)
+        records_committed = 0
 
         try:
             message_list = list(messages)
@@ -939,6 +931,7 @@ class EmailSyncService:
 
             # Persist all message upserts before final run bookkeeping.
             await self.db.commit()
+            records_committed = records_processed
 
             # Store run metadata so the scheduler can make recovery decisions.
             await self._sync_history.complete(
@@ -999,18 +992,13 @@ class EmailSyncService:
                 exc_info=True,
             )
 
-            await self._sync_history.complete(
+            await self._sync_history.fail(
                 sync_history,
-                status=SyncStatus.FAILED,
-                records_processed=0,
+                integration_id=integration_id,
+                records_processed=records_committed,
                 records_failed=len(message_list),
-                error_details={"error": str(e), "error_type": type(e).__name__},
+                error=e,
             )
-
-            integration.last_sync_status = SyncStatus.FAILED.value
-            integration.last_sync_error = str(e)[:500]
-            self.db.add(integration)
-            await self.db.commit()
 
             raise
 

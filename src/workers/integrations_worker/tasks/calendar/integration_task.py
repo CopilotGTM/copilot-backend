@@ -41,8 +41,8 @@ from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.integrations.calendar_cursor_metadata import (
+    apply_calendar_sync_outcome,
     get_calendar_delta_link,
-    set_calendar_delta_link,
 )
 from src.service.integrations.calendar_sync_service import CalendarSyncService
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
@@ -153,6 +153,7 @@ def sync_calendar_integration_task(
     started_at = started_at_dt.isoformat()
     org_id = UUID(organisation_id)
     int_id = UUID(integration_id)
+    current_capability: list[IntegrationType | None] = [None]
     communication_trigger_source = "webhook" if trigger_source == "webhook" else "manual_sync"
 
     async def _sync_integration() -> dict[str, Any]:
@@ -244,6 +245,7 @@ def sync_calendar_integration_task(
                 sync_state_id = state.sync_state_id
                 int_type = capability
             _, provider = categorize_integration_type(int_type)
+            current_capability[0] = int_type
 
             # Single shared calendar cursor key per integration row.
             calendar_delta_link = None
@@ -374,30 +376,32 @@ def sync_calendar_integration_task(
                 events=events,
             )
             records_synced = sync_result.get("records_processed", 0)
-            cursor_saved = new_calendar_delta_link is not None
+            sync_status = sync_result.get("status", "failed")
+            state = None
+            if fetch_data.sync_state_id:
+                state_stmt = select(IntegrationSyncState).where(
+                    col(IntegrationSyncState.sync_state_id) == fetch_data.sync_state_id,
+                )
+                state_result = await session.execute(state_stmt)
+                state = state_result.scalar_one_or_none()
 
-            # Persist cursor after successful sync.
-            if new_calendar_delta_link:
-                if fetch_data.sync_state_id:
-                    state_stmt = select(IntegrationSyncState).where(
-                        col(IntegrationSyncState.sync_state_id) == fetch_data.sync_state_id,
-                    )
-                    state_result = await session.execute(state_stmt)
-                    state = state_result.scalar_one_or_none()
-                    if state:
-                        state.cursor_metadata = set_calendar_delta_link(
-                            dict(state.cursor_metadata or {}),
-                            fetch_data.integration_type,
-                            new_calendar_delta_link,
-                        )
-                        state.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
-                        session.add(state)
-                else:
-                    integration_db.connection_metadata = set_calendar_delta_link(
-                        dict(integration_db.connection_metadata or {}),
-                        fetch_data.integration_type,
-                        new_calendar_delta_link,
-                    )
+            # Both manual and scheduled paths use this policy. Partial pages
+            # replay twice, then quarantine bounded diagnostics so one poison
+            # event cannot stop later provider changes indefinitely.
+            persistence = apply_calendar_sync_outcome(
+                integration=integration_db,
+                state=state,
+                integration_type=fetch_data.integration_type,
+                sync_result=sync_result,
+                input_cursor=fetch_data.calendar_delta_link,
+                next_cursor=new_calendar_delta_link,
+            )
+            cursor_saved = persistence.cursor_advanced
+            sync_result["cursor_quarantined"] = persistence.quarantined
+            sync_result["partial_attempts"] = persistence.partial_attempts
+            if state is not None:
+                session.add(state)
+            if cursor_saved:
                 logger.info(
                     "Calendar cursor saved",
                     extra={
@@ -422,10 +426,6 @@ def sync_calendar_integration_task(
                 },
             )
 
-            # Strip tzinfo — column is `timestamp without time zone`; asyncpg
-            # rejects tz-aware datetimes for tz-naive columns.
-            if not fetch_data.sync_state_id:
-                integration_db.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
             session.add(integration_db)
             await session.commit()
 
@@ -472,7 +472,7 @@ def sync_calendar_integration_task(
             )
 
             return {
-                "status": "success",
+                "status": sync_status,
                 "organisation_id": organisation_id,
                 "integration_id": integration_id,
                 "integration_type": fetch_data.integration_type_value,
@@ -533,6 +533,7 @@ def sync_calendar_integration_task(
                     organisation_id=org_id,
                     integration_id=int_id,
                     error=TimeoutError(f"Soft time limit exceeded ({_L['soft']}s)"),
+                    capability=current_capability[0],
                 )
             )
         except Exception:
@@ -572,6 +573,21 @@ def sync_calendar_integration_task(
                 },
             )
             raise self.retry(exc=e) from e
+
+        try:
+            run_async(
+                record_sync_failure(
+                    organisation_id=org_id,
+                    integration_id=int_id,
+                    error=e,
+                    capability=current_capability[0],
+                )
+            )
+        except Exception:
+            logger.warning(
+                "Failed to record terminal calendar sync failure",
+                extra={"integration_id": integration_id},
+            )
 
         return {
             "status": "failed",

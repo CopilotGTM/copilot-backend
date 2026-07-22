@@ -36,7 +36,7 @@ from uuid import UUID
 from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
-from src.domain.models.organisation_tables.sync import KnowledgeIntegration
+from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEvent,
     CalendarEventUserState,
@@ -71,6 +71,7 @@ logger = get_logger(__name__)
 # batches can include hundreds of events; logging all of them would be noisy
 # in Sentry and slow to render.
 SAMPLE_LOG_LIMIT = 5
+FAILED_RECORD_ID_LIMIT = 20
 
 
 class CalendarSyncService:
@@ -94,6 +95,24 @@ class CalendarSyncService:
         self._writer = CalendarSyncWriter(session, organisation_id)
         self._pending_recording_event_ids: set[UUID] = set()
 
+    @staticmethod
+    def _uses_capability_health(integration: KnowledgeIntegration) -> bool:
+        integration_type = (
+            IntegrationType(integration.integration_type)
+            if isinstance(integration.integration_type, str)
+            else integration.integration_type
+        )
+        return integration_type in {IntegrationType.GOOGLE, IntegrationType.MICROSOFT}
+
+    @staticmethod
+    def _failed_record_id(event_data: dict[str, Any], index: int) -> str:
+        """Return a bounded provider identifier suitable for retry fingerprinting."""
+        for key in ("id", "iCalUID", "iCalUId", "seriesMasterId", "recurringEventId"):
+            value = event_data.get(key)
+            if value:
+                return str(value)[:200]
+        return f"index:{index}"
+
     async def sync_calendar_events(
         self,
         *,
@@ -113,6 +132,7 @@ class CalendarSyncService:
         are fatal — they roll the integration back to FAILED and re-raise.
         """
         sync_history = await self._sync_history.start(integration.integration_id)
+        records_committed = 0
 
         try:
             event_list = list(events)
@@ -129,6 +149,7 @@ class CalendarSyncService:
             updated_count = 0
             changed_event_ids: list[str] = []
             missing_identity_samples: list[dict[str, Any]] = []
+            failed_record_ids: list[str] = []
 
             # --- Step 1: prefetch existing rows for every (external_id, anchor) ---
             # We look up all identities in one query so the per-event loop below
@@ -158,6 +179,8 @@ class CalendarSyncService:
                         if len(missing_identity_samples) < SAMPLE_LOG_LIMIT:
                             missing_identity_samples.append(normalized.debug_sample)
                         records_failed += 1
+                        if len(failed_record_ids) < FAILED_RECORD_ID_LIMIT:
+                            failed_record_ids.append(self._failed_record_id(event_data, idx))
                         continue
 
                     key = (external_id, occurrence_anchor)
@@ -188,6 +211,7 @@ class CalendarSyncService:
                     # any single failure.
                     if records_processed % 100 == 0:
                         await self.db.commit()
+                        records_committed = records_processed
                         await self._dispatch_pending_recording_events()
                         logger.debug("Batch commit: %d events processed", records_processed)
 
@@ -203,8 +227,11 @@ class CalendarSyncService:
                         exc_info=True,
                     )
                     records_failed += 1
+                    if len(failed_record_ids) < FAILED_RECORD_ID_LIMIT:
+                        failed_record_ids.append(self._failed_record_id(event_data, idx))
 
             await self.db.commit()
+            records_committed = records_processed
             await self._dispatch_pending_recording_events()
 
             if missing_identity_samples:
@@ -215,30 +242,35 @@ class CalendarSyncService:
                 )
 
             # --- Step 3: close out sync history and integration status ---
+            sync_status = SyncStatus.PARTIAL if records_failed else SyncStatus.SUCCESS
             await self._sync_history.complete(
                 sync_history,
-                status=SyncStatus.SUCCESS,
+                status=sync_status,
                 records_processed=records_processed,
                 records_failed=records_failed,
                 metadata={
                     "created": created_count,
                     "updated": updated_count,
                     "provider": provider,
+                    "failed_record_ids": failed_record_ids,
                 },
             )
 
-            integration.last_synced_at = datetime_now_naive()
-            integration.last_sync_status = SyncStatus.SUCCESS.value
-            self.db.add(integration)
-            await self.db.commit()
+            if not self._uses_capability_health(integration):
+                if sync_status == SyncStatus.SUCCESS:
+                    integration.last_synced_at = datetime_now_naive()
+                integration.last_sync_status = sync_status.value
+                self.db.add(integration)
+                await self.db.commit()
 
             return {
-                "status": "success",
+                "status": sync_status.value,
                 "records_processed": records_processed,
                 "records_failed": records_failed,
                 "created": created_count,
                 "updated": updated_count,
                 "changed_event_ids": changed_event_ids,
+                "failed_record_ids": failed_record_ids,
             }
 
         except Exception as e:
@@ -249,22 +281,14 @@ class CalendarSyncService:
                 exc_info=True,
             )
 
-            # Mark the sync history failed and roll the integration to FAILED so
-            # the worker UI surfaces the problem on next render. Truncate the
-            # error to 500 chars — the column is bounded and stack traces are
-            # already in Sentry via exc_info above.
-            await self._sync_history.complete(
+            await self._sync_history.fail(
                 sync_history,
-                status=SyncStatus.FAILED,
-                records_processed=0,
+                integration_id=integration.integration_id,
+                records_processed=records_committed,
                 records_failed=len(event_list),
-                error_details={"error": str(e), "error_type": type(e).__name__},
+                error=e,
+                update_integration=not self._uses_capability_health(integration),
             )
-
-            integration.last_sync_status = SyncStatus.FAILED.value
-            integration.last_sync_error = str(e)[:500]
-            self.db.add(integration)
-            await self.db.commit()
 
             raise
 
@@ -292,6 +316,7 @@ class CalendarSyncService:
         the routing logic missed a branch and needs investigation.
         """
         sync_history = await self._sync_history.start(integration.integration_id)
+        records_committed = 0
 
         try:
             event_list = list(events)
@@ -350,6 +375,7 @@ class CalendarSyncService:
             deleted_no_state_count = 0
             missing_identity_samples: list[dict[str, Any]] = []
             unchanged_samples: list[dict[str, Any]] = []
+            failed_record_ids: list[str] = []
             directly_changed_event_ids: list[str] = []
             # These three lists accumulate the work that will be flushed as
             # batched writes after the per-event loop completes. Keeping them
@@ -377,11 +403,10 @@ class CalendarSyncService:
                     # has it active. This is what prevents one attendee's
                     # deletion from cancelling the meeting for everyone.
                     if sync_action == SyncAction.DELETED and user_external_id:
-                        record = await self._find_event_by_user_external_id(
+                        records = await self._find_events_by_user_external_id(
                             user_external_id,
                             integration.integration_id,
                         )
-                        records = [(record, user_external_id)] if record else []
                         if not records:
                             records = await self._find_events_by_series_external_id(
                                 user_external_id,
@@ -411,11 +436,10 @@ class CalendarSyncService:
                         and not self._is_google_cancelled_exception(event_data, provider)
                         and user_external_id
                     ):
-                        record = await self._find_event_by_user_external_id(
+                        records = await self._find_events_by_user_external_id(
                             user_external_id,
                             integration.integration_id,
                         )
-                        records = [(record, user_external_id)] if record else []
                         if not records:
                             records = await self._find_events_by_series_external_id(
                                 user_external_id,
@@ -440,11 +464,10 @@ class CalendarSyncService:
                     # path for context.
                     if not external_id:
                         if provider == "google" and normalized.is_cancelled and user_external_id:
-                            record = await self._find_event_by_user_external_id(
+                            records = await self._find_events_by_user_external_id(
                                 user_external_id,
                                 integration.integration_id,
                             )
-                            records = [(record, user_external_id)] if record else []
                             if not records and normalized.series_external_id and occurrence_anchor:
                                 record_with_state = await self._find_event_by_series_external_id_and_occurrence_anchor(
                                     normalized.series_external_id,
@@ -464,6 +487,8 @@ class CalendarSyncService:
                         if len(missing_identity_samples) < SAMPLE_LOG_LIMIT:
                             missing_identity_samples.append(normalized.debug_sample)
                         records_failed += 1
+                        if len(failed_record_ids) < FAILED_RECORD_ID_LIMIT:
+                            failed_record_ids.append(self._failed_record_id(event_data, idx))
                         continue
 
                     key = (external_id, occurrence_anchor)
@@ -538,6 +563,8 @@ class CalendarSyncService:
                         exc_info=True,
                     )
                     records_failed += 1
+                    if len(failed_record_ids) < FAILED_RECORD_ID_LIMIT:
+                        failed_record_ids.append(self._failed_record_id(event_data, idx))
 
             # --- Step 3: flush the batched writes ---
             # Per-event routing above preserves legacy counters and error
@@ -586,6 +613,7 @@ class CalendarSyncService:
             await self._batch_upsert_user_states(user_states_to_upsert)
 
             await self.db.commit()
+            records_committed = records_processed
             await self._dispatch_pending_recording_events()
 
             # --- Step 4: counter reconciliation log line ---
@@ -639,9 +667,10 @@ class CalendarSyncService:
                 )
 
             # --- Step 5: close out sync history and integration status ---
+            sync_status = SyncStatus.PARTIAL if records_failed else SyncStatus.SUCCESS
             await self._sync_history.complete(
                 sync_history,
-                status=SyncStatus.SUCCESS,
+                status=sync_status,
                 records_processed=records_processed,
                 records_failed=records_failed,
                 metadata={
@@ -654,16 +683,19 @@ class CalendarSyncService:
                     "deleted_no_state": deleted_no_state_count,
                     "provider": provider,
                     "action_counts": action_counts.to_dict(),
+                    "failed_record_ids": failed_record_ids,
                 },
             )
 
-            integration.last_synced_at = datetime_now_naive()
-            integration.last_sync_status = SyncStatus.SUCCESS.value
-            self.db.add(integration)
-            await self.db.commit()
+            if not self._uses_capability_health(integration):
+                if sync_status == SyncStatus.SUCCESS:
+                    integration.last_synced_at = datetime_now_naive()
+                integration.last_sync_status = sync_status.value
+                self.db.add(integration)
+                await self.db.commit()
 
             return {
-                "status": "success",
+                "status": sync_status.value,
                 "records_processed": records_processed,
                 "records_failed": records_failed,
                 "created": created_count,
@@ -675,6 +707,7 @@ class CalendarSyncService:
                 "deleted_no_state": deleted_no_state_count,
                 "changed_event_ids": list(dict.fromkeys(changed_event_ids)),
                 "action_counts": action_counts.to_dict(),
+                "failed_record_ids": failed_record_ids,
             }
 
         except Exception as e:
@@ -685,21 +718,14 @@ class CalendarSyncService:
                 exc_info=True,
             )
 
-            # Same fatal-failure handling as the full-sync path: roll the
-            # integration to FAILED, truncate the error message to fit the
-            # column, and re-raise so the worker can retry on its own schedule.
-            await self._sync_history.complete(
+            await self._sync_history.fail(
                 sync_history,
-                status=SyncStatus.FAILED,
-                records_processed=0,
+                integration_id=integration.integration_id,
+                records_processed=records_committed,
                 records_failed=len(event_list),
-                error_details={"error": str(e), "error_type": type(e).__name__},
+                error=e,
+                update_integration=not self._uses_capability_health(integration),
             )
-
-            integration.last_sync_status = SyncStatus.FAILED.value
-            integration.last_sync_error = str(e)[:500]
-            self.db.add(integration)
-            await self.db.commit()
 
             raise
 
@@ -858,20 +884,21 @@ class CalendarSyncService:
     def _extract_event_fields(event_data: dict[str, Any], provider: str) -> dict[str, Any]:
         return CalendarEventNormalizer.extract_event_fields(event_data, provider)
 
-    async def _find_event_by_user_external_id(
+    async def _find_events_by_user_external_id(
         self,
         user_external_id: str,
         integration_id: UUID,
-    ) -> CalendarEvent | None:
-        """Look up a calendar event via user_states using the per-mailbox/calendar ID.
+    ) -> list[tuple[CalendarEvent, str]]:
+        """Look up every event linked to one per-mailbox provider ID.
 
         Used by the deletion and Google-cancellation branches in incremental
-        sync. The org filter on `CalendarEvent.organisation_id` is the trust
-        boundary — `user_external_id` is supplied by the provider and we never
-        trust it on its own to surface rows across tenants.
+        sync. Recurring-series revisions can leave more than one canonical row
+        linked to the same provider ID, so callers must retire every matching
+        user state rather than choosing an arbitrary row. The org filter on
+        `CalendarEvent.organisation_id` is the tenant trust boundary.
         """
         stmt = (
-            select(CalendarEvent)
+            select(CalendarEvent, CalendarEventUserState.external_id)
             .join(
                 CalendarEventUserState,
                 col(CalendarEventUserState.event_id) == col(CalendarEvent.event_id),
@@ -883,7 +910,7 @@ class CalendarSyncService:
             )
         )
         result = await self.db.execute(stmt)
-        return result.scalar_one_or_none()
+        return [(event, external_id) for event, external_id in result.all()]
 
     async def _find_events_by_series_external_id(
         self,
@@ -1001,8 +1028,8 @@ class CalendarSyncService:
             col(CalendarEventUserState.event_id) == event_id,
             col(CalendarEventUserState.is_deleted).is_(False),
         )
-        result = await self.db.execute(stmt)
-        return result.scalar_one_or_none() is None
+        result = await self.db.execute(stmt.limit(1))
+        return result.scalars().first() is None
 
     async def _load_existing_events_by_identity(
         self,

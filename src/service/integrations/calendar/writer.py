@@ -466,15 +466,26 @@ class CalendarSyncWriter:
         event: CalendarEvent,
         normalized: NormalizedCalendarEvent,
     ) -> list[dict[str, Any]]:
+        # Providers occasionally return the same attendee more than once, with
+        # email casing as the only difference. Keep the latest provider fields,
+        # but preserve an organiser=True signal from any duplicate.
+        attendees_by_email: dict[str, tuple[Any, bool]] = {}
+        for attendee in normalized.attendees:
+            normalized_email = attendee.email.strip().lower()
+            previous = attendees_by_email.get(normalized_email)
+            attendees_by_email[normalized_email] = (
+                attendee,
+                attendee.is_organiser or bool(previous and previous[1]),
+            )
         return [
             {
                 "attendee_id": uuid4(),
                 "event_id": event.event_id,
-                "email": attendee.email,
+                "email": normalized_email,
                 "display_name": attendee.display_name,
                 "response_status": attendee.response_status,
-                "is_organiser": attendee.is_organiser,
+                "is_organiser": is_organiser,
                 "data_payload": attendee.data_payload,
             }
-            for attendee in normalized.attendees
+            for normalized_email, (attendee, is_organiser) in attendees_by_email.items()
         ]

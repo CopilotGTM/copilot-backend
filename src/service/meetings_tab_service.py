@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 from sqlmodel import col
@@ -41,7 +41,11 @@ from src.domain.models.organisation_tables.sync.calendar import (
     GenerationStatus,
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
-from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
+from src.domain.models.organisation_tables.sync.integration_models import (
+    IntegrationSyncState,
+    IntegrationType,
+    KnowledgeIntegration,
+)
 from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     Meeting,
     MeetingStatus,
@@ -66,7 +70,7 @@ from src.service.crm.activity_feed_projection_service import ActivityFeedProject
 from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
 from src.service.crm.utils.internal_domains import normalize_internal_domains
 from src.service.integrations.calendar.integration_types import (
-    PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPES as CALENDAR_INTEGRATION_TYPES,
+    DISPATCH_CALENDAR_INTEGRATION_TYPES as CALENDAR_INTEGRATION_TYPES,
 )
 from src.service.meeting_bot.display_status import meeting_recording_display_status
 from src.service.meeting_bot.lifecycle_service import (
@@ -588,6 +592,44 @@ class MeetingsTabService:
                 integration_c.created_by_user_id == self.user_id,
                 integration_c.is_active.is_(True),
                 integration_c.integration_type.in_(CALENDAR_INTEGRATION_TYPES),
+                or_(
+                    and_(
+                        integration_c.integration_type == IntegrationType.GOOGLE.value,
+                        exists(
+                            select(1).where(
+                                col(IntegrationSyncState.organisation_id)
+                                == self.organisation_id,
+                                col(IntegrationSyncState.integration_id)
+                                == integration_c.integration_id,
+                                col(IntegrationSyncState.capability)
+                                == IntegrationType.GOOGLE_CALENDAR,
+                                col(IntegrationSyncState.enabled).is_(True),
+                            )
+                        ),
+                    ),
+                    and_(
+                        integration_c.integration_type == IntegrationType.MICROSOFT.value,
+                        exists(
+                            select(1).where(
+                                col(IntegrationSyncState.organisation_id)
+                                == self.organisation_id,
+                                col(IntegrationSyncState.integration_id)
+                                == integration_c.integration_id,
+                                col(IntegrationSyncState.capability)
+                                == IntegrationType.OUTLOOK_CALENDAR,
+                                col(IntegrationSyncState.enabled).is_(True),
+                            )
+                        ),
+                    ),
+                    # Active legacy direct rows remain readable until the
+                    # provider-parent rollout is fully reconciled.
+                    integration_c.integration_type.in_(
+                        (
+                            IntegrationType.GOOGLE_CALENDAR.value,
+                            IntegrationType.OUTLOOK_CALENDAR.value,
+                        )
+                    ),
+                ),
             )
         )
 

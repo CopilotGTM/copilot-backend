@@ -49,7 +49,6 @@ from src.service.integrations.email_delta_sync_service import (
     EmailDeltaSyncService,
 )
 from src.service.integrations.sync_health import (
-    CIRCUIT_BREAKER_THRESHOLD,
     classify_sync_error,
     is_action_required_failure,
     record_sync_failure,
@@ -152,9 +151,6 @@ def sync_email_org_task(
                 ),
                 col(KnowledgeIntegration.is_active).is_(True),
                 col(KnowledgeIntegration.connection_id).isnot(None),
-                # Circuit breaker: skip integrations with too many consecutive
-                # transient failures. Counter resets on success automatically.
-                col(KnowledgeIntegration.consecutive_sync_failures) < CIRCUIT_BREAKER_THRESHOLD,
             )
             result = await session.execute(stmt)
             rows = result.all()

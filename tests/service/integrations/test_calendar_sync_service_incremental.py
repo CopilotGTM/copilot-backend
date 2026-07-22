@@ -10,6 +10,7 @@ from sqlalchemy.dialects import postgresql
 from src.domain.models.organisation_tables.sync.integration_models import (
     IntegrationType,
     KnowledgeIntegration,
+    SyncStatus,
 )
 from src.service.integrations.calendar.normalizer import CalendarEventNormalizer
 from src.service.integrations.calendar.writer import _ASYNC_PG_BIND_PARAMETER_LIMIT
@@ -363,6 +364,37 @@ class TestCalendarIncrementalBatchWrites:
             assert len(compiled.params) <= _ASYNC_PG_BIND_PARAMETER_LIMIT
 
     @pytest.mark.asyncio
+    async def test_attendee_snapshot_deduplicates_case_insensitive_email(self) -> None:
+        """Provider duplicate attendees must not violate the event/email unique index."""
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=_FakeExecuteResult())
+        service = CalendarSyncService(session, uuid4())
+        event = _event_row("ical-duplicate-attendee")
+
+        await service._sync_attendees(
+            event,
+            _normalize_event(
+                _google_event(
+                    provider_id="evt-duplicate-attendee",
+                    external_id="ical-duplicate-attendee",
+                    attendees=[
+                        {
+                            "email": "Buyer@Example.com",
+                            "displayName": "First",
+                            "organizer": True,
+                        },
+                        {"email": "buyer@example.com", "displayName": "Latest"},
+                    ],
+                )
+            ),
+        )
+
+        insert_params = session.execute.await_args_list[1].args[0].compile().params
+        assert list(insert_params.values()).count("buyer@example.com") == 1
+        assert "Latest" in insert_params.values()
+        assert True in insert_params.values()
+
+    @pytest.mark.asyncio
     async def test_batch_upsert_user_states_resets_deleted_state_in_one_statement(self) -> None:
         """User-state rows are upserted in one statement and resurrect on conflict.
 
@@ -518,6 +550,36 @@ class TestCalendarIncrementalBatchWrites:
             str(first_event.event_id),
             str(second_event.event_id),
         ]
+
+    @pytest.mark.asyncio
+    async def test_full_sync_reports_partial_when_a_provider_record_is_rejected(self) -> None:
+        """A completed batch with rejected rows must not masquerade as success."""
+        organisation_id = uuid4()
+        integration = _make_integration(organisation_id=organisation_id)
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        session.add = MagicMock()
+        service = CalendarSyncService(session, organisation_id)
+        service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
+        service._sync_history.complete = AsyncMock()
+        provider_event = _google_event(
+            provider_id="missing-shared-uid",
+            external_id="temporary",
+        )
+        provider_event.pop("iCalUID")
+
+        result = await service.sync_calendar_events(
+            integration=integration,
+            provider="google",
+            events=[provider_event],
+        )
+
+        assert result["status"] == "partial"
+        assert result["records_failed"] == 1
+        assert result["failed_record_ids"] == ["missing-shared-uid"]
+        assert integration.last_sync_status == "partial"
+        assert integration.last_synced_at is None
+        assert service._sync_history.complete.await_args.kwargs["status"] == SyncStatus.PARTIAL
 
     @pytest.mark.asyncio
     async def test_incremental_sync_enqueues_changed_future_meeting_bot_after_commit(
@@ -793,7 +855,7 @@ class TestCalendarIncrementalBatchWrites:
         service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
         service._sync_history.complete = AsyncMock()
         service._load_existing_events_by_identity = AsyncMock(return_value={})
-        service._find_event_by_user_external_id = AsyncMock(return_value=None)
+        service._find_events_by_user_external_id = AsyncMock(return_value=[])
         first_occurrence = _event_row("ical-series", "2026-07-01T10:00:00Z")
         first_occurrence.start_at = datetime.now(UTC) + timedelta(hours=2)
         second_occurrence = _event_row("ical-series", "2026-07-02T10:00:00Z")
@@ -877,7 +939,7 @@ class TestCalendarIncrementalBatchWrites:
         service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
         service._sync_history.complete = AsyncMock()
         service._load_existing_events_by_identity = AsyncMock(return_value={})
-        service._find_event_by_user_external_id = AsyncMock(return_value=None)
+        service._find_events_by_user_external_id = AsyncMock(return_value=[])
         occurrence = _event_row("ms-occurrence-ical")
         service._find_events_by_series_external_id = AsyncMock(
             return_value=[(occurrence, "ms-occurrence-id")]
@@ -928,7 +990,9 @@ class TestCalendarIncrementalBatchWrites:
         service._sync_history.complete = AsyncMock()
         service._load_existing_events_by_identity = AsyncMock(return_value={})
         existing = _event_row("ical-recurring", "2026-07-01T10:00:00Z")
-        service._find_event_by_user_external_id = AsyncMock(return_value=existing)
+        service._find_events_by_user_external_id = AsyncMock(
+            return_value=[(existing, "google-occurrence-1")]
+        )
         service._mark_user_state_deleted = AsyncMock(return_value=True)
         service._all_user_states_deleted = AsyncMock(return_value=False)
         service._batch_upsert_events = AsyncMock(return_value={})
@@ -982,6 +1046,45 @@ class TestCalendarIncrementalBatchWrites:
         assert "calendar_events.organisation_id" in sql
         assert "calendar_event_user_states.integration_id" in sql
         assert "calendar_event_user_states.series_external_id" in sql
+
+    @pytest.mark.asyncio
+    async def test_mailbox_id_lookup_returns_all_recurring_revision_rows(self) -> None:
+        """One provider ID may map to multiple revisions; deletion must see every row."""
+        organisation_id = uuid4()
+        integration_id = uuid4()
+        rows = [
+            (_event_row("ical-revision-1"), "provider-event-id"),
+            (_event_row("ical-revision-2"), "provider-event-id"),
+        ]
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=SimpleNamespace(all=lambda: rows))
+        service = CalendarSyncService(session, organisation_id)
+
+        result = await service._find_events_by_user_external_id(
+            "provider-event-id",
+            integration_id,
+        )
+
+        assert result == rows
+        sql = str(session.execute.call_args.args[0].compile(dialect=postgresql.dialect()))
+        assert "calendar_events.organisation_id" in sql
+        assert "calendar_event_user_states.integration_id" in sql
+        assert "calendar_event_user_states.external_id" in sql
+
+    @pytest.mark.asyncio
+    async def test_all_user_states_deleted_uses_bounded_existence_lookup(self) -> None:
+        """Several remaining mailbox copies must not trigger MultipleResultsFound."""
+        session = AsyncMock()
+        session.execute = AsyncMock(
+            return_value=SimpleNamespace(
+                scalars=lambda: SimpleNamespace(first=lambda: SimpleNamespace())
+            )
+        )
+        service = CalendarSyncService(session, uuid4())
+
+        assert await service._all_user_states_deleted(uuid4()) is False
+        sql = str(session.execute.await_args.args[0].compile(dialect=postgresql.dialect()))
+        assert "LIMIT" in sql
 
     @pytest.mark.asyncio
     async def test_incremental_sync_does_not_enqueue_ineligible_meeting_bot_events(
@@ -1748,7 +1851,7 @@ class TestCalendarIncrementalResultStructure:
         }
 
         sample_result = {
-            "status": "success",
+            "status": "partial",
             "records_processed": 15,
             "records_failed": 1,
             "created": 5,
