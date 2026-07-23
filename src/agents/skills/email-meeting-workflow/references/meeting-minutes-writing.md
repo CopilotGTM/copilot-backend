@@ -10,8 +10,9 @@ post-meeting follow-up based on a transcript, uploaded audio, summary, or meetin
 - After presenting the minutes, offer to prepare a customer-safe follow-up email.
 - If the user asks to share the MOM, prepare the email and save it to the provider Drafts
   folder by default. Do not send without exact confirmation.
-- If the request refers to an existing email chain and reply-draft tooling is unavailable,
-  provide the reply copy but do not silently start a new thread.
+- If the user asks to share the MOM on an existing email chain, resolve the exact source
+  message and call `save_email_draft` with `reply_to_internet_message_id`. Otherwise,
+  save it as a new email draft.
 
 ## Required context
 

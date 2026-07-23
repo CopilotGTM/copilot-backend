@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync import (
+    Email,
     IntegrationActivityRequest,
     IntegrationActivityRequestStatus,
     IntegrationType,
@@ -24,6 +25,7 @@ from src.service.email_sends.models import (
     EmailDraftOperationResult,
     EmailDraftSaveRequest,
     EmailDraftSnapshot,
+    EmailSendAddress,
     EmailSendCreateRequest,
     EmailSendCreateResult,
     EmailSendError,
@@ -44,25 +46,35 @@ EMAIL_DRAFT_SEND_ACTIVITY_TYPE = "send_email_draft"
 
 
 class EmailSendClient(Protocol):
+    """Provider operations required by the mailbox send and draft service."""
+
     async def send_mail(
         self,
         token_info,
         request: EmailSendCreateRequest,
-    ) -> EmailSendProviderResult | None: ...
+    ) -> EmailSendProviderResult | None:
+        """Send one new message through the resolved mailbox provider."""
+        ...
 
     async def save_draft(
         self,
         token_info,
         request: EmailDraftSaveRequest,
-    ) -> EmailDraftSnapshot: ...
+    ) -> EmailDraftSnapshot:
+        """Create or update one new or threaded provider draft."""
+        ...
 
-    async def get_draft(self, token_info, draft_id: str) -> EmailDraftSnapshot: ...
+    async def get_draft(self, token_info, draft_id: str) -> EmailDraftSnapshot:
+        """Return the provider's current draft state for review."""
+        ...
 
     async def send_draft(
         self,
         token_info,
         draft_id: str,
-    ) -> EmailSendProviderResult: ...
+    ) -> EmailSendProviderResult:
+        """Send one provider draft that the service has already reviewed."""
+        ...
 
 
 def _activity_status_value(status: IntegrationActivityRequestStatus | str) -> str:
@@ -262,11 +274,15 @@ class EmailSendService:
                 "Choose the sender mailbox before saving this draft.",
                 status_code=409,
             )
+        provider_request = await self._prepare_reply_draft(
+            request.model_copy(update={"sender_email": sender_email}),
+            integration_id=resolved.integration.integration_id,
+            sender_email=sender_email,
+        )
         await self._ensure_deal_access(request.deal_id)
         operation = (
             EMAIL_DRAFT_UPDATE_ACTIVITY_TYPE if request.draft_id else EMAIL_DRAFT_SAVE_ACTIVITY_TYPE
         )
-        provider_request = request.model_copy(update={"sender_email": sender_email})
         idempotency_key = request.idempotency_key or self._draft_operation_key(
             operation,
             provider_request,
@@ -336,6 +352,129 @@ class EmailSendService:
             )
             await self._mark_failed(audit_row, wrapped)
             raise wrapped from exc
+
+    async def _prepare_reply_draft(
+        self,
+        request: EmailDraftSaveRequest,
+        *,
+        integration_id: UUID,
+        sender_email: str,
+    ) -> EmailDraftSaveRequest:
+        """Resolve a public message ID to one mailbox-owned provider reply target.
+
+        New drafts and updates pass through unchanged. Reply drafts replace
+        model-supplied routing fields with synchronized source data, so a model
+        cannot redirect a reply while still claiming it belongs to that thread.
+        """
+
+        source_message_id = request.reply_to_internet_message_id
+        if not source_message_id:
+            return request
+
+        email_c = cast(Any, Email).__table__.c
+        # Organisation and integration predicates are the trust boundary. An
+        # RFC Message-ID is shared across recipients and is not authorization.
+        statement = (
+            select(Email)
+            .where(
+                email_c.organisation_id == self.organisation_id,
+                email_c.integration_id == integration_id,
+                email_c.internet_message_id == source_message_id,
+                email_c.is_deleted.is_(False),
+            )
+            .order_by(email_c.received_at.desc(), email_c.email_id.desc())
+            .limit(1)
+        )
+        result = await self.session.execute(statement)
+        source = result.scalars().first()
+        if source is None:
+            raise EmailSendError(
+                "email_reply_source_not_found",
+                "I could not find that source email in the selected mailbox.",
+                status_code=404,
+            )
+        if not source.external_message_id or not source.thread_id or not source.internet_message_id:
+            raise EmailSendError(
+                "email_reply_source_incomplete",
+                "That email is missing provider thread information required for a reply draft.",
+                status_code=409,
+            )
+        if not source.subject:
+            raise EmailSendError(
+                "email_reply_subject_missing",
+                "That email is missing the subject required to keep the reply in its thread.",
+                status_code=409,
+            )
+
+        to, cc = self._reply_recipients(
+            source,
+            sender_email=sender_email,
+            reply_all=request.reply_mode == "reply_all",
+        )
+        references = list(
+            dict.fromkeys([*list(source.references or []), source.internet_message_id])
+        )
+        subject = (
+            source.subject if source.subject.lower().startswith("re:") else f"Re: {source.subject}"
+        )
+        return cast(
+            EmailDraftSaveRequest,
+            request.model_copy(
+                update={
+                    "to": to,
+                    "cc": cc,
+                    "bcc": [],
+                    "subject": subject,
+                    "reply_to_external_message_id": source.external_message_id,
+                    "reply_thread_id": source.thread_id,
+                    "reply_references": references,
+                }
+            ),
+        )
+
+    @staticmethod
+    def _reply_recipients(
+        source: Email,
+        *,
+        sender_email: str,
+        reply_all: bool,
+    ) -> tuple[list[EmailSendAddress], list[EmailSendAddress]]:
+        """Derive safe reply recipients while excluding the authenticated sender."""
+
+        sender = sender_email.strip().lower()
+        source_from = (source.from_email or "").strip().lower()
+        if source_from and source_from != sender:
+            primary = [(source_from, source.from_name)]
+        else:
+            # A follow-up anchored to the user's own last message should go back
+            # to its original recipients instead of creating a reply to self.
+            primary = [(address, None) for address in list(source.to_emails or [])]
+
+        seen = {sender}
+
+        def _addresses(values: list[tuple[str, str | None]]) -> list[EmailSendAddress]:
+            resolved: list[EmailSendAddress] = []
+            for raw_email, name in values:
+                normalized = (raw_email or "").strip().lower()
+                if not normalized or normalized in seen:
+                    continue
+                seen.add(normalized)
+                resolved.append(EmailSendAddress(email=normalized, name=name))
+            return resolved
+
+        to = _addresses(primary)
+        cc_candidates: list[tuple[str, str | None]] = []
+        if reply_all:
+            cc_candidates.extend((address, None) for address in list(source.to_emails or []))
+            cc_candidates.extend((address, None) for address in list(source.cc_emails or []))
+        cc = _addresses(cc_candidates)
+        if not to:
+            raise EmailSendError(
+                "email_reply_recipients_missing",
+                "That email does not contain a valid recipient for this reply.",
+                status_code=409,
+            )
+        return to, cc
 
     async def get_draft(
         self,
@@ -510,6 +649,11 @@ class EmailSendService:
         )
         row.activity_type = operation
         row.request_payload["draft_id"] = request.draft_id
+        if request.reply_to_internet_message_id:
+            row.request_payload["reply_to_internet_message_id"] = (
+                request.reply_to_internet_message_id
+            )
+            row.request_payload["reply_mode"] = request.reply_mode
         return row
 
     def _build_snapshot_audit_row(

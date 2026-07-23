@@ -38,7 +38,8 @@ def _format_addresses(recipients: list[EmailSendAddress]) -> str:
 
 
 def build_gmail_send_message_payload(request: EmailSendCreateRequest) -> dict[str, str]:
-    """Build the base64url RFC 2822 payload expected by Gmail messages.send."""
+    """Build Gmail MIME, including thread headers for a verified reply draft."""
+
     message = EmailMessage()
     if request.sender_email:
         message["From"] = request.sender_email
@@ -48,11 +49,19 @@ def build_gmail_send_message_payload(request: EmailSendCreateRequest) -> dict[st
     if request.bcc:
         message["Bcc"] = _format_addresses(request.bcc)
     message["Subject"] = request.subject
+    if isinstance(request, EmailDraftSaveRequest) and request.reply_to_internet_message_id:
+        message["In-Reply-To"] = request.reply_to_internet_message_id
+        message["References"] = " ".join(request.reply_references)
     subtype = "html" if request.body_content_type == "HTML" else "plain"
     message.set_content(request.body, subtype=subtype)
 
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii").rstrip("=")
-    return {"raw": raw}
+    payload = {"raw": raw}
+    if isinstance(request, EmailDraftSaveRequest) and request.reply_thread_id:
+        # Gmail requires both the provider thread ID and RFC reply headers; one
+        # without the other can silently create a separate conversation.
+        payload["threadId"] = request.reply_thread_id
+    return payload
 
 
 def _draft_addresses(message: Message, header: str) -> list[EmailSendAddress]:
@@ -75,13 +84,49 @@ def _draft_body(message: Message) -> tuple[str, str]:
     return str(message.get_content()), "HTML" if message.get_content_subtype() == "html" else "Text"
 
 
+def _decode_gmail_raw_message(payload: dict[str, Any]) -> Message:
+    """Decode one Gmail message payload so draft state can be reviewed or preserved."""
+
+    encoded = str(payload.get("raw") or "")
+    encoded += "=" * (-len(encoded) % 4)
+    return message_from_bytes(base64.urlsafe_b64decode(encoded), policy=policy.default)
+
+
+def preserve_gmail_draft_thread(
+    message_payload: dict[str, str],
+    existing_draft: dict[str, Any],
+) -> dict[str, str]:
+    """Carry provider thread identity across Gmail's replace-on-update operation.
+
+    Gmail destroys and recreates the message inside a draft during update. A
+    body edit therefore has to copy the existing thread ID and RFC headers or
+    the provider can turn a reply draft into a new conversation.
+    """
+
+    existing_payload = (
+        existing_draft.get("message") if isinstance(existing_draft.get("message"), dict) else {}
+    )
+    thread_id = str(existing_payload.get("threadId") or "")
+    if not thread_id:
+        return message_payload
+
+    existing_message = _decode_gmail_raw_message(existing_payload)
+    updated_message = _decode_gmail_raw_message(message_payload)
+    for header in ("Subject", "In-Reply-To", "References"):
+        if header in updated_message:
+            del updated_message[header]
+        if existing_message.get(header):
+            updated_message[header] = str(existing_message[header])
+
+    raw = base64.urlsafe_b64encode(updated_message.as_bytes()).decode("ascii").rstrip("=")
+    return {"raw": raw, "threadId": thread_id}
+
+
 def normalize_gmail_draft(payload: dict[str, Any]) -> EmailDraftSnapshot:
     """Decode Gmail's MIME draft into the provider-neutral review contract."""
 
     message_payload = payload.get("message") if isinstance(payload.get("message"), dict) else {}
-    encoded = str(message_payload.get("raw") or "")
-    encoded += "=" * (-len(encoded) % 4)
-    message = message_from_bytes(base64.urlsafe_b64decode(encoded), policy=policy.default)
+    message = _decode_gmail_raw_message(message_payload)
     to = _draft_addresses(message, "To")
     cc = _draft_addresses(message, "Cc")
     bcc = _draft_addresses(message, "Bcc")
@@ -181,6 +226,8 @@ class GmailEmailSendClient:
         token_info: IntegrationTokenInfo,
         request: EmailSendCreateRequest,
     ) -> EmailSendProviderResult:
+        """Send one new Gmail message after the service resolves mailbox authority."""
+
         payload = build_gmail_send_message_payload(request)
 
         async def _request(access_token: str) -> dict[str, Any]:
@@ -246,11 +293,20 @@ class GmailEmailSendClient:
         async def _request(access_token: str) -> dict[str, Any]:
             headers = {"Authorization": f"Bearer {access_token}"}
             async with httpx.AsyncClient(headers=headers, timeout=30.0) as client:
+                provider_message = message_payload
+                if request.draft_id:
+                    existing = await _gmail_json_request(
+                        client,
+                        "GET",
+                        f"/gmail/v1/users/me/drafts/{request.draft_id}",
+                        params={"format": "raw"},
+                    )
+                    provider_message = preserve_gmail_draft_thread(provider_message, existing)
                 saved = await _gmail_json_request(
                     client,
                     method,
                     endpoint,
-                    json_body={"message": message_payload},
+                    json_body={"message": provider_message},
                 )
                 # Gmail create/update responses omit raw MIME; read it back so the
                 # confirmation hash represents provider state rather than input.

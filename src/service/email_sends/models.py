@@ -4,9 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, TypeAdapter, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 
 EMAIL_ADAPTER = TypeAdapter(EmailStr)
 
@@ -30,6 +39,8 @@ class EmailSendAddress(BaseModel):
     @field_validator("email")
     @classmethod
     def validate_email(cls, value: str) -> str:
+        """Normalize recipient addresses before provider or audit use."""
+
         return str(EMAIL_ADAPTER.validate_python(value)).strip().lower()
 
 
@@ -54,6 +65,8 @@ class EmailSendCreateRequest(BaseModel):
     @field_validator("subject", "body", mode="before")
     @classmethod
     def clean_required_string(cls, value: str) -> str:
+        """Reject content that becomes empty after user-input whitespace is removed."""
+
         cleaned = str(value).strip()
         if not cleaned:
             raise ValueError("value is required")
@@ -62,6 +75,8 @@ class EmailSendCreateRequest(BaseModel):
     @field_validator("body_content_type")
     @classmethod
     def validate_body_content_type(cls, value: str) -> str:
+        """Keep body types within the common Gmail and Outlook draft contract."""
+
         cleaned = value.strip()
         if cleaned not in {"Text", "HTML"}:
             raise ValueError("body_content_type must be Text or HTML")
@@ -70,6 +85,8 @@ class EmailSendCreateRequest(BaseModel):
     @field_validator("sender_email")
     @classmethod
     def normalize_sender_email(cls, value: str | None) -> str | None:
+        """Normalize an optional mailbox selector without inventing a default."""
+
         if value is None:
             return None
         return str(EMAIL_ADAPTER.validate_python(value)).strip().lower()
@@ -95,13 +112,31 @@ class EmailSendProviderResult(BaseModel):
 
 
 class EmailDraftSaveRequest(EmailSendCreateRequest):
-    """Create or replace one draft in the authenticated user's mailbox.
+    """Create, reply with, or replace one draft in the authenticated user's mailbox.
 
     `draft_id` is provider-owned and may only be used after the service resolves
     the current user's integration; callers cannot use it to select a mailbox.
+    `reply_to_internet_message_id` is the cross-provider source identity exposed
+    by mailbox read tools. Provider-owned reply fields are populated only after
+    the service verifies that source inside the selected mailbox.
     """
 
     draft_id: str | None = Field(default=None, max_length=1024)
+    reply_to_internet_message_id: str | None = Field(default=None, max_length=512)
+    reply_mode: Literal["reply", "reply_all"] = "reply"
+    reply_to_external_message_id: str | None = Field(default=None, max_length=1024, exclude=True)
+    reply_thread_id: str | None = Field(default=None, max_length=1024, exclude=True)
+    reply_references: list[str] = Field(default_factory=list, exclude=True)
+
+    @model_validator(mode="after")
+    def validate_draft_target(self) -> EmailDraftSaveRequest:
+        """Keep create, reply-create, and existing-draft update modes unambiguous."""
+
+        if self.draft_id and self.reply_to_internet_message_id:
+            raise ValueError("draft_id and reply_to_internet_message_id cannot be used together")
+        if self.reply_mode == "reply_all" and not self.reply_to_internet_message_id:
+            raise ValueError("reply_all requires reply_to_internet_message_id")
+        return self
 
 
 class EmailDraftSnapshot(BaseModel):
