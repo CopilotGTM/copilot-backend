@@ -61,7 +61,7 @@ flowchart TD
 
 | Trigger | Payload | When it runs | May create contacts? | Communication scope | Research behavior |
 |---|---|---|---|---|---|
-| Email sync | `changed_email_ids` | After the email sync service has persisted its records | Yes | Only changed email rows | No research |
+| Email sync | `changed_email_ids` | After the email sync service has persisted its records | Yes | Changed rows and their retained provider threads | No research |
 | Calendar sync | `changed_event_ids` | After the calendar transaction commits | Yes | Only changed event rows | No research |
 | Manual contact API | One `contact_id` | After the contact transaction commits | No; the contact already exists | All locally stored emails/events matching that contact's identities | Hydration does not research; the existing API research dispatch still runs separately |
 | Agent `create_contact` tool | One `contact_id` for a newly created contact | After the contact transaction commits | No; the contact already exists | All locally stored emails/events matching that contact's identities | Hydration does not research |
@@ -87,7 +87,7 @@ sequenceDiagram
     Sync->>Dispatcher: Enqueue changed source IDs
     Sync->>Mapper: Trigger deal mapping for the same changed IDs
     Dispatcher-->>Hydrator: deal.hydrate_contact_communications
-    Hydrator->>DB: Load only the changed source rows
+    Hydrator->>DB: Load changed sources and retained email thread context
     Hydrator->>DB: Resolve existing activity identities
     Hydrator->>DB: Create only eligible missing contacts/accounts
     Hydrator->>Feed: Upsert activity and object links
@@ -101,7 +101,7 @@ The email and calendar workers pass IDs returned by their sync services:
 - Email: `changed_email_ids`
 - Calendar: `changed_event_ids`
 
-No full-table scan is performed in this mode. Initial sync and later incremental/webhook-driven sync use the same integration task, so the same post-commit logic applies.
+No full-table scan is performed in this mode. Email context is bounded to the provider threads named by the changed rows, while calendar hydration still loads only changed events. Initial sync and later incremental/webhook-driven sync use the same integration task, so the same post-commit logic applies.
 
 ### Automatic Contact Eligibility
 
@@ -113,6 +113,13 @@ Automatic contact creation is conservative. A source communication is considered
 
 Only the organisation's configured domains are applied as domain-wide exclusions. A user or integration address never causes its whole domain to become internal. Public/free email domains are also not treated as organisation-wide internal domains; one internal Gmail address does not make every `gmail.com` participant internal.
 
+Email creation uses demonstrated relationship evidence rather than inbound frequency:
+
+- an internal sender makes every eligible external participant in that provider thread a creation candidate, including `to`, `cc`, and available `bcc` recipients;
+- an inbound-only thread never creates missing contacts, even when the sender follows up repeatedly;
+- when an internal reply changes the thread, retained earlier senders and copied participants become candidates and the retained thread is reprojected so their history is attached;
+- thread matching uses the Gmail/Outlook provider thread ID and never mutable subject text.
+
 For a qualifying communication, activity identities are normalized and deduplicated by email across the whole task batch. Activity matching excludes:
 
 - malformed email addresses;
@@ -121,7 +128,7 @@ For a qualifying communication, activity identities are normalized and deduplica
 - declined calendar attendees;
 - calendar resource attendees such as rooms.
 
-Automatic creation applies one additional restriction: obvious automated mailboxes such as `noreply`, `mailer-daemon`, and `postmaster` are not created. If such an address already belongs to a CRM contact, it remains eligible for activity matching.
+Automatic creation also excludes shared role and functional mailboxes such as `noreply`, `marketing`, `sales`, `support`, `apply`, and `newsletter`. Local parts are normalized across punctuation, regional variants, and `+` aliases before comparison. If such an address already belongs to a CRM contact, it remains eligible for activity matching.
 
 A calendar event with more than 25 attendees cannot create missing contacts automatically. Existing contacts in that event are still resolved and receive the meeting activity. This prevents large webinars or company-wide events from becoming accidental bulk imports without hiding legitimate history from contacts already in the CRM. These skip reasons are returned as counters in the task result.
 
@@ -203,13 +210,13 @@ Input: `changed_email_ids` and/or `changed_event_ids`.
 
 Behavior:
 
-1. Load only active changed emails and the requested calendar events.
+1. Load active changed emails, their retained provider-thread context, and the requested calendar events.
 2. Build the organisation's internal identity context.
-3. Identify valid external activity identities.
-4. Apply stricter creation-only guardrails to decide which missing contacts may be created.
+3. Identify valid external activity identities and whether each email thread contains an internal sender.
+4. Create from internally-sent threads while keeping inbound-only and role-mailbox identities activity-only.
 5. Reuse or create eligible contacts, then resolve existing contacts for suppressed identities.
-6. Project only the changed communications.
-7. Replace contact/company links for those source records with the complete set resolved from the changed record.
+6. Project changed events and the retained email threads that established the relationship.
+7. Replace contact/company links for those source records with the complete resolved participant set.
 
 This is the integration sync path and is the only hydration mode that automatically creates missing contacts.
 
@@ -296,6 +303,7 @@ New callers should use `deal.hydrate_contact_communications` rather than the cal
 
 - Manual/API/tool enqueue is best-effort after commit. A periodic reconciliation job could be added if missed handoffs become operationally significant.
 - Explicit-contact mode searches all locally stored historical communications for up to 100 contacts. It is currently used by manual web/tool creation; very large tenants may eventually need time windows or cursor-based reconciliation.
+- Changed-email mode reloads the complete retained provider thread for each changed batch. This intentionally preserves all discussion participants; exceptionally large threads may eventually need a participant projection table.
 - Automatic identity creation uses one advisory transaction lock per organisation. A normalized contact-identity table with a database unique constraint is the clean upgrade if this lock becomes a throughput bottleneck.
 - Hydration can only connect data already persisted locally. It does not ask a provider for older history that was never synced.
 

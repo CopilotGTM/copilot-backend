@@ -14,7 +14,7 @@ from enum import StrEnum
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import array
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -44,11 +44,44 @@ from src.service.crm.utils.internal_domains import normalize_internal_domains
 # above this product guardrail rather than flooding CRM with weak attendee identities.
 MAX_CONTACT_DISCOVERY_ATTENDEES = 25
 _ROLE_MAILBOX_LOCAL_PARTS = {
+    "accounts",
+    "admin",
+    "alerts",
+    "apply",
+    "billing",
+    "bot",
+    "calendar",
+    "careers",
+    "compliance",
+    "contact",
     "donotreply",
-    "mailer-daemon",
-    "no-reply",
+    "events",
+    "finance",
+    "hello",
+    "help",
+    "hr",
+    "info",
+    "insider",
+    "jobs",
+    "legal",
+    "mailerdaemon",
+    "marketing",
+    "newsletter",
     "noreply",
+    "notification",
+    "notifications",
+    "partners",
     "postmaster",
+    "privacy",
+    "recruiting",
+    "resource",
+    "room",
+    "sales",
+    "security",
+    "success",
+    "support",
+    "team",
+    "webinar",
 }
 
 
@@ -62,6 +95,7 @@ class SkipReason(StrEnum):
     DECLINED_ATTENDEE = "declined_attendee"
     RESOURCE_ATTENDEE = "resource_attendee"
     NO_INTERNAL_PARTICIPANT = "no_internal_participant"
+    INBOUND_UNENGAGED = "inbound_unengaged"
     TOO_MANY_ATTENDEES = "too_many_attendees"
 
 
@@ -124,13 +158,23 @@ def build_contact_communication_hydration_plan(
     candidates: dict[str, str | None] = {}
     activity_identities: set[str] = set()
 
-    # A communication is eligible only when a known coworker participated; otherwise an
-    # arbitrary provider row could create contacts unrelated to this organisation.
-    for email_record in emails:
-        participants = _email_participants(email_record)
+    # A sent message is evidence that a coworker intentionally engaged the thread. Inbound-only
+    # threads remain available for activity matching but cannot turn cold outreach into contacts.
+    for thread_emails in _group_email_threads(emails):
+        participants = [
+            participant
+            for email_record in thread_emails
+            for participant in _email_participants(email_record)
+        ]
         if not _has_internal_participant(participants, context):
             counters[SkipReason.NO_INTERNAL_PARTICIPANT.value] += 1
             continue
+        create_contacts = any(
+            _is_internal_identity(email_record.from_email, context)
+            for email_record in thread_emails
+        )
+        if not create_contacts:
+            counters[SkipReason.INBOUND_UNENGAGED.value] += 1
         for raw_email, name in participants:
             _add_candidate(
                 candidates,
@@ -139,7 +183,7 @@ def build_contact_communication_hydration_plan(
                 raw_email=raw_email,
                 name=name,
                 context=context,
-                create_contact=True,
+                create_contact=create_contacts,
             )
 
     # Bound attendee fan-out before identity work so webinar-sized events cannot create
@@ -198,12 +242,16 @@ class ContactCommunicationHydrationService:
         changed_event_ids: list[UUID] | None = None,
     ) -> ContactCommunicationHydrationResult:
         """Create contacts from one committed email/calendar change batch."""
-        emails = await self._load_changed_emails(changed_email_ids or [])
+        changed_emails = await self._load_changed_emails(changed_email_ids or [])
         events = await self._load_changed_events(changed_event_ids or [])
+        context = await self._load_context()
+        # When a reply proves engagement, hydrate the retained thread as one relationship so
+        # earlier senders and copied participants receive both a contact and their history.
+        emails = await self._load_email_thread_context(changed_emails)
         plan = build_contact_communication_hydration_plan(
             emails=emails,
             events=events,
-            context=await self._load_context(),
+            context=context,
         )
         if plan.candidates:
             # copilotgtm: serialize contact identity creation per org until a
@@ -432,6 +480,39 @@ class ContactCommunicationHydrationService:
         )
         return list(result.scalars().all())
 
+    async def _load_email_thread_context(self, changed_emails: list[Email]) -> list[Email]:
+        """Load retained rows in the changed messages' provider threads.
+
+        Gmail and Outlook both persist provider thread IDs. Messages without one remain
+        single-message conversations; subject text is deliberately ignored because unrelated
+        cold emails often reuse the same subject.
+        """
+        if not changed_emails:
+            return []
+        thread_keys = {
+            (email.integration_id, email.thread_id) for email in changed_emails if email.thread_id
+        }
+        related = await self._load_email_context_rows(thread_keys)
+        return list({email.email_id: email for email in [*changed_emails, *related]}.values())
+
+    async def _load_email_context_rows(
+        self,
+        thread_keys: set[tuple[UUID, str]],
+    ) -> list[Email]:
+        """Load active org-scoped rows matching provider thread identities."""
+        if not thread_keys:
+            return []
+        # Thread IDs come from provider payloads; organisation scope remains the trust boundary
+        # preventing one tenant's identifiers from selecting another's rows.
+        result = await self.org_session.execute(
+            select(Email).where(
+                col(Email.organisation_id) == self.organisation_id,
+                col(Email.is_deleted).is_(False),
+                tuple_(col(Email.integration_id), col(Email.thread_id)).in_(thread_keys),
+            )
+        )
+        return list(result.scalars().all())
+
     async def _load_changed_events(self, event_ids: list[UUID]) -> list[CalendarEvent]:
         """Load calendar rows named by the current queue payload under this organisation."""
         if not event_ids:
@@ -546,9 +627,10 @@ class ContactCommunicationHydrationService:
 
 
 def _is_role_mailbox(email: str) -> bool:
-    local_part = email.rsplit("@", 1)[0]
+    local_part = email.rsplit("@", 1)[0].split("+", 1)[0]
     compact = re.sub(r"[^a-z0-9]", "", local_part)
-    return local_part in _ROLE_MAILBOX_LOCAL_PARTS or compact in _ROLE_MAILBOX_LOCAL_PARTS
+    tokens = set(re.findall(r"[a-z0-9]+", local_part))
+    return compact in _ROLE_MAILBOX_LOCAL_PARTS or bool(tokens & _ROLE_MAILBOX_LOCAL_PARTS)
 
 
 def _usable_display_name(name: str | None) -> str | None:
@@ -568,6 +650,35 @@ def _email_participants(email: Email) -> list[tuple[str | None, str | None]]:
         *[(value, None) for value in email.cc_emails or []],
         *[(value, None) for value in email.bcc_emails or []],
     ]
+
+
+def _group_email_threads(emails: list[Email]) -> list[list[Email]]:
+    """Group retained messages by provider thread without guessing from subject text."""
+    grouped: dict[tuple[str, UUID, str], list[Email]] = {}
+    for email in emails:
+        key = (
+            ("thread", email.integration_id, email.thread_id)
+            if email.thread_id
+            else ("message", email.integration_id, str(email.email_id))
+        )
+        grouped.setdefault(key, []).append(email)
+    return list(grouped.values())
+
+
+def _is_internal_identity(
+    raw_email: str | None,
+    context: ContactCommunicationHydrationContext,
+) -> bool:
+    """Return whether an address is an exact coworker or configured company-domain identity."""
+    normalized = normalize_email(raw_email)
+    return bool(
+        normalized
+        and is_valid_email(normalized)
+        and (
+            normalized in context.internal_emails
+            or extract_email_domain(normalized) in context.internal_domains
+        )
+    )
 
 
 def _event_participants(
@@ -626,12 +737,7 @@ def _has_internal_participant(
     context: ContactCommunicationHydrationContext,
 ) -> bool:
     """Require one known internal participant before a communication can create contacts."""
-    return any(
-        normalized in context.internal_emails
-        or extract_email_domain(normalized) in context.internal_domains
-        for raw_email, _name in participants
-        if (normalized := normalize_email(raw_email)) and is_valid_email(normalized)
-    )
+    return any(_is_internal_identity(raw_email, context) for raw_email, _name in participants)
 
 
 def _is_resource_attendee(payload: dict | None) -> bool:
