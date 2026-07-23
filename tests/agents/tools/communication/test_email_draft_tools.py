@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 import pytest
-from src.agents.tools.communication.email_drafts import send_email_draft
+from src.agents.tools.communication.email_drafts import save_email_draft, send_email_draft
 from src.service.email_sends.models import (
     EmailDraftOperationResult,
     EmailDraftSnapshot,
@@ -40,6 +40,45 @@ def _snapshot() -> EmailDraftSnapshot:
         body="Please review the attached proposal.",
         content_hash="a" * 64,
     )
+
+
+@pytest.mark.asyncio
+async def test_save_reply_draft_reuses_existing_tool_contract(monkeypatch) -> None:
+    """The existing save tool forwards a source message instead of adding another tool."""
+
+    requests: list[object] = []
+
+    class FakeService:
+        """Capture the normalized request without crossing a provider boundary."""
+
+        def __init__(self, session, *, organisation_id, requested_by_user_id):
+            pass
+
+        async def save_draft(self, request):
+            """Return provider state after recording the reply discriminator."""
+            requests.append(request)
+            return EmailDraftOperationResult(status="draft_saved", snapshot=_snapshot())
+
+    monkeypatch.setattr(
+        "src.agents.tools.communication.email_drafts.EmailSendService",
+        FakeService,
+    )
+
+    result = await save_email_draft(
+        context=_FakeContext(UUID(int=1), UUID(int=2)),
+        to=["buyer@example.com"],
+        subject="Re: Proposal",
+        body="Thanks, I will review it.",
+        sender_email="seller@example.com",
+        reply_to_internet_message_id="<source@example.com>",
+        reply_mode="reply",
+    )
+
+    request = requests[0]
+    assert request.reply_to_internet_message_id == "<source@example.com>"
+    assert request.reply_mode == "reply"
+    assert result["draft_kind"] == "reply"
+    assert result["message"] == "Reply saved in the existing email thread."
 
 
 @pytest.mark.asyncio

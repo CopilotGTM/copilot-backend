@@ -570,6 +570,11 @@ def test_email_meeting_workflow_skill_has_description() -> None:
     skill = next(s for s in skills if s.name == "email-meeting-workflow")
     assert skill.description
     assert len(skill.description) <= 1024
+    description = skill.description.lower()
+    assert "reply" in description
+    assert "mom" in description
+    assert "audio" in description
+    assert "prioritize" in description
 
 
 def test_email_meeting_workflow_skill_has_instructions() -> None:
@@ -786,6 +791,20 @@ def test_email_meeting_workflow_skill_has_email_writing_reference() -> None:
     skill = next(s for s in skills if s.name == "email-meeting-workflow")
     assert "sales-email-writing.md" in skill.references
     assert "meeting-minutes-writing.md" in skill.references
+
+
+def test_email_meeting_workflow_routes_new_and_threaded_drafts_through_one_tool() -> None:
+    """Draft routing should reuse one tool with an explicit source-message discriminator."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "email-meeting-workflow")
+    instructions = skill.instructions
+
+    assert "reply_to_internet_message_id" in instructions
+    assert "Omit" in instructions
+    assert "new email" in instructions
+    assert "Never infer threading from a `Re:` subject alone" in instructions
+    assert "reply_mode=reply_all" in instructions
 
 
 def test_skills_system_prompt_snippet_mentions_call_analysis() -> None:

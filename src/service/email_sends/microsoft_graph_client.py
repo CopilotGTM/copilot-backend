@@ -130,6 +130,8 @@ class MicrosoftEmailSendClient:
         token_info: IntegrationTokenInfo,
         request: EmailSendCreateRequest,
     ) -> EmailSendProviderResult:
+        """Send one new Outlook message after the service resolves mailbox authority."""
+
         payload = build_microsoft_send_mail_payload(request)
 
         async def _request(access_token: str) -> None:
@@ -173,7 +175,7 @@ class MicrosoftEmailSendClient:
         token_info: IntegrationTokenInfo,
         request: EmailDraftSaveRequest,
     ) -> EmailDraftSnapshot:
-        """Create or patch an Outlook draft in the authenticated mailbox."""
+        """Create a new/reply draft or patch one Outlook draft in the current mailbox."""
 
         payload = build_microsoft_draft_payload(request)
 
@@ -183,6 +185,18 @@ class MicrosoftEmailSendClient:
                 "Content-Type": "application/json",
             }
             async with httpx.AsyncClient(headers=headers, timeout=30.0) as client:
+                if request.reply_to_external_message_id:
+                    # Graph owns reply recipient and conversation semantics. Use
+                    # its native operation instead of imitating a reply with a
+                    # newly-created message that only has a matching subject.
+                    action = (
+                        "createReplyAll" if request.reply_mode == "reply_all" else "createReply"
+                    )
+                    return await graph_api_post_json(
+                        client,
+                        f"/v1.0/me/messages/{request.reply_to_external_message_id}/{action}",
+                        json_body={"message": {"body": payload["body"]}},
+                    )
                 if request.draft_id:
                     return await graph_api_patch_json(
                         client,

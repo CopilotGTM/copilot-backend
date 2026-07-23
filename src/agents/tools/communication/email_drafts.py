@@ -32,8 +32,10 @@ async def save_email_draft(
     body_content_type: str = "Text",
     draft_id: str | None = None,
     deal_id: str | None = None,
+    reply_to_internet_message_id: str | None = None,
+    reply_mode: str = "reply",
 ) -> dict[str, Any]:
-    """Save a new or replacement provider draft for the authenticated user."""
+    """Save a new, reply, or replacement draft within the user's mailbox boundary."""
 
     if not context.user_id:
         return {"status": "error", "message": "Cannot save draft: user not identified."}
@@ -53,6 +55,8 @@ async def save_email_draft(
             sender_email=sender_email,
             draft_id=draft_id,
             deal_id=deal_id,
+            reply_to_internet_message_id=reply_to_internet_message_id,
+            reply_mode=reply_mode,
         )
     except (ValueError, TypeError) as exc:
         return {
@@ -77,7 +81,12 @@ async def save_email_draft(
         return {"status": "error", "message": "Draft saved without a readable provider copy."}
     return {
         "status": "draft_saved",
-        "message": "Email saved to your Drafts folder.",
+        "message": (
+            "Reply saved in the existing email thread."
+            if request.reply_to_internet_message_id
+            else "Email saved to your Drafts folder."
+        ),
+        "draft_kind": "reply" if request.reply_to_internet_message_id else "new",
         "draft_id": snapshot.draft_id,
         "sender_email": snapshot.sender_email,
         "to": _public_recipients(snapshot.to),
@@ -174,8 +183,15 @@ def create_save_email_draft(
         body_content_type: str = "Text",
         draft_id: str | None = None,
         deal_id: str | None = None,
+        reply_to_internet_message_id: str | None = None,
+        reply_mode: str = "reply",
     ) -> dict[str, Any]:
-        """Save email content to Gmail or Outlook Drafts; this does not send it."""
+        """Save a new or threaded email draft; this never sends the message.
+
+        Omit `reply_to_internet_message_id` for a new email. For a reply, pass
+        the exact source Message-ID returned by mailbox search/details and use
+        `reply_all` only when the user explicitly asks to include all recipients.
+        """
 
         result = await execute_with_capabilities(
             capabilities_getter(),
@@ -192,6 +208,8 @@ def create_save_email_draft(
                 "body_content_type": body_content_type,
                 "draft_id": draft_id,
                 "deal_id": deal_id,
+                "reply_to_internet_message_id": reply_to_internet_message_id,
+                "reply_mode": reply_mode,
             },
             description="Saving email draft",
             fallback_value={"status": "error", "message": "Failed to save email draft."},

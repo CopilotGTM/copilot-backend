@@ -1,6 +1,6 @@
 ---
 name: email-meeting-workflow
-description: Use when a chat, Teams, Slack, WhatsApp, web, or voice user asks to write or send an email, draft sales outreach or follow-up copy, schedule/create/send a meeting invite, send a meeting to people or all stakeholders, list or resolve meetings, send a meeting bot, or resolve email/meeting recipients from CRM context.
+description: Use when a chat, Teams, Slack, WhatsApp, web, or voice user asks to read, prioritize, write, draft, reply to, save, or send email; create or share MOM, meeting minutes, or recaps from audio, transcripts, summaries, or meeting records; schedule/create/send/update/cancel a meeting invite; list or resolve meetings; send a meeting bot; or resolve email/meeting recipients from CRM context.
 ---
 
 # Email Meeting Workflow
@@ -40,6 +40,7 @@ exist, ask a grounded choice question rather than a blank-slate question.
 | Send/share generated email content | Save it to the provider Drafts folder by default so the user can review it there |
 | Send an exact email immediately | Use `send_email` only after the user explicitly insists on immediate delivery and confirms the exact payload |
 | Send a saved mailbox draft | Preview its current provider content, then use `send_email_draft` after confirmation |
+| Save a reply in an existing email thread | Read the exact source thread, then call `save_email_draft` with its `reply_to_internet_message_id`; use `reply_all` only when explicit |
 | Create MOM or meeting minutes | Load `references/meeting-minutes-writing.md`, produce MOM in the current channel, and do not assume it should be emailed |
 | Schedule or send a meeting invite | Resolve title, date, time, timezone, organizer, attendees, and context; show the final preview; then wait for confirmation |
 | Update or reschedule an existing calendar event | Use `update_calendar_meeting` only for a single event organized by the user's connected calendar |
@@ -319,8 +320,17 @@ Determine whether the request is:
 Do not use `send_email` for replies, thread continuation, attachments, scheduled sends,
 or shared mailboxes unless the tool contract explicitly supports those operations.
 
-If the user asks for a reply and no reply-capable tool exists, provide a reply draft.
-Do not silently send it as a new email.
+For a bare request to draft or write a reply, provide reply copy in the current channel.
+When the user asks to save/store/put the reply in Drafts, call `save_email_draft` with
+the exact source email's `internet_message_id` as `reply_to_internet_message_id`. Omit
+that parameter for new email. Never infer threading from a `Re:` subject alone.
+
+Use `reply_mode=reply` by default. Use `reply_mode=reply_all` only when the user
+explicitly says reply all or explicitly asks to retain all thread recipients.
+
+If the source email cannot be resolved to one exact message in the selected mailbox,
+ask one grounded clarification using the likely thread candidates. Do not silently
+save the content as a new email.
 
 ### 2. Gather enough context
 
