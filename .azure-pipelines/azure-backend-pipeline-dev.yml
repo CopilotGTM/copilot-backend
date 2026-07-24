@@ -244,6 +244,7 @@ stages:
           #       buildAndPush ignores the 'arguments' input (no cache support)
           # ===================================================================
           - script: |
+              set -euo pipefail
               echo "##[section]🔨 Building API Image with cache..."
               docker build \
                 --target api \
@@ -269,6 +270,7 @@ stages:
           # Target: knowledge-worker (installs 'knowledge' extra)
           # ===================================================================
           - script: |
+              set -euo pipefail
               echo "##[section]🔨 Building Knowledge Worker Image with cache..."
               docker build \
                 --target knowledge-worker \
@@ -294,6 +296,7 @@ stages:
           # Target: light-worker (installs 'workers-light' extra)
           # ===================================================================
           - script: |
+              set -euo pipefail
               echo "##[section]🔨 Building Light Worker Image with cache..."
               docker build \
                 --target light-worker \
@@ -319,6 +322,7 @@ stages:
           # Target: integrations-worker (installs 'integrations' extra)
           # ===================================================================
           - script: |
+              set -euo pipefail
               echo "##[section]🔨 Building Integrations Worker Image with cache..."
               docker build \
                 --target integrations-worker \
