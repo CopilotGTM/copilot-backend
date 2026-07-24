@@ -324,6 +324,14 @@ def test_activity_link_classification_fields_have_database_guards() -> None:
     )
 
 
+def test_activity_link_role_allows_hydrated_communication_participants() -> None:
+    """Hydration participant links must satisfy the database role constraint."""
+    assert "PARTICIPANT" in _check_constraint_sql(
+        CRMActivityLink,
+        "ck_crm_activity_link_role",
+    )
+
+
 def test_activity_link_required_strings_are_not_optional_in_python() -> None:
     type_hints = get_type_hints(CRMActivityLink)
 
