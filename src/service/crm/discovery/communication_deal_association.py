@@ -1,9 +1,10 @@
-"""Associate hydrated communications with one unambiguous CRM deal.
+"""Associate hydrated communications with eligible CRM deals.
 
 Contact communication hydration calls this module after it resolves activity
 participants. The pure resolver keeps relationship activity on contact/account
 feeds unless both a deal contact and a current internal deal participant are
-present; database loading and writes are added around this rule below.
+present. Emails may belong to every deal satisfying that rule, while calendar
+events still require one unambiguous deal.
 """
 
 from __future__ import annotations
@@ -80,6 +81,7 @@ class CommunicationDealAssociationResult:
     associations_deactivated: int = 0
     discovered_contact_ids: set[UUID] = field(default_factory=set)
     email_deal_ids: set[UUID] = field(default_factory=set)
+    attachment_deal_ids: set[UUID] = field(default_factory=set)
 
 
 def resolve_unique_deal_id(
@@ -176,36 +178,43 @@ class CommunicationDealAssociationService:
         pending_discovery: dict[tuple[UUID, StakeholderSource], set[UUID]] = {}
 
         for email, communication in prepared_emails:
-            deal_id = resolve_unique_deal_id(communication, deals)
-            if deal_id is None:
-                self._count_unresolved(result, communication, deals)
-                continue
-            if target_deal_ids is not None and deal_id not in target_deal_ids:
+            deal_ids = set(communication.existing_deal_ids) or {
+                deal.deal_id for deal in deals if communication_matches_deal(communication, deal)
+            }
+            if target_deal_ids is not None:
+                deal_ids.intersection_update(target_deal_ids)
+            if not deal_ids:
                 result.unmatched += 1
                 continue
-            result.email_deal_ids.add(deal_id)
-            if communication.existing_deal_ids:
-                await self._update_last_contact(
+            for deal_id in sorted(deal_ids, key=str):
+                result.email_deal_ids.add(deal_id)
+                # The model is typed as bool but backed by a string column. Accept only the two
+                # canonical values that the extractor's SQL predicate can process.
+                attachment_flag = getattr(email, "has_attachments", False)
+                if attachment_flag is True or attachment_flag == "true":
+                    result.attachment_deal_ids.add(deal_id)
+                if communication.existing_deal_ids:
+                    await self._update_last_contact(
+                        deal_id=deal_id,
+                        contact_ids=set(communication.contact_ids),
+                        contact_time=email.received_at or email.sent_at,
+                    )
+                    if discover_participants and deal_id in deals_by_id:
+                        pending_discovery.setdefault(
+                            (deal_id, StakeholderSource.EMAIL_DISCOVERY), set()
+                        ).update(communication.contact_ids)
+                    continue
+                if await self._associate_email(
+                    email,
                     deal_id=deal_id,
                     contact_ids=set(communication.contact_ids),
-                    contact_time=email.received_at or email.sent_at,
-                )
-                if discover_participants and deal_id in deals_by_id:
-                    pending_discovery.setdefault(
-                        (deal_id, StakeholderSource.EMAIL_DISCOVERY), set()
-                    ).update(communication.contact_ids)
-                continue
-            if await self._associate_email(
-                email,
-                deal_id=deal_id,
-                contact_ids=set(communication.contact_ids),
-                contact_emails=set(communication.contact_emails),
-            ):
-                result.associations_created += 1
-                if discover_participants:
-                    pending_discovery.setdefault(
-                        (deal_id, StakeholderSource.EMAIL_DISCOVERY), set()
-                    ).update(communication.contact_ids)
+                    contact_emails=set(communication.contact_emails),
+                ):
+                    result.associations_created += 1
+                    if discover_participants:
+                        pending_discovery.setdefault(
+                            (deal_id, StakeholderSource.EMAIL_DISCOVERY), set()
+                        ).update(communication.contact_ids)
 
         for event, communication in prepared_events:
             if str(event.status or "").lower() == "cancelled":

@@ -28,6 +28,14 @@ from src.workers.deal_worker.utils.pipeline_dispatch import (
 
 logger = get_logger(__name__)
 
+# Broker retries cover the short outage window without delaying the committed hydration task.
+ATTACHMENT_PUBLISH_RETRY_POLICY = {
+    "max_retries": 3,
+    "interval_start": 0,
+    "interval_step": 1,
+    "interval_max": 2,
+}
+
 
 # Two delayed retries cover transient database failures without looping indefinitely. The hard
 # limit gives a worker 60 seconds after the ten-minute soft limit to unwind the batch cleanly.
@@ -112,6 +120,7 @@ def hydrate_contact_communications_task(
                 organisation_id=org_id,
                 discovered_contact_ids=set(result.discovered_contact_ids),
                 email_deal_jobs=email_deal_jobs,
+                attachment_deal_ids=set(result.attachment_deal_ids),
             )
             return {
                 "status": "success",
@@ -142,6 +151,7 @@ async def _dispatch_association_followups(
     organisation_id: UUID,
     discovered_contact_ids: set[UUID],
     email_deal_jobs: dict[UUID, UUID],
+    attachment_deal_ids: set[UUID],
 ) -> None:
     """Run idempotent downstream work only after association rows commit."""
     for contact_id in sorted(discovered_contact_ids, key=str):
@@ -161,24 +171,29 @@ async def _dispatch_association_followups(
                 exc_info=True,
             )
 
+    attachment_publish_error: Exception | None = None
     for deal_id, memory_job_id in sorted(email_deal_jobs.items(), key=lambda item: str(item[0])):
-        try:
-            extract_email_attachments_deal_task.apply_async(
-                kwargs={
-                    "organisation_id": str(organisation_id),
-                    "deal_id": str(deal_id),
-                },
-                headers=correlation_headers(),
-            )
-        except Exception:
-            logger.warning(
-                "Failed to dispatch email attachment extraction after association",
-                extra={
-                    "organisation_id": str(organisation_id),
-                    "deal_id": str(deal_id),
-                },
-                exc_info=True,
-            )
+        if deal_id in attachment_deal_ids:
+            try:
+                extract_email_attachments_deal_task.apply_async(
+                    kwargs={
+                        "organisation_id": str(organisation_id),
+                        "deal_id": str(deal_id),
+                    },
+                    headers=correlation_headers(),
+                    retry=True,
+                    retry_policy=ATTACHMENT_PUBLISH_RETRY_POLICY,
+                )
+            except Exception as exc:
+                attachment_publish_error = attachment_publish_error or exc
+                logger.warning(
+                    "Failed to dispatch email attachment extraction after association",
+                    extra={
+                        "organisation_id": str(organisation_id),
+                        "deal_id": str(deal_id),
+                    },
+                    exc_info=True,
+                )
         try:
             dispatch_deal_insight_pipeline(
                 str(organisation_id),
@@ -194,6 +209,8 @@ async def _dispatch_association_followups(
                 },
                 exc_info=True,
             )
+    if attachment_publish_error is not None:
+        raise attachment_publish_error
 
 
 def _parse_uuids(values: list[str] | None) -> list[UUID]:

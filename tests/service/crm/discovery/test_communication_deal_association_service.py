@@ -145,8 +145,22 @@ def test_does_not_collapse_multiple_existing_associations() -> None:
 
 
 @pytest.mark.asyncio
-async def test_changed_email_creates_only_unique_deal_association() -> None:
-    """The batch service writes one association after resolving hydrated contact IDs."""
+@pytest.mark.parametrize(
+    ("has_attachments", "expects_attachment_deal"),
+    [
+        (True, True),
+        ("true", True),
+        (False, False),
+        ("false", False),
+        (None, False),
+        ("TRUE", False),
+    ],
+)
+async def test_changed_email_tracks_only_canonical_attachment_flags(
+    has_attachments,
+    expects_attachment_deal: bool,
+) -> None:
+    """Only the provider-normalized attachment flag should enqueue deal asset work."""
     contact_id = uuid4()
     deal_id = uuid4()
     email = SimpleNamespace(
@@ -156,6 +170,7 @@ async def test_changed_email_creates_only_unique_deal_association() -> None:
         to_emails=["buyer@customer.test"],
         cc_emails=[],
         bcc_emails=[],
+        has_attachments=has_attachments,
     )
     service = CommunicationDealAssociationService(MagicMock(), uuid4())
     service._load_existing_deal_ids = AsyncMock(return_value=({}, {}))  # type: ignore[method-assign]
@@ -184,6 +199,7 @@ async def test_changed_email_creates_only_unique_deal_association() -> None:
     assert result.associations_created == 1
     assert result.ambiguous == 0
     assert result.email_deal_ids == {deal_id}
+    assert result.attachment_deal_ids == ({deal_id} if expects_attachment_deal else set())
     service._associate_email.assert_awaited_once_with(  # type: ignore[attr-defined]
         email,
         deal_id=deal_id,
@@ -193,9 +209,10 @@ async def test_changed_email_creates_only_unique_deal_association() -> None:
 
 
 @pytest.mark.asyncio
-async def test_changed_email_leaves_multiple_matching_deals_unassociated() -> None:
-    """The service must not replace an ambiguous relationship activity with a deal card."""
+async def test_existing_email_association_still_tracks_attachment_recovery() -> None:
+    """Historical replay must recover assets even when the deal link already exists."""
     contact_id = uuid4()
+    deal_id = uuid4()
     email = SimpleNamespace(
         email_id=uuid4(),
         internet_message_id="message-1",
@@ -203,25 +220,69 @@ async def test_changed_email_leaves_multiple_matching_deals_unassociated() -> No
         to_emails=["buyer@customer.test"],
         cc_emails=[],
         bcc_emails=[],
+        has_attachments=True,
+        received_at=None,
+        sent_at=None,
+    )
+    service = CommunicationDealAssociationService(MagicMock(), uuid4())
+    service._load_existing_deal_ids = AsyncMock(  # type: ignore[method-assign]
+        return_value=({"message-1": {deal_id}}, {})
+    )
+    service._load_deal_candidates = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            DealCandidate(
+                deal_id=deal_id,
+                contact_ids=frozenset({contact_id}),
+                internal_emails=frozenset({"owner@acme.test"}),
+            )
+        ]
+    )
+    service._update_last_contact = AsyncMock()  # type: ignore[method-assign]
+
+    result = await service.associate_changed_communications(
+        emails=[email],
+        events=[],
+        identity_contacts={
+            "buyer@customer.test": SimpleNamespace(contact_id=contact_id),
+        },
+        integration_id=None,
+        discover_participants=False,
+    )
+
+    assert result.email_deal_ids == {deal_id}
+    assert result.attachment_deal_ids == {deal_id}
+    service._update_last_contact.assert_awaited_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_changed_email_associates_every_matching_deal() -> None:
+    """One email may be valid activity for multiple deals sharing its participants."""
+    contact_id = uuid4()
+    deal_ids = {uuid4(), uuid4()}
+    email = SimpleNamespace(
+        email_id=uuid4(),
+        internet_message_id="message-1",
+        from_email="owner@acme.test",
+        to_emails=["buyer@customer.test"],
+        cc_emails=[],
+        bcc_emails=[],
+        has_attachments=True,
     )
     service = CommunicationDealAssociationService(MagicMock(), uuid4())
     service._load_existing_deal_ids = AsyncMock(return_value=({}, {}))  # type: ignore[method-assign]
     service._load_deal_candidates = AsyncMock(  # type: ignore[method-assign]
         return_value=[
             DealCandidate(
-                deal_id=uuid4(),
+                deal_id=deal_id,
                 contact_ids=frozenset({contact_id}),
                 internal_emails=frozenset({"owner@acme.test"}),
-            ),
-            DealCandidate(
-                deal_id=uuid4(),
-                contact_ids=frozenset({contact_id}),
-                internal_emails=frozenset({"owner@acme.test"}),
-            ),
+            )
+            for deal_id in deal_ids
         ]
     )
-    service._associate_email = AsyncMock()  # type: ignore[method-assign]
+    service._associate_email = AsyncMock(return_value=True)  # type: ignore[method-assign]
     service._associate_event = AsyncMock()  # type: ignore[method-assign]
+    service._discover_participants = AsyncMock(return_value=set())  # type: ignore[method-assign]
 
     result = await service.associate_changed_communications(
         emails=[email],
@@ -232,16 +293,22 @@ async def test_changed_email_leaves_multiple_matching_deals_unassociated() -> No
         integration_id=None,
     )
 
-    assert result.associations_created == 0
-    assert result.ambiguous == 1
-    service._associate_email.assert_not_awaited()  # type: ignore[attr-defined]
+    assert result.associations_created == 2
+    assert result.ambiguous == 0
+    assert result.email_deal_ids == deal_ids
+    assert result.attachment_deal_ids == deal_ids
+    assert {
+        call.kwargs["deal_id"]
+        for call in service._associate_email.await_args_list  # type: ignore[attr-defined]
+    } == deal_ids
 
 
 @pytest.mark.asyncio
-async def test_targeted_replay_still_checks_other_deals_for_ambiguity() -> None:
-    """A deal-scoped replay must not hide another equally eligible deal."""
+async def test_targeted_replay_associates_only_matching_target_deal() -> None:
+    """A deal-scoped replay may link its target without mutating another matching deal."""
     contact_id = uuid4()
     target_deal_id = uuid4()
+    other_deal_id = uuid4()
     email = SimpleNamespace(
         email_id=uuid4(),
         internet_message_id="message-1",
@@ -249,6 +316,7 @@ async def test_targeted_replay_still_checks_other_deals_for_ambiguity() -> None:
         to_emails=["buyer@customer.test"],
         cc_emails=[],
         bcc_emails=[],
+        has_attachments=True,
     )
     service = CommunicationDealAssociationService(MagicMock(), uuid4())
     service._load_existing_deal_ids = AsyncMock(return_value=({}, {}))  # type: ignore[method-assign]
@@ -260,13 +328,14 @@ async def test_targeted_replay_still_checks_other_deals_for_ambiguity() -> None:
                 internal_emails=frozenset({"owner@acme.test"}),
             ),
             DealCandidate(
-                deal_id=uuid4(),
+                deal_id=other_deal_id,
                 contact_ids=frozenset({contact_id}),
                 internal_emails=frozenset({"owner@acme.test"}),
             ),
         ]
     )
-    service._associate_email = AsyncMock()  # type: ignore[method-assign]
+    service._associate_email = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    service._discover_participants = AsyncMock(return_value=set())  # type: ignore[method-assign]
 
     result = await service.associate_changed_communications(
         emails=[email],
@@ -278,8 +347,14 @@ async def test_targeted_replay_still_checks_other_deals_for_ambiguity() -> None:
         target_deal_ids={target_deal_id},
     )
 
-    assert result.ambiguous == 1
-    service._associate_email.assert_not_awaited()  # type: ignore[attr-defined]
+    assert result.associations_created == 1
+    assert result.ambiguous == 0
+    assert result.email_deal_ids == {target_deal_id}
+    service._associate_email.assert_awaited_once()  # type: ignore[attr-defined]
+    assert (
+        service._associate_email.await_args.kwargs["deal_id"]  # type: ignore[attr-defined]
+        == target_deal_id
+    )
 
 
 @pytest.mark.asyncio
@@ -320,6 +395,7 @@ async def test_targeted_replay_never_writes_a_different_unique_deal() -> None:
 
     assert result.unmatched == 1
     assert result.email_deal_ids == set()
+    assert result.attachment_deal_ids == set()
     service._associate_email.assert_not_awaited()  # type: ignore[attr-defined]
 
 

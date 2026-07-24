@@ -140,6 +140,10 @@ def extract_email_attachments_deal_task(
     async def _run() -> dict[str, Any]:
         service = DealAssetEmailAttachmentService(UUID(organisation_id))
         stats = await service.process_deal(UUID(deal_id))
+        if stats["errors"] > 0:
+            raise RuntimeError(
+                f"Email attachment extraction completed with {stats['errors']} error(s)"
+            )
         return {
             "status": "success",
             "organisation_id": organisation_id,
@@ -161,14 +165,7 @@ def extract_email_attachments_deal_task(
         if self.request.retries < self.max_retries:
             raise self.retry(exc=exc, countdown=60 * (2**self.request.retries)) from exc
 
-        return {
-            "status": "failed",
-            "organisation_id": organisation_id,
-            "deal_id": deal_id,
-            "started_at": started_at,
-            "completed_at": datetime.now(UTC).isoformat(),
-            "error": str(exc),
-        }
+        raise
 
 
 @app.task(

@@ -119,6 +119,7 @@ async def test_hydration_followups_research_contacts_and_process_email_deals() -
             organisation_id=organisation_id,
             discovered_contact_ids={contact_id},
             email_deal_jobs={deal_id: memory_job_id},
+            attachment_deal_ids={deal_id},
         )
 
     research.assert_awaited_once_with(
@@ -127,6 +128,71 @@ async def test_hydration_followups_research_contacts_and_process_email_deals() -
         trigger="communication_participant_discovery",
     )
     attachments.apply_async.assert_called_once()
+    assert attachments.apply_async.call_args.kwargs["retry"] is True
+    assert attachments.apply_async.call_args.kwargs["retry_policy"]["max_retries"] == 3
+    insights.assert_called_once_with(
+        str(organisation_id),
+        str(deal_id),
+        str(memory_job_id),
+    )
+
+
+@pytest.mark.asyncio
+async def test_hydration_followups_skip_attachments_without_signal_but_keep_insights() -> None:
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    memory_job_id = uuid4()
+
+    with (
+        patch(
+            "src.workers.deal_worker.tasks.deal_mappers."
+            "contact_communication_hydration_tasks.extract_email_attachments_deal_task"
+        ) as attachments,
+        patch(
+            "src.workers.deal_worker.tasks.deal_mappers."
+            "contact_communication_hydration_tasks.dispatch_deal_insight_pipeline"
+        ) as insights,
+    ):
+        await _dispatch_association_followups(
+            organisation_id=organisation_id,
+            discovered_contact_ids=set(),
+            email_deal_jobs={deal_id: memory_job_id},
+            attachment_deal_ids=set(),
+        )
+
+    attachments.apply_async.assert_not_called()
+    insights.assert_called_once_with(
+        str(organisation_id),
+        str(deal_id),
+        str(memory_job_id),
+    )
+
+
+@pytest.mark.asyncio
+async def test_hydration_followups_keep_insights_when_attachment_publish_fails() -> None:
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    memory_job_id = uuid4()
+
+    with (
+        patch(
+            "src.workers.deal_worker.tasks.deal_mappers."
+            "contact_communication_hydration_tasks.extract_email_attachments_deal_task"
+        ) as attachments,
+        patch(
+            "src.workers.deal_worker.tasks.deal_mappers."
+            "contact_communication_hydration_tasks.dispatch_deal_insight_pipeline"
+        ) as insights,
+    ):
+        attachments.apply_async.side_effect = RuntimeError("broker unavailable")
+        with pytest.raises(RuntimeError, match="broker unavailable"):
+            await _dispatch_association_followups(
+                organisation_id=organisation_id,
+                discovered_contact_ids=set(),
+                email_deal_jobs={deal_id: memory_job_id},
+                attachment_deal_ids={deal_id},
+            )
+
     insights.assert_called_once_with(
         str(organisation_id),
         str(deal_id),

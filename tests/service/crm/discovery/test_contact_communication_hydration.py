@@ -450,6 +450,7 @@ async def test_thread_context_query_pairs_provider_thread_with_integration() -> 
 async def test_changed_source_associates_deals_after_contact_projection() -> None:
     """Deal selection must consume the contacts resolved by hydration, not start another scan."""
     email = _email()
+    attachment_deal_id = uuid4()
     contact = CRMContact(
         organisation_id=ORG_ID,
         contact_id=uuid4(),
@@ -473,7 +474,10 @@ async def test_changed_source_associates_deals_after_contact_projection() -> Non
     writer.find_contacts_by_email_batch = AsyncMock(return_value={})
     associator = MagicMock()
     associator.associate_changed_communications = AsyncMock(
-        return_value=CommunicationDealAssociationResult()
+        return_value=CommunicationDealAssociationResult(
+            email_deal_ids={attachment_deal_id},
+            attachment_deal_ids={attachment_deal_id},
+        )
     )
 
     with (
@@ -487,7 +491,7 @@ async def test_changed_source_associates_deals_after_contact_projection() -> Non
             return_value=associator,
         ),
     ):
-        await service.hydrate_changed_sources(changed_email_ids=[email.email_id])
+        result = await service.hydrate_changed_sources(changed_email_ids=[email.email_id])
 
     associator.associate_changed_communications.assert_awaited_once_with(
         emails=[email],
@@ -496,6 +500,8 @@ async def test_changed_source_associates_deals_after_contact_projection() -> Non
         integration_id=None,
     )
     assert service._project.await_count == 1  # type: ignore[attr-defined]
+    assert result.email_deal_ids == frozenset({attachment_deal_id})
+    assert result.attachment_deal_ids == frozenset({attachment_deal_id})
 
 
 @pytest.mark.asyncio
@@ -530,8 +536,12 @@ async def test_contact_backfill_reuses_same_deal_association_service() -> None:
     service._load_events_for_identities = AsyncMock(return_value=[event])  # type: ignore[method-assign]
     service._project = AsyncMock(return_value=1)  # type: ignore[method-assign]
     associator = MagicMock()
+    attachment_deal_id = uuid4()
     associator.associate_changed_communications = AsyncMock(
-        return_value=CommunicationDealAssociationResult()
+        return_value=CommunicationDealAssociationResult(
+            email_deal_ids={attachment_deal_id},
+            attachment_deal_ids={attachment_deal_id},
+        )
     )
 
     with patch(
@@ -539,7 +549,7 @@ async def test_contact_backfill_reuses_same_deal_association_service() -> None:
         "CommunicationDealAssociationService",
         return_value=associator,
     ):
-        await service.backfill_contacts([contact.contact_id])
+        result = await service.backfill_contacts([contact.contact_id])
 
     associator.associate_changed_communications.assert_awaited_once_with(
         emails=[email],
@@ -549,6 +559,8 @@ async def test_contact_backfill_reuses_same_deal_association_service() -> None:
         discover_participants=True,
         target_deal_ids=None,
     )
+    assert result.email_deal_ids == frozenset({attachment_deal_id})
+    assert result.attachment_deal_ids == frozenset({attachment_deal_id})
 
 
 @pytest.mark.asyncio

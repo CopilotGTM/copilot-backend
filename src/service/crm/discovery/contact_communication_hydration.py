@@ -148,6 +148,7 @@ class ContactCommunicationHydrationResult:
     participants_auto_approved: int = 0
     discovered_contact_ids: frozenset[UUID] = field(default_factory=frozenset)
     email_deal_ids: frozenset[UUID] = field(default_factory=frozenset)
+    attachment_deal_ids: frozenset[UUID] = field(default_factory=frozenset)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the result without leaking ORM rows into Celery."""
@@ -330,6 +331,7 @@ class ContactCommunicationHydrationService:
             association_result.ambiguous += expansion.deal_associations_ambiguous
             association_result.discovered_contact_ids.update(expansion.discovered_contact_ids)
             association_result.email_deal_ids.update(expansion.email_deal_ids)
+            association_result.attachment_deal_ids.update(expansion.attachment_deal_ids)
         created_contact_ids = {
             result.contact.contact_id for result in resolved.values() if result.created
         }
@@ -349,6 +351,7 @@ class ContactCommunicationHydrationService:
             participants_auto_approved=len(association_result.discovered_contact_ids),
             discovered_contact_ids=frozenset(association_result.discovered_contact_ids),
             email_deal_ids=frozenset(association_result.email_deal_ids),
+            attachment_deal_ids=frozenset(association_result.attachment_deal_ids),
         )
 
     async def backfill_contacts(
@@ -410,6 +413,7 @@ class ContactCommunicationHydrationService:
             association_result.ambiguous += expansion.deal_associations_ambiguous
             association_result.discovered_contact_ids.update(expansion.discovered_contact_ids)
             association_result.email_deal_ids.update(expansion.email_deal_ids)
+            association_result.attachment_deal_ids.update(expansion.attachment_deal_ids)
         return ContactCommunicationHydrationResult(
             emails_considered=len(emails),
             events_considered=len(events),
@@ -423,6 +427,7 @@ class ContactCommunicationHydrationService:
             participants_auto_approved=len(association_result.discovered_contact_ids),
             discovered_contact_ids=frozenset(association_result.discovered_contact_ids),
             email_deal_ids=frozenset(association_result.email_deal_ids),
+            attachment_deal_ids=frozenset(association_result.attachment_deal_ids),
         )
 
     async def backfill_deals(
