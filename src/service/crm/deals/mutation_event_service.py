@@ -14,7 +14,10 @@ from src.service.crm.mutations.contracts import (
     CRMMutationRecordCommand,
     CRMMutationRecordResult,
 )
-from src.service.crm.mutations.event_service import CRMMutationEventService
+from src.service.crm.mutations.event_service import (
+    AutomationEventEnqueuer,
+    CRMMutationEventService,
+)
 from src.service.crm.mutations.json_safe import changed_field
 
 __all__ = ["DealMutationEventService", "changed_field"]
@@ -23,10 +26,18 @@ __all__ = ["DealMutationEventService", "changed_field"]
 class DealMutationEventService:
     """Deal-specific facade over the shared CRM mutation event recorder."""
 
-    def __init__(self, session: AsyncSession, organisation_id: UUID):
+    def __init__(
+        self,
+        session: AsyncSession,
+        organisation_id: UUID,
+        *,
+        event_enqueuer: AutomationEventEnqueuer | None = None,
+    ):
         self.session = session
         self.organisation_id = organisation_id
-        self._events = CRMMutationEventService(session, organisation_id)
+        self._events = CRMMutationEventService(
+            session, organisation_id, event_enqueuer=event_enqueuer
+        )
 
     async def record_event(
         self,
@@ -39,6 +50,8 @@ class DealMutationEventService:
         context: DealWriteContext,
         summary: str | None,
     ) -> CRMMutationRecordResult:
+        """Persist one deal mutation and enqueue supported semantics atomically."""
+
         command = CRMMutationRecordCommand(
             entity_type="deal",
             entity_id=deal.deal_id,
@@ -60,6 +73,8 @@ class DealMutationEventService:
             idempotency_scope=f"deal:{operation}:{deal.deal_id}",
         )
         try:
-            return await self._events.record_event(command)
+            result = await self._events.record_event(command)
         except CRMMutationEventServiceError as exc:
             raise DealWriteServiceError(exc.message, status_code=exc.status_code) from exc
+
+        return result

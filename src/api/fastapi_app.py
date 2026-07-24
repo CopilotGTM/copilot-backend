@@ -31,12 +31,18 @@ from src.api.middleware.public_form_cors import PublicLeadFormCORSMiddleware
 from src.api.routers.admin.admin_auth_handler import router as admin_auth_router
 from src.api.routers.admin.organizations_handler import router as admin_org_router
 from src.api.routers.admin.users_handler import router as admin_user_router
+from src.api.routers.agents import (
+    agent_capabilities_router,
+    agent_definitions_router,
+    agent_templates_router,
+)
 from src.api.routers.app_preferences.agent_actions_handler import agent_action_approval_router
 from src.api.routers.app_preferences.kai_training_handler import kai_training_router
 from src.api.routers.app_preferences.meeting_recording_policy_handler import (
     meeting_recording_policy_router,
 )
 from src.api.routers.app_preferences.navigation_handler import navigation_preferences_router
+from src.api.routers.automation import agent_runs_router, automation_triggers_router
 from src.api.routers.bots import bots_router
 from src.api.routers.chat.messages_handler import router as chat_messages_router
 from src.api.routers.chat.sessions_handler import router as chat_sessions_router
@@ -306,6 +312,31 @@ def create_fastapi_app():
     # Reminders
     fastapp.include_router(reminders_router, prefix="/users/reminders", tags=["reminders"])
     fastapp.include_router(agents_router, prefix="/users/agents", tags=["agents"])
+    fastapp.include_router(
+        agent_definitions_router,
+        prefix="/users/v1/agents",
+        tags=["agent-definitions"],
+    )
+    fastapp.include_router(
+        agent_capabilities_router,
+        prefix="/users/v1",
+        tags=["agent-capabilities"],
+    )
+    fastapp.include_router(
+        agent_templates_router,
+        prefix="/users/v1/agent-templates",
+        tags=["agent-templates"],
+    )
+    fastapp.include_router(
+        automation_triggers_router,
+        prefix="/users/v1",
+        tags=["automation-triggers"],
+    )
+    fastapp.include_router(
+        agent_runs_router,
+        prefix="/users/v1",
+        tags=["agent-runs"],
+    )
 
     # Integration routers
     fastapp.include_router(integrations_router, prefix="/users/integrations", tags=["integrations"])

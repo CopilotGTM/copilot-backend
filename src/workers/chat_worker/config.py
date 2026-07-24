@@ -35,6 +35,18 @@ class ChatWorkerConfig(BaseWorkerConfig):
         )
 
         self.task_routes = {
+            "chat.activate_automation_event": {
+                "queue": "chat_processing",
+                "routing_key": "chat_processing",
+            },
+            "chat.execute_agent_run": {
+                "queue": "chat_messages",
+                "routing_key": "chat_messages",
+            },
+            "chat.recover_agent_runs": {
+                "queue": "chat_processing",
+                "routing_key": "chat_processing",
+            },
             "attachments.post_upload": {
                 "queue": "attachments",
                 "routing_key": "attachments",
@@ -86,6 +98,14 @@ class ChatWorkerConfig(BaseWorkerConfig):
 
         # Beat schedule — periodic tasks run by the scheduler
         self.beat_schedule = {
+            "recover-agent-runs": {
+                "task": "chat.recover_agent_runs",
+                "schedule": 30.0,
+                "options": {
+                    "queue": "chat_processing",
+                    "routing_key": "chat_processing",
+                },
+            },
             "poll-due-reminders": {
                 "task": "chat.poll_due_reminders",
                 "schedule": 60.0,

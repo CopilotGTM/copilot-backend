@@ -39,6 +39,15 @@ class _FakeSession:
         return None
 
 
+class _FakeEventEnqueuer:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str, str]] = []
+
+    async def enqueue(self, *, source_domain: str, source_event_id: str, event_type: str) -> object:
+        self.events.append((source_domain, source_event_id, event_type))
+        return object()
+
+
 def _deal() -> SimpleNamespace:
     return SimpleNamespace(deal_id=uuid4(), integration_id=uuid4())
 
@@ -89,7 +98,8 @@ async def test_record_event_skips_empty_changed_fields() -> None:
 @pytest.mark.asyncio
 async def test_record_event_persists_one_event_for_multi_field_update() -> None:
     """A multi-field deal update must be stored as one mutation event row."""
-    service = DealMutationEventService(_FakeSession(), uuid4())
+    enqueuer = _FakeEventEnqueuer()
+    service = DealMutationEventService(_FakeSession(), uuid4(), event_enqueuer=enqueuer)
 
     result = await service.record_event(
         deal=_deal(),
@@ -111,6 +121,27 @@ async def test_record_event_persists_one_event_for_multi_field_update() -> None:
     assert set(event.changed_fields) == {"amount", "stage_id"}
     assert event.semantic_event_types == ["crm.deal.amount_changed", "crm.deal.stage_changed"]
     assert service.session.added == [event]
+    assert enqueuer.events == [("crm", str(event.event_id), "crm.deal.stage_changed")]
+
+
+@pytest.mark.asyncio
+async def test_record_event_does_not_activate_unrelated_semantic_event() -> None:
+    """Only the supported stage-change semantic event enters trigger activation."""
+    enqueuer = _FakeEventEnqueuer()
+    service = DealMutationEventService(_FakeSession(), uuid4(), event_enqueuer=enqueuer)
+
+    result = await service.record_event(
+        deal=_deal(),
+        event_type="crm.deal.updated",
+        operation="update_deal",
+        changed_fields={"amount": {"old": 100, "new": 200}},
+        semantic_event_types=["crm.deal.amount_changed"],
+        context=_context(),
+        summary="Updated deal",
+    )
+
+    assert result.changed is True
+    assert enqueuer.events == []
 
 
 def test_record_event_does_not_store_workflow_runtime_state() -> None:

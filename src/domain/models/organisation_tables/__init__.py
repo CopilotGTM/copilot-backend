@@ -20,6 +20,21 @@ meeting bot flow.
 # Keep every org-scoped model export in one place so callers can import a stable
 # package-level surface for both legacy SQLModel usage and type-checking.
 
+from .agent_models import (
+    AgentOutputMode,
+    AgentRun,
+    AgentRunStatus,
+    AgentSourceType,
+    AgentStatus,
+    AgentVisibility,
+    AutomationEventDispatch,
+    AutomationScopeType,
+    AutomationTargetType,
+    AutomationTrigger,
+    AutomationTriggerStatus,
+    AutomationTriggerType,
+    UserAgent,
+)
 from .base_mixins import CreatedAtMixin, TimestampMixin
 from .chat_message_models import Attachment, ChatMessage, ChatMessageAttachmentLink
 from .chat_session_access_models import ChatSessionAccess
@@ -109,6 +124,20 @@ __all__ = [
     # Base Mixins
     "TimestampMixin",
     "CreatedAtMixin",
+    # Agent Automation Models
+    "UserAgent",
+    "AutomationTrigger",
+    "AutomationEventDispatch",
+    "AgentRun",
+    "AgentSourceType",
+    "AgentVisibility",
+    "AgentStatus",
+    "AgentOutputMode",
+    "AutomationTargetType",
+    "AutomationTriggerType",
+    "AutomationScopeType",
+    "AutomationTriggerStatus",
+    "AgentRunStatus",
     # Chat Models
     "ChatSession",
     "ChatSessionAccess",

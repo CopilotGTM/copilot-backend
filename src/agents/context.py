@@ -13,8 +13,10 @@ SECURITY BOUNDARIES (immutable, baked into context at initialization):
   This prevents cross-org data access attacks. Agents CANNOT modify this value.
 - deal_id: For deal-scoped agents, tools use context.deal_id, cannot accept as parameter.
   This prevents agents from querying data from other deals.
+- subject_type/subject_id: Triggered agents retain the exact event subject even
+  when no deal exists, so future contact/email tools can enforce the same boundary.
 
-IMPORTANT: organisation_id and deal_id are set at context creation and CANNOT be
+IMPORTANT: organisation, subject, and deal identities are set at context creation and CANNOT be
 modified by agents or tools. This is a critical security feature that prevents
 agents from accessing data from other organisations or deals.
 
@@ -60,6 +62,8 @@ class AgentContext:
 
     organisation_id: UUID
     deal_id: UUID | None = None  # SECURITY: Immutable for deal-scoped agents
+    subject_type: str | None = None
+    subject_id: str | None = None
     org_name: str = "Our Organization"
     organisation_profile: str | None = None
     user_id: UUID | None = None
@@ -102,6 +106,8 @@ class AgentContext:
         return AgentContext(
             organisation_id=self.organisation_id,
             deal_id=self.deal_id,
+            subject_type=self.subject_type,
+            subject_id=self.subject_id,
             org_name=self.org_name,
             organisation_profile=self.organisation_profile,
             user_id=self.user_id,
@@ -120,6 +126,8 @@ class AgentContext:
         return AgentContext(
             organisation_id=self.organisation_id,
             deal_id=self.deal_id,
+            subject_type=self.subject_type,
+            subject_id=self.subject_id,
             org_name=self.org_name,
             organisation_profile=self.organisation_profile,
             user_id=self.user_id,

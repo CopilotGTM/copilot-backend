@@ -151,6 +151,14 @@ class AgentConfig:
     GENERAL_DEBUG: bool = os.getenv("AGENT_GENERAL_DEBUG", "false").lower() == "true"
     GENERAL_TIMEOUT: int = int(os.getenv("AGENT_GENERAL_TIMEOUT", "600"))
 
+    # Triggered user agents start on the current chat model but have separate
+    # operational controls so later tuning cannot change interactive chat.
+    USER_CONFIGURED_MODEL: str = os.getenv("AGENT_USER_CONFIGURED_MODEL", GENERAL_MODEL)
+    USER_CONFIGURED_DEBUG: bool = (
+        os.getenv("AGENT_USER_CONFIGURED_DEBUG", "false").lower() == "true"
+    )
+    USER_CONFIGURED_TIMEOUT: int = int(os.getenv("AGENT_USER_CONFIGURED_TIMEOUT", "600"))
+
     # Router Agent - routes queries to appropriate agents
     ROUTER_MODEL: str = os.getenv("AGENT_ROUTER_MODEL", "gpt-5.6-luna")
     ROUTER_DEBUG: bool = os.getenv("AGENT_ROUTER_DEBUG", "false").lower() == "true"
@@ -182,6 +190,11 @@ class AgentConfig:
             "STAKEHOLDER_TIMEOUT",
         ),
         "general_agent": ("GENERAL_MODEL", "GENERAL_DEBUG", "GENERAL_TIMEOUT"),
+        "user_configured_agent": (
+            "USER_CONFIGURED_MODEL",
+            "USER_CONFIGURED_DEBUG",
+            "USER_CONFIGURED_TIMEOUT",
+        ),
         "router_agent": ("ROUTER_MODEL", "ROUTER_DEBUG", "ROUTER_TIMEOUT"),
         "voice_realtime_agent": (
             "VOICE_REALTIME_MODEL",

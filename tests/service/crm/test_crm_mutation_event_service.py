@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import Enum
@@ -61,6 +62,15 @@ class _FakeSession:
     async def flush(self) -> None:
         """Match AsyncSession.flush without touching a database."""
         return None
+
+
+class _FakeEventEnqueuer:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str, str]] = []
+
+    async def enqueue(self, *, source_domain: str, source_event_id: str, event_type: str) -> object:
+        self.events.append((source_domain, source_event_id, event_type))
+        return object()
 
 
 def _command(
@@ -161,6 +171,27 @@ async def test_record_event_persists_generic_crm_event() -> None:
 
 
 @pytest.mark.asyncio
+async def test_supported_semantic_event_enqueues_once_from_shared_recorder() -> None:
+    enqueuer = _FakeEventEnqueuer()
+    service = CRMMutationEventService(_FakeSession(), uuid4(), event_enqueuer=enqueuer)
+    command = replace(_command(), semantic_event_types=["crm.contact.created"])
+
+    result = await service.record_event(command)
+
+    assert enqueuer.events == [("crm", str(result.event_id), "crm.contact.created")]
+
+
+@pytest.mark.asyncio
+async def test_unsupported_semantic_event_remains_audit_only() -> None:
+    enqueuer = _FakeEventEnqueuer()
+    service = CRMMutationEventService(_FakeSession(), uuid4(), event_enqueuer=enqueuer)
+
+    await service.record_event(_command())
+
+    assert enqueuer.events == []
+
+
+@pytest.mark.asyncio
 async def test_record_event_returns_existing_event_for_same_scoped_idempotency_payload() -> None:
     """Safe retries with the same scoped payload should return the original event id."""
     session = _FakeSession()
@@ -174,6 +205,28 @@ async def test_record_event_returns_existing_event_for_same_scoped_idempotency_p
 
     assert second.event_id == first.event_id
     assert retry_session.added == []
+
+
+@pytest.mark.asyncio
+async def test_supported_idempotent_retry_replays_enqueue() -> None:
+    """A retry must repair a missing dispatch left by an older producer deployment."""
+    session = _FakeSession()
+    command = replace(
+        _command(idempotency_key="req-123"),
+        semantic_event_types=["crm.contact.created"],
+    )
+    first_service = CRMMutationEventService(session, uuid4(), event_enqueuer=_FakeEventEnqueuer())
+    await first_service.record_event(command)
+
+    enqueuer = _FakeEventEnqueuer()
+    retry_service = CRMMutationEventService(
+        _FakeSession(existing=session.added[0]),
+        first_service.organisation_id,
+        event_enqueuer=enqueuer,
+    )
+    result = await retry_service.record_event(command)
+
+    assert enqueuer.events == [("crm", str(result.event_id), "crm.contact.created")]
 
 
 @pytest.mark.asyncio
