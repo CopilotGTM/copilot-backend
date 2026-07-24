@@ -11,15 +11,32 @@ from sqlalchemy import func, or_, select
 from sqlmodel import col
 from src.domain.models.master_tables.super_admin_models import AdminUserStatus
 from src.domain.models.master_tables.user_models import SupabaseUserStatus, User
+from src.domain.models.organisation_tables.sync.crm.activities import (
+    CRMActivity,
+    CRMActivityLink,
+    CRMActivityObjectType,
+    CRMActivityType,
+)
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDeal,
+    CRMDealMutationEvent,
     CRMDealParticipant,
+    CRMDealStatus,
     CRMParticipantType,
+)
+from src.domain.models.organisation_tables.sync.crm.leads import (
+    CRMLead,
+    CRMLeadParticipant,
+    CRMLeadParticipantType,
+    CRMLeadStatus,
 )
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
 )
+from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
 from src.service.calendar_invites.models import CalendarInviteAttendee
+from src.service.crm.contacts.read_service import ContactReadService
 
 _DEAL_STAKEHOLDER_PHRASES = {
     "all stakeholders",
@@ -101,9 +118,19 @@ class CalendarInviteAttendeeResolver:
     remains a write-only boundary that accepts already validated attendee emails.
     """
 
-    def __init__(self, session: Any, *, organisation_id: UUID) -> None:
+    def __init__(
+        self,
+        session: Any,
+        *,
+        organisation_id: UUID,
+        requested_by_user_id: UUID | None = None,
+        user_email: str | None = None,
+    ) -> None:
+        """Bind identity lookup to the tenant and requesting user's commercial graph."""
         self.session = session
         self.organisation_id = organisation_id
+        self.requested_by_user_id = requested_by_user_id
+        self.user_email = (user_email or "").strip().lower() or None
 
     async def resolve(
         self,
@@ -211,12 +238,240 @@ class CalendarInviteAttendeeResolver:
         *,
         deal_id: UUID | None,
     ) -> list[AttendeeCandidate]:
-        """Search stakeholders, CRM contacts, and internal users for a name/email."""
-        candidates: list[AttendeeCandidate] = []
-        candidates.extend(await self._search_stakeholders(search, deal_id=deal_id))
-        candidates.extend(await self._search_contacts(search))
+        """Search the requester's working set before the organization-wide fallback.
+
+        Each stage stops only when it finds plausible matches. This preserves
+        ambiguity within a commercial context while preventing thousands of
+        unrelated organization contacts from competing with an active deal.
+        """
+        if deal_id:
+            candidates = self._prefer_unique_exact(
+                self._dedupe_candidates(await self._search_stakeholders(search, deal_id=deal_id))
+            )
+            if candidates:
+                return candidates
+        if self.requested_by_user_id:
+            for search_stage in (
+                self._search_user_deal_contacts,
+                self._search_user_lead_contacts,
+                self._search_user_added_contacts,
+                self._search_recent_activity_contacts,
+            ):
+                candidates = self._prefer_unique_exact(
+                    self._dedupe_candidates(await search_stage(search))
+                )
+                if candidates:
+                    return candidates
+
+        # Reuse the indexed fuzzy search used by the CRM agent instead of keeping
+        # a second organization-wide matching algorithm in the calendar feature.
+        candidates = await self._search_contacts(search)
         candidates.extend(await self._search_internal_users(search))
-        return self._dedupe_candidates(candidates)
+        return self._prefer_unique_exact(self._dedupe_candidates(candidates))
+
+    async def _search_user_deal_contacts(self, search: str) -> list[AttendeeCandidate]:
+        """Return name matches from the requester's open deals."""
+        if not self.requested_by_user_id:
+            return []
+        participant = CRMDealParticipant
+        deal = CRMDeal
+        stmt = (
+            select(participant)
+            .join(deal, col(participant.deal_id) == col(deal.deal_id))
+            .where(
+                col(participant.organisation_id) == self.organisation_id,
+                col(deal.organisation_id) == self.organisation_id,
+                col(participant.participant_type) == CRMParticipantType.CONTACT.value,
+                col(participant.is_deleted) == False,  # noqa: E712
+                col(deal.is_deleted) == False,  # noqa: E712
+                col(participant.approval_status) == ApprovalStatus.APPROVED.value,
+                col(deal.deal_status) == CRMDealStatus.OPEN.value,
+                self._requester_owns_record(deal),
+                self._participant_matches(
+                    search,
+                    name_column=col(participant.related_name),
+                    email_column=col(participant.related_email),
+                ),
+            )
+            .order_by(col(deal.last_activity_at).desc().nullslast())
+            .limit(10)
+        )
+        result = await self.session.execute(stmt)
+        return [
+            self._candidate_from_participant(
+                row,
+                search,
+                source="user_open_deal",
+            )
+            for row in result.scalars().all()
+            if row.related_email
+        ]
+
+    async def _search_user_lead_contacts(self, search: str) -> list[AttendeeCandidate]:
+        """Return contacts and direct identities on the requester's active prospects."""
+        if not self.requested_by_user_id:
+            return []
+        active_statuses = {
+            CRMLeadStatus.NEW.value,
+            CRMLeadStatus.WORKING.value,
+            CRMLeadStatus.QUALIFIED.value,
+        }
+        lead_stmt = (
+            select(CRMLead)
+            .where(
+                col(CRMLead.organisation_id) == self.organisation_id,
+                col(CRMLead.is_deleted) == False,  # noqa: E712
+                col(CRMLead.status).in_(active_statuses),
+                self._requester_owns_record(CRMLead),
+                col(CRMLead.email).is_not(None),
+                self._participant_matches(
+                    search,
+                    name_column=col(CRMLead.full_name),
+                    email_column=col(CRMLead.email),
+                ),
+            )
+            .order_by(col(CRMLead.last_activity_at).desc().nullslast())
+            .limit(10)
+        )
+        lead_result = await self.session.execute(lead_stmt)
+        candidates = [
+            AttendeeCandidate(
+                email=CalendarInviteAttendee(email=lead.email or "").email,
+                name=lead.full_name,
+                source="user_active_prospect",
+                source_id=str(lead.lead_id),
+                confidence=self._confidence_for(search, name=lead.full_name, email=lead.email),
+                input_value=search,
+            )
+            for lead in lead_result.scalars().all()
+            if lead.email
+        ]
+
+        participant_stmt = (
+            select(CRMLeadParticipant)
+            .join(CRMLead, col(CRMLeadParticipant.lead_id) == col(CRMLead.lead_id))
+            .where(
+                col(CRMLeadParticipant.organisation_id) == self.organisation_id,
+                col(CRMLead.organisation_id) == self.organisation_id,
+                col(CRMLeadParticipant.is_deleted) == False,  # noqa: E712
+                col(CRMLead.is_deleted) == False,  # noqa: E712
+                col(CRMLead.status).in_(active_statuses),
+                col(CRMLeadParticipant.participant_type) == CRMLeadParticipantType.CONTACT.value,
+                self._requester_owns_record(CRMLead),
+                col(CRMLeadParticipant.email).is_not(None),
+                self._participant_matches(
+                    search,
+                    name_column=col(CRMLeadParticipant.name),
+                    email_column=col(CRMLeadParticipant.email),
+                ),
+            )
+            .order_by(col(CRMLead.last_activity_at).desc().nullslast())
+            .limit(10)
+        )
+        participant_result = await self.session.execute(participant_stmt)
+        candidates.extend(
+            AttendeeCandidate(
+                email=CalendarInviteAttendee(email=row.email or "").email,
+                name=row.name,
+                source="user_active_prospect",
+                source_id=str(row.participant_id),
+                confidence=self._confidence_for(search, name=row.name, email=row.email),
+                input_value=search,
+            )
+            for row in participant_result.scalars().all()
+            if row.email
+        )
+        return candidates
+
+    async def _search_user_added_contacts(self, search: str) -> list[AttendeeCandidate]:
+        """Return contacts explicitly owned or created by the requesting user."""
+        if not self.requested_by_user_id:
+            return []
+        actor_contact_ids = select(col(CRMDealMutationEvent.entity_id)).where(
+            col(CRMDealMutationEvent.organisation_id) == self.organisation_id,
+            col(CRMDealMutationEvent.entity_type) == "contact",
+            col(CRMDealMutationEvent.operation) == "create_contact",
+            col(CRMDealMutationEvent.actor_user_id) == self.requested_by_user_id,
+        )
+        ownership = [
+            col(CRMContact.owner_id) == self.requested_by_user_id,
+            col(CRMContact.contact_id).in_(actor_contact_ids),
+        ]
+        if self.user_email:
+            ownership.append(func.lower(func.trim(col(CRMContact.owner_email))) == self.user_email)
+        stmt = (
+            select(CRMContact)
+            .where(
+                col(CRMContact.organisation_id) == self.organisation_id,
+                col(CRMContact.is_deleted) == False,  # noqa: E712
+                col(CRMContact.email).is_not(None),
+                or_(*ownership),
+                self._contact_matches(search),
+            )
+            .order_by(col(CRMContact.last_activity_at).desc().nullslast())
+            .limit(10)
+        )
+        result = await self.session.execute(stmt)
+        return [
+            self._candidate_from_contact(contact, search, source="user_added_contact")
+            for contact in result.scalars().all()
+            if contact.email
+        ]
+
+    async def _search_recent_activity_contacts(self, search: str) -> list[AttendeeCandidate]:
+        """Return contacts with recent projected activity from the requester's mailbox."""
+        if not self.requested_by_user_id:
+            return []
+
+        # Email hydration has already materialized both the contact edge and its
+        # source integration. Reusing that projection avoids loading message
+        # subjects or bodies merely to rediscover an existing CRM contact.
+        recent_activity = (
+            select(
+                col(CRMActivityLink.object_id).label("contact_id"),
+                func.max(col(CRMActivityLink.occurred_at)).label("last_user_activity_at"),
+            )
+            .join(
+                CRMActivity,
+                col(CRMActivityLink.activity_id) == col(CRMActivity.activity_id),
+            )
+            .join(
+                KnowledgeIntegration,
+                col(CRMActivity.source_integration_id) == col(KnowledgeIntegration.integration_id),
+            )
+            .where(
+                col(CRMActivityLink.organisation_id) == self.organisation_id,
+                col(CRMActivity.organisation_id) == self.organisation_id,
+                col(KnowledgeIntegration.organisation_id) == self.organisation_id,
+                col(KnowledgeIntegration.created_by_user_id) == self.requested_by_user_id,
+                col(CRMActivityLink.object_type) == CRMActivityObjectType.CONTACT.value,
+                col(CRMActivity.activity_type) == CRMActivityType.EMAIL.value,
+                col(CRMActivity.is_deleted) == False,  # noqa: E712
+            )
+            .group_by(col(CRMActivityLink.object_id))
+            .subquery()
+        )
+        stmt = (
+            select(CRMContact)
+            .join(
+                recent_activity,
+                col(CRMContact.contact_id) == recent_activity.c.contact_id,
+            )
+            .where(
+                col(CRMContact.organisation_id) == self.organisation_id,
+                col(CRMContact.is_deleted) == False,  # noqa: E712
+                col(CRMContact.email).is_not(None),
+                self._contact_matches(search),
+            )
+            .order_by(recent_activity.c.last_user_activity_at.desc())
+            .limit(10)
+        )
+        result = await self.session.execute(stmt)
+        return [
+            self._candidate_from_contact(contact, search, source="recent_user_email")
+            for contact in result.scalars().all()
+            if contact.email
+        ]
 
     async def _search_stakeholders(
         self,
@@ -255,35 +510,62 @@ class CalendarInviteAttendeeResolver:
         ]
 
     async def _search_contacts(self, search: str) -> list[AttendeeCandidate]:
-        lower_search = search.strip().lower()
+        """Use the CRM agent's indexed fuzzy search as the broad fallback."""
+        rows = await ContactReadService(
+            self.session,
+            self.organisation_id,
+        ).search_contacts_for_agent(q=search, limit=20)
+        return [
+            self._candidate_from_contact(
+                row["contact"],
+                search,
+                source="organization_contact",
+            )
+            for row in rows
+            if row["contact"].email
+        ]
+
+    def _requester_owns_record(self, model: Any) -> Any:
+        """Build the user-ownership predicate shared by deal and lead queries."""
+        conditions = [
+            col(model.owner_id) == self.requested_by_user_id,
+            col(model.created_by_user_id) == self.requested_by_user_id,
+        ]
+        if self.user_email:
+            conditions.append(func.lower(func.trim(col(model.owner_email))) == self.user_email)
+        return or_(*conditions)
+
+    @staticmethod
+    def _participant_matches(search: str, *, name_column: Any, email_column: Any) -> Any:
+        """Build an exact-or-substring identity predicate for relationship rows."""
+        normalized = search.strip().lower()
+        escaped = normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return or_(
+            func.lower(func.trim(email_column)) == normalized,
+            func.lower(func.trim(name_column)) == normalized,
+            name_column.ilike(f"%{escaped}%", escape="\\"),
+            email_column.ilike(f"%{escaped}%", escape="\\"),
+        )
+
+    @classmethod
+    def _contact_matches(cls, search: str) -> Any:
+        """Match a contact by canonical name components or primary email."""
         full_name_expr = func.concat(
             func.coalesce(col(CRMContact.first_name), ""),
             " ",
             func.coalesce(col(CRMContact.last_name), ""),
         )
-        stmt = (
-            select(CRMContact)
-            .where(
-                col(CRMContact.organisation_id) == self.organisation_id,
-                col(CRMContact.is_deleted) == False,  # noqa: E712
-                col(CRMContact.email).is_not(None),
-                or_(
-                    func.lower(col(CRMContact.email)) == lower_search,
-                    func.lower(col(CRMContact.full_name)) == lower_search,
-                    func.lower(full_name_expr) == lower_search,
-                    col(CRMContact.email).ilike(f"%{search}%"),
-                    col(CRMContact.full_name).ilike(f"%{search}%"),
-                    col(CRMContact.first_name).ilike(f"%{search}%"),
-                    col(CRMContact.last_name).ilike(f"%{search}%"),
-                ),
-            )
-            .limit(10)
+        normalized = search.strip().lower()
+        escaped = normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return or_(
+            func.lower(func.trim(col(CRMContact.email))) == normalized,
+            func.lower(func.trim(col(CRMContact.full_name))) == normalized,
+            func.lower(func.trim(full_name_expr)) == normalized,
+            col(CRMContact.email).ilike(f"%{escaped}%", escape="\\"),
+            col(CRMContact.full_name).ilike(f"%{escaped}%", escape="\\"),
+            col(CRMContact.first_name).ilike(f"%{escaped}%", escape="\\"),
+            col(CRMContact.last_name).ilike(f"%{escaped}%", escape="\\"),
         )
-        result = await self.session.execute(stmt)
-        contacts = result.scalars().all()
-        return [
-            self._candidate_from_contact(contact, search) for contact in contacts if contact.email
-        ]
 
     async def _search_internal_users(self, search: str) -> list[AttendeeCandidate]:
         lower_search = search.strip().lower()
@@ -455,6 +737,16 @@ class CalendarInviteAttendeeResolver:
         return deduped
 
     @staticmethod
+    def _prefer_unique_exact(candidates: list[AttendeeCandidate]) -> list[AttendeeCandidate]:
+        """Collapse a tier only when one candidate has the sole exact identity match."""
+        exact = [
+            candidate
+            for candidate in candidates
+            if candidate.confidence in {"exact_email", "exact_name"}
+        ]
+        return exact if len(exact) == 1 else candidates
+
+    @staticmethod
     def _confidence_for(search: str, *, name: str | None, email: str | None) -> str:
         normalized = search.strip().lower()
         if email and email.lower() == normalized:
@@ -470,13 +762,14 @@ class CalendarInviteAttendeeResolver:
         *,
         contact: CRMContact | None = None,
         confidence: str | None = None,
+        source: str = "deal_stakeholder",
     ) -> AttendeeCandidate:
         email = contact.email if contact and contact.email else participant.related_email
         name = contact.full_name if contact and contact.full_name else participant.related_name
         return AttendeeCandidate(
             email=CalendarInviteAttendee(email=email or "").email,
             name=name,
-            source="deal_stakeholder",
+            source=source,
             source_id=str(participant.participant_id),
             confidence=confidence
             or self._confidence_for(
@@ -487,14 +780,20 @@ class CalendarInviteAttendeeResolver:
             input_value=search,
         )
 
-    def _candidate_from_contact(self, contact: CRMContact, search: str) -> AttendeeCandidate:
+    def _candidate_from_contact(
+        self,
+        contact: CRMContact,
+        search: str,
+        *,
+        source: str = "contact",
+    ) -> AttendeeCandidate:
         name = contact.full_name or " ".join(
             part for part in [contact.first_name, contact.last_name] if part
         )
         return AttendeeCandidate(
             email=CalendarInviteAttendee(email=contact.email or "").email,
             name=name or None,
-            source="contact",
+            source=source,
             source_id=str(contact.contact_id),
             confidence=self._confidence_for(search, name=name, email=contact.email),
             input_value=search,

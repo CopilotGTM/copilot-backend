@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 from uuid import UUID
 
@@ -14,7 +15,7 @@ from src.service.calendar_invites.attendee_resolver import (
     AttendeeCandidate,
     AttendeeResolutionResult,
 )
-from src.service.calendar_invites.models import CalendarInviteCreateResult, CalendarInviteError
+from src.service.calendar_invites.models import CalendarInviteCreateResult
 
 
 class _AsyncSessionContext:
@@ -38,11 +39,67 @@ class _FakeContext:
     user_id: UUID | None
     channel: str = "teams"
     metadata: dict = field(default_factory=dict)
+    user_email: str | None = "seller@contoso.com"
 
     @asynccontextmanager
     async def acquire_session(self):
         """Return a fake SQL session from the async protocol."""
         yield MagicMock()
+
+
+@pytest.fixture(autouse=True)
+def _stub_calendar_sender_context(monkeypatch) -> None:
+    """Keep tool tests local while preserving the sender-selection contract."""
+
+    async def no_preference(**_kwargs):
+        """Return no persisted preference for the default tool-test path."""
+        return None
+
+    async def official_domains(_organisation_id):
+        """Treat the fixture mailbox domain as the organization domain."""
+        return {"contoso.com"}
+
+    class FakeCalendarResolver:
+        """Resolve the explicit or primary test mailbox without a database."""
+
+        async def resolve(self, _session, _organisation_id, _user_id, **kwargs):
+            """Return one deterministic writable calendar."""
+            email = kwargs.get("sender_email") or kwargs.get("user_email") or "seller@contoso.com"
+            return SimpleNamespace(
+                integration=SimpleNamespace(
+                    integration_email=email,
+                    integration_id=UUID("99999999-9999-9999-9999-999999999999"),
+                ),
+                connected_account_count=1,
+                selection_reason=(
+                    "explicit_sender" if kwargs.get("sender_email") else "primary_user_email"
+                ),
+                warning=None,
+            )
+
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.send_calendar_invite.load_preferred_calendar_sender",
+        no_preference,
+    )
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.send_calendar_invite.get_internal_domains",
+        official_domains,
+    )
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.send_calendar_invite.CalendarIntegrationResolver",
+        FakeCalendarResolver,
+    )
+
+
+async def _preview_then_confirm(**kwargs):
+    """Confirm with the exact token returned by the immediately preceding preview."""
+    preview = await send_calendar_invite(**kwargs)
+    assert preview["status"] == "confirmation_required"
+    return await send_calendar_invite(
+        **kwargs,
+        confirmed=True,
+        idempotency_key=preview["confirmation_payload"]["confirmation_token"],
+    )
 
 
 @pytest.mark.asyncio
@@ -84,14 +141,13 @@ async def test_send_calendar_invite_creates_invite_for_current_user(monkeypatch)
         FakeService,
     )
 
-    result = await send_calendar_invite(
+    result = await _preview_then_confirm(
         context=context,
         title="Discovery call",
         start_time="2026-05-12T20:00:00+05:30",
         end_time="2026-05-12T20:30:00+05:30",
         attendees=["buyer@example.com"],
         sender_email="seller@contoso.com",
-        confirmed=True,
     )
 
     assert result["status"] == "sent"
@@ -171,17 +227,17 @@ async def test_send_calendar_invite_replaces_email_based_default_title_before_co
         sender_email="nikhil@copilotgtm.com",
     )
 
-    assert result["status"] == "needs_clarification"
-    assert result["code"] == "calendar_invite_title_required"
-    assert result["missing_fields"] == ["title"]
+    assert result["status"] == "confirmation_required"
+    assert result["confirmation_payload"]["title"] == "Meeting"
+    assert "title" in result["confirmation_payload"]["inferred_fields"]
     service.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_send_calendar_invite_bundles_missing_title_and_sender_for_email_attendee(
+async def test_send_calendar_invite_derives_title_and_sender_for_email_attendee(
     monkeypatch,
 ) -> None:
-    """Email-only invites need a user-provided title before final confirmation."""
+    """Email-only invites should reach review without title or sender questions."""
     session = MagicMock()
     context = _FakeContext(
         organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
@@ -203,15 +259,16 @@ async def test_send_calendar_invite_bundles_missing_title_and_sender_for_email_a
         attendees=["nikhilsinghal005@gmail.com"],
     )
 
-    assert result["status"] == "needs_clarification"
-    assert result["code"] == "calendar_invite_details_required"
-    assert result["missing_fields"] == ["title", "sender_email"]
+    assert result["status"] == "confirmation_required"
+    assert result["confirmation_payload"]["title"] == "Meeting"
+    assert result["confirmation_payload"]["sender_email"] == "seller@contoso.com"
+    assert result["confirmation_payload"]["show_sender"] is False
     service.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_send_calendar_invite_requires_sender_before_confirmation(monkeypatch) -> None:
-    """Missing sender should be a clarification blocker, not a final confirmation card."""
+async def test_send_calendar_invite_infers_sender_before_confirmation(monkeypatch) -> None:
+    """Missing sender should resolve from the user's connected calendar."""
     session = MagicMock()
     context = _FakeContext(
         organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
@@ -233,10 +290,9 @@ async def test_send_calendar_invite_requires_sender_before_confirmation(monkeypa
         attendees=["nikhilsinghal005@gmail.com"],
     )
 
-    assert result["status"] == "needs_clarification"
-    assert result["code"] == "calendar_sender_email_required"
-    assert result["missing_fields"] == ["sender_email"]
-    assert "confirmation_payload" not in result
+    assert result["status"] == "confirmation_required"
+    assert result["confirmation_payload"]["sender_email"] == "seller@contoso.com"
+    assert result["confirmation_payload"]["show_sender"] is False
     service.assert_not_called()
 
 
@@ -275,6 +331,7 @@ async def test_send_calendar_invite_rejects_yes_as_sender_email(monkeypatch) -> 
 async def test_send_calendar_invite_resolves_weekday_time_from_user_timezone_anchor(
     monkeypatch,
 ) -> None:
+    """Relative weekdays should resolve against the user's local calendar date."""
     session = MagicMock()
     context = _FakeContext(
         organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
@@ -288,10 +345,13 @@ async def test_send_calendar_invite_resolves_weekday_time_from_user_timezone_anc
     created_requests = []
 
     class FakeService:
+        """Capture the final localized request after exact confirmation."""
+
         def __init__(self, *_args, **_kwargs) -> None:
             pass
 
         async def create_invite(self, request):
+            """Record the request and return a successful provider result."""
             created_requests.append(request)
             return CalendarInviteCreateResult(
                 request_id=UUID("33333333-3333-3333-3333-333333333333"),
@@ -306,14 +366,13 @@ async def test_send_calendar_invite_resolves_weekday_time_from_user_timezone_anc
         FakeService,
     )
 
-    result = await send_calendar_invite(
+    result = await _preview_then_confirm(
         context=context,
         title="Discovery call",
         start_time="Saturday 10 AM",
         end_time="Saturday 10:30 AM",
         attendees=["buyer@example.com"],
         sender_email="seller@contoso.com",
-        confirmed=True,
     )
 
     assert result["status"] == "sent"
@@ -323,10 +382,10 @@ async def test_send_calendar_invite_resolves_weekday_time_from_user_timezone_anc
 
 
 @pytest.mark.asyncio
-async def test_send_calendar_invite_blocks_tool_timezone_that_conflicts_with_context(
+async def test_send_calendar_invite_honors_explicit_timezone_in_review(
     monkeypatch,
 ) -> None:
-    """The app-captured timezone must not be silently overridden by model-chosen UTC."""
+    """An explicitly supplied timezone should override the app default."""
     session = MagicMock()
     context = _FakeContext(
         organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
@@ -354,10 +413,9 @@ async def test_send_calendar_invite_blocks_tool_timezone_that_conflicts_with_con
     )
 
     assert result["status"] == "confirmation_required"
-    assert result["code"] == "calendar_invite_timezone_confirmation_required"
-    assert result["confirmation_payload"]["timezone"] == "Asia/Kolkata"
-    assert result["confirmation_payload"]["requested_timezone"] == "UTC"
-    assert "timezone_conflicts_with_user_timezone" in result["confirmation_reasons"]
+    assert result["code"] == "calendar_invite_confirmation_required"
+    assert result["confirmation_payload"]["timezone"] == "UTC"
+    assert "timezone_conflicts_with_user_timezone" not in result["confirmation_reasons"]
     service.assert_not_called()
 
 
@@ -379,10 +437,13 @@ async def test_send_calendar_invite_uses_explicit_timezone_after_conflict_confir
     created_requests = []
 
     class FakeService:
+        """Capture the request that explicitly overrides the app timezone."""
+
         def __init__(self, *_args, **_kwargs) -> None:
             pass
 
         async def create_invite(self, request):
+            """Record the request and return a successful provider result."""
             created_requests.append(request)
             return CalendarInviteCreateResult(
                 request_id=UUID("33333333-3333-3333-3333-333333333333"),
@@ -397,7 +458,7 @@ async def test_send_calendar_invite_uses_explicit_timezone_after_conflict_confir
         FakeService,
     )
 
-    result = await send_calendar_invite(
+    result = await _preview_then_confirm(
         context=context,
         title="Discovery call",
         start_time="Saturday 8 PM",
@@ -405,7 +466,6 @@ async def test_send_calendar_invite_uses_explicit_timezone_after_conflict_confir
         attendees=["buyer@example.com"],
         sender_email="seller@contoso.com",
         timezone="UTC",
-        confirmed=True,
     )
 
     assert result["status"] == "sent"
@@ -445,10 +505,13 @@ async def test_send_calendar_invite_requires_confirmation_for_resolved_name(
     context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))
 
     class FakeResolver:
+        """Return one CRM contact for a name-derived attendee."""
+
         def __init__(self, *_args, **_kwargs) -> None:
             pass
 
         async def resolve(self, attendees, *, deal_id=None):
+            """Resolve the test name without querying CRM."""
             return AttendeeResolutionResult(
                 resolved=[
                     AttendeeCandidate(
@@ -512,10 +575,13 @@ async def test_send_calendar_invite_requires_confirmation_for_resolved_internal_
     context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))
 
     class FakeResolver:
+        """Return one internal user for a name-derived attendee."""
+
         def __init__(self, *_args, **_kwargs) -> None:
             pass
 
         async def resolve(self, attendees, *, deal_id=None):
+            """Resolve the test teammate without querying the user table."""
             assert attendees == ["Saksham Bhutani"]
             return AttendeeResolutionResult(
                 resolved=[
@@ -569,10 +635,13 @@ async def test_send_calendar_invite_blocks_ambiguous_attendees(monkeypatch) -> N
     context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))
 
     class FakeResolver:
+        """Return two plausible identities to exercise clarification."""
+
         def __init__(self, *_args, **_kwargs) -> None:
             pass
 
         async def resolve(self, attendees, *, deal_id=None):
+            """Return a deliberately ambiguous attendee result."""
             return AttendeeResolutionResult(
                 ambiguous=[
                     {
@@ -614,10 +683,220 @@ async def test_send_calendar_invite_blocks_ambiguous_attendees(monkeypatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_send_calendar_invite_returns_sender_selection_as_structured_clarification(
+async def test_send_calendar_invite_derives_title_duration_and_optional_review(
     monkeypatch,
 ) -> None:
-    """Multiple calendar accounts should produce a bundled sender blocker for the agent."""
+    """The first review should contain every derived field needed for one-click send."""
+    context = _FakeContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={"user_timezone": "Asia/Kolkata"},
+    )
+    service = MagicMock()
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.send_calendar_invite.CalendarInviteService",
+        service,
+    )
+
+    result = await send_calendar_invite(
+        context=context,
+        attendees=[
+            {"email": "bhawesh@example.com", "name": "Bhawesh"},
+            {"email": "legal@example.com", "name": "Legal", "optional": True},
+        ],
+        start_time="2026-07-25 3:30 PM",
+    )
+
+    payload = result["confirmation_payload"]
+    start_at = datetime.fromisoformat(payload["start_time"])
+    end_at = datetime.fromisoformat(payload["end_time"])
+    assert result["status"] == "confirmation_required"
+    assert payload["title"] == "Meeting with Bhawesh and 1 others"
+    assert start_at.utcoffset() == timedelta(hours=5, minutes=30)
+    assert end_at - start_at == timedelta(minutes=30)
+    assert payload["required_attendees"][0]["email"] == "bhawesh@example.com"
+    assert payload["optional_attendees"][0]["email"] == "legal@example.com"
+    assert {"title", "duration_30_minutes", "timezone"} <= set(payload["inferred_fields"])
+    assert result["review_text"].splitlines() == [
+        "Meeting with Bhawesh and 1 others",
+        "25 July, 3:30–4:00 PM IST",
+        "To: bhawesh@example.com",
+        "Optional: legal@example.com",
+        "Reply send to confirm.",
+    ]
+    assert result["_bot_channel_payload"]["force_override"] is True
+    service.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_calendar_invite_bundles_missing_date_with_known_review(monkeypatch) -> None:
+    """A clock without a date should return one clarification plus known recipients."""
+    context = _FakeContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={"user_timezone": "Asia/Kolkata"},
+    )
+    service = MagicMock()
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.send_calendar_invite.CalendarInviteService",
+        service,
+    )
+
+    result = await send_calendar_invite(
+        context=context,
+        attendees=[{"email": "bhawesh@example.com", "name": "Bhawesh"}],
+        start_time="3:30 PM",
+    )
+
+    assert result["status"] == "needs_clarification"
+    assert result["missing_fields"] == ["date"]
+    assert result["review_payload"]["title"] == "Meeting with Bhawesh"
+    assert result["review_payload"]["start_time"] == "3:30 PM"
+    assert result["review_payload"]["end_time"] is None
+    assert result["review_payload"]["required_attendees"][0]["email"] == "bhawesh@example.com"
+    service.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_calendar_invite_asks_for_am_pm_on_bare_clock(monkeypatch) -> None:
+    """A natural 12-hour clock must not silently become an AM or PM meeting."""
+    context = _FakeContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={"user_timezone": "Asia/Kolkata"},
+    )
+    service = MagicMock()
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.send_calendar_invite.CalendarInviteService",
+        service,
+    )
+
+    result = await send_calendar_invite(
+        context=context,
+        attendees=["bhawesh@example.com"],
+        start_time="25 July 3:30",
+    )
+
+    assert result["status"] == "needs_clarification"
+    assert result["missing_fields"] == ["start_time_am_pm"]
+    assert result["review_payload"]["timezone"] == "Asia/Kolkata"
+    service.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_calendar_invite_accepts_unambiguous_24_hour_clock(monkeypatch) -> None:
+    """A 24-hour clock should use the user's default timezone without another question."""
+    context = _FakeContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={"user_timezone": "Asia/Kolkata"},
+    )
+    service = MagicMock()
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.send_calendar_invite.CalendarInviteService",
+        service,
+    )
+
+    result = await send_calendar_invite(
+        context=context,
+        attendees=["bhawesh@example.com"],
+        start_time="25 July 15:30",
+    )
+
+    assert result["status"] == "confirmation_required"
+    assert result["confirmation_payload"]["timezone"] == "Asia/Kolkata"
+    assert result["review_text"].splitlines()[1] == "25 July, 3:30–4:00 PM IST"
+    service.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_calendar_invite_asks_for_am_pm_on_bare_end_clock(monkeypatch) -> None:
+    """An explicit start meridiem must not silently determine a bare end clock."""
+    context = _FakeContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={"user_timezone": "Asia/Kolkata"},
+    )
+    service = MagicMock()
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.send_calendar_invite.CalendarInviteService",
+        service,
+    )
+
+    result = await send_calendar_invite(
+        context=context,
+        attendees=["bhawesh@example.com"],
+        start_time="25 July 3:30 PM",
+        end_time="4:00",
+    )
+
+    assert result["status"] == "needs_clarification"
+    assert result["missing_fields"] == ["end_time_am_pm"]
+    service.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_calendar_invite_asks_again_for_invalid_explicit_timezone(
+    monkeypatch,
+) -> None:
+    """A mistyped explicit timezone must not silently fall back to the user default."""
+    context = _FakeContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={"user_timezone": "Asia/Kolkata"},
+    )
+    service = MagicMock()
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.send_calendar_invite.CalendarInviteService",
+        service,
+    )
+
+    result = await send_calendar_invite(
+        context=context,
+        attendees=["bhawesh@example.com"],
+        start_time="25 July 3:30 PM",
+        timezone="Mars/Colony",
+    )
+
+    assert result["status"] == "needs_clarification"
+    assert result["missing_fields"] == ["timezone"]
+    service.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_calendar_invite_rejects_stale_confirmation_token(monkeypatch) -> None:
+    """Changed review fields must not inherit approval from an older invite payload."""
+    context = _FakeContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={"user_timezone": "Asia/Kolkata"},
+    )
+    service = MagicMock()
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.send_calendar_invite.CalendarInviteService",
+        service,
+    )
+
+    result = await send_calendar_invite(
+        context=context,
+        attendees=["bhawesh@example.com"],
+        title="Discussion",
+        start_time="2026-07-25 3:30 PM",
+        confirmed=True,
+        idempotency_key="stale-review",
+    )
+
+    assert result["status"] == "confirmation_required"
+    assert result["code"] == "calendar_invite_confirmation_stale"
+    assert result["confirmation_payload"]["confirmation_token"] != "stale-review"
+    service.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_calendar_invite_shows_automatically_selected_sender_for_multiple_accounts(
+    monkeypatch,
+) -> None:
+    """Multiple calendars should show the selected sender without asking a question."""
     session = MagicMock()
     context = _FakeContext(
         organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
@@ -626,24 +905,24 @@ async def test_send_calendar_invite_returns_sender_selection_as_structured_clari
     )
     context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))
 
-    class FakeService:
-        def __init__(self, *_args, **_kwargs) -> None:
-            pass
+    class MultipleAccountResolver:
+        """Expose the automatically selected sender from two calendars."""
 
-        async def create_invite(self, _request):
-            raise CalendarInviteError(
-                "calendar_sender_selection_required",
-                (
-                    "You have multiple Calendar accounts that can send invites. "
-                    "Which sender should I use? Available sender accounts: "
-                    "seller@contoso.com, ae@contoso.com."
+        async def resolve(self, *_args, **_kwargs):
+            """Return the primary mailbox and mark sender display as relevant."""
+            return SimpleNamespace(
+                integration=SimpleNamespace(
+                    integration_email="seller@contoso.com",
+                    integration_id=UUID("99999999-9999-9999-9999-999999999999"),
                 ),
-                status_code=409,
+                connected_account_count=2,
+                selection_reason="primary_user_email",
+                warning=None,
             )
 
     monkeypatch.setattr(
-        "src.agents.tools.calendar.send_calendar_invite.CalendarInviteService",
-        FakeService,
+        "src.agents.tools.calendar.send_calendar_invite.CalendarIntegrationResolver",
+        MultipleAccountResolver,
     )
 
     result = await send_calendar_invite(
@@ -652,10 +931,9 @@ async def test_send_calendar_invite_returns_sender_selection_as_structured_clari
         start_time="2026-05-12T16:00:00+05:30",
         end_time="2026-05-12T17:00:00+05:30",
         attendees=["buyer@example.com"],
-        confirmed=True,
     )
 
-    assert result["status"] == "needs_clarification"
-    assert result["code"] == "calendar_sender_selection_required"
-    assert result["missing_fields"] == ["sender_email"]
-    assert result["available_sender_accounts"] == ["seller@contoso.com", "ae@contoso.com"]
+    assert result["status"] == "confirmation_required"
+    assert result["confirmation_payload"]["sender_email"] == "seller@contoso.com"
+    assert result["confirmation_payload"]["show_sender"] is True
+    assert "From: seller@contoso.com" in result["review_text"].splitlines()

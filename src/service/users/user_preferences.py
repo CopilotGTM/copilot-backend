@@ -105,6 +105,7 @@ def set_preferred_deal_currency(
 
 
 def normalize_navigation_preferences(preferences: Any) -> dict[str, Any]:
+    """Fill navigation defaults while preserving every valid user selection."""
     branch = preferences if isinstance(preferences, dict) else {}
     raw_sections = branch.get("expanded_sections")
     raw_sections = raw_sections if isinstance(raw_sections, dict) else {}
@@ -133,8 +134,41 @@ def merge_navigation_preferences(
     preferences: dict[str, Any] | None,
     navigation: dict[str, Any],
 ) -> dict[str, Any]:
+    """Replace the navigation branch without disturbing unrelated preferences."""
     root = dict(preferences or {})
     root["navigation"] = normalize_navigation_preferences(navigation)
+    return root
+
+
+def preferred_calendar_sender(preferences: dict[str, Any] | None) -> str | None:
+    """Return the normalized preferred calendar address from user preferences."""
+    root = preferences if isinstance(preferences, dict) else {}
+    communications = root.get("communications")
+    communications = communications if isinstance(communications, dict) else {}
+    calendar = communications.get("calendar")
+    calendar = calendar if isinstance(calendar, dict) else {}
+    raw_email = calendar.get("preferred_sender_email")
+    if not isinstance(raw_email, str):
+        return None
+    normalized = raw_email.strip().lower()
+    return normalized or None
+
+
+def merge_preferred_calendar_sender(
+    preferences: dict[str, Any] | None,
+    sender_email: str | None,
+) -> dict[str, Any]:
+    """Return preferences with one calendar default updated or cleared."""
+    root = dict(preferences or {})
+    communications = dict(root.get("communications") or {})
+    calendar = dict(communications.get("calendar") or {})
+    normalized = (sender_email or "").strip().lower()
+    if normalized:
+        calendar["preferred_sender_email"] = normalized
+    else:
+        calendar.pop("preferred_sender_email", None)
+    communications["calendar"] = calendar
+    root["communications"] = communications
     return root
 
 
@@ -195,4 +229,7 @@ def normalize_user_preferences(preferences: dict[str, Any] | None) -> dict[str, 
     crm["tasks"] = tasks
     root["crm"] = crm
     root["navigation"] = normalize_navigation_preferences(root.get("navigation"))
+    calendar_sender = preferred_calendar_sender(root)
+    if calendar_sender:
+        root = merge_preferred_calendar_sender(root, calendar_sender)
     return root

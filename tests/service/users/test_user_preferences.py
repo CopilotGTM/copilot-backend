@@ -1,10 +1,15 @@
+"""Tests for normalized defaults stored in the shared user preferences document."""
+
 from src.service.users.user_preferences import (
+    merge_preferred_calendar_sender,
     normalize_user_preferences,
+    preferred_calendar_sender,
     set_preferred_deal_currency,
 )
 
 
 def test_normalize_user_preferences_adds_default_contact_list_columns() -> None:
+    """Missing contact table settings should receive the product defaults."""
     assert normalize_user_preferences({})["crm"]["contacts"]["list"]["columns"] == [
         "full_name",
         "job_title",
@@ -20,6 +25,7 @@ def test_normalize_user_preferences_adds_default_contact_list_columns() -> None:
 
 
 def test_normalize_user_preferences_adds_default_account_list_columns() -> None:
+    """Missing account table settings should receive the product defaults."""
     assert normalize_user_preferences({})["crm"]["accounts"]["list"]["columns"] == [
         "name",
         "domain",
@@ -37,6 +43,7 @@ def test_normalize_user_preferences_adds_default_account_list_columns() -> None:
 
 
 def test_normalize_user_preferences_adds_default_deal_list_columns() -> None:
+    """Missing deal table settings should receive the product defaults."""
     assert normalize_user_preferences({})["crm"]["deals"]["list"]["columns"] == [
         "name",
         "company_name",
@@ -50,6 +57,7 @@ def test_normalize_user_preferences_adds_default_deal_list_columns() -> None:
 
 
 def test_normalize_user_preferences_adds_default_task_list_columns() -> None:
+    """Missing task table settings should receive the product defaults."""
     assert normalize_user_preferences({})["crm"]["tasks"]["list"]["columns"] == [
         "subject",
         "due_date",
@@ -62,6 +70,7 @@ def test_normalize_user_preferences_adds_default_task_list_columns() -> None:
 
 
 def test_normalize_user_preferences_preserves_user_contact_list_columns() -> None:
+    """An explicit contact column selection should not be replaced by defaults."""
     preferences = {
         "crm": {
             "contacts": {
@@ -80,6 +89,7 @@ def test_normalize_user_preferences_preserves_user_contact_list_columns() -> Non
 
 
 def test_normalize_user_preferences_preserves_user_account_list_columns() -> None:
+    """An explicit account column selection should not be replaced by defaults."""
     preferences = {
         "crm": {
             "accounts": {
@@ -98,6 +108,7 @@ def test_normalize_user_preferences_preserves_user_account_list_columns() -> Non
 
 
 def test_normalize_user_preferences_preserves_user_deal_list_columns() -> None:
+    """An explicit deal column selection should not be replaced by defaults."""
     preferences = {
         "crm": {
             "deals": {
@@ -116,6 +127,7 @@ def test_normalize_user_preferences_preserves_user_deal_list_columns() -> None:
 
 
 def test_normalize_user_preferences_normalizes_preferred_deal_currency() -> None:
+    """A valid deal currency should be stored in canonical uppercase form."""
     preferences = {
         "crm": {
             "deals": {
@@ -132,6 +144,7 @@ def test_normalize_user_preferences_normalizes_preferred_deal_currency() -> None
 
 
 def test_normalize_user_preferences_ignores_invalid_preferred_deal_currency() -> None:
+    """Malformed currency values should not leak into normalized preferences."""
     for value in ["rupee", "12$", 123, None]:
         preferences = {"crm": {"deals": {"preferred_currency": value}}}
 
@@ -141,6 +154,7 @@ def test_normalize_user_preferences_ignores_invalid_preferred_deal_currency() ->
 
 
 def test_set_preferred_deal_currency_preserves_unrelated_preferences() -> None:
+    """Updating deal currency should preserve all sibling preference branches."""
     preferences = {
         "notifications": {"email": True},
         "crm": {"deals": {"list": {"columns": ["name"]}}},
@@ -154,6 +168,7 @@ def test_set_preferred_deal_currency_preserves_unrelated_preferences() -> None:
 
 
 def test_set_preferred_deal_currency_ignores_empty_or_invalid_currency() -> None:
+    """Invalid currency updates should leave the original document untouched."""
     preferences = {"crm": {"deals": {"preferred_currency": "INR"}}}
 
     assert set_preferred_deal_currency(preferences, None) == preferences
@@ -163,6 +178,7 @@ def test_set_preferred_deal_currency_ignores_empty_or_invalid_currency() -> None
 
 
 def test_normalize_user_preferences_preserves_user_task_list_columns() -> None:
+    """An explicit task column selection should not be replaced by defaults."""
     preferences = {
         "crm": {
             "tasks": {
@@ -178,3 +194,22 @@ def test_normalize_user_preferences_preserves_user_task_list_columns() -> None:
         "due_date",
         "status",
     ]
+
+
+def test_calendar_sender_preference_normalizes_and_preserves_other_settings() -> None:
+    """Calendar defaults should share User.preferences without replacing other branches."""
+    preferences = {"notifications": {"email": True}}
+
+    updated = merge_preferred_calendar_sender(preferences, " Sales@Contoso.COM ")
+
+    assert preferred_calendar_sender(updated) == "sales@contoso.com"
+    assert updated["notifications"] == {"email": True}
+
+
+def test_calendar_sender_preference_can_be_cleared() -> None:
+    """Clearing the default should leave deterministic inference available."""
+    preferences = merge_preferred_calendar_sender({}, "sales@contoso.com")
+
+    updated = merge_preferred_calendar_sender(preferences, None)
+
+    assert preferred_calendar_sender(updated) is None

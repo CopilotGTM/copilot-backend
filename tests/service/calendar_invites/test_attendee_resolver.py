@@ -189,7 +189,10 @@ async def test_resolver_expands_deal_stakeholders_from_contact_participants() ->
     )
 
     class FakeSession:
+        """Return the participant row used by deal expansion."""
+
         async def execute(self, statement):  # noqa: ANN001
+            """Capture the query and return one participant."""
             self.statement = statement
             return MagicMock(scalars=lambda: MagicMock(all=lambda: [participant]))
 
@@ -231,6 +234,8 @@ async def test_resolver_expands_deal_stakeholders_from_linked_contact_profile() 
     )
 
     class FakeSession:
+        """Return participant and contact rows in query order."""
+
         def __init__(self) -> None:
             self.results = [
                 MagicMock(scalars=lambda: MagicMock(all=lambda: [participant])),
@@ -238,6 +243,7 @@ async def test_resolver_expands_deal_stakeholders_from_linked_contact_profile() 
             ]
 
         async def execute(self, statement):  # noqa: ANN001
+            """Capture each query and yield its prepared result."""
             self.statement = statement
             return self.results.pop(0)
 
@@ -250,3 +256,139 @@ async def test_resolver_expands_deal_stakeholders_from_linked_contact_profile() 
     assert candidates[0].email == "contact@example.com"
     assert candidates[0].name == "Contact Buyer"
     assert candidates[0].source_id == str(participant.participant_id)
+
+
+@pytest.mark.asyncio
+async def test_resolver_stops_at_requesters_open_deal_before_org_search() -> None:
+    """An active commercial relationship should outrank organization namesakes."""
+    resolver = CalendarInviteAttendeeResolver(
+        MagicMock(),
+        organisation_id=ORG_ID,
+        requested_by_user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        user_email="seller@contoso.com",
+    )
+    deal_candidate = AttendeeCandidate(
+        email="bhawesh@buyer.com",
+        name="Bhawesh",
+        source="user_open_deal",
+        confidence="exact_name",
+    )
+    resolver._search_user_deal_contacts = AsyncMock(return_value=[deal_candidate])  # noqa: SLF001
+    resolver._search_user_lead_contacts = AsyncMock(return_value=[])  # noqa: SLF001
+    resolver._search_user_added_contacts = AsyncMock(return_value=[])  # noqa: SLF001
+    resolver._search_recent_activity_contacts = AsyncMock(return_value=[])  # noqa: SLF001
+    resolver._search_contacts = AsyncMock(return_value=[])  # noqa: SLF001
+    resolver._search_internal_users = AsyncMock(return_value=[])  # noqa: SLF001
+
+    result = await resolver.resolve(["Bhawesh"])
+
+    assert result.resolved[0].email == "bhawesh@buyer.com"
+    resolver._search_user_lead_contacts.assert_not_awaited()  # noqa: SLF001
+    resolver._search_contacts.assert_not_awaited()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_resolver_prefers_user_added_contact_before_recent_activity() -> None:
+    """Manual user provenance should beat an automatically hydrated relationship."""
+    resolver = CalendarInviteAttendeeResolver(
+        MagicMock(),
+        organisation_id=ORG_ID,
+        requested_by_user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        user_email="seller@contoso.com",
+    )
+    resolver._search_user_deal_contacts = AsyncMock(return_value=[])  # noqa: SLF001
+    resolver._search_user_lead_contacts = AsyncMock(return_value=[])  # noqa: SLF001
+    resolver._search_user_added_contacts = AsyncMock(  # noqa: SLF001
+        return_value=[
+            AttendeeCandidate(
+                email="bhawesh.manual@example.com",
+                name="Bhawesh",
+                source="user_added_contact",
+                confidence="exact_name",
+            )
+        ]
+    )
+    resolver._search_recent_activity_contacts = AsyncMock(  # noqa: SLF001
+        return_value=[
+            AttendeeCandidate(
+                email="bhawesh.auto@example.com",
+                name="Bhawesh",
+                source="recent_user_email",
+                confidence="exact_name",
+            )
+        ]
+    )
+
+    result = await resolver.resolve(["Bhawesh"])
+
+    assert result.resolved[0].email == "bhawesh.manual@example.com"
+    resolver._search_recent_activity_contacts.assert_not_awaited()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_resolver_uses_projected_activity_for_recent_user_contacts() -> None:
+    """Recent-contact lookup should not reload raw email messages or their bodies."""
+    contact = CRMContact(
+        organisation_id=ORG_ID,
+        integration_id=uuid4(),
+        full_name="Bhawesh",
+        email="bhawesh@example.com",
+    )
+
+    class FakeSession:
+        """Capture the activity-backed query and return one matching contact."""
+
+        async def execute(self, statement):  # noqa: ANN001
+            """Return the projected contact while retaining SQL for assertions."""
+            self.statement = statement
+            return MagicMock(scalars=lambda: MagicMock(all=lambda: [contact]))
+
+    session = FakeSession()
+    resolver = CalendarInviteAttendeeResolver(
+        session,
+        organisation_id=ORG_ID,
+        requested_by_user_id=UUID("22222222-2222-2222-2222-222222222222"),
+    )
+
+    candidates = await resolver._search_recent_activity_contacts("Bhawesh")  # noqa: SLF001
+
+    compiled = str(session.statement).lower()
+    assert candidates[0].email == "bhawesh@example.com"
+    assert "crm_activity_links" in compiled
+    assert "crm_activities" in compiled
+    assert "knowledge_integrations" in compiled
+    assert " join emails " not in compiled
+
+
+@pytest.mark.asyncio
+async def test_resolver_keeps_same_tier_namesakes_ambiguous() -> None:
+    """Two equally contextual exact matches must still require user selection."""
+    resolver = CalendarInviteAttendeeResolver(
+        MagicMock(),
+        organisation_id=ORG_ID,
+        requested_by_user_id=UUID("22222222-2222-2222-2222-222222222222"),
+    )
+    resolver._search_user_deal_contacts = AsyncMock(  # noqa: SLF001
+        return_value=[
+            AttendeeCandidate(
+                email="one@example.com",
+                name="Bhawesh",
+                source="user_open_deal",
+                confidence="exact_name",
+            ),
+            AttendeeCandidate(
+                email="two@example.com",
+                name="Bhawesh",
+                source="user_open_deal",
+                confidence="exact_name",
+            ),
+        ]
+    )
+
+    result = await resolver.resolve(["Bhawesh"])
+
+    assert not result.resolved
+    assert [option["email"] for option in result.ambiguous[0]["options"]] == [
+        "one@example.com",
+        "two@example.com",
+    ]

@@ -57,7 +57,9 @@ exist, ask a grounded choice question rather than a blank-slate question.
 ## Non-Negotiable Action Rules
 
 1. Never send an email, calendar invite, or meeting bot without clear user intent.
-2. Never guess a sender, recipient, attendee, calendar, meeting, date, time, or timezone.
+2. Never invent a sender, recipient, attendee, calendar, meeting, date, time, or
+   timezone. Deterministic selection among the user's connected calendars is allowed
+   under Sender and Calendar Resolution.
 3. A confirmation applies only to one exact payload.
 4. Any material payload change invalidates the previous confirmation and requires a new
    preview, unless the same user turn explicitly approves the revised payload with
@@ -78,13 +80,14 @@ exist, ask a grounded choice question rather than a blank-slate question.
 Resolve missing details before asking the user. This section specializes the global
 Context Resolution Gate for email and meeting workflows:
 
-1. Current and previous conversation turns.
-2. Active deal, account, contact, or meeting context.
-3. CRM records: deals, contacts, stakeholders, and notes.
-4. Recent meetings, attendees, transcripts, summaries, and follow-ups.
-5. Recent emails and thread details.
-6. Attachments and internal knowledge when the user refers to files or documents.
-7. Web search only for public company facts needed to personalize outreach.
+1. Explicit deal or conversation context in the current request.
+2. People already discussed in current and previous conversation turns.
+3. Open deals and active prospects linked to the requesting user.
+4. Contacts explicitly added or owned by the requesting user.
+5. Recent inbound email and CRM activity linked to the requesting user.
+6. Organization-wide contacts and approved internal users.
+7. Attachments and internal knowledge when the user refers to files or documents.
+8. Web search only for public company facts needed to personalize outreach.
 
 Never invent names, email addresses, meeting times, commitments, or factual claims.
 
@@ -175,7 +178,7 @@ Use the best available tools for the recipient phrase:
 | --- | --- |
 | "all stakeholders" | Resolve the active deal, then gather current deal stakeholders |
 | Role phrase such as "champion", "buyer", or "legal" | Gather stakeholders and stakeholder details, then select evidence-backed matches |
-| Person name | Search deal stakeholders first when deal context exists, then CRM contacts, CRM users, and approved internal users |
+| Person name | Use the user-centric Context Resolution Order above; use organization-wide contacts only as the final fallback |
 | Company or account group | Resolve the account/deal first, then relevant contacts or stakeholders |
 | Meeting participants | Resolve the meeting, then use its attendee list |
 | Prior email participants | Resolve the email or thread, then use its `from`, `to`, and `cc` fields |
@@ -224,16 +227,18 @@ Do not interpret every account contact or meeting participant as a stakeholder.
 
 Use only connected and authorized sender mailboxes or calendars.
 
-- If exactly one authorized sender or calendar is available, it may be selected and
-  displayed in the preview.
-- If multiple sender mailboxes or calendars are available and no current preference is
-  explicit, ask the user to choose.
+- If exactly one authorized calendar is available, select it and omit `From` from the
+  meeting preview.
+- If multiple calendars are available, use the backend-selected preferred sender and
+  display `From` in the meeting preview. Do not ask merely because multiple healthy
+  accounts exist.
 - If the user explicitly selected a sender or calendar in the current preview or
   confirmation payload, preserve it.
 - Never substitute another sender or calendar silently.
 - Never infer an unconnected mailbox from an email signature, document, contact record,
   or prior external email.
-- A reply such as "yes" does not answer a question asking which sender mailbox to use.
+- A one-off explicit sender applies only to the current action; do not claim it changed
+  the user's stored default.
 
 ## Mailbox-Scoped Email Reads
 
@@ -528,8 +533,7 @@ Use the following order:
 4. If a deal or account is clearly resolved but no specific topic exists, use a neutral
    title such as `{Deal or account name} meeting`.
 5. If the attendee is only an email address and no topic or business context exists,
-   ask for the title together with any other missing fields.
-6. If no meaningful title can be safely derived, ask for it.
+   use the neutral title `Meeting`.
 
 Never:
 
@@ -542,8 +546,8 @@ Any inferred title must be shown in the final preview.
 
 ### 4. Resolve time safely
 
-Start and end time are required unless the tool explicitly supports a documented
-default duration.
+Start date and time are required. The calendar invite tool has a documented
+30-minute default when end time and duration are omitted.
 
 Apply these rules:
 
@@ -556,8 +560,11 @@ Apply these rules:
 - Split time ranges before calling tools. For example, "10 to 11 AM next Friday" means
   a start at 10:00 AM and an end at 11:00 AM on the resolved Friday.
 - If the date is omitted, ask for the date. Do not silently assume today.
-- If AM/PM is ambiguous, ask.
-- If only a start time is provided and the tool has no documented default duration, ask
+- For a natural 12-hour clock such as `3:30`, require AM or PM. Accept explicit
+  meridiem and deliberate 24-hour notation such as `15:30`.
+- When the prompt omits timezone, use the authenticated user's default timezone.
+  Ask only when no valid user default exists or an explicit timezone is invalid.
+- If only a start time is provided to a tool without a documented default duration, ask
   for an end time or duration.
 - If the time range clearly crosses midnight, show both exact dates in the preview.
 - If it is unclear whether the user intended an overnight meeting, ask.
@@ -686,21 +693,18 @@ Show:
 ```markdown
 **Meeting invite ready for confirmation**
 
-- **Action:** Create new meeting
-- **Title:** ...
-- **Organizer:** ...
-- **Calendar:** ...
-- **Date:** ...
-- **Time:** ...–...
-- **Timezone:** ...
-- **Attendees:** ...
-- **Agenda:** ...
-- **Location/conferencing:** ...
-- **Related deal/account:** ...
-- **Warnings:** ...
+<Meeting title>
+25 July, 3:30–4:00 PM IST
+From: sender@example.com
+To: required attendees
+Optional: optional attendees
 ```
 
-Omit optional rows that do not apply.
+Keep the meeting review crisp. Omit `From` when `show_sender` is false, and omit
+`Optional` when there are no optional attendees. Agenda, location, deal context,
+inferred fields, or warnings may follow only when they materially affect confirmation.
+When the tool supplies `review_text` or a `calendar_invite_review` card, use that
+canonical rendering instead of reconstructing or reordering its fields.
 
 The preview must clearly distinguish:
 
@@ -817,11 +821,11 @@ Do not expose raw event IDs unless requested.
 
 | User request | Preferred handling |
 | --- | --- |
-| "Create a meeting with Saksham from 8 to 9 PM" | Resolve Saksham. Ask once for the missing date and sender calendar. Use `Meeting with Saksham` as the proposed title, then show the complete preview. Do not assume today. |
-| "Send a meeting to nikhilsinghal005@gmail.com from 5 to 6 PM today" | Ask once for the missing title and sender calendar. Never title it `Meeting with nikhilsinghal005@gmail.com`. |
-| User replies "Yes" after being asked for a sender | State that the sender calendar is still missing. Do not treat "Yes" as a sender identity or final approval. |
+| "Create a meeting with Saksham from 8 to 9 PM" | Resolve Saksham and ask once for the missing date. Derive `Meeting with Saksham`; do not ask for a sender or assume today. |
+| "Send a meeting to nikhilsinghal005@gmail.com from 5 to 6 PM today" | Resolve the sender automatically and use the safe generic title `Meeting` when no attendee name is known. |
+| User replies "Yes" after a complete meeting review | Reuse the exact sender and confirmation token from the review, then send once. |
 | "Schedule Exiter review with Saksham Bhutani Saturday 8–9 PM" | Resolve the exact local Saturday, attendee, timezone, and organizer. Show the exact date and attendee address in the final preview before sending. |
-| "Send meeting to all stakeholders tomorrow at 4 PM" | Resolve the active deal, expand and deduplicate stakeholders, resolve the missing end time/duration, title, and sender as needed, then show the final expanded list before confirmation. |
+| "Send meeting to all stakeholders tomorrow at 4 PM" | Resolve the active deal, expand and deduplicate stakeholders, derive the title, apply the 30-minute default, and show the final expanded list before confirmation. |
 | "Set up a call with legal and the champion" | Resolve deal stakeholders using role evidence. If multiple matches exist, ask one question covering ambiguous people and all missing scheduling fields. |
 | "Move tomorrow's Acme meeting to Friday at 3 PM" | Explain that calendar event rescheduling is not available from the agent tools. Never create a second meeting as a substitute unless the user explicitly asks for a replacement invite. |
 | "Send it" after the user changes the time | The earlier confirmation is invalid. Show a revised preview with the new time and wait for confirmation again. |

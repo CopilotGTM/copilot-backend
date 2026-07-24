@@ -59,6 +59,9 @@ class ChannelPayload:
     text_fallback: str | None = None  # Fallback text for channels that don't support rich UI
     attachments: list[dict[str, Any]] | None = None  # Slack attachments (e.g. table blocks)
     source_text: str | None = None  # Original markdown text for fallback re-rendering
+    # Most WhatsApp replies preserve the model's conversational wording. Exact
+    # action reviews opt into this flag when their canonical payload must win.
+    force_override: bool = False
 
 
 @dataclass

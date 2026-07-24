@@ -632,8 +632,8 @@ class BotMessageProcessingService:
             dict(action)
             for action in raw_actions
             if isinstance(action, dict)
-            and cls._parse_iso_datetime(action.get("expires_at"))
-            and cls._parse_iso_datetime(action.get("expires_at")) > now
+            and (expires_at := cls._parse_iso_datetime(action.get("expires_at"))) is not None
+            and expires_at > now
         ]
         if len(actions) > _WHATSAPP_PENDING_ACTION_LIMIT:
             overflow = len(actions) - _WHATSAPP_PENDING_ACTION_LIMIT
@@ -2368,6 +2368,7 @@ class BotMessageProcessingService:
                 text_fallback=raw_payload.get("text_fallback"),
                 attachments=raw_payload.get("attachments"),
                 source_text=raw_payload.get("source_text"),
+                force_override=bool(raw_payload.get("force_override", False)),
             )
 
         return None
@@ -2379,8 +2380,8 @@ class BotMessageProcessingService:
         rendered_payload: ChannelPayload,
         override_payload: ChannelPayload | None,
     ) -> bool:
-        """Prefer rich tool payloads where supported, while WhatsApp keeps LLM text."""
-        if override_payload and provider != "whatsapp":
+        """Prefer tool payloads, preserving WhatsApp prose unless exact rendering is required."""
+        if override_payload and (provider != "whatsapp" or override_payload.force_override):
             if await self._send_payload(provider, reply_context, override_payload):
                 return True
             logger.warning("Tool channel payload failed, falling back to rendered response")
