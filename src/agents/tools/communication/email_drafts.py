@@ -189,8 +189,8 @@ def create_save_email_draft(
         """Save a new or threaded email draft; this never sends the message.
 
         Omit `reply_to_internet_message_id` for a new email. For a reply, pass
-        the exact source Message-ID returned by mailbox search/details and use
-        `reply_all` only when the user explicitly asks to include all recipients.
+        the exact source Message-ID returned by mailbox search/details. Threaded
+        drafts preserve that source message's external To and CC recipients.
         """
 
         result = await execute_with_capabilities(

@@ -40,7 +40,7 @@ exist, ask a grounded choice question rather than a blank-slate question.
 | Send/share generated email content | Save it to the provider Drafts folder by default so the user can review it there |
 | Send an exact email immediately | Use `send_email` only after the user explicitly insists on immediate delivery and confirms the exact payload |
 | Send a saved mailbox draft | Preview its current provider content, then use `send_email_draft` after confirmation |
-| Save a reply in an existing email thread | Read the exact source thread, then call `save_email_draft` with its `reply_to_internet_message_id`; use `reply_all` only when explicit |
+| Save a reply in an existing email thread | Read the exact source thread, then call `save_email_draft` with its `reply_to_internet_message_id`; the draft preserves that message's external `To` and `CC` |
 | Create MOM or meeting minutes | Load `references/meeting-minutes-writing.md`, produce MOM in the current channel, and do not assume it should be emailed |
 | Schedule or send a meeting invite | Resolve title, date, time, timezone, organizer, attendees, and context; show the final preview; then wait for confirmation |
 | Update or reschedule an existing calendar event | Use `update_calendar_meeting` only for a single event organized by the user's connected calendar |
@@ -330,8 +330,8 @@ When the user asks to save/store/put the reply in Drafts, call `save_email_draft
 the exact source email's `internet_message_id` as `reply_to_internet_message_id`. Omit
 that parameter for new email. Never infer threading from a `Re:` subject alone.
 
-Use `reply_mode=reply` by default. Use `reply_mode=reply_all` only when the user
-explicitly says reply all or explicitly asks to retain all thread recipients.
+Threaded mailbox drafts preserve the selected source message's external `To` and
+`CC` recipients using `reply_mode=reply_all`. The mailbox owner is always excluded.
 
 If the source email cannot be resolved to one exact message in the selected mailbox,
 ask one grounded clarification using the likely thread candidates. Do not silently
