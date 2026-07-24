@@ -266,7 +266,7 @@ async def test_participant_writer_reuses_contact_participant_with_duplicate_iden
     assert result.participants_updated == 1
     assert session.add.call_count == 1
     created = session.add.call_args.args[0]
-    assert created.relationship_role is None
+    assert created.relationship_role == "Decision Maker"
     assert created.is_primary_contact is True
     assert created.participant_source == "CRM"
     _assert_no_removed_participant_profile_fields(created)
@@ -392,7 +392,7 @@ async def test_participant_writer_clears_stale_primary_contact_flag() -> None:
     )
 
     assert existing.is_primary_contact is False
-    assert existing.relationship_role is None
+    assert existing.relationship_role == "Decision Maker"
     assert existing.participant_source == "CRM"
 
 
@@ -498,3 +498,243 @@ async def test_association_writer_upserts_source_mapping_for_existing_associatio
     assert mapped_rows[0].external_object_type == CRMSourceObjectType.ASSOCIATION
     assert mapped_rows[0].local_object_type == CRMSourceObjectType.ASSOCIATION
     assert mapped_rows[0].local_object_id == existing.association_id
+
+
+def test_salesforce_contact_roles_map_to_bounded_decision_power() -> None:
+    writer = SalesforceDealParticipantWriter(
+        session=AsyncMock(),
+        organisation_id=uuid4(),
+        integration_id=uuid4(),
+    )
+    expected_by_role = {
+        "Business User": "END_USER",
+        "Decision Maker": "DECISION_MAKER",
+        "Economic Buyer": "UNKNOWN",
+        "Economic Decision Maker": "DECISION_MAKER",
+        "Evaluator": "EVALUATOR",
+        "Executive Sponsor": "DECISION_MAKER",
+        "Influencer": "INFLUENCER",
+        "Technical Buyer": "EVALUATOR",
+        "Other": "UNKNOWN",
+    }
+
+    for role, expected in expected_by_role.items():
+        row = writer._new_row(
+            participant=NormalizedSalesforceDealParticipant(
+                deal_external_id="006A",
+                participant_type=CRMParticipantType.CONTACT.value,
+                related_external_id="003A",
+                relationship_role=role,
+                is_primary=False,
+                data_payload=None,
+            ),
+            deal_id=uuid4(),
+            related_local_id=uuid4(),
+            related_name="Buyer",
+            related_email="buyer@example.com",
+            now=datetime.now(UTC),
+        )
+
+        assert row.decision_power == expected
+
+
+def test_primary_contact_label_is_not_stored_as_relationship_role() -> None:
+    writer = SalesforceDealParticipantWriter(
+        session=AsyncMock(),
+        organisation_id=uuid4(),
+        integration_id=uuid4(),
+    )
+
+    row = writer._new_row(
+        participant=NormalizedSalesforceDealParticipant(
+            deal_external_id="006A",
+            participant_type=CRMParticipantType.CONTACT.value,
+            related_external_id="003A",
+            relationship_role="Primary Contact Person",
+            is_primary=True,
+            data_payload=None,
+        ),
+        deal_id=uuid4(),
+        related_local_id=uuid4(),
+        related_name="Buyer",
+        related_email="buyer@example.com",
+        now=datetime.now(UTC),
+    )
+
+    assert row.is_primary_contact is True
+    assert row.relationship_role is None
+
+
+def test_salesforce_role_updates_do_not_erase_decision_power_with_primary_marker() -> None:
+    writer = SalesforceDealParticipantWriter(
+        session=AsyncMock(),
+        organisation_id=uuid4(),
+        integration_id=uuid4(),
+    )
+    row = CRMDealParticipant(
+        organisation_id=writer.organisation_id,
+        integration_id=writer.integration_id,
+        deal_id=uuid4(),
+        participant_type=CRMParticipantType.CONTACT,
+        related_local_id=uuid4(),
+        decision_power="UNKNOWN",
+    )
+    now = datetime.now(UTC)
+
+    writer._apply_updates(
+        row,
+        participant=NormalizedSalesforceDealParticipant(
+            deal_external_id="006A",
+            participant_type=CRMParticipantType.CONTACT.value,
+            related_external_id="003A",
+            relationship_role="Decision Maker",
+            is_primary=False,
+            data_payload=None,
+        ),
+        related_local_id=row.related_local_id,
+        related_name="Buyer",
+        related_email="buyer@example.com",
+        now=now,
+    )
+    assert row.decision_power == "DECISION_MAKER"
+
+    writer._apply_updates(
+        row,
+        participant=NormalizedSalesforceDealParticipant(
+            deal_external_id="006A",
+            participant_type=CRMParticipantType.CONTACT.value,
+            related_external_id="003A",
+            relationship_role="primary_contact",
+            is_primary=True,
+            data_payload=None,
+        ),
+        related_local_id=row.related_local_id,
+        related_name="Buyer",
+        related_email="buyer@example.com",
+        now=now,
+    )
+    assert row.decision_power == "DECISION_MAKER"
+    assert row.is_primary_contact is True
+
+    row.decision_power = "INFLUENCER"
+    writer._apply_updates(
+        row,
+        participant=NormalizedSalesforceDealParticipant(
+            deal_external_id="006A",
+            participant_type=CRMParticipantType.CONTACT.value,
+            related_external_id="003A",
+            relationship_role="Decision Maker",
+            is_primary=False,
+            data_payload=None,
+        ),
+        related_local_id=row.related_local_id,
+        related_name="Buyer",
+        related_email="buyer@example.com",
+        now=now,
+    )
+    assert row.decision_power == "INFLUENCER"
+
+
+def test_salesforce_contact_reference_hints_fill_unknown_bounded_fields() -> None:
+    writer = SalesforceDealParticipantWriter(
+        session=AsyncMock(),
+        organisation_id=uuid4(),
+        integration_id=uuid4(),
+    )
+    participant = NormalizedSalesforceDealParticipant(
+        deal_external_id="006HEROX",
+        participant_type=CRMParticipantType.CONTACT.value,
+        related_external_id="003SHEKHAR",
+        relationship_role=None,
+        is_primary=True,
+        data_payload=None,
+        decision_power="DECISION_MAKER",
+        stance="CHAMPION",
+    )
+    now = datetime.now(UTC)
+
+    row = writer._new_row(
+        participant=participant,
+        deal_id=uuid4(),
+        related_local_id=uuid4(),
+        related_name="Shekhar Gupta",
+        related_email="shekhar.gupta@herovired.com",
+        now=now,
+    )
+    assert row.decision_power == "DECISION_MAKER"
+    assert row.stance == "CHAMPION"
+
+    row.decision_power = "INFLUENCER"
+    row.stance = "SUPPORTER"
+    writer._apply_updates(
+        row,
+        participant=participant,
+        related_local_id=row.related_local_id,
+        related_name=row.related_name,
+        related_email=row.related_email,
+        now=now,
+    )
+    assert row.decision_power == "INFLUENCER"
+    assert row.stance == "SUPPORTER"
+
+
+def test_salesforce_champion_role_maps_to_stance_and_preserves_role() -> None:
+    writer = SalesforceDealParticipantWriter(
+        session=AsyncMock(),
+        organisation_id=uuid4(),
+        integration_id=uuid4(),
+    )
+    row = writer._new_row(
+        participant=NormalizedSalesforceDealParticipant(
+            deal_external_id="006A",
+            participant_type=CRMParticipantType.CONTACT.value,
+            related_external_id="003A",
+            relationship_role="Champion",
+            is_primary=False,
+            data_payload=None,
+        ),
+        deal_id=uuid4(),
+        related_local_id=uuid4(),
+        related_name="Buyer",
+        related_email="buyer@example.com",
+        now=datetime.now(UTC),
+    )
+
+    assert row.relationship_role == "Champion"
+    assert row.stance == "CHAMPION"
+
+
+def test_salesforce_role_does_not_replace_manual_relationship_role() -> None:
+    writer = SalesforceDealParticipantWriter(
+        session=AsyncMock(),
+        organisation_id=uuid4(),
+        integration_id=uuid4(),
+    )
+    row = CRMDealParticipant(
+        organisation_id=writer.organisation_id,
+        integration_id=writer.integration_id,
+        deal_id=uuid4(),
+        participant_type=CRMParticipantType.CONTACT,
+        related_local_id=uuid4(),
+        relationship_role="Procurement",
+        participant_source="MANUAL",
+    )
+
+    writer._apply_updates(
+        row,
+        participant=NormalizedSalesforceDealParticipant(
+            deal_external_id="006A",
+            participant_type=CRMParticipantType.CONTACT.value,
+            related_external_id="003A",
+            relationship_role="Decision Maker",
+            is_primary=False,
+            data_payload=None,
+        ),
+        related_local_id=row.related_local_id,
+        related_name="Buyer",
+        related_email="buyer@example.com",
+        now=datetime.now(UTC),
+    )
+
+    assert row.relationship_role == "Procurement"
+    assert row.participant_source == "MANUAL"

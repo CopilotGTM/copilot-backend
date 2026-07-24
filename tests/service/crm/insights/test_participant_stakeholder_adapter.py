@@ -21,6 +21,7 @@ def test_participant_adapter_uses_identity_without_contact_join() -> None:
         deal_id=uuid4(),
         participant_id=participant_id,
         participant_type=CRMParticipantType.CONTACT,
+        relationship_role="Economic Buyer",
         related_name="Alex Buyer",
         related_email="alex@example.com",
         approval_status="APPROVED",
@@ -32,6 +33,7 @@ def test_participant_adapter_uses_identity_without_contact_join() -> None:
     assert payload["participant_id"] == participant.participant_id
     assert "stakeholder_id" not in payload
     assert payload["email"] == "alex@example.com"
+    assert payload["relationship_role"] == "Economic Buyer"
     assert payload["job_title"] is None
     assert payload["phone_number"] is None
     assert payload["linkedin_url"] is None

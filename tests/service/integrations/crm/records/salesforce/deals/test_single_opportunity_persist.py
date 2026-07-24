@@ -30,6 +30,7 @@ from src.service.integrations.crm.records.salesforce.deals.deal_types import (
     NormalizedSalesforceOpportunity,
     NormalizedSalesforceStageTransition,
     ParticipantWriteResult,
+    SalesforceContactReferenceField,
     StageHistoryWriteResult,
 )
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
@@ -64,6 +65,7 @@ async def test_persist_single_opportunity_reuses_deal_writer_without_relationshi
         )
 
     monkeypatch.setattr(service, "_persist", fake_persist)
+    monkeypatch.setattr(service, "_load_contact_reference_fields", AsyncMock(return_value=()))
 
     result = await service.persist_single_opportunity(
         organisation_id=uuid4(),
@@ -85,6 +87,59 @@ async def test_persist_single_opportunity_reuses_deal_writer_without_relationshi
     assert isinstance(participant_extraction, DealParticipantExtraction)
     assert participant_extraction.participants == []
     assert participant_extraction.associations == []
+
+
+@pytest.mark.asyncio
+async def test_single_opportunity_persists_contact_reference_stakeholder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SalesforceDealRecordSyncService()
+    captured: dict[str, object] = {}
+
+    async def fake_persist(**kwargs):
+        captured.update(kwargs)
+        return (
+            DealWriteResult(),
+            StageHistoryWriteResult(),
+            ParticipantWriteResult(participants_created=1),
+            AssociationWriteResult(),
+            {"rows_updated": 0, "per_op": {}},
+        )
+
+    monkeypatch.setattr(service, "_persist", fake_persist)
+    monkeypatch.setattr(
+        service,
+        "_load_contact_reference_fields",
+        AsyncMock(
+            return_value=(
+                SalesforceContactReferenceField(
+                    field_name="Primary_Contact_Person__c",
+                    relationship_role="Primary Contact Person",
+                    is_primary=True,
+                    decision_power="UNKNOWN",
+                    stance="UNKNOWN",
+                ),
+            )
+        ),
+    )
+
+    result = await service.persist_single_opportunity(
+        organisation_id=uuid4(),
+        integration_id=uuid4(),
+        raw_opportunity={
+            "Id": "006A",
+            "Name": "HeroX",
+            "StageName": "Prospecting",
+            "Primary_Contact_Person__c": "003A",
+        },
+        instance_url="https://acme.my.salesforce.com",
+    )
+
+    extraction = captured["participant_extraction"]
+    assert isinstance(extraction, DealParticipantExtraction)
+    assert extraction.participants[0].related_external_id == "003A"
+    assert captured["opportunities"][0].primary_contact_external_id == "003A"
+    assert result["participants_created"] == 1
 
 
 @pytest.mark.asyncio
@@ -172,6 +227,7 @@ async def test_run_persists_opportunities_in_chunks_before_relationships(
         FakeContactRolesFetcher,
     )
     monkeypatch.setattr(service, "_load_context", fake_load_context)
+    monkeypatch.setattr(service, "_load_contact_reference_fields", AsyncMock(return_value=()))
     monkeypatch.setattr(service, "_persist", fake_persist)
 
     result = await service.run(organisation_id=organisation_id, integration_id=integration_id)

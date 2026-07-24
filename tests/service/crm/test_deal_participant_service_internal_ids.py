@@ -157,6 +157,7 @@ async def test_add_participants_reuses_contact_when_same_contact_has_multiple_ro
     assert isinstance(created[0], CRMDealParticipant)
     assert created[0].related_name is None
     assert created[0].is_primary_contact is True
+    assert created[0].relationship_role == "decision_maker"
     assert getattr(created[0], "properties", None) is None
 
 
@@ -205,6 +206,41 @@ async def test_participant_write_service_returns_typed_result() -> None:
     assert result.contact_participant_changed is True
     assert result.integration_id == integration_id
     assert result.created[0].is_primary_contact is True
+
+
+@pytest.mark.asyncio
+async def test_legacy_primary_contact_role_is_stored_as_flag_only() -> None:
+    session = _FakeSession()
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    deal_id = uuid4()
+    contact_id = uuid4()
+    service = ParticipantWriteService(
+        session=session,
+        organisation_id=organisation_id,
+        actor_user_id=uuid4(),
+    )
+    service._get_internal_deal = AsyncMock(
+        return_value=(SimpleNamespace(deal_id=deal_id), integration_id)
+    )
+    service._resolve_participant_entity = AsyncMock(
+        return_value=(contact_id, "Ada Lovelace", "ada@example.com")
+    )
+    service._find_existing_participant = AsyncMock(return_value=None)
+
+    result = await service.add_participants(
+        deal_id,
+        [
+            {
+                "participant_type": CRMParticipantType.CONTACT.value,
+                "related_id": contact_id,
+                "relationship_role": "primary_contact",
+            }
+        ],
+    )
+
+    assert result.created[0].is_primary_contact is True
+    assert result.created[0].relationship_role is None
 
 
 @pytest.mark.asyncio

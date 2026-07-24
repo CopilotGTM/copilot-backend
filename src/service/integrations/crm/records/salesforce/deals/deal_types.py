@@ -96,6 +96,17 @@ class NormalizedSalesforceDealParticipant:
     relationship_role: str | None
     is_primary: bool
     data_payload: dict[str, Any] | None
+    decision_power: str | None = None
+    stance: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class SalesforceContactReferenceField:
+    field_name: str
+    relationship_role: str
+    is_primary: bool
+    decision_power: str
+    stance: str
 
 
 @dataclass(slots=True)

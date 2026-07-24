@@ -135,6 +135,7 @@ async def list_deal_stakeholders(
                     "email": payload["email"],
                     "name": payload["name"],
                     "job_title": payload["job_title"],
+                    "relationship_role": payload["relationship_role"],
                     "phone_number": payload["phone_number"],
                     "department": payload["department"],
                     "linkedin_url": payload["linkedin_url"],
@@ -176,6 +177,7 @@ def _stakeholder_payload(stakeholder: Any) -> dict[str, Any]:
         "email": stakeholder.email,
         "name": stakeholder.name,
         "job_title": stakeholder.job_title,
+        "relationship_role": getattr(stakeholder, "relationship_role", None),
         "phone_number": stakeholder.phone_number,
         "department": getattr(stakeholder, "department", None),
         "linkedin_url": getattr(stakeholder, "linkedin_url", None),
@@ -223,6 +225,7 @@ def _matches_query(payload: dict[str, Any], query: str) -> bool:
         payload.get("name"),
         payload.get("email"),
         payload.get("job_title"),
+        payload.get("relationship_role"),
         payload.get("department"),
     )
     return any(needle in str(value).lower() for value in fields if value)
@@ -260,7 +263,7 @@ def create_list_deal_stakeholders(
                 context. Pass this when you got a deal_id from search_deals but
                 are not in a deal view.
             stakeholder_id: Optional participant UUID. Returns at most one row.
-            query: Optional person search across stakeholder name/email/title/department.
+            query: Optional person search across stakeholder name/email/title/role/department.
             limit: Maximum number of results (default: 20, max: 50)
 
         Note: organisation_id is automatically set from context and cannot be

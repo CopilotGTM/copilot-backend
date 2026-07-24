@@ -44,6 +44,7 @@ def participant_to_stakeholder_detail_dict(
         "email": contact.email if contact and contact.email else participant.related_email,
         "name": contact.full_name if contact and contact.full_name else participant.related_name,
         "job_title": contact.job_title if contact else None,
+        "relationship_role": participant.relationship_role,
         "department": contact.properties.get("department") if contact else None,
         "phone_number": (
             contact.phone

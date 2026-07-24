@@ -1581,7 +1581,6 @@ class DealWriteService:
         now: datetime,
     ) -> None:
         participant.is_primary_contact = True
-        participant.relationship_role = "primary_contact"
         participant.related_name = (
             self._build_contact_display_name(contact) or participant.related_name
         )
@@ -2133,7 +2132,8 @@ class DealWriteService:
             {
                 "participant_type": "contact",
                 "related_id": contact.contact_id,
-                "relationship_role": "primary_contact",
+                "relationship_role": None,
+                "is_primary_contact": True,
             }
         ]
         await participant_service.add_participants(deal.deal_id, payloads)

@@ -120,6 +120,7 @@ async def test_list_deal_stakeholders_returns_participant_ids() -> None:
     deal_id = uuid4()
     participant_id = uuid4()
     participant = _participant(org_id, integration_id, deal_id, participant_id)
+    participant.relationship_role = "Economic Buyer"
     deal = CRMDeal(
         organisation_id=org_id,
         integration_id=integration_id,
@@ -135,6 +136,7 @@ async def test_list_deal_stakeholders_returns_participant_ids() -> None:
     assert "stakeholder_id" not in result[0]
     assert result[0]["email"] == "buyer@example.com"
     assert result[0]["name"] == "Buyer Snapshot"
+    assert result[0]["relationship_role"] == "Economic Buyer"
     assert "engagement_score" not in result[0]
 
 
@@ -283,12 +285,13 @@ async def test_list_deal_stakeholders_single_lookup_requires_deal_context() -> N
 
 @pytest.mark.asyncio
 async def test_list_deal_stakeholders_filters_by_query() -> None:
-    """Name queries narrow the list without adding a second detail tool."""
+    """Role queries narrow the list without adding a second detail tool."""
     org_id = uuid4()
     integration_id = uuid4()
     deal_id = uuid4()
     matched = _participant(org_id, integration_id, deal_id, uuid4())
-    matched.related_name = "Buyer Champion"
+    matched.related_name = "Buyer"
+    matched.relationship_role = "Economic Buyer"
     unmatched = _participant(org_id, integration_id, deal_id, uuid4())
     unmatched.related_name = "Legal Reviewer"
     deal = CRMDeal(
@@ -304,7 +307,7 @@ async def test_list_deal_stakeholders_filters_by_query() -> None:
 
     result = await list_deal_stakeholders(
         context=context,  # type: ignore[arg-type]
-        query="champion",
+        query="economic buyer",
     )
 
     assert [item["participant_id"] for item in result] == [str(matched.participant_id)]
