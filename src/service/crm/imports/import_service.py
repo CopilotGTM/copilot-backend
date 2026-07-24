@@ -166,6 +166,7 @@ class CRMImportBatchResult:
     job: DealJobs
     has_more: bool = False
     lock_acquired: bool = True
+    deal_ids: tuple[UUID, ...] = ()
 
 
 class CRMImportServiceError(Exception):
@@ -559,6 +560,7 @@ class CRMImportService:
         contact_writer = ContactWriteService(
             self.org_session, self.organisation_id, self.master_session
         )
+        deal_ids: list[UUID] = []
         for row in rows:
             attempt_count = int(_row_audit(row).get("attempt_count") or 0) + 1
             row.normalized_values = {
@@ -633,6 +635,8 @@ class CRMImportService:
                         custom_properties=prepared["custom_properties"],
                         metadata=metadata,
                     )
+                    if deal_id is not None and contact_id is not None:
+                        deal_ids.append(deal_id)
                 row.account_id = account_id
                 row.contact_id = contact_id
                 row.deal_id = deal_id
@@ -702,7 +706,11 @@ class CRMImportService:
         job.job_metadata = metadata
         self.org_session.add(job)
         await self._commit()
-        return CRMImportBatchResult(job=job, has_more=has_more)
+        return CRMImportBatchResult(
+            job=job,
+            has_more=has_more,
+            deal_ids=tuple(dict.fromkeys(deal_ids)),
+        )
 
     async def get_status(self, import_id: UUID) -> CRMImportJobResult:
         """Load the caller-scoped parent import job."""

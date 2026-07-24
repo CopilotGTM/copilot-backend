@@ -41,9 +41,6 @@ from src.service.integrations.webhooks.sync_receipt import (
     is_terminal_webhook_result,
     update_webhook_sync_receipt,
 )
-from src.workers.deal_worker.services.deal_mapper_services.communication_deal_mapping_trigger_service import (
-    CommunicationDealMappingTriggerService,
-)
 from src.workers.deal_worker.utils.contact_communication_hydration_dispatch import (
     dispatch_contact_communication_hydration_async,
 )
@@ -102,7 +99,6 @@ def sync_email_integration_task(
     started_at = started_at_dt.isoformat()
     org_id = UUID(organisation_id)
     int_id = UUID(integration_id)
-    communication_trigger_source = "webhook" if trigger_source == "webhook" else "manual_sync"
     receipt_id = UUID(webhook_sync_id) if webhook_sync_id else None
 
     def _record_receipt(
@@ -160,17 +156,6 @@ def sync_email_integration_task(
                 changed_email_ids=result.get("changed_email_ids", []),
                 trigger="email_sync",
             )
-            result["communication_deal_mapping"] = (
-                await CommunicationDealMappingTriggerService(
-                    org_id
-                ).trigger_for_changed_communications(
-                    integration_id=int_id,
-                    source_kind="email",
-                    trigger_source=communication_trigger_source,
-                    changed_record_ids=result.get("changed_email_ids", []),
-                    sync_started_at=started_at_dt,
-                )
-            ).to_dict()
 
         # Add timing info to result
         result["started_at"] = started_at

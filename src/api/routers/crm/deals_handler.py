@@ -82,6 +82,9 @@ from src.service.crm.jobs.stakeholder_job_visibility_service import (
 )
 from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 from src.service.crm.schema.deal_schema_service import DealSchemaService
+from src.workers.deal_worker.utils.contact_communication_hydration_dispatch import (
+    dispatch_contact_communication_hydration_async,
+)
 from sse_starlette.sse import EventSourceResponse
 
 logger = get_logger("deals_handler")
@@ -1344,6 +1347,20 @@ async def create_deal(
                     user_id=service.actor_user_id,
                 )
 
+        if request.contact_participants or request.primary_contact_email:
+            try:
+                await dispatch_contact_communication_hydration_async(
+                    organisation_id=service.organisation_id,
+                    deal_ids=[deal.deal_id],
+                    trigger="deal_created",
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to replay communications after deal creation",
+                    extra={"deal_id": str(deal.deal_id)},
+                    exc_info=True,
+                )
+
         payload = _map_deal_write_response(deal)
         return Response.created_response(
             message="Deal created successfully", data=payload, response=response
@@ -1458,6 +1475,18 @@ async def update_deal_primary_contact(
         primary_contact_details = _primary_contact_details_from_deal(deal)
         await service.session.commit()
         await service.session.refresh(deal)
+        try:
+            await dispatch_contact_communication_hydration_async(
+                organisation_id=service.organisation_id,
+                deal_ids=[deal.deal_id],
+                trigger="deal_primary_contact_changed",
+            )
+        except Exception:
+            logger.warning(
+                "Failed to replay communications after primary contact update",
+                extra={"deal_id": str(deal.deal_id)},
+                exc_info=True,
+            )
         payload = _map_deal_write_response(
             deal,
             primary_contact_details=primary_contact_details,

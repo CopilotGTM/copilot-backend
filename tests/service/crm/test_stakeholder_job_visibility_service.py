@@ -41,8 +41,8 @@ class _Session:
 
 
 @pytest.mark.asyncio
-async def test_create_stakeholder_processing_jobs_registers_three_visible_jobs(monkeypatch):
-    """Stakeholder create gets three user-visible processing jobs and no research job."""
+async def test_create_stakeholder_processing_jobs_registers_one_visible_job(monkeypatch):
+    """Stakeholder create gets one visible job that owns the unified replay."""
     organisation_id = uuid4()
     user_id = uuid4()
     deal_id = uuid4()
@@ -63,11 +63,7 @@ async def test_create_stakeholder_processing_jobs_registers_three_visible_jobs(m
     service = StakeholderJobVisibilityService(session, organisation_id, user_id)
     jobs = await service.create_stakeholder_processing_jobs(deal_id, stakeholder_id)
 
-    assert [job.job_type for job in jobs] == [
-        DealJobType.DEAL_EMAIL_REMATCH,
-        DealJobType.DEAL_CALENDAR_REMATCH,
-        DealJobType.STAKEHOLDER_SYNC,
-    ]
+    assert [job.job_type for job in jobs] == [DealJobType.STAKEHOLDER_SYNC]
     assert all(job.status == JobStatus.PENDING for job in jobs)
     assert all(job.user_id == user_id for job in jobs)
     assert all(job.organisation_id == organisation_id for job in jobs)
@@ -91,9 +87,7 @@ async def test_create_stakeholder_processing_jobs_registers_three_visible_jobs(m
     assert len(sent_chains) == 1
     assert sent_chains[0]["queue"] == "deal"
     assert [task["task_name"] for task in sent_chains[0]["task_signatures"]] == [
-        "deal.match_email_to_deals",
-        "deal.match_calendar_to_deals",
-        "stakeholder.sync_deal_stakeholders",
+        "stakeholder.sync_deal_stakeholders"
     ]
     assert all(
         task["kwargs"]["organisation_id"] == str(organisation_id)
@@ -105,6 +99,7 @@ async def test_create_stakeholder_processing_jobs_registers_three_visible_jobs(m
     assert [task["kwargs"]["job_id"] for task in sent_chains[0]["task_signatures"]] == [
         str(job.job_id) for job in jobs
     ]
+    assert sent_chains[0]["task_signatures"][0]["kwargs"]["trigger_rematching"] is True
 
 
 @pytest.mark.asyncio

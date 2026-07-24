@@ -31,20 +31,12 @@ ACTIVE_JOB_STATUSES = {JobStatus.PENDING, JobStatus.IN_PROGRESS}
 
 # Deterministic post-stakeholder-create operations surfaced as deal-level activity.
 STAKEHOLDER_PROCESSING_JOB_TYPES = {
-    DealJobType.DEAL_EMAIL_REMATCH,
-    DealJobType.DEAL_CALENDAR_REMATCH,
     DealJobType.STAKEHOLDER_SYNC,
 }
 
-STAKEHOLDER_PROCESSING_ORDER = (
-    DealJobType.DEAL_EMAIL_REMATCH,
-    DealJobType.DEAL_CALENDAR_REMATCH,
-    DealJobType.STAKEHOLDER_SYNC,
-)
+STAKEHOLDER_PROCESSING_ORDER = (DealJobType.STAKEHOLDER_SYNC,)
 
 STAKEHOLDER_PROCESSING_TASK_NAMES = {
-    DealJobType.DEAL_EMAIL_REMATCH: "deal.match_email_to_deals",
-    DealJobType.DEAL_CALENDAR_REMATCH: "deal.match_calendar_to_deals",
     DealJobType.STAKEHOLDER_SYNC: "stakeholder.sync_deal_stakeholders",
 }
 
@@ -91,17 +83,15 @@ def _stakeholder_task_kwargs(job: DealJobs) -> dict:
     org_id = str(job.organisation_id)
     deal_id = str(job.deal_id)
     job_id = str(job.job_id)
-    if job.job_type == DealJobType.STAKEHOLDER_SYNC:
-        return {
-            "organisation_id": org_id,
-            "deal_id": deal_id,
-            "change_type": "MANUAL_REFRESH",
-            "integration_id": None,
-            "integration_type": None,
-            "trigger_rematching": False,
-            "job_id": job_id,
-        }
-    return {"organisation_id": org_id, "deal_id": deal_id, "job_id": job_id}
+    return {
+        "organisation_id": org_id,
+        "deal_id": deal_id,
+        "change_type": "MANUAL_REFRESH",
+        "integration_id": None,
+        "integration_type": None,
+        "trigger_rematching": True,
+        "job_id": job_id,
+    }
 
 
 class DealJobServiceError(Exception):

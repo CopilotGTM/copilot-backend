@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any
 from uuid import UUID
 
 from celery import Task
@@ -15,6 +15,9 @@ from src.infra.utils.logger import get_logger
 from src.service.crm.imports.import_service import CRMImportService
 from src.workers.deal_worker.celery_app import app
 from src.workers.deal_worker.client import send_deal_task_async
+from src.workers.deal_worker.utils.contact_communication_hydration_dispatch import (
+    dispatch_contact_communication_hydration_async,
+)
 
 logger = get_logger(__name__)
 
@@ -44,7 +47,7 @@ def analyze_csv_import_task(
     org_id = UUID(organisation_id)
     job_id = UUID(import_job_id)
     try:
-        return cast(dict[str, Any], run_async(analyze_csv_import(org_id, job_id)))
+        return run_async(analyze_csv_import(org_id, job_id))
     except Exception as exc:
         logger.error(
             "CRM CSV analyze task failed",
@@ -87,7 +90,7 @@ def process_csv_import_task(
     org_id = UUID(organisation_id)
     job_id = UUID(import_job_id)
     try:
-        return cast(dict[str, Any], run_async(process_csv_import(org_id, job_id)))
+        return run_async(process_csv_import(org_id, job_id))
     except Exception as exc:
         logger.error(
             "CRM CSV process task failed",
@@ -140,6 +143,12 @@ async def process_csv_import(organisation_id: UUID, import_job_id: UUID) -> dict
             master_session=master_session,
         ).process_next_batch(import_job_id),
     )
+    if result.deal_ids:
+        await dispatch_contact_communication_hydration_async(
+            organisation_id=organisation_id,
+            deal_ids=list(result.deal_ids),
+            trigger="crm_import_deals_committed",
+        )
     # Dispatch only after the batch commit. If queue publication fails, Celery
     # retries this task and the committed row states advance it safely.
     if result.has_more and result.lock_acquired:

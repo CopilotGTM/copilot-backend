@@ -43,6 +43,9 @@ from src.service.crm.leads.conversion_service import LeadConversionService
 from src.service.crm.leads.participant_service import LeadParticipantService
 from src.service.crm.leads.read_service import LeadReadService
 from src.service.crm.leads.write_service import LeadWriteService
+from src.workers.deal_worker.utils.contact_communication_hydration_dispatch import (
+    dispatch_contact_communication_hydration_async,
+)
 
 logger = get_logger("leads_handler")
 
@@ -393,6 +396,18 @@ async def convert_lead(
     """Convert a lead into an internal CRM deal."""
     try:
         result = await service.convert_lead(lead_id, body.model_dump(exclude_unset=True))
+        try:
+            await dispatch_contact_communication_hydration_async(
+                organisation_id=service.organisation_id,
+                deal_ids=[result["deal_id"]],
+                trigger="lead_conversion_committed",
+            )
+        except Exception:
+            logger.warning(
+                "Failed to replay communications after lead conversion",
+                extra={"lead_id": str(lead_id), "deal_id": str(result["deal_id"])},
+                exc_info=True,
+            )
         return Response.created_response(
             message="Lead converted",
             data=present_lead_conversion_response(result),

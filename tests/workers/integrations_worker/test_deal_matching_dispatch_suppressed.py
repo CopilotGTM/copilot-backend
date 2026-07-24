@@ -22,21 +22,21 @@ def test_email_integration_sync_does_not_dispatch_broad_deal_matching() -> None:
     assert '"deal.match_email_to_deals_org"' not in source
 
 
-def test_email_integration_sync_uses_communication_deal_mapping_trigger_service() -> None:
+def test_email_integration_sync_delegates_mapping_to_hydration_only() -> None:
+    """One changed-source task owns contact projection and deal association ordering."""
     source = inspect.getsource(email_integration_task.sync_email_integration_task)
 
-    assert "CommunicationDealMappingTriggerService" in source
-    assert "trigger_for_changed_communications" in source
-    assert 'changed_record_ids=result.get("changed_email_ids", [])' in source
+    assert "CommunicationDealMappingTriggerService" not in source
+    assert "trigger_for_changed_communications" not in source
     assert "dispatch_contact_communication_hydration_async" in source
     assert 'changed_email_ids=result.get("changed_email_ids", [])' in source
 
 
-def test_calendar_integration_sync_uses_communication_deal_mapping_trigger_service() -> None:
+def test_calendar_integration_sync_delegates_mapping_to_hydration_only() -> None:
+    """Calendar changes follow the same single-service path as changed email rows."""
     source = inspect.getsource(calendar_integration_task.sync_calendar_integration_task)
 
-    assert "CommunicationDealMappingTriggerService" in source
-    assert "trigger_for_changed_communications" in source
-    assert 'changed_record_ids=sync_result.get("changed_event_ids", [])' in source
+    assert "CommunicationDealMappingTriggerService" not in source
+    assert "trigger_for_changed_communications" not in source
     assert "dispatch_contact_communication_hydration_async" in source
     assert 'changed_event_ids=sync_result.get("changed_event_ids", [])' in source

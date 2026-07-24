@@ -11,6 +11,7 @@ TASK_NAME = "deal.hydrate_contact_communications"
 # transaction at 100 records; replace this ceiling with bulk SQL if profiling shows queue pressure.
 CHANGED_SOURCE_CHUNK_SIZE = 100
 CONTACT_CHUNK_SIZE = 100
+DEAL_CHUNK_SIZE = 100
 
 
 async def dispatch_contact_communication_hydration_async(
@@ -20,17 +21,26 @@ async def dispatch_contact_communication_hydration_async(
     changed_email_ids: list[UUID | str] | None = None,
     changed_event_ids: list[UUID | str] | None = None,
     contact_ids: list[UUID | str] | None = None,
+    deal_ids: list[UUID | str] | None = None,
     trigger: str,
 ) -> list[str]:
     """Enqueue bounded source batches or contact-backfill batches after commit."""
     email_ids = [str(value) for value in changed_email_ids or []]
     event_ids = [str(value) for value in changed_event_ids or []]
     explicit_contact_ids = [str(value) for value in contact_ids or []]
+    explicit_deal_ids = [str(value) for value in deal_ids or []]
     payloads: list[dict[str, object]] = []
 
-    # Explicit-contact and changed-source modes are exclusive: mixing them would select backfill
-    # semantics and silently ignore the changed communication IDs.
-    if explicit_contact_ids:
+    source_ids_present = bool(email_ids or event_ids)
+    if sum((bool(explicit_contact_ids), bool(explicit_deal_ids), source_ids_present)) > 1:
+        raise ValueError("contact, deal, and changed-source hydration cannot be mixed")
+    # Replay modes stay exclusive so no caller can send IDs that a worker silently ignores.
+    if explicit_deal_ids:
+        payloads.extend(
+            {"deal_ids": explicit_deal_ids[offset : offset + DEAL_CHUNK_SIZE]}
+            for offset in range(0, len(explicit_deal_ids), DEAL_CHUNK_SIZE)
+        )
+    elif explicit_contact_ids:
         payloads.extend(
             {"contact_ids": explicit_contact_ids[offset : offset + CONTACT_CHUNK_SIZE]}
             for offset in range(0, len(explicit_contact_ids), CONTACT_CHUNK_SIZE)

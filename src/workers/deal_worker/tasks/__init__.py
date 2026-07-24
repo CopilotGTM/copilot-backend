@@ -24,11 +24,6 @@ from .deal_insight_tasks import (
 )
 from .deal_mappers import (
     hydrate_contact_communications_task,
-    match_calendar_to_deals_all_orgs_task,
-    match_calendar_to_deals_org_task,
-    match_calendar_to_deals_task,
-    match_email_to_deals_org_task,
-    match_email_to_deals_task,
     sync_all_deals_stakeholders_org_task,
     sync_deal_stakeholders_task,
 )
@@ -60,14 +55,7 @@ __all__ = [
     # Deal mappers - Task 1: Stakeholder Sync
     "sync_deal_stakeholders_task",
     "sync_all_deals_stakeholders_org_task",
-    # Deal mappers - Task 2: Calendar Matching
     "hydrate_contact_communications_task",
-    "match_calendar_to_deals_all_orgs_task",
-    "match_calendar_to_deals_org_task",
-    "match_calendar_to_deals_task",
-    # Deal mappers - Task 3: Email Matching
-    "match_email_to_deals_org_task",
-    "match_email_to_deals_task",
     # Meeting insight tasks (meeting-level)
     "process_meeting_prep",
     "process_meeting_summary",

@@ -55,15 +55,7 @@ class DealWorkerConfig(BaseWorkerConfig):
             "stakeholder.sync_all_deals_stakeholders_org",
             "stakeholder.sync_all_deals_stakeholders_all_orgs",
             # "stakeholder.trigger_analysis_all_orgs",  # Disabled — uses pipeline dispatch now
-            # Calendar matching
             "deal.hydrate_contact_communications",
-            "deal.match_calendar_to_deals_org",
-            "deal.match_calendar_to_deals",
-            "deal.match_calendar_to_deals_all_orgs",
-            # Email matching
-            "deal.match_email_to_deals_org",
-            "deal.match_email_to_deals",
-            "deal.match_email_to_deals_all_orgs",
             # Meeting recording dispatch stays on the main deal queue because
             # these tasks are orchestration/I-O, not the long-running LLM jobs
             # that belong on `deal_jobs`.

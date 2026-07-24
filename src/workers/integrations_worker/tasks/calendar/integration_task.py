@@ -56,9 +56,6 @@ from src.service.integrations.webhooks.sync_receipt import (
     is_terminal_webhook_result,
     update_webhook_sync_receipt,
 )
-from src.workers.deal_worker.services.deal_mapper_services.communication_deal_mapping_trigger_service import (
-    CommunicationDealMappingTriggerService,
-)
 from src.workers.deal_worker.utils.contact_communication_hydration_dispatch import (
     dispatch_contact_communication_hydration_async,
 )
@@ -163,7 +160,6 @@ def sync_calendar_integration_task(
     org_id = UUID(organisation_id)
     int_id = UUID(integration_id)
     current_capability: list[IntegrationType | None] = [None]
-    communication_trigger_source = "webhook" if trigger_source == "webhook" else "manual_sync"
     receipt_id = UUID(webhook_sync_id) if webhook_sync_id else None
 
     def _record_receipt(
@@ -467,11 +463,9 @@ def sync_calendar_integration_task(
             session.add(integration_db)
             await session.commit()
 
-            communication_deal_mapping = None
             if records_synced > 0 or sync_result.get("changed_event_ids"):
-                # Both follow-ups read committed calendar rows in independent worker sessions.
-                # Enqueue hydration after the commit above, before deal mapping may replace a
-                # direct activity card with its association-backed version.
+                # Hydration owns contact projection and deal association in one ordered task, so
+                # calendar sync dispatches only the committed changed event IDs.
                 sync_result[
                     "contact_communication_hydration_task_ids"
                 ] = await dispatch_contact_communication_hydration_async(
@@ -480,17 +474,6 @@ def sync_calendar_integration_task(
                     changed_event_ids=sync_result.get("changed_event_ids", []),
                     trigger="calendar_sync",
                 )
-                communication_deal_mapping = (
-                    await CommunicationDealMappingTriggerService(
-                        org_id
-                    ).trigger_for_changed_communications(
-                        integration_id=int_id,
-                        source_kind="calendar",
-                        trigger_source=communication_trigger_source,
-                        changed_record_ids=sync_result.get("changed_event_ids", []),
-                        sync_started_at=started_at_dt,
-                    )
-                ).to_dict()
 
             logger.info(
                 "Manual calendar sync complete",
@@ -518,7 +501,6 @@ def sync_calendar_integration_task(
                 "completed_at": datetime.now(UTC).isoformat(),
                 "events_synced": records_synced,
                 "sync_breakdown": sync_result,
-                "communication_deal_mapping": communication_deal_mapping,
             }
         # Session released after this block
 

@@ -54,11 +54,8 @@ from src.service.integrations.sync_health import (
     record_sync_failure,
     record_sync_success,
 )
-from src.workers.deal_worker.services.deal_mapper_services.communication_deal_mapping_trigger_service import (
-    CommunicationDealMappingTriggerService,
-)
-from src.workers.deal_worker.utils.communication_contact_materialization_dispatch import (
-    dispatch_communication_contact_materialization_async,
+from src.workers.deal_worker.utils.contact_communication_hydration_dispatch import (
+    dispatch_contact_communication_hydration_async,
 )
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.config import TASK_LIMITS
@@ -209,7 +206,6 @@ def sync_email_org_task(
 
         for info in integration_list:
             current_integration_id[0] = info.integration_id
-            integration_sync_started_at = datetime.now(UTC)
             logger.info(
                 "Syncing email integration",
                 extra={
@@ -235,25 +231,16 @@ def sync_email_org_task(
                     if sync_result.get("messages_synced", 0) > 0 or sync_result.get(
                         "changed_email_ids"
                     ):
-                        sync_result[
-                            "communication_contact_materialization_task_id"
-                        ] = await dispatch_communication_contact_materialization_async(
+                        task_ids = await dispatch_contact_communication_hydration_async(
                             organisation_id=org_id,
                             integration_id=info.integration_id,
                             changed_email_ids=sync_result.get("changed_email_ids", []),
-                            trigger_source="incremental_sync",
+                            trigger="deprecated_email_incremental_sync",
                         )
-                        communication_deal_mapping = (
-                            await CommunicationDealMappingTriggerService(
-                                org_id
-                            ).trigger_for_changed_communications(
-                                integration_id=info.integration_id,
-                                source_kind="email",
-                                trigger_source="incremental_sync",
-                                changed_record_ids=sync_result.get("changed_email_ids", []),
-                                sync_started_at=integration_sync_started_at,
-                            )
-                        ).to_dict()
+                        communication_deal_mapping = {
+                            "status": "triggered",
+                            "task_ids": task_ids,
+                        }
                     successful += 1
                     total_folders += sync_result.get("folders_synced", 0)
                     total_messages += sync_result.get("messages_synced", 0)

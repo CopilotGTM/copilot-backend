@@ -31,10 +31,6 @@ class StakeholderProcessingStep:
     build_kwargs: TaskKwargsBuilder
 
 
-def _deal_rematch_kwargs(org_id: str, deal_id: str, job_id: str) -> dict:
-    return {"organisation_id": org_id, "deal_id": deal_id, "job_id": job_id}
-
-
 def _stakeholder_sync_kwargs(org_id: str, deal_id: str, job_id: str) -> dict:
     return {
         "organisation_id": org_id,
@@ -42,22 +38,12 @@ def _stakeholder_sync_kwargs(org_id: str, deal_id: str, job_id: str) -> dict:
         "change_type": StakeholderChangeType.MANUAL_REFRESH.value,
         "integration_id": None,
         "integration_type": None,
-        "trigger_rematching": False,
+        "trigger_rematching": True,
         "job_id": job_id,
     }
 
 
 STAKEHOLDER_PROCESSING_PIPELINE = (
-    StakeholderProcessingStep(
-        job_type=DealJobType.DEAL_EMAIL_REMATCH,
-        task_name="deal.match_email_to_deals",
-        build_kwargs=_deal_rematch_kwargs,
-    ),
-    StakeholderProcessingStep(
-        job_type=DealJobType.DEAL_CALENDAR_REMATCH,
-        task_name="deal.match_calendar_to_deals",
-        build_kwargs=_deal_rematch_kwargs,
-    ),
     StakeholderProcessingStep(
         job_type=DealJobType.STAKEHOLDER_SYNC,
         task_name="stakeholder.sync_deal_stakeholders",
@@ -69,9 +55,8 @@ STAKEHOLDER_PROCESSING_PIPELINE = (
 class StakeholderJobVisibilityService:
     """Create and dispatch user-visible processing jobs for one stakeholder action.
 
-    The service guarantees a single operation group for the full set of jobs
-    and keeps DB writes aligned with chain dispatch so the UI can safely
-    display job progress without orphan rows.
+    The service keeps the visible stakeholder job aligned with queue dispatch
+    so the UI can display progress without orphan rows.
     """
 
     def __init__(self, session: AsyncSession, organisation_id: UUID, user_id: UUID):
@@ -87,7 +72,7 @@ class StakeholderJobVisibilityService:
     ) -> list[DealJobs]:
         """Create and enqueue deterministic post-create stakeholder jobs.
 
-        The three jobs are created in one transaction so:
+        The job is created transactionally so:
         - they are discoverable in a single operation group for reconnect/retry UX
         - each task receives a stable job_id for progress/SSE
         - workers can read committed job rows before publishing progress
@@ -147,8 +132,8 @@ class StakeholderJobVisibilityService:
     ) -> DealJobs:
         """Build a visible job row carrying stakeholder-specific operation metadata.
 
-        operation_group_id lets the UI group the three jobs from one manual add
-        action, while trigger/stakeholder_id preserve stable filters for status
+        operation_group_id lets the UI group work from one manual add action,
+        while trigger/stakeholder_id preserve stable filters for status
         views and reconnect screens.
         """
         return DealJobs(

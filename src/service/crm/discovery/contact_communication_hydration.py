@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, cast
@@ -30,12 +30,20 @@ from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEventDealAssociation,
 )
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDealParticipant,
+    CRMParticipantType,
+)
+from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
 from src.domain.models.organisation_tables.sync.email_models import DealEmailAssociation, Email
 from src.service.crm.activity_feed_projection_service import (
     ActivityFeedProjectionService,
 )
 from src.service.crm.contacts.contracts import ContactCreateCommand, ContactWriteContext
 from src.service.crm.contacts.write_service import ContactWriteService
+from src.service.crm.discovery.communication_deal_association import (
+    CommunicationDealAssociationService,
+)
 from src.service.crm.guards.internal_user_guard import FREE_EMAIL_DOMAINS
 from src.service.crm.utils.identity import extract_email_domain, is_valid_email, normalize_email
 from src.service.crm.utils.internal_domains import normalize_internal_domains
@@ -134,6 +142,12 @@ class ContactCommunicationHydrationResult:
     contacts_reused: int
     activities_projected: int
     skip_counters: dict[str, int]
+    deal_associations_created: int = 0
+    deal_associations_ambiguous: int = 0
+    deal_associations_deactivated: int = 0
+    participants_auto_approved: int = 0
+    discovered_contact_ids: frozenset[UUID] = field(default_factory=frozenset)
+    email_deal_ids: frozenset[UUID] = field(default_factory=frozenset)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the result without leaking ORM rows into Celery."""
@@ -143,6 +157,10 @@ class ContactCommunicationHydrationResult:
             "contacts_created": self.contacts_created,
             "contacts_reused": self.contacts_reused,
             "activities_projected": self.activities_projected,
+            "deal_associations_created": self.deal_associations_created,
+            "deal_associations_ambiguous": self.deal_associations_ambiguous,
+            "deal_associations_deactivated": self.deal_associations_deactivated,
+            "participants_auto_approved": self.participants_auto_approved,
             "skip_counters": self.skip_counters,
         }
 
@@ -289,6 +307,29 @@ class ContactCommunicationHydrationService:
             integration_id=integration_id,
             replace_links=True,
         )
+        # Deal association consumes the exact contacts resolved above. Running it after direct
+        # projection keeps one transaction and avoids a second organisation-wide mapper scan.
+        association_result = await CommunicationDealAssociationService(
+            self.org_session,
+            self.organisation_id,
+        ).associate_changed_communications(
+            emails=emails,
+            events=events,
+            identity_contacts=identity_contacts,
+            integration_id=integration_id,
+        )
+        if association_result.discovered_contact_ids:
+            expansion = await self._backfill_contacts(
+                sorted(association_result.discovered_contact_ids, key=str),
+                integration_id=integration_id,
+                discover_participants=False,
+                target_deal_ids=None,
+            )
+            projected += expansion.activities_projected
+            association_result.associations_created += expansion.deal_associations_created
+            association_result.ambiguous += expansion.deal_associations_ambiguous
+            association_result.discovered_contact_ids.update(expansion.discovered_contact_ids)
+            association_result.email_deal_ids.update(expansion.email_deal_ids)
         created_contact_ids = {
             result.contact.contact_id for result in resolved.values() if result.created
         }
@@ -302,6 +343,12 @@ class ContactCommunicationHydrationService:
             contacts_reused=len(reused_contact_ids),
             activities_projected=projected,
             skip_counters=plan.skip_counters,
+            deal_associations_created=association_result.associations_created,
+            deal_associations_ambiguous=association_result.ambiguous,
+            deal_associations_deactivated=association_result.associations_deactivated,
+            participants_auto_approved=len(association_result.discovered_contact_ids),
+            discovered_contact_ids=frozenset(association_result.discovered_contact_ids),
+            email_deal_ids=frozenset(association_result.email_deal_ids),
         )
 
     async def backfill_contacts(
@@ -311,6 +358,22 @@ class ContactCommunicationHydrationService:
         integration_id: UUID | None = None,
     ) -> ContactCommunicationHydrationResult:
         """Attach retained communication history to already-created contacts."""
+        return await self._backfill_contacts(
+            contact_ids,
+            integration_id=integration_id,
+            discover_participants=True,
+            target_deal_ids=None,
+        )
+
+    async def _backfill_contacts(
+        self,
+        contact_ids: list[UUID],
+        *,
+        integration_id: UUID | None,
+        discover_participants: bool,
+        target_deal_ids: set[UUID] | None,
+    ) -> ContactCommunicationHydrationResult:
+        """Run contact history once; recursive calls disable further participant discovery."""
         contacts = await self._load_contacts(contact_ids)
         identity_contacts = _identity_contact_map(contacts)
         identities = set(identity_contacts)
@@ -324,6 +387,29 @@ class ContactCommunicationHydrationService:
             integration_id=integration_id,
             replace_links=False,
         )
+        association_result = await CommunicationDealAssociationService(
+            self.org_session,
+            self.organisation_id,
+        ).associate_changed_communications(
+            emails=emails,
+            events=events,
+            identity_contacts=identity_contacts,
+            integration_id=integration_id,
+            discover_participants=discover_participants,
+            target_deal_ids=target_deal_ids,
+        )
+        if discover_participants and association_result.discovered_contact_ids:
+            expansion = await self._backfill_contacts(
+                sorted(association_result.discovered_contact_ids, key=str),
+                integration_id=integration_id,
+                discover_participants=False,
+                target_deal_ids=target_deal_ids,
+            )
+            projected += expansion.activities_projected
+            association_result.associations_created += expansion.deal_associations_created
+            association_result.ambiguous += expansion.deal_associations_ambiguous
+            association_result.discovered_contact_ids.update(expansion.discovered_contact_ids)
+            association_result.email_deal_ids.update(expansion.email_deal_ids)
         return ContactCommunicationHydrationResult(
             emails_considered=len(emails),
             events_considered=len(events),
@@ -331,7 +417,62 @@ class ContactCommunicationHydrationService:
             contacts_reused=len(contacts),
             activities_projected=projected,
             skip_counters={},
+            deal_associations_created=association_result.associations_created,
+            deal_associations_ambiguous=association_result.ambiguous,
+            deal_associations_deactivated=association_result.associations_deactivated,
+            participants_auto_approved=len(association_result.discovered_contact_ids),
+            discovered_contact_ids=frozenset(association_result.discovered_contact_ids),
+            email_deal_ids=frozenset(association_result.email_deal_ids),
         )
+
+    async def backfill_deals(
+        self,
+        deal_ids: list[UUID],
+        *,
+        integration_id: UUID | None = None,
+    ) -> ContactCommunicationHydrationResult:
+        """Replay retained communications for approved contacts on changed deals."""
+        contact_ids = await self._load_deal_contact_ids(deal_ids)
+        contacts = await self._load_contacts(contact_ids)
+        deactivated = await CommunicationDealAssociationService(
+            self.org_session,
+            self.organisation_id,
+        ).reconcile_deal_associations(
+            deal_ids=deal_ids,
+            identity_contacts=_identity_contact_map(contacts),
+        )
+        result = await self._backfill_contacts(
+            contact_ids,
+            integration_id=integration_id,
+            discover_participants=True,
+            target_deal_ids=set(deal_ids),
+        )
+        if not deactivated:
+            return result
+        return replace(
+            result,
+            deal_associations_deactivated=(result.deal_associations_deactivated + deactivated),
+        )
+
+    async def _load_deal_contact_ids(self, deal_ids: list[UUID]) -> list[UUID]:
+        """Load approved contact anchors for targeted deal creation/participant replay."""
+        if not deal_ids:
+            return []
+        # A participant row is tenant-owned even though deal IDs are UUIDs; the org predicate
+        # prevents a malformed worker payload from crossing schema ownership boundaries.
+        result = await self.org_session.execute(
+            select(col(CRMDealParticipant.related_local_id))
+            .where(
+                col(CRMDealParticipant.organisation_id) == self.organisation_id,
+                col(CRMDealParticipant.deal_id).in_(deal_ids),
+                col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT,
+                col(CRMDealParticipant.approval_status) == ApprovalStatus.APPROVED.value,
+                col(CRMDealParticipant.is_deleted).is_(False),
+                col(CRMDealParticipant.related_local_id).is_not(None),
+            )
+            .distinct()
+        )
+        return [contact_id for contact_id in result.scalars().all() if contact_id]
 
     async def _project(
         self,
