@@ -35,7 +35,10 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
 )
 from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
-from src.service.calendar_invites.models import CalendarInviteAttendee
+from src.service.calendar_invites.models import (
+    MAX_CALENDAR_INVITE_ATTENDEES,
+    CalendarInviteAttendee,
+)
 from src.service.crm.contacts.read_service import ContactReadService
 
 _DEAL_STAKEHOLDER_PHRASES = {
@@ -46,6 +49,9 @@ _DEAL_STAKEHOLDER_PHRASES = {
     "deal stakeholders",
     "everyone on the deal",
 }
+# Fuzzy matching walks several user-context tiers. Exact matching is batched,
+# while this small remainder keeps worst-case database work bounded.
+MAX_FUZZY_ATTENDEE_NAMES = 10
 
 
 @dataclass(frozen=True)
@@ -138,10 +144,24 @@ class CalendarInviteAttendeeResolver:
         *,
         deal_id: str | UUID | None = None,
     ) -> AttendeeResolutionResult:
-        """Resolve mixed attendee input into exact emails or user-facing blockers."""
+        """Resolve mixed attendee input with bounded user-centric database work."""
         result = AttendeeResolutionResult()
+        if len(attendees) > MAX_CALENDAR_INVITE_ATTENDEES:
+            result.missing.append(
+                {
+                    "input": f"{len(attendees)} attendees",
+                    "reason": "attendee_limit_exceeded",
+                    "message": (
+                        f"Calendar invites support at most "
+                        f"{MAX_CALENDAR_INVITE_ATTENDEES} attendees."
+                    ),
+                }
+            )
+            return result
+
         default_deal_id = self._parse_uuid(deal_id)
         seen_emails: set[str] = set()
+        name_intents: dict[str, dict[str, Any]] = {}
 
         for raw_attendee in attendees:
             intent = self._coerce_attendee_intent(raw_attendee)
@@ -193,44 +213,137 @@ class CalendarInviteAttendeeResolver:
                 self._append_unique(result.resolved, candidate, seen_emails)
                 continue
 
-            matches = await self._search_people(input_value, deal_id=default_deal_id)
-            if not matches:
+            # Repeated names should not repeat the same multi-tier lookup. The
+            # first occurrence keeps its required/optional role, matching email dedupe.
+            name_intents.setdefault(self._normalize_identity(input_value), intent)
+
+        if not name_intents:
+            return result
+
+        # Exact names are searched once per source tier for the complete input set.
+        # This retains the user-centric priority without multiplying queries by names.
+        exact_matches = await self._search_exact_people(
+            set(name_intents),
+            deal_id=default_deal_id,
+        )
+        unresolved_names = [name for name in name_intents if name not in exact_matches]
+        if len(unresolved_names) > MAX_FUZZY_ATTENDEE_NAMES:
+            for normalized_name in unresolved_names:
                 result.missing.append(
                     {
-                        "input": input_value,
-                        "reason": "no_match",
-                        "message": "No contact, stakeholder, or internal user matched.",
+                        "input": name_intents[normalized_name]["value"],
+                        "reason": "name_lookup_limit_exceeded",
+                        "message": (
+                            "Too many attendees need fuzzy name matching; provide exact "
+                            "email addresses for the unresolved attendees."
+                        ),
                     }
                 )
-                continue
+            return result
 
-            if len(matches) == 1:
-                candidate = matches[0]
-                self._append_unique(
-                    result.resolved,
-                    AttendeeCandidate(
-                        email=candidate.email,
-                        name=candidate.name,
-                        optional=optional,
-                        source=candidate.source,
-                        source_id=candidate.source_id,
-                        confidence=candidate.confidence,
-                        input_value=input_value,
-                    ),
-                    seen_emails,
+        for normalized_name, intent in name_intents.items():
+            matches = exact_matches.get(normalized_name)
+            if matches is None:
+                matches = await self._search_people(
+                    intent["value"],
+                    deal_id=default_deal_id,
                 )
-                result.add_confirmation_reason("attendee_resolved_from_name")
-                continue
-
-            result.ambiguous.append(
-                {
-                    "input": input_value,
-                    "options": [candidate.to_public_dict() for candidate in matches[:10]],
-                }
+            self._record_name_resolution(
+                result,
+                matches=matches,
+                input_value=intent["value"],
+                optional=bool(intent.get("optional", False)),
+                seen_emails=seen_emails,
             )
-            result.add_confirmation_reason("attendee_ambiguous")
 
         return result
+
+    def _record_name_resolution(
+        self,
+        result: AttendeeResolutionResult,
+        *,
+        matches: list[AttendeeCandidate],
+        input_value: str,
+        optional: bool,
+        seen_emails: set[str],
+    ) -> None:
+        """Record one name lookup while preserving confirmation and ambiguity rules."""
+        if not matches:
+            result.missing.append(
+                {
+                    "input": input_value,
+                    "reason": "no_match",
+                    "message": "No contact, stakeholder, or internal user matched.",
+                }
+            )
+            return
+
+        if len(matches) == 1:
+            candidate = matches[0]
+            self._append_unique(
+                result.resolved,
+                AttendeeCandidate(
+                    email=candidate.email,
+                    name=candidate.name,
+                    optional=optional,
+                    source=candidate.source,
+                    source_id=candidate.source_id,
+                    confidence=candidate.confidence,
+                    input_value=input_value,
+                ),
+                seen_emails,
+            )
+            result.add_confirmation_reason("attendee_resolved_from_name")
+            return
+
+        result.ambiguous.append(
+            {
+                "input": input_value,
+                "options": [candidate.to_public_dict() for candidate in matches[:10]],
+            }
+        )
+        result.add_confirmation_reason("attendee_ambiguous")
+
+    async def _search_exact_people(
+        self,
+        searches: set[str],
+        *,
+        deal_id: UUID | None,
+    ) -> dict[str, list[AttendeeCandidate]]:
+        """Resolve exact identities in fixed-count tiers before fuzzy per-name lookup."""
+        unresolved = set(searches)
+        resolved: dict[str, list[AttendeeCandidate]] = {}
+
+        def claim(candidates: list[AttendeeCandidate]) -> None:
+            """Claim only the highest-priority tier that matched each input name."""
+            grouped: dict[str, list[AttendeeCandidate]] = {}
+            for candidate in candidates:
+                if candidate.input_value in unresolved:
+                    grouped.setdefault(candidate.input_value, []).append(candidate)
+            for search, matches in grouped.items():
+                resolved[search] = self._prefer_unique_exact(self._dedupe_candidates(matches))
+                unresolved.remove(search)
+
+        if deal_id:
+            claim(await self._search_stakeholders(unresolved, deal_id=deal_id))
+        if self.requested_by_user_id:
+            for search_stage in (
+                self._search_user_deal_contacts,
+                self._search_user_lead_contacts,
+                self._search_user_added_contacts,
+                self._search_recent_activity_contacts,
+            ):
+                if not unresolved:
+                    break
+                claim(await search_stage(unresolved))
+
+        if unresolved:
+            # Organization contacts and internal users share the broad fallback
+            # tier, so namesakes across those sources remain ambiguous.
+            candidates = await self._search_contacts(unresolved)
+            candidates.extend(await self._search_internal_users(unresolved))
+            claim(candidates)
+        return resolved
 
     async def _search_people(
         self,
@@ -269,7 +382,10 @@ class CalendarInviteAttendeeResolver:
         candidates.extend(await self._search_internal_users(search))
         return self._prefer_unique_exact(self._dedupe_candidates(candidates))
 
-    async def _search_user_deal_contacts(self, search: str) -> list[AttendeeCandidate]:
+    async def _search_user_deal_contacts(
+        self,
+        search: str | set[str],
+    ) -> list[AttendeeCandidate]:
         """Return name matches from the requester's open deals."""
         if not self.requested_by_user_id:
             return []
@@ -294,20 +410,27 @@ class CalendarInviteAttendeeResolver:
                 ),
             )
             .order_by(col(deal.last_activity_at).desc().nullslast())
-            .limit(10)
+            .limit(self._search_limit(search))
         )
         result = await self.session.execute(stmt)
         return [
             self._candidate_from_participant(
                 row,
-                search,
+                self._candidate_search(
+                    search,
+                    name=row.related_name,
+                    email=row.related_email,
+                ),
                 source="user_open_deal",
             )
             for row in result.scalars().all()
             if row.related_email
         ]
 
-    async def _search_user_lead_contacts(self, search: str) -> list[AttendeeCandidate]:
+    async def _search_user_lead_contacts(
+        self,
+        search: str | set[str],
+    ) -> list[AttendeeCandidate]:
         """Return contacts and direct identities on the requester's active prospects."""
         if not self.requested_by_user_id:
             return []
@@ -331,7 +454,7 @@ class CalendarInviteAttendeeResolver:
                 ),
             )
             .order_by(col(CRMLead.last_activity_at).desc().nullslast())
-            .limit(10)
+            .limit(self._search_limit(search))
         )
         lead_result = await self.session.execute(lead_stmt)
         candidates = [
@@ -340,8 +463,16 @@ class CalendarInviteAttendeeResolver:
                 name=lead.full_name,
                 source="user_active_prospect",
                 source_id=str(lead.lead_id),
-                confidence=self._confidence_for(search, name=lead.full_name, email=lead.email),
-                input_value=search,
+                confidence=self._confidence_for(
+                    self._candidate_search(search, name=lead.full_name, email=lead.email),
+                    name=lead.full_name,
+                    email=lead.email,
+                ),
+                input_value=self._candidate_search(
+                    search,
+                    name=lead.full_name,
+                    email=lead.email,
+                ),
             )
             for lead in lead_result.scalars().all()
             if lead.email
@@ -366,7 +497,7 @@ class CalendarInviteAttendeeResolver:
                 ),
             )
             .order_by(col(CRMLead.last_activity_at).desc().nullslast())
-            .limit(10)
+            .limit(self._search_limit(search))
         )
         participant_result = await self.session.execute(participant_stmt)
         candidates.extend(
@@ -375,15 +506,26 @@ class CalendarInviteAttendeeResolver:
                 name=row.name,
                 source="user_active_prospect",
                 source_id=str(row.participant_id),
-                confidence=self._confidence_for(search, name=row.name, email=row.email),
-                input_value=search,
+                confidence=self._confidence_for(
+                    self._candidate_search(search, name=row.name, email=row.email),
+                    name=row.name,
+                    email=row.email,
+                ),
+                input_value=self._candidate_search(
+                    search,
+                    name=row.name,
+                    email=row.email,
+                ),
             )
             for row in participant_result.scalars().all()
             if row.email
         )
         return candidates
 
-    async def _search_user_added_contacts(self, search: str) -> list[AttendeeCandidate]:
+    async def _search_user_added_contacts(
+        self,
+        search: str | set[str],
+    ) -> list[AttendeeCandidate]:
         """Return contacts explicitly owned or created by the requesting user."""
         if not self.requested_by_user_id:
             return []
@@ -409,16 +551,23 @@ class CalendarInviteAttendeeResolver:
                 self._contact_matches(search),
             )
             .order_by(col(CRMContact.last_activity_at).desc().nullslast())
-            .limit(10)
+            .limit(self._search_limit(search))
         )
         result = await self.session.execute(stmt)
         return [
-            self._candidate_from_contact(contact, search, source="user_added_contact")
+            self._candidate_from_contact(
+                contact,
+                self._candidate_search(search, name=contact.full_name, email=contact.email),
+                source="user_added_contact",
+            )
             for contact in result.scalars().all()
             if contact.email
         ]
 
-    async def _search_recent_activity_contacts(self, search: str) -> list[AttendeeCandidate]:
+    async def _search_recent_activity_contacts(
+        self,
+        search: str | set[str],
+    ) -> list[AttendeeCandidate]:
         """Return contacts with recent projected activity from the requester's mailbox."""
         if not self.requested_by_user_id:
             return []
@@ -464,24 +613,25 @@ class CalendarInviteAttendeeResolver:
                 self._contact_matches(search),
             )
             .order_by(recent_activity.c.last_user_activity_at.desc())
-            .limit(10)
+            .limit(self._search_limit(search))
         )
         result = await self.session.execute(stmt)
         return [
-            self._candidate_from_contact(contact, search, source="recent_user_email")
+            self._candidate_from_contact(
+                contact,
+                self._candidate_search(search, name=contact.full_name, email=contact.email),
+                source="recent_user_email",
+            )
             for contact in result.scalars().all()
             if contact.email
         ]
 
     async def _search_stakeholders(
         self,
-        search: str,
+        search: str | set[str],
         *,
         deal_id: UUID | None,
     ) -> list[AttendeeCandidate]:
-        lower_search = search.strip().lower()
-        name_expr = func.lower(col(CRMDealParticipant.related_name))
-        email_expr = func.lower(col(CRMDealParticipant.related_email))
         stmt = (
             select(CRMDealParticipant)
             .where(
@@ -489,14 +639,13 @@ class CalendarInviteAttendeeResolver:
                 col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
                 col(CRMDealParticipant.is_deleted) == False,  # noqa: E712
                 col(CRMDealParticipant.approval_status) == ApprovalStatus.APPROVED.value,
-                or_(
-                    name_expr == lower_search,
-                    email_expr == lower_search,
-                    col(CRMDealParticipant.related_name).ilike(f"%{search}%"),
-                    col(CRMDealParticipant.related_email).ilike(f"%{search}%"),
+                self._participant_matches(
+                    search,
+                    name_column=col(CRMDealParticipant.related_name),
+                    email_column=col(CRMDealParticipant.related_email),
                 ),
             )
-            .limit(10)
+            .limit(self._search_limit(search))
         )
         if deal_id:
             stmt = stmt.where(col(CRMDealParticipant.deal_id) == deal_id)
@@ -504,21 +653,46 @@ class CalendarInviteAttendeeResolver:
         result = await self.session.execute(stmt)
         participants = result.scalars().all()
         return [
-            self._candidate_from_participant(participant, search)
+            self._candidate_from_participant(
+                participant,
+                self._candidate_search(
+                    search,
+                    name=participant.related_name,
+                    email=participant.related_email,
+                ),
+            )
             for participant in participants
             if participant.related_email
         ]
 
-    async def _search_contacts(self, search: str) -> list[AttendeeCandidate]:
+    async def _search_contacts(self, search: str | set[str]) -> list[AttendeeCandidate]:
         """Use the CRM agent's indexed fuzzy search as the broad fallback."""
-        rows = await ContactReadService(
-            self.session,
-            self.organisation_id,
-        ).search_contacts_for_agent(q=search, limit=20)
+        if isinstance(search, set):
+            stmt = (
+                select(CRMContact)
+                .where(
+                    col(CRMContact.organisation_id) == self.organisation_id,
+                    col(CRMContact.is_deleted) == False,  # noqa: E712
+                    col(CRMContact.email).is_not(None),
+                    self._contact_matches(search),
+                )
+                .limit(self._search_limit(search))
+            )
+            result = await self.session.execute(stmt)
+            rows = [{"contact": contact} for contact in result.scalars().all()]
+        else:
+            rows = await ContactReadService(
+                self.session,
+                self.organisation_id,
+            ).search_contacts_for_agent(q=search, limit=20)
         return [
             self._candidate_from_contact(
                 row["contact"],
-                search,
+                self._candidate_search(
+                    search,
+                    name=row["contact"].full_name,
+                    email=row["contact"].email,
+                ),
                 source="organization_contact",
             )
             for row in rows
@@ -535,10 +709,21 @@ class CalendarInviteAttendeeResolver:
             conditions.append(func.lower(func.trim(col(model.owner_email))) == self.user_email)
         return or_(*conditions)
 
-    @staticmethod
-    def _participant_matches(search: str, *, name_column: Any, email_column: Any) -> Any:
+    @classmethod
+    def _participant_matches(
+        cls,
+        search: str | set[str],
+        *,
+        name_column: Any,
+        email_column: Any,
+    ) -> Any:
         """Build an exact-or-substring identity predicate for relationship rows."""
-        normalized = search.strip().lower()
+        if isinstance(search, set):
+            return or_(
+                func.lower(func.trim(email_column)).in_(search),
+                func.lower(func.trim(name_column)).in_(search),
+            )
+        normalized = cls._normalize_identity(search)
         escaped = normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         return or_(
             func.lower(func.trim(email_column)) == normalized,
@@ -548,14 +733,20 @@ class CalendarInviteAttendeeResolver:
         )
 
     @classmethod
-    def _contact_matches(cls, search: str) -> Any:
+    def _contact_matches(cls, search: str | set[str]) -> Any:
         """Match a contact by canonical name components or primary email."""
         full_name_expr = func.concat(
             func.coalesce(col(CRMContact.first_name), ""),
             " ",
             func.coalesce(col(CRMContact.last_name), ""),
         )
-        normalized = search.strip().lower()
+        if isinstance(search, set):
+            return or_(
+                func.lower(func.trim(col(CRMContact.email))).in_(search),
+                func.lower(func.trim(col(CRMContact.full_name))).in_(search),
+                func.lower(func.trim(full_name_expr)).in_(search),
+            )
+        normalized = cls._normalize_identity(search)
         escaped = normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         return or_(
             func.lower(func.trim(col(CRMContact.email))) == normalized,
@@ -567,28 +758,48 @@ class CalendarInviteAttendeeResolver:
             col(CRMContact.last_name).ilike(f"%{escaped}%", escape="\\"),
         )
 
-    async def _search_internal_users(self, search: str) -> list[AttendeeCandidate]:
-        lower_search = search.strip().lower()
+    async def _search_internal_users(
+        self,
+        search: str | set[str],
+    ) -> list[AttendeeCandidate]:
         full_name_expr = func.concat(col(User.first_name), " ", col(User.last_name))
+        if isinstance(search, set):
+            identity_filter = or_(
+                func.lower(func.trim(col(User.email))).in_(search),
+                func.lower(func.trim(full_name_expr)).in_(search),
+            )
+        else:
+            lower_search = self._normalize_identity(search)
+            identity_filter = or_(
+                func.lower(col(User.email)) == lower_search,
+                func.lower(full_name_expr) == lower_search,
+                col(User.email).ilike(f"%{search}%"),
+                col(User.first_name).ilike(f"%{search}%"),
+                col(User.last_name).ilike(f"%{search}%"),
+            )
         stmt = (
             select(User)
             .where(
                 col(User.organisation_id) == self.organisation_id,
                 col(User.status) == SupabaseUserStatus.ACTIVE,
                 col(User.admin_status) == AdminUserStatus.APPROVED,
-                or_(
-                    func.lower(col(User.email)) == lower_search,
-                    func.lower(full_name_expr) == lower_search,
-                    col(User.email).ilike(f"%{search}%"),
-                    col(User.first_name).ilike(f"%{search}%"),
-                    col(User.last_name).ilike(f"%{search}%"),
-                ),
+                identity_filter,
             )
-            .limit(10)
+            .limit(self._search_limit(search))
         )
         result = await self.session.execute(stmt)
         users = result.scalars().all()
-        return [self._candidate_from_user(user, search) for user in users]
+        return [
+            self._candidate_from_user(
+                user,
+                self._candidate_search(
+                    search,
+                    name=" ".join(part for part in [user.first_name, user.last_name] if part),
+                    email=str(user.email),
+                ),
+            )
+            for user in users
+        ]
 
     async def _resolve_deal_stakeholders(
         self,
@@ -700,6 +911,30 @@ class CalendarInviteAttendeeResolver:
             "optional": raw_attendee.get("optional", False),
             "deal_id": raw_attendee.get("deal_id"),
         }
+
+    @staticmethod
+    def _normalize_identity(value: str) -> str:
+        """Normalize user-entered identity text for exact batch matching and dedupe."""
+        return re.sub(r"\s+", " ", value.strip().lower())
+
+    @classmethod
+    def _candidate_search(
+        cls,
+        search: str | set[str],
+        *,
+        name: str | None,
+        email: str | None,
+    ) -> str:
+        """Return the batched input that exactly matched a candidate identity."""
+        if isinstance(search, str):
+            return search
+        identities = {cls._normalize_identity(value) for value in (name, email) if value}
+        return next((value for value in search if value in identities), "")
+
+    @staticmethod
+    def _search_limit(search: str | set[str]) -> int:
+        """Allow up to ten namesakes per batched input without an unbounded result set."""
+        return 10 if isinstance(search, str) else max(10, len(search) * 10)
 
     @staticmethod
     def _parse_uuid(value: str | UUID | None) -> UUID | None:

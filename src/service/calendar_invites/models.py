@@ -8,6 +8,9 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, TypeAdapter, field_validator
 
 EMAIL_ADAPTER = TypeAdapter(EmailStr)
+# Provider requests support large recipient lists, but the resolver must enforce
+# this ceiling before performing one lookup per user-supplied attendee.
+MAX_CALENDAR_INVITE_ATTENDEES = 100
 
 
 class CalendarInviteError(Exception):
@@ -47,7 +50,10 @@ class CalendarInviteCreateRequest(BaseModel):
     start_at: datetime
     end_at: datetime
     timezone: str = Field(min_length=1, max_length=128)
-    attendees: list[CalendarInviteAttendee] = Field(min_length=1, max_length=100)
+    attendees: list[CalendarInviteAttendee] = Field(
+        min_length=1,
+        max_length=MAX_CALENDAR_INVITE_ATTENDEES,
+    )
     body: str | None = Field(default=None, max_length=10000)
     location: str | None = Field(default=None, max_length=500)
     deal_id: UUID | None = None
@@ -109,7 +115,10 @@ class CalendarMeetingUpdateRequest(BaseModel):
     start_at: datetime
     end_at: datetime
     timezone: str = Field(min_length=1, max_length=128)
-    attendees: list[CalendarInviteAttendee] = Field(default_factory=list, max_length=100)
+    attendees: list[CalendarInviteAttendee] = Field(
+        default_factory=list,
+        max_length=MAX_CALENDAR_INVITE_ATTENDEES,
+    )
     body: str | None = Field(default=None, max_length=10000)
     location: str | None = Field(default=None, max_length=500)
     body_changed: bool = Field(default=False, exclude=True)
@@ -128,6 +137,7 @@ class CalendarMeetingUpdateRequest(BaseModel):
     @field_validator("end_at")
     @classmethod
     def require_end_after_start(cls, value: datetime, info) -> datetime:
+        """Reject meeting updates whose requested end does not follow the start."""
         start_at = info.data.get("start_at")
         if start_at and value <= start_at:
             raise ValueError("end_at must be after start_at")

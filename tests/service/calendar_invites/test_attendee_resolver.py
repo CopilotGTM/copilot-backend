@@ -52,6 +52,7 @@ async def test_resolver_requires_confirmation_for_name_match(monkeypatch) -> Non
             )
         ]
     )
+    resolver._search_exact_people = AsyncMock(return_value={})  # noqa: SLF001
 
     result = await resolver.resolve(["Saksham Bhutani"])
 
@@ -84,6 +85,7 @@ async def test_resolver_marks_multiple_name_matches_ambiguous() -> None:
             ),
         ]
     )
+    resolver._search_exact_people = AsyncMock(return_value={})  # noqa: SLF001
 
     result = await resolver.resolve(["Saksham"])
 
@@ -272,6 +274,7 @@ async def test_resolver_stops_at_requesters_open_deal_before_org_search() -> Non
         name="Bhawesh",
         source="user_open_deal",
         confidence="exact_name",
+        input_value="bhawesh",
     )
     resolver._search_user_deal_contacts = AsyncMock(return_value=[deal_candidate])  # noqa: SLF001
     resolver._search_user_lead_contacts = AsyncMock(return_value=[])  # noqa: SLF001
@@ -305,6 +308,7 @@ async def test_resolver_prefers_user_added_contact_before_recent_activity() -> N
                 name="Bhawesh",
                 source="user_added_contact",
                 confidence="exact_name",
+                input_value="bhawesh",
             )
         ]
     )
@@ -315,6 +319,7 @@ async def test_resolver_prefers_user_added_contact_before_recent_activity() -> N
                 name="Bhawesh",
                 source="recent_user_email",
                 confidence="exact_name",
+                input_value="bhawesh",
             )
         ]
     )
@@ -375,12 +380,14 @@ async def test_resolver_keeps_same_tier_namesakes_ambiguous() -> None:
                 name="Bhawesh",
                 source="user_open_deal",
                 confidence="exact_name",
+                input_value="bhawesh",
             ),
             AttendeeCandidate(
                 email="two@example.com",
                 name="Bhawesh",
                 source="user_open_deal",
                 confidence="exact_name",
+                input_value="bhawesh",
             ),
         ]
     )
@@ -392,3 +399,69 @@ async def test_resolver_keeps_same_tier_namesakes_ambiguous() -> None:
         "one@example.com",
         "two@example.com",
     ]
+
+
+@pytest.mark.asyncio
+async def test_resolver_batches_large_exact_name_lists_by_tier() -> None:
+    """One exact tier query should resolve many names without per-name amplification."""
+    resolver = CalendarInviteAttendeeResolver(
+        MagicMock(),
+        organisation_id=ORG_ID,
+        requested_by_user_id=UUID("22222222-2222-2222-2222-222222222222"),
+    )
+
+    async def exact_open_deal_matches(searches):
+        """Return one exact commercial-graph identity for every batched input."""
+        return [
+            AttendeeCandidate(
+                email=f"person-{index}@example.com",
+                name=search,
+                source="user_open_deal",
+                confidence="exact_name",
+                input_value=search,
+            )
+            for index, search in enumerate(sorted(searches))
+        ]
+
+    resolver._search_user_deal_contacts = AsyncMock(  # noqa: SLF001
+        side_effect=exact_open_deal_matches
+    )
+    resolver._search_user_lead_contacts = AsyncMock(return_value=[])  # noqa: SLF001
+    resolver._search_user_added_contacts = AsyncMock(return_value=[])  # noqa: SLF001
+    resolver._search_recent_activity_contacts = AsyncMock(return_value=[])  # noqa: SLF001
+    resolver._search_contacts = AsyncMock(return_value=[])  # noqa: SLF001
+    resolver._search_internal_users = AsyncMock(return_value=[])  # noqa: SLF001
+    resolver._search_people = AsyncMock(return_value=[])  # noqa: SLF001
+
+    result = await resolver.resolve([f"Person {index}" for index in range(100)])
+
+    assert len(result.resolved) == 100
+    resolver._search_user_deal_contacts.assert_awaited_once()  # noqa: SLF001
+    resolver._search_user_lead_contacts.assert_not_awaited()  # noqa: SLF001
+    resolver._search_people.assert_not_awaited()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_resolver_stops_before_unbounded_fuzzy_name_searches() -> None:
+    """More than ten unresolved names should request emails without fuzzy queries."""
+    resolver = CalendarInviteAttendeeResolver(MagicMock(), organisation_id=ORG_ID)
+    resolver._search_exact_people = AsyncMock(return_value={})  # noqa: SLF001
+    resolver._search_people = AsyncMock(return_value=[])  # noqa: SLF001
+
+    result = await resolver.resolve([f"Unknown Person {index}" for index in range(11)])
+
+    assert len(result.missing) == 11
+    assert {item["reason"] for item in result.missing} == {"name_lookup_limit_exceeded"}
+    resolver._search_people.assert_not_awaited()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_resolver_rejects_attendee_limit_before_database_lookup() -> None:
+    """Oversized requests must fail before attendee resolution can pressure the pool."""
+    session = MagicMock(execute=AsyncMock())
+    resolver = CalendarInviteAttendeeResolver(session, organisation_id=ORG_ID)
+
+    result = await resolver.resolve([f"person-{index}@example.com" for index in range(101)])
+
+    assert result.missing[0]["reason"] == "attendee_limit_exceeded"
+    session.execute.assert_not_awaited()

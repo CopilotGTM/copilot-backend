@@ -43,16 +43,11 @@ _GENERIC_EMAIL_ONLY_TITLES = {
     "call",
     "sync",
 }
-_DATE_HINT_PATTERN = re.compile(
-    r"\b(?:today|tomorrow|"
-    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
-    r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
-    r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|"
-    r"dec(?:ember)?|\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?|"
-    r"\d{1,2}(?:st|nd|rd|th))\b",
+_MERIDIEM_PATTERN = re.compile(r"\b(?:a\.?m\.?|p\.?m\.?)\b", re.IGNORECASE)
+_TIME_ONLY_PATTERN = re.compile(
+    r"^\s*(?:[01]?\d|2[0-3])(?::[0-5]\d)?\s*(?:a\.?m\.?|p\.?m\.?)?\s*$",
     re.IGNORECASE,
 )
-_MERIDIEM_PATTERN = re.compile(r"\b(?:a\.?m\.?|p\.?m\.?)\b", re.IGNORECASE)
 # A single-digit/ordinary 12-hour clock such as "3:30" needs AM/PM. Leading-zero
 # and 13–23 hour inputs are treated as deliberate 24-hour notation.
 _AMBIGUOUS_CLOCK_PATTERN = re.compile(r"(?<![\d:])(?:[1-9]|1[0-2]):[0-5]\d(?![\d:])")
@@ -187,11 +182,6 @@ def _resolve_invite_timezone(
     return requested_timezone or context_timezone or "UTC"
 
 
-def _has_date_hint(value: str) -> bool:
-    """Return whether a time expression identifies a date instead of implying today."""
-    return bool(_DATE_HINT_PATTERN.search(value) or re.search(r"\d{4}-\d{2}-\d{2}T", value))
-
-
 def _has_ambiguous_clock_time(value: str | None) -> bool:
     """Return whether natural-language clock input needs an AM/PM clarification."""
     if not value or _MERIDIEM_PATTERN.search(value):
@@ -212,7 +202,7 @@ def _parse_end_datetime(
 ) -> datetime | None:
     """Parse an end time, borrowing the reviewed start date when only a clock is given."""
     candidate = value
-    if start_at and not _has_date_hint(value):
+    if start_at and _TIME_ONLY_PATTERN.fullmatch(value):
         local_date = start_at.astimezone(ZoneInfo(timezone_name)).date().isoformat()
         candidate = f"{local_date} {value}"
     parsed = _parse_datetime(candidate, timezone_name, metadata)
@@ -408,8 +398,6 @@ async def send_calendar_invite(
     if not start_time:
         missing_fields.extend(["date", "start_time"])
     else:
-        if not _has_date_hint(start_time):
-            missing_fields.append("date")
         if ambiguous_start_time:
             missing_fields.append("start_time_am_pm")
         elif not start_at:
@@ -495,16 +483,11 @@ async def send_calendar_invite(
             confirmation_reasons.append("final_send_confirmation")
 
         show_sender = sender_resolution.connected_account_count > 1
-        has_exact_date = "date" not in missing_fields
         review_start_time = (
-            start_at.astimezone(ZoneInfo(timezone_name)).isoformat()
-            if start_at and has_exact_date
-            else start_time
+            start_at.astimezone(ZoneInfo(timezone_name)).isoformat() if start_at else start_time
         )
         review_end_time = (
-            end_at.astimezone(ZoneInfo(timezone_name)).isoformat()
-            if end_at and has_exact_date
-            else end_time
+            end_at.astimezone(ZoneInfo(timezone_name)).isoformat() if end_at else end_time
         )
         review_payload = _build_confirmation_payload(
             title=effective_title,

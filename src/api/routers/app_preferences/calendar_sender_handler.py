@@ -40,9 +40,10 @@ async def update_calendar_sender_preference(
         organisation_id=user_ids.organisation_id,
         user_id=user_ids.user_id,
     )
-    payload = await service.update(
+    preferred_sender_email = await service.update(
         str(request.preferred_sender_email) if request.preferred_sender_email else None
     )
+    payload = CalendarSenderPreference(preferred_sender_email=preferred_sender_email)
     return Response.success_response(
         message="Calendar sender preference updated successfully",
         data=payload,

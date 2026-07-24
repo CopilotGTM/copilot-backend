@@ -54,7 +54,7 @@ async def test_preference_service_stores_only_connected_calendar() -> None:
 
     result = await service.update(" Sales@Contoso.com ")
 
-    assert str(result.preferred_sender_email) == "sales@contoso.com"
+    assert result == "sales@contoso.com"
     assert preferred_calendar_sender(user.preferences) == "sales@contoso.com"
     master_session.commit.assert_awaited_once()
 
