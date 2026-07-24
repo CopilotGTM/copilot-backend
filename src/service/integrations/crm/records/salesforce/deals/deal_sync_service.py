@@ -15,6 +15,11 @@ from src.domain.models.organisation_tables.sync.crm import CRMSourceObjectType
 from src.domain.models.organisation_tables.sync.crm.associations import CRMObjectType
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.domain.models.organisation_tables.sync.crm.custom_fields import (
+    CRMCustomFieldDefinition,
+    CRMCustomFieldEntity,
+    CRMCustomFieldSource,
+)
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
     CRMDealStage,
@@ -41,6 +46,7 @@ from src.service.integrations.crm.records.salesforce.deals.deal_types import (
     DealWriteResult,
     DimensionHit,
     ParticipantWriteResult,
+    SalesforceContactReferenceField,
     StageHistoryWriteResult,
 )
 from src.service.integrations.crm.records.salesforce.deals.deal_writer import (
@@ -50,6 +56,8 @@ from src.service.integrations.crm.records.salesforce.deals.opportunity_normalize
     normalize_opportunities,
 )
 from src.service.integrations.crm.records.salesforce.deals.participant_normalizer import (
+    contact_reference_fields_from_definitions,
+    extract_contact_reference_participants,
     extract_participants,
 )
 from src.service.integrations.crm.records.salesforce.deals.participant_writer import (
@@ -101,6 +109,9 @@ class SalesforceDealRecordSyncService:
     ) -> DealSyncResult:
         started_at = datetime.now(UTC)
         context = await self._load_context(organisation_id, integration_id)
+        contact_reference_fields = await self._load_contact_reference_fields(
+            organisation_id, integration_id
+        )
 
         opportunities_fetcher = SalesforceOpportunitiesFetcher(
             token_info=context.token_info,
@@ -120,6 +131,7 @@ class SalesforceDealRecordSyncService:
         backfill_payload: dict[str, Any] = {"rows_updated": 0, "per_op": {}}
         fetched_stage_history_rows = 0
         fetched_participant_rows = 0
+        contact_reference_primary_by_deal: dict[str, str] = {}
 
         phase_started_at = perf_counter()
         async for page_records, field_names in opportunities_fetcher.fetch_pages():
@@ -140,9 +152,12 @@ class SalesforceDealRecordSyncService:
                 integration_id=integration_id,
                 instance_url=context.instance_url,
                 raw_opportunities=pending_raw,
+                contact_reference_fields=contact_reference_fields,
             )
             self._merge_deal_write_result(write_result, chunk_result[0])
             skipped_malformed_opportunities += chunk_result[1]
+            self._merge_participant_result(participant_result, chunk_result[2])
+            contact_reference_primary_by_deal.update(chunk_result[3])
             pending_raw = []
 
         if pending_raw:
@@ -151,9 +166,12 @@ class SalesforceDealRecordSyncService:
                 integration_id=integration_id,
                 instance_url=context.instance_url,
                 raw_opportunities=pending_raw,
+                contact_reference_fields=contact_reference_fields,
             )
             self._merge_deal_write_result(write_result, chunk_result[0])
             skipped_malformed_opportunities += chunk_result[1]
+            self._merge_participant_result(participant_result, chunk_result[2])
+            contact_reference_primary_by_deal.update(chunk_result[3])
 
         logger.info(
             "Salesforce deal opportunities phase completed",
@@ -208,6 +226,7 @@ class SalesforceDealRecordSyncService:
             integration_id=integration_id,
             token_info=context.token_info,
             instance_url=context.instance_url,
+            additional_primary_contact_by_deal=contact_reference_primary_by_deal,
         )
         self._merge_participant_result(participant_result, role_participant_result)
         self._merge_association_result(association_result, role_association_result)
@@ -345,6 +364,27 @@ class SalesforceDealRecordSyncService:
             "Could not acquire org session for Salesforce deals record sync"
         )
 
+    async def _load_contact_reference_fields(
+        self,
+        organisation_id: UUID,
+        integration_id: UUID,
+    ) -> tuple[SalesforceContactReferenceField, ...]:
+        async for session in acquire_org_async_session(organisation_id):
+            stmt = select(CRMCustomFieldDefinition).where(
+                col(CRMCustomFieldDefinition.organisation_id) == organisation_id,
+                col(CRMCustomFieldDefinition.integration_id) == integration_id,
+                col(CRMCustomFieldDefinition.entity_type) == CRMCustomFieldEntity.DEAL.value,
+                col(CRMCustomFieldDefinition.field_source) == CRMCustomFieldSource.PROVIDER.value,
+                col(CRMCustomFieldDefinition.provider_name) == self.PROVIDER,
+                col(CRMCustomFieldDefinition.is_active).is_(True),
+                col(CRMCustomFieldDefinition.is_deleted).is_(False),
+            )
+            definitions = (await session.execute(stmt)).scalars().all()
+            return contact_reference_fields_from_definitions(definitions)
+        raise SalesforceDealSyncConfigurationError(
+            "Could not acquire org session for Salesforce contact-reference fields"
+        )
+
     async def _persist_opportunity_chunk(
         self,
         *,
@@ -352,13 +392,18 @@ class SalesforceDealRecordSyncService:
         integration_id: UUID,
         instance_url: str,
         raw_opportunities: list[dict[str, Any]],
-    ) -> tuple[DealWriteResult, int]:
+        contact_reference_fields: tuple[SalesforceContactReferenceField, ...],
+    ) -> tuple[DealWriteResult, int, ParticipantWriteResult, dict[str, str]]:
+        participant_extraction = extract_contact_reference_participants(
+            raw_opportunities,
+            fields=contact_reference_fields,
+        )
         normalized_opportunities, skipped_malformed_opportunities = normalize_opportunities(
             raw_opportunities,
             instance_url=instance_url,
-            primary_contact_by_deal={},
+            primary_contact_by_deal=participant_extraction.primary_contact_by_deal,
             current_stage_entered_at_by_deal={},
-            contact_count_by_deal={},
+            contact_count_by_deal=participant_extraction.contact_count_by_deal,
         )
         logger.info(
             "Salesforce deals chunk persist started",
@@ -369,12 +414,12 @@ class SalesforceDealRecordSyncService:
                 "normalized_opportunities": len(normalized_opportunities),
             },
         )
-        write_result, *_ = await self._persist(
+        write_result, _, participant_result, _, _ = await self._persist(
             organisation_id=organisation_id,
             integration_id=integration_id,
             opportunities=normalized_opportunities,
             transitions=[],
-            participant_extraction=DealParticipantExtraction(),
+            participant_extraction=participant_extraction,
             backfill=False,
             preserve_relationship_fields=True,
         )
@@ -388,7 +433,12 @@ class SalesforceDealRecordSyncService:
                 "skipped_malformed_opportunities": skipped_malformed_opportunities,
             },
         )
-        return write_result, skipped_malformed_opportunities
+        return (
+            write_result,
+            skipped_malformed_opportunities,
+            participant_result,
+            participant_extraction.primary_contact_by_deal,
+        )
 
     async def _persist(
         self,
@@ -675,6 +725,7 @@ class SalesforceDealRecordSyncService:
         integration_id: UUID,
         token_info: IntegrationTokenInfo,
         instance_url: str,
+        additional_primary_contact_by_deal: dict[str, str] | None = None,
     ) -> tuple[int, int, ParticipantWriteResult, AssociationWriteResult, dict[str, Any]]:
         fetched_rows = 0
         skipped_malformed = 0
@@ -695,6 +746,7 @@ class SalesforceDealRecordSyncService:
                 organisation_id=organisation_id,
                 integration_id=integration_id,
                 raw_contact_roles=completed_rows,
+                additional_primary_contact_by_deal=additional_primary_contact_by_deal,
             )
             skipped_malformed += chunk_result[0]
             self._merge_participant_result(participant_result, chunk_result[1])
@@ -706,6 +758,7 @@ class SalesforceDealRecordSyncService:
                 organisation_id=organisation_id,
                 integration_id=integration_id,
                 raw_contact_roles=carry,
+                additional_primary_contact_by_deal=additional_primary_contact_by_deal,
             )
             skipped_malformed += chunk_result[0]
             self._merge_participant_result(participant_result, chunk_result[1])
@@ -726,10 +779,12 @@ class SalesforceDealRecordSyncService:
         organisation_id: UUID,
         integration_id: UUID,
         raw_contact_roles: list[dict[str, Any]],
+        additional_primary_contact_by_deal: dict[str, str] | None = None,
     ) -> tuple[int, ParticipantWriteResult, AssociationWriteResult, dict[str, Any]]:
         participant_extraction = extract_participants(
             raw_contact_roles,
             company_external_id_by_deal={},
+            additional_primary_contact_by_deal=additional_primary_contact_by_deal,
         )
         await self._update_deal_relationship_snapshots(
             organisation_id=organisation_id,
@@ -803,12 +858,19 @@ class SalesforceDealRecordSyncService:
         instance_url: str,
         project_deal_created_activity_feed: bool = False,
     ) -> dict[str, Any]:
+        contact_reference_fields = await self._load_contact_reference_fields(
+            organisation_id, integration_id
+        )
+        participant_extraction = extract_contact_reference_participants(
+            [raw_opportunity],
+            fields=contact_reference_fields,
+        )
         normalized_opportunities, skipped_malformed_opportunities = normalize_opportunities(
             [raw_opportunity],
             instance_url=instance_url,
-            primary_contact_by_deal={},
+            primary_contact_by_deal=participant_extraction.primary_contact_by_deal,
             current_stage_entered_at_by_deal={},
-            contact_count_by_deal={},
+            contact_count_by_deal=participant_extraction.contact_count_by_deal,
         )
         (
             write_result,
@@ -821,7 +883,7 @@ class SalesforceDealRecordSyncService:
             integration_id=integration_id,
             opportunities=normalized_opportunities,
             transitions=[],
-            participant_extraction=DealParticipantExtraction(),
+            participant_extraction=participant_extraction,
             project_deal_created_activity_feed=project_deal_created_activity_feed,
         )
         return {

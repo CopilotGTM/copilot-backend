@@ -161,7 +161,7 @@ async def test_create_first_stakeholder_sets_deal_primary_contact(monkeypatch) -
     )
 
     assert participant.is_primary_contact is True
-    assert participant.relationship_role == "primary_contact"
+    assert participant.relationship_role is None
     assert deal.primary_contact_id is None
     assert deal.primary_contact_name == "First Buyer"
     assert deal.primary_contact_email == "first@example.com"

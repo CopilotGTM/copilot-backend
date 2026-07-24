@@ -15,6 +15,10 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 from src.domain.models.organisation_tables.sync.crm.source_mappings import (
     CRMSourceObjectType,
 )
+from src.domain.models.organisation_tables.sync.crm.stakeholders import (
+    DecisionPower,
+    StakeholderStance,
+)
 from src.infra.utils.logger import get_logger
 from src.service.integrations.crm.records.common.query_chunks import (
     LOCAL_ID_QUERY_CHUNK_SIZE,
@@ -31,6 +35,26 @@ from src.service.integrations.crm.records.salesforce.deals.deal_types import (
 )
 
 logger = get_logger(__name__)
+
+_DECISION_POWER_BY_CONTACT_ROLE = {
+    "business user": DecisionPower.END_USER.value,
+    "decision maker": DecisionPower.DECISION_MAKER.value,
+    "economic decision maker": DecisionPower.DECISION_MAKER.value,
+    "end user": DecisionPower.END_USER.value,
+    "evaluator": DecisionPower.EVALUATOR.value,
+    "executive sponsor": DecisionPower.DECISION_MAKER.value,
+    "gatekeeper": DecisionPower.GATEKEEPER.value,
+    "influencer": DecisionPower.INFLUENCER.value,
+    "other": DecisionPower.UNKNOWN.value,
+    "technical buyer": DecisionPower.EVALUATOR.value,
+}
+_STANCE_BY_CONTACT_ROLE = {
+    "blocker": StakeholderStance.BLOCKER.value,
+    "champion": StakeholderStance.CHAMPION.value,
+    "detractor": StakeholderStance.DETRACTOR.value,
+    "neutral": StakeholderStance.NEUTRAL.value,
+    "supporter": StakeholderStance.SUPPORTER.value,
+}
 
 
 class SalesforceDealParticipantWriter:
@@ -274,12 +298,22 @@ class SalesforceDealParticipantWriter:
             integration_id=self.integration_id,
             deal_id=deal_id,
             participant_type=CRMParticipantType(participant.participant_type),
-            relationship_role=None,
+            relationship_role=_business_relationship_role(participant.relationship_role),
             is_primary_contact=_is_primary_contact(participant),
             related_local_id=related_local_id,
             related_name=related_name,
             related_email=related_email,
             participant_source=_participant_source(participant),
+            decision_power=(
+                participant.decision_power
+                or _decision_power_for_role(participant.relationship_role)
+                or DecisionPower.UNKNOWN.value
+            ),
+            stance=(
+                participant.stance
+                or _stance_for_role(participant.relationship_role)
+                or StakeholderStance.UNKNOWN.value
+            ),
             synced_at=now,
             last_seen_at=now,
         )
@@ -294,10 +328,35 @@ class SalesforceDealParticipantWriter:
         related_email: str | None,
         now: datetime,
     ) -> None:
-        row.participant_source = "CRM"
+        provider_owned_role = row.participant_source == "CRM"
         if _participant_type_value(row.participant_type) == CRMParticipantType.CONTACT.value:
             row.is_primary_contact = _is_primary_contact(participant)
-            row.relationship_role = None
+            incoming_role = _business_relationship_role(participant.relationship_role)
+            if incoming_role is not None and (
+                provider_owned_role
+                or not row.relationship_role
+                or _normalized_role(row.relationship_role) == "primary contact"
+            ):
+                row.relationship_role = incoming_role
+            elif (
+                incoming_role is None
+                and row.relationship_role
+                and ("primary contact" in _normalized_role(row.relationship_role))
+            ):
+                row.relationship_role = None
+            mapped_decision_power = participant.decision_power or _decision_power_for_role(
+                participant.relationship_role
+            )
+            if (
+                mapped_decision_power is not None
+                and row.decision_power == DecisionPower.UNKNOWN.value
+            ):
+                row.decision_power = mapped_decision_power
+            if participant.stance is not None and row.stance == StakeholderStance.UNKNOWN.value:
+                row.stance = participant.stance
+            mapped_stance = _stance_for_role(participant.relationship_role)
+            if mapped_stance is not None and row.stance == StakeholderStance.UNKNOWN.value:
+                row.stance = mapped_stance
         if related_local_id is not None:
             row.related_local_id = related_local_id
         if related_name is not None:
@@ -339,6 +398,29 @@ def _participant_source(participant: NormalizedSalesforceDealParticipant) -> str
     }:
         return "CRM"
     return None
+
+
+def _decision_power_for_role(role: str | None) -> str | None:
+    if not role:
+        return None
+    normalized = " ".join(role.strip().lower().replace("-", " ").replace("_", " ").split())
+    return _DECISION_POWER_BY_CONTACT_ROLE.get(normalized)
+
+
+def _stance_for_role(role: str | None) -> str | None:
+    if not role:
+        return None
+    return _STANCE_BY_CONTACT_ROLE.get(_normalized_role(role))
+
+
+def _business_relationship_role(role: str | None) -> str | None:
+    if not role or "primary contact" in _normalized_role(role):
+        return None
+    return role.strip() or None
+
+
+def _normalized_role(role: str) -> str:
+    return " ".join(role.strip().lower().replace("-", " ").replace("_", " ").split())
 
 
 def _local_to_external(external_to_local: dict[str, UUID]) -> dict[UUID, str]:

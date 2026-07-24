@@ -353,6 +353,7 @@ class StakeholderDetail(BaseModel):
     email: str | None = None
     name: str | None = None
     job_title: str | None = None
+    relationship_role: str | None = None
     phone_number: str | None = Field(None, description="Phone number as provided by CRM or user")
     linkedin_url: str | None = Field(None, description="LinkedIn profile URL")
     external_links: list[StakeholderLink] | None = None
@@ -416,6 +417,7 @@ class StakeholderFullDetail(BaseModel):
     email: str | None = None
     name: str | None = None
     job_title: str | None = None
+    relationship_role: str | None = None
     phone_number: str | None = Field(None, description="Phone number as provided by CRM or user")
     linkedin_url: str | None = Field(None, description="LinkedIn profile URL")
     department: str | None = Field(

@@ -92,6 +92,12 @@ class ParticipantWriteService:
             participant_type = self._parse_participant_type(payload.get("participant_type"))
             related_id = payload.get("related_id")
             relationship_role = clean_optional_string(payload.get("relationship_role"))
+            is_primary_contact = participant_type == CRMParticipantType.CONTACT and (
+                payload.get("is_primary_contact") is True
+                or self._is_primary_contact_role(relationship_role)
+            )
+            if is_primary_contact and self._is_primary_contact_role(relationship_role):
+                relationship_role = None
 
             if not isinstance(related_id, UUID):
                 raise ParticipantServiceError("Invalid related_id", status_code=400)
@@ -112,9 +118,7 @@ class ParticipantWriteService:
                 # Company/user rows keep role-specific behavior for existing callers.
                 request_key = (participant_type.value, identity_key, "")
             if request_key in seen_keys:
-                if participant_type == CRMParticipantType.CONTACT and self._is_primary_contact_role(
-                    relationship_role
-                ):
+                if is_primary_contact:
                     seen_participant = seen_contact_participants.get(identity_key)
                     if seen_participant is not None:
                         seen_participant.is_primary_contact = True
@@ -165,9 +169,7 @@ class ParticipantWriteService:
                 None if participant_type == CRMParticipantType.CONTACT else related_name
             )
             participant.related_email = related_email
-            if participant_type == CRMParticipantType.CONTACT and self._is_primary_contact_role(
-                relationship_role
-            ):
+            if is_primary_contact:
                 participant.is_primary_contact = True
             participant.source_modified_at = now
             participant.synced_at = now
@@ -266,6 +268,12 @@ class ParticipantWriteService:
             raise ParticipantServiceError("Participant not found", status_code=404)
 
         new_role = clean_optional_string(relationship_role)
+        is_primary_contact = (
+            participant.participant_type == CRMParticipantType.CONTACT
+            and self._is_primary_contact_role(new_role)
+        )
+        if is_primary_contact:
+            new_role = None
         role_key = new_role or ""
 
         participant_type = self._parse_participant_type(participant.participant_type)
@@ -284,9 +292,7 @@ class ParticipantWriteService:
             raise ParticipantServiceError("Participant with role already exists", status_code=409)
 
         participant.participant_type = participant_type
-        if participant_type == CRMParticipantType.CONTACT and self._is_primary_contact_role(
-            new_role
-        ):
+        if is_primary_contact:
             participant.is_primary_contact = True
         participant.relationship_role = new_role
         now = datetime.now(UTC)

@@ -672,6 +672,7 @@ async def test_update_primary_contact_sets_approved_stakeholder_by_contact_id() 
     integration_id = uuid4()
     selected_contact = _contact(contact_id, email="Jane@Example.com")
     selected_participant = _participant(contact_id)
+    selected_participant.relationship_role = "Economic Buyer"
     old_primary = _participant(uuid4(), primary=True)
     old_primary.relationship_role = "primary_contact"
     session = _QueuedOrgSession([[selected_contact], [selected_participant], [old_primary]])
@@ -695,7 +696,7 @@ async def test_update_primary_contact_sets_approved_stakeholder_by_contact_id() 
     assert existing_deal.primary_contact_name == "Jane Buyer"
     assert existing_deal.primary_contact_email == "jane@example.com"
     assert selected_participant.is_primary_contact is True
-    assert selected_participant.relationship_role == "primary_contact"
+    assert selected_participant.relationship_role == "Economic Buyer"
     assert selected_participant.related_email == "jane@example.com"
     assert old_primary.is_deleted is False
     assert old_primary.is_primary_contact is False

@@ -11,20 +11,140 @@ from src.domain.models.organisation_tables.sync.crm.associations import (
     CRMObjectType,
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMParticipantType
+from src.domain.models.organisation_tables.sync.crm.stakeholders import (
+    DecisionPower,
+    StakeholderStance,
+)
 from src.infra.utils.logger import get_logger
 from src.service.integrations.crm.records.salesforce.deals.deal_types import (
     DealParticipantExtraction,
     NormalizedSalesforceDealAssociation,
     NormalizedSalesforceDealParticipant,
+    SalesforceContactReferenceField,
 )
 
 logger = get_logger(__name__)
+
+
+def contact_reference_fields_from_definitions(
+    definitions: Iterable[Any],
+) -> tuple[SalesforceContactReferenceField, ...]:
+    fields: list[SalesforceContactReferenceField] = []
+    for definition in definitions:
+        raw = getattr(definition, "data_payload", None)
+        if not isinstance(raw, Mapping):
+            continue
+        if str(raw.get("type") or "").lower() != "reference":
+            continue
+        if "Contact" not in (raw.get("referenceTo") or []):
+            continue
+        if raw.get("queryable") is False or raw.get("deprecatedAndHidden") is True:
+            continue
+
+        field_name = _coerce_str(raw.get("name") or getattr(definition, "provider_field_key", None))
+        if field_name is None:
+            continue
+        label = _coerce_str(raw.get("label") or getattr(definition, "label", None))
+        semantics = _field_semantics(field_name, label)
+        fields.append(
+            SalesforceContactReferenceField(
+                field_name=field_name,
+                relationship_role=label or field_name,
+                is_primary=semantics["is_primary"],
+                decision_power=semantics["decision_power"],
+                stance=semantics["stance"],
+            )
+        )
+    return tuple(sorted(fields, key=lambda field: field.field_name.casefold()))
+
+
+def extract_contact_reference_participants(
+    raw_opportunities: Iterable[dict[str, Any]],
+    *,
+    fields: tuple[SalesforceContactReferenceField, ...],
+) -> DealParticipantExtraction:
+    by_identity: dict[tuple[str, str], dict[str, Any]] = {}
+    primary_contact_by_deal: dict[str, str] = {}
+    contact_ids_by_deal: dict[str, set[str]] = defaultdict(set)
+    skipped_malformed = 0
+
+    for raw in raw_opportunities:
+        if not isinstance(raw, dict):
+            skipped_malformed += 1
+            continue
+        deal_external_id = _coerce_str(raw.get("Id"))
+        if deal_external_id is None:
+            skipped_malformed += 1
+            continue
+        for field in fields:
+            contact_external_id = _coerce_str(raw.get(field.field_name))
+            if contact_external_id is None:
+                continue
+            contact_ids_by_deal[deal_external_id].add(contact_external_id)
+            identity = (deal_external_id, contact_external_id)
+            aggregate = by_identity.setdefault(
+                identity,
+                {
+                    "field_names": [],
+                    "relationship_role": None,
+                    "relationship_role_rank": -1,
+                    "is_primary": False,
+                    "decision_power": DecisionPower.UNKNOWN.value,
+                    "stance": StakeholderStance.UNKNOWN.value,
+                },
+            )
+            aggregate["field_names"].append(field.field_name)
+            role_rank = _contact_reference_role_rank(field)
+            if role_rank > aggregate["relationship_role_rank"]:
+                aggregate["relationship_role"] = field.relationship_role
+                aggregate["relationship_role_rank"] = role_rank
+            aggregate["is_primary"] = aggregate["is_primary"] or field.is_primary
+            if (
+                aggregate["decision_power"] == DecisionPower.UNKNOWN.value
+                and field.decision_power != DecisionPower.UNKNOWN.value
+            ):
+                aggregate["decision_power"] = field.decision_power
+            if (
+                aggregate["stance"] == StakeholderStance.UNKNOWN.value
+                and field.stance != StakeholderStance.UNKNOWN.value
+            ):
+                aggregate["stance"] = field.stance
+            if field.is_primary:
+                primary_contact_by_deal.setdefault(deal_external_id, contact_external_id)
+
+    participants = [
+        NormalizedSalesforceDealParticipant(
+            deal_external_id=deal_external_id,
+            participant_type=CRMParticipantType.CONTACT.value,
+            related_external_id=contact_external_id,
+            relationship_role=aggregate["relationship_role"],
+            is_primary=aggregate["is_primary"],
+            data_payload={
+                "source": "Opportunity contact reference",
+                "opportunity_id": deal_external_id,
+                "contact_id": contact_external_id,
+                "field_names": aggregate["field_names"],
+            },
+            decision_power=aggregate["decision_power"],
+            stance=aggregate["stance"],
+        )
+        for (deal_external_id, contact_external_id), aggregate in by_identity.items()
+    ]
+    return DealParticipantExtraction(
+        participants=participants,
+        primary_contact_by_deal=primary_contact_by_deal,
+        contact_count_by_deal={
+            deal_id: len(contact_ids) for deal_id, contact_ids in contact_ids_by_deal.items()
+        },
+        skipped_malformed=skipped_malformed,
+    )
 
 
 def extract_participants(
     raw_contact_roles: Iterable[dict[str, Any]],
     *,
     company_external_id_by_deal: Mapping[str, str | None],
+    additional_primary_contact_by_deal: Mapping[str, str] | None = None,
 ) -> DealParticipantExtraction:
     participants: list[NormalizedSalesforceDealParticipant] = []
     associations: list[NormalizedSalesforceDealAssociation] = []
@@ -43,34 +163,25 @@ def extract_participants(
             continue
 
         role_label = _coerce_str(raw.get("Role"))
-        is_primary = _coerce_bool(raw.get("IsPrimary"))
+        is_primary = (
+            _coerce_bool(raw.get("IsPrimary"))
+            or (additional_primary_contact_by_deal or {}).get(deal_external_id)
+            == contact_external_id
+        )
         contact_ids_by_deal[deal_external_id].add(contact_external_id)
         if is_primary:
             primary_contact_by_deal.setdefault(deal_external_id, contact_external_id)
 
-        if role_label is not None or not is_primary:
-            participants.append(
-                NormalizedSalesforceDealParticipant(
-                    deal_external_id=deal_external_id,
-                    participant_type=CRMParticipantType.CONTACT.value,
-                    related_external_id=contact_external_id,
-                    relationship_role=role_label,
-                    is_primary=is_primary,
-                    data_payload=raw,
-                )
+        participants.append(
+            NormalizedSalesforceDealParticipant(
+                deal_external_id=deal_external_id,
+                participant_type=CRMParticipantType.CONTACT.value,
+                related_external_id=contact_external_id,
+                relationship_role=role_label,
+                is_primary=is_primary,
+                data_payload=raw,
             )
-        if is_primary:
-            participants.append(
-                NormalizedSalesforceDealParticipant(
-                    deal_external_id=deal_external_id,
-                    participant_type=CRMParticipantType.CONTACT.value,
-                    related_external_id=contact_external_id,
-                    relationship_role="primary_contact",
-                    is_primary=True,
-                    data_payload=raw,
-                )
-            )
-
+        )
         associations.append(
             NormalizedSalesforceDealAssociation(
                 from_external_id=deal_external_id,
@@ -183,3 +294,67 @@ def _coerce_bool(value: Any) -> bool:
     if isinstance(value, (int, float)):
         return value != 0
     return False
+
+
+def _field_semantics(field_name: str, label: str | None) -> dict[str, Any]:
+    normalized = " ".join(
+        f"{field_name} {label or ''}".lower()
+        .replace("__c", " ")
+        .replace("_", " ")
+        .replace("-", " ")
+        .split()
+    )
+    decision_power = DecisionPower.UNKNOWN.value
+    stance = StakeholderStance.UNKNOWN.value
+
+    if any(
+        phrase in normalized
+        for phrase in (
+            "decision maker",
+            "executive sponsor",
+        )
+    ):
+        decision_power = DecisionPower.DECISION_MAKER.value
+    elif "technical buyer" in normalized or "evaluator" in normalized:
+        decision_power = DecisionPower.EVALUATOR.value
+    elif "influencer" in normalized:
+        decision_power = DecisionPower.INFLUENCER.value
+    elif "business user" in normalized or "end user" in normalized:
+        decision_power = DecisionPower.END_USER.value
+    elif "gatekeeper" in normalized:
+        decision_power = DecisionPower.GATEKEEPER.value
+
+    if "champion" in normalized:
+        stance = StakeholderStance.CHAMPION.value
+    elif "supporter" in normalized:
+        stance = StakeholderStance.SUPPORTER.value
+    elif "detractor" in normalized:
+        stance = StakeholderStance.DETRACTOR.value
+    elif "blocker" in normalized:
+        stance = StakeholderStance.BLOCKER.value
+    elif "neutral" in normalized:
+        stance = StakeholderStance.NEUTRAL.value
+
+    return {
+        "is_primary": "primary contact" in normalized,
+        "decision_power": decision_power,
+        "stance": stance,
+    }
+
+
+def _contact_reference_role_rank(field: SalesforceContactReferenceField) -> int:
+    role = " ".join(field.relationship_role.lower().replace("__c", " ").replace("_", " ").split())
+    priorities = (
+        (("economic buyer", "budget owner"), 80),
+        (("decision maker",), 70),
+        (("executive sponsor",), 60),
+        (("technical buyer", "evaluator"), 50),
+        (("influencer",), 40),
+        (("business user", "end user"), 30),
+        (("champion",), 20),
+        (("primary contact",), 10),
+    )
+    for phrases, rank in priorities:
+        if any(phrase in role for phrase in phrases):
+            return rank
+    return 0

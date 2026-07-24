@@ -419,7 +419,6 @@ class StakeholderWriteService:
 
         now = datetime.now(UTC)
         participant.is_primary_contact = True
-        participant.relationship_role = participant.relationship_role or "primary_contact"
         participant.source_modified_at = now
         participant.synced_at = now
         participant.last_seen_at = now
