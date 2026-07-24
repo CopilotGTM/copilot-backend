@@ -406,11 +406,7 @@ class EmailSendService:
                 status_code=409,
             )
 
-        to, cc = self._reply_recipients(
-            source,
-            sender_email=sender_email,
-            reply_all=request.reply_mode == "reply_all",
-        )
+        to, cc = self._reply_recipients(source, sender_email=sender_email)
         references = list(
             dict.fromkeys([*list(source.references or []), source.internet_message_id])
         )
@@ -428,6 +424,7 @@ class EmailSendService:
                     "reply_to_external_message_id": source.external_message_id,
                     "reply_thread_id": source.thread_id,
                     "reply_references": references,
+                    "reply_mode": "reply_all",
                 }
             ),
         )
@@ -437,9 +434,8 @@ class EmailSendService:
         source: Email,
         *,
         sender_email: str,
-        reply_all: bool,
     ) -> tuple[list[EmailSendAddress], list[EmailSendAddress]]:
-        """Derive safe reply recipients while excluding the authenticated sender."""
+        """Preserve source-message participants without addressing the mailbox owner."""
 
         sender = sender_email.strip().lower()
         source_from = (source.from_email or "").strip().lower()
@@ -463,10 +459,8 @@ class EmailSendService:
             return resolved
 
         to = _addresses(primary)
-        cc_candidates: list[tuple[str, str | None]] = []
-        if reply_all:
-            cc_candidates.extend((address, None) for address in list(source.to_emails or []))
-            cc_candidates.extend((address, None) for address in list(source.cc_emails or []))
+        cc_candidates = [(address, None) for address in list(source.to_emails or [])]
+        cc_candidates.extend((address, None) for address in list(source.cc_emails or []))
         cc = _addresses(cc_candidates)
         if not to:
             raise EmailSendError(

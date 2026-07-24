@@ -42,6 +42,7 @@ class _SourceSession:
 
         class _Scalars:
             def first(self):
+                """Return the single synchronized source configured for this test."""
                 return source
 
         return SimpleNamespace(scalars=lambda: _Scalars())
@@ -101,8 +102,12 @@ async def test_reply_resolution_replaces_model_routing_with_source_thread() -> N
     )
 
     assert [address.email for address in request.to] == ["buyer@example.com"]
-    assert request.cc == []
+    assert [address.email for address in request.cc] == [
+        "observer@example.com",
+        "champion@example.com",
+    ]
     assert request.bcc == []
+    assert request.reply_mode == "reply_all"
     assert request.subject == "Re: Proposal"
     assert request.reply_to_external_message_id == "provider-message-1"
     assert request.reply_thread_id == "provider-thread-1"
@@ -113,26 +118,34 @@ async def test_reply_resolution_replaces_model_routing_with_source_thread() -> N
 
 
 @pytest.mark.asyncio
-async def test_reply_all_preserves_other_thread_participants_without_sender() -> None:
-    """Reply-all retains visible participants but never adds the sender to recipients."""
+async def test_outbound_follow_up_preserves_original_recipients_without_sender() -> None:
+    """A follow-up to the user's sent message must not turn into a reply to self."""
 
     service = EmailSendService(
-        _SourceSession(_source()),
+        _SourceSession(
+            _source(
+                from_email="seller@example.com",
+                from_name="Seller",
+                to_emails=["buyer@example.com", "observer@example.com"],
+                cc_emails=["champion@example.com"],
+            )
+        ),
         organisation_id=ORGANISATION_ID,
         requested_by_user_id=USER_ID,
     )
 
     request = await service._prepare_reply_draft(
-        _request(reply_mode="reply_all"),
+        _request(),
         integration_id=INTEGRATION_ID,
         sender_email="seller@example.com",
     )
 
-    assert [address.email for address in request.to] == ["buyer@example.com"]
-    assert [address.email for address in request.cc] == [
+    assert [address.email for address in request.to] == [
+        "buyer@example.com",
         "observer@example.com",
-        "champion@example.com",
     ]
+    assert [address.email for address in request.cc] == ["champion@example.com"]
+    assert request.reply_mode == "reply_all"
 
 
 @pytest.mark.asyncio
