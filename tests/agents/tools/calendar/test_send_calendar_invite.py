@@ -729,12 +729,15 @@ async def test_send_calendar_invite_derives_title_duration_and_optional_review(
 
 
 @pytest.mark.asyncio
-async def test_send_calendar_invite_bundles_missing_date_with_known_review(monkeypatch) -> None:
-    """A clock without a date should return one clarification plus known recipients."""
+async def test_send_calendar_invite_restores_parser_date_for_bare_time(monkeypatch) -> None:
+    """A bare time should use the parser-inferred date retained before PR 1188."""
     context = _FakeContext(
         organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
         user_id=UUID("22222222-2222-2222-2222-222222222222"),
-        metadata={"user_timezone": "Asia/Kolkata"},
+        metadata={
+            "user_timezone": "Asia/Kolkata",
+            "current_datetime": "2026-07-25T04:00:00+00:00",
+        },
     )
     service = MagicMock()
     monkeypatch.setattr(
@@ -748,12 +751,49 @@ async def test_send_calendar_invite_bundles_missing_date_with_known_review(monke
         start_time="3:30 PM",
     )
 
-    assert result["status"] == "needs_clarification"
-    assert result["missing_fields"] == ["date"]
-    assert result["review_payload"]["title"] == "Meeting with Bhawesh"
-    assert result["review_payload"]["start_time"] == "3:30 PM"
-    assert result["review_payload"]["end_time"] is None
-    assert result["review_payload"]["required_attendees"][0]["email"] == "bhawesh@example.com"
+    assert result["status"] == "confirmation_required"
+    assert result["confirmation_payload"]["title"] == "Meeting with Bhawesh"
+    assert result["review_text"].splitlines()[1] == "25 July, 3:30–4:00 PM IST"
+    service.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("start_time", "expected_start"),
+    [
+        ("in 2 days at 3 PM", datetime(2026, 7, 27, 9, 30, tzinfo=UTC)),
+        ("next week at 3 PM", datetime(2026, 8, 1, 9, 30, tzinfo=UTC)),
+    ],
+)
+@pytest.mark.asyncio
+async def test_send_calendar_invite_accepts_parser_supported_relative_dates(
+    monkeypatch,
+    start_time,
+    expected_start,
+) -> None:
+    """Relative dates parsed successfully before PR 1188 must not need clarification."""
+    context = _FakeContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={
+            "user_timezone": "Asia/Kolkata",
+            "current_datetime": "2026-07-25T04:00:00+00:00",
+        },
+    )
+    service = MagicMock()
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.send_calendar_invite.CalendarInviteService",
+        service,
+    )
+
+    result = await send_calendar_invite(
+        context=context,
+        attendees=["bhawesh@example.com"],
+        start_time=start_time,
+    )
+
+    assert result["status"] == "confirmation_required"
+    parsed_start = datetime.fromisoformat(result["confirmation_payload"]["start_time"])
+    assert parsed_start.astimezone(UTC) == expected_start
     service.assert_not_called()
 
 

@@ -13,7 +13,6 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
-from src.api.schemas.calendar_sender_preference_models import CalendarSenderPreference
 from src.domain.models.master_tables.user_models import User
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.infra.database.sessions import acquire_master_async_session
@@ -42,8 +41,12 @@ class CalendarSenderPreferencesService:
         self.organisation_id = organisation_id
         self.user_id = user_id
 
-    async def update(self, sender_email: str | None) -> CalendarSenderPreference:
-        """Set a connected calendar as preferred, or clear the current preference."""
+    async def update(self, sender_email: str | None) -> str | None:
+        """Persist a connected calendar preference and return its normalized email.
+
+        API response models stay in the handler so workers can import this service
+        without requiring the API-only package in their lightweight image.
+        """
         normalized = (sender_email or "").strip().lower() or None
         if normalized:
             # The organization and creator predicates are the trust boundary;
@@ -65,7 +68,7 @@ class CalendarSenderPreferencesService:
         user.preferences = merge_preferred_calendar_sender(user.preferences, normalized)
         await self.master_session.commit()
         await self.master_session.refresh(user)
-        return CalendarSenderPreference(preferred_sender_email=normalized)
+        return normalized
 
     async def _current_user(self) -> User:
         """Load the authenticated user inside the organization boundary."""
