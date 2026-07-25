@@ -149,6 +149,18 @@ def test_mailbox_draft_tools_are_available_to_general_agent() -> None:
     assert "send_email_draft_tool" in tool_names
 
 
+def test_email_attachment_reader_is_available_to_general_agent() -> None:
+    """Email details can hand one attachment at a time to the dedicated reader."""
+    context = AgentContext(organisation_id=uuid4(), user_id=uuid4(), channel="web")
+    registry = ToolRegistry(context, lambda: None)
+
+    tools = registry.get_tools_for_agent("GeneralAgent", channel="web")
+    tool_names = {getattr(tool, "name", getattr(tool, "__name__", "")) for tool in tools}
+
+    assert ToolName.READ_EMAIL_ATTACHMENT in AGENT_TOOLS["GeneralAgent"]
+    assert "read_email_attachment_tool" in tool_names
+
+
 def test_general_agent_exposes_context_resolution_read_tools_on_web() -> None:
     context = AgentContext(organisation_id=uuid4(), user_id=uuid4(), channel="web")
     registry = ToolRegistry(context, lambda: None)

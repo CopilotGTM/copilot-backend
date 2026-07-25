@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -51,6 +52,16 @@ class DownloadedAttachment:
 
     content: bytes
     size_bytes: int
+
+
+def build_attachment_source_record_id(
+    internet_message_id: str,
+    attachment_id: str,
+) -> str:
+    """Build the stable DealAsset provenance key for one message-owned attachment."""
+    msg_hash = hashlib.sha256(internet_message_id.encode()).hexdigest()[:16]
+    attachment_hash = hashlib.sha256(attachment_id.encode()).hexdigest()[:16]
+    return f"email:{msg_hash}:attachment:{attachment_hash}"
 
 
 def _ensure_download_size(content: bytes) -> None:
@@ -96,7 +107,7 @@ def filter_junk_attachments(attachments: list[AttachmentMeta]) -> list[Attachmen
     kept: list[AttachmentMeta] = []
 
     for att in attachments:
-        reason = _junk_reason(att)
+        reason = attachment_filter_reason(att)
         if reason:
             logger.debug("Skipping attachment %r: %s", att.filename, reason)
             continue
@@ -105,7 +116,7 @@ def filter_junk_attachments(attachments: list[AttachmentMeta]) -> list[Attachmen
     return kept
 
 
-def _junk_reason(att: AttachmentMeta) -> str | None:
+def attachment_filter_reason(att: AttachmentMeta) -> str | None:
     """Return a reason string if the attachment should be filtered, else None."""
     mime_type = att.mime_type.lower()
 
@@ -171,8 +182,8 @@ async def download_gmail_attachment(
 def list_gmail_attachments(payload: dict[str, Any]) -> list[AttachmentMeta]:
     """Extract attachment metadata by recursively walking Gmail MIME parts.
 
-    Only parts with an attachmentId (stored separately by Gmail) are returned.
-    Parts with inline body data are skipped — those are body content, not attachments.
+    Only parts with both a filename and an attachmentId are returned. Gmail can
+    store a large body part behind an attachmentId, but only files have names.
     """
     results: list[AttachmentMeta] = []
     _walk_gmail_parts(payload, results)
@@ -191,14 +202,16 @@ async def list_gmail_message_attachments(
 
 
 def _walk_gmail_parts(part: dict[str, Any], results: list[AttachmentMeta]) -> None:
-    """Collect IDs stored outside Gmail's arbitrarily nested MIME tree."""
+    """Collect file handles while excluding separately stored email body parts."""
     if not isinstance(part, dict):
         return
 
     body = part.get("body", {})
     attachment_id = body.get("attachmentId")
 
-    if attachment_id:
+    # A filename is Gmail's attachment boundary; attachmentId alone can point
+    # to separately stored email body text.
+    if attachment_id and part.get("filename"):
         results.append(
             AttachmentMeta(
                 filename=part.get("filename", ""),

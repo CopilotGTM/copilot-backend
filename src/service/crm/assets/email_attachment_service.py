@@ -44,6 +44,7 @@ from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorag
 from src.infra.utils.logger import get_logger
 from src.service.integrations.email.attachment_provider import (
     AttachmentMeta,
+    build_attachment_source_record_id,
     download_gmail_attachment,
     download_outlook_attachment,
     filter_junk_attachments,
@@ -90,9 +91,7 @@ def _build_legacy_attachment_source_record_id(
     attachment_id: str,
 ) -> str:
     """Reproduce the provider-local source key used by existing asset rows."""
-    msg_hash = hashlib.sha256(internet_message_id.encode()).hexdigest()[:16]
-    attachment_hash = hashlib.sha256(attachment_id.encode()).hexdigest()[:16]
-    return f"email:{msg_hash}:attachment:{attachment_hash}"
+    return build_attachment_source_record_id(internet_message_id, attachment_id)
 
 
 def _build_attachment_source_record_id(

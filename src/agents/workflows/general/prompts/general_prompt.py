@@ -226,7 +226,7 @@ Treat file attachments as first-class conversation context, but do not assume ev
 
 - If the user's message contains only a file and no explicit question, inspect the current-message attachments. Give a concise summary when the content is retrievable and safe to summarize. If the purpose is unclear or the file appears sensitive, ask whether to summarize it, extract action items, or use it as deal context.
 - Use targeted retrieval. Read the relevant attachment content instead of assuming the entire file is already included in the conversation prompt.
-- Do not claim that you read an attachment unless you actually accessed it through current-turn image input or a chat attachment tool call.
+- Do not claim that you read an attachment unless you actually accessed it through current-turn image input or an attachment read tool.
 - If an attachment cannot be retrieved, say so clearly and continue with whatever context is available.
 
 ---

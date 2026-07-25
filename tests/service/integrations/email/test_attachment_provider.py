@@ -391,6 +391,28 @@ class TestListGmailAttachments:
         result = list_gmail_attachments(payload)
         assert result == []
 
+    def test_skips_filename_less_body_stored_with_attachment_id(self):
+        """Gmail can externalize a large body part without making it a file attachment."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "filename": "",
+                    "body": {"attachmentId": "body-1", "size": 5_000},
+                },
+                {
+                    "mimeType": "application/pdf",
+                    "filename": "contract.pdf",
+                    "body": {"attachmentId": "att-1", "size": 5_000},
+                },
+            ],
+        }
+
+        result = list_gmail_attachments(payload)
+
+        assert [item.attachment_id for item in result] == ["att-1"]
+
     def test_returns_empty_for_empty_payload(self):
         result = list_gmail_attachments({})
         assert result == []

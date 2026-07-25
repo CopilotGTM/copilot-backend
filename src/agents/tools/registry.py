@@ -115,6 +115,7 @@ class ToolName(str, Enum):
     # -------------------------------------------------------------------------
     LIST_DEAL_EMAILS = "list_deal_emails"
     GET_EMAIL_DETAILS = "get_email_details"
+    READ_EMAIL_ATTACHMENT = "read_email_attachment"
     LIST_CONNECTED_EMAIL_ACCOUNTS = "list_connected_email_accounts"
     SEARCH_MAILBOX_EMAILS = "search_mailbox_emails"
     SEND_EMAIL = "send_email"
@@ -319,6 +320,7 @@ GENERAL_AGENT_TOOLS: set[ToolName] = {
     # Communication tools
     ToolName.LIST_DEAL_EMAILS,
     ToolName.GET_EMAIL_DETAILS,
+    ToolName.READ_EMAIL_ATTACHMENT,
     ToolName.LIST_CONNECTED_EMAIL_ACCOUNTS,
     ToolName.SEARCH_MAILBOX_EMAILS,
     ToolName.SEND_EMAIL,
@@ -404,6 +406,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
+        ToolName.READ_EMAIL_ATTACHMENT,
         ToolName.READ_CHAT_ATTACHMENT,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
         ToolName.LIST_DEAL_NOTES,  # Internal notes contain prep context
@@ -449,6 +452,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
+        ToolName.READ_EMAIL_ATTACHMENT,
         ToolName.READ_CHAT_ATTACHMENT,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
     },
@@ -476,6 +480,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Communication tools (targeted drill-down for quotes/evidence)
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
+        ToolName.READ_EMAIL_ATTACHMENT,
         ToolName.READ_CHAT_ATTACHMENT,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
         ToolName.LIST_DEAL_NOTES,
@@ -500,6 +505,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
+        ToolName.READ_EMAIL_ATTACHMENT,
         ToolName.READ_CHAT_ATTACHMENT,
         ToolName.LIST_DEAL_NOTES,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
@@ -521,6 +527,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.GET_MEETING_SUMMARY,
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
+        ToolName.READ_EMAIL_ATTACHMENT,
         ToolName.UPDATE_DEAL_FIELDS,
         ToolName.UPDATE_DEAL_LIFECYCLE,
         ToolName.UPDATE_DEAL_ACCOUNT,
@@ -547,6 +554,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
+        ToolName.READ_EMAIL_ATTACHMENT,
         ToolName.READ_CHAT_ATTACHMENT,
         ToolName.LIST_DEAL_NOTES,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,  # Slack/Teams channel messages
@@ -627,6 +635,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     # Communication
     ToolName.LIST_DEAL_EMAILS: ToolCategory.COMMUNICATION,
     ToolName.GET_EMAIL_DETAILS: ToolCategory.COMMUNICATION,
+    ToolName.READ_EMAIL_ATTACHMENT: ToolCategory.COMMUNICATION,
     ToolName.LIST_CONNECTED_EMAIL_ACCOUNTS: ToolCategory.COMMUNICATION,
     ToolName.SEARCH_MAILBOX_EMAILS: ToolCategory.COMMUNICATION,
     ToolName.SEND_EMAIL: ToolCategory.COMMUNICATION,
@@ -703,6 +712,7 @@ class ToolRegistry:
             create_list_deal_channel_messages,
             create_list_deal_emails,
             create_read_chat_attachment,
+            create_read_email_attachment,
             create_save_email_draft,
             create_search_mailbox_emails,
             create_send_email,
@@ -931,6 +941,9 @@ class ToolRegistry:
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.GET_EMAIL_DETAILS] = lambda: create_get_email_details(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.READ_EMAIL_ATTACHMENT] = lambda: create_read_email_attachment(
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.LIST_CONNECTED_EMAIL_ACCOUNTS] = (
