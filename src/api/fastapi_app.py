@@ -66,6 +66,7 @@ from src.api.routers.crm import (
     deal_notes_router,
     deal_participants_router,
     deals_router,
+    emails_router,
     imports_router,
     lead_forms_router,
     lead_ingestion_keys_router,
@@ -363,6 +364,7 @@ def create_fastapi_app():
     fastapp.include_router(custom_fields_router, prefix="/users/crm", tags=["crm-custom-fields"])
     fastapp.include_router(pipelines_router, prefix="/users/crm", tags=["pipelines"])
     fastapp.include_router(deals_router, prefix="/users/crm", tags=["deals"])
+    fastapp.include_router(emails_router, prefix="/users/crm", tags=["crm-emails"])
     fastapp.include_router(lead_forms_router, prefix="/users/crm", tags=["lead-forms"])
     fastapp.include_router(
         lead_ingestion_keys_router,
