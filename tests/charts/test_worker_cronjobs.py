@@ -58,6 +58,7 @@ def _render_prod_worker_cronjobs() -> list[dict]:
 
 
 def test_prod_startup_hook_does_not_require_priority_class_before_upgrade() -> None:
+    """Keep startup hooks independent from resources created by the same Helm upgrade."""
     manifests = _render_all_manifests("charts/application/values-prod.yaml")
     startup_job = next(
         doc
@@ -285,6 +286,33 @@ def test_chat_worker_renders_bounded_concurrency_and_memory_guardrails() -> None
         assert "--concurrency=2" in container["command"]
         assert "--max-tasks-per-child=25" in container["command"]
         assert "--max-memory-per-child=700000" in container["command"]
+
+
+def test_prod_integrations_and_deal_workers_render_measured_limits() -> None:
+    """Lock the measured prod capacity without increasing the riskier deal worker."""
+    manifests = _render_all_manifests("charts/application/values-prod.yaml")
+    deal_deployment = next(
+        doc
+        for doc in manifests
+        if doc.get("kind") == "Deployment"
+        and doc["metadata"]["name"] == "copilot-backend-deal-worker"
+    )
+    commands = {
+        doc["metadata"]["name"]: doc["spec"]["template"]["spec"]["containers"][0]["command"]
+        for doc in manifests
+        if doc.get("kind") == "Deployment"
+        and doc["metadata"]["name"]
+        in {"copilot-backend-integrations-worker", "copilot-backend-deal-worker"}
+    }
+
+    integrations_command = commands["copilot-backend-integrations-worker"]
+    assert "--concurrency=2" in integrations_command
+    assert "--max-tasks-per-child=50" in integrations_command
+    assert "--concurrency=1" in commands["copilot-backend-deal-worker"]
+    assert deal_deployment["spec"]["template"]["spec"]["containers"][0]["resources"] == {
+        "requests": {"cpu": "500m", "memory": "1Gi"},
+        "limits": {"cpu": "1500m", "memory": "3Gi"},
+    }
 
 
 def test_worker_deployments_render_celery_events_and_health_probes() -> None:
