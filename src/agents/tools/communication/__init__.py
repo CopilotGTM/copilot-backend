@@ -13,6 +13,9 @@ if TYPE_CHECKING:
         create_list_chat_attachments,
         create_read_chat_attachment,
     )
+    from src.agents.tools.communication.email_attachments import (
+        create_read_email_attachment,
+    )
     from src.agents.tools.communication.email_drafts import (
         create_save_email_draft,
         create_send_email_draft,
@@ -47,6 +50,10 @@ _EXPORTS = {
     "create_get_email_details": (
         "src.agents.tools.communication.get_email_details",
         "create_get_email_details",
+    ),
+    "create_read_email_attachment": (
+        "src.agents.tools.communication.email_attachments",
+        "create_read_email_attachment",
     ),
     "create_list_connected_email_accounts": (
         "src.agents.tools.communication.mailbox_emails",

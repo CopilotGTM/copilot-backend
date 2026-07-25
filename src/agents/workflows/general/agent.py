@@ -128,6 +128,7 @@ class GeneralAgent(BaseAgent):
             model=AzureOpenAI(
                 id=config.model,
                 api_version=config.api_version,
+                reasoning_effort="low",
                 retries=config.retries,
                 delay_between_retries=1,
                 exponential_backoff=True,

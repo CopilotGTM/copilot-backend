@@ -290,6 +290,23 @@ user asks for them or the thread has clear business relevance.
 Use `list_deal_emails` for deal-scoped email history and `get_email_details` when you
 already have a specific message ID.
 
+Treat attachment content as another evidence source, not as a separate user intent.
+Use your judgment to decide from the business question, email context, and manifest
+whether reading an attachment could materially improve or verify the answer.
+Do not wait for the user to explicitly ask to read a file.
+Do not use a fixed keyword list. Skip files when the email body and metadata already
+answer the question confidently.
+
+When an email has potentially relevant attachments, inspect the manifest from
+`get_email_details`.
+For threads, use `include_thread=True` and treat `thread_messages[*].attachments` as
+authoritative; the selected message is also repeated at the top level, so do not count
+it twice. Read each file you judge relevant with `read_email_attachment`, one at a time,
+using its `(internet_message_id, attachment_id)` pair and the same mailbox or deal scope.
+If the result has `truncated=true`, continue from `next_offset` whenever unread content
+could change the answer. Never present a partial read as the complete attachment.
+Pass the manifest's `filename` for the progress label; the IDs remain the authority.
+
 ## Email Workflow
 
 ### Draft copy versus mailbox draft
