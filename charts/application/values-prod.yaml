@@ -150,8 +150,10 @@ chat-beat:
       memory: "512Mi"
 
 integrations-worker:
+  # copilotgtm: Cap prefork at 2 from prod measurements; raise only after provider and DB load tests.
   config:
-    concurrency: 1
+    concurrency: 2
+    maxTasksPerChild: 50
     memoryLogging:
       enabled: true
       minDeltaMb: 0
@@ -178,6 +180,7 @@ integrationsCronJobs:
       schedule: "0 2 * * *"
 
 deal-worker:
+  # copilotgtm: Keep one task slot but allow measured CPU bursts; retest before raising concurrency.
   config:
     concurrency: 1
     memoryLogging:
@@ -188,10 +191,10 @@ deal-worker:
     maxReplicas: 2
   resources:
     requests:
-      cpu: "250m"
+      cpu: "500m"
       memory: "1Gi"
     limits:
-      cpu: "1000m"
+      cpu: "1500m"
       memory: "3Gi"
 
 knowledgeCronJobs:
