@@ -204,6 +204,7 @@ async def test_create_deal_adds_selected_contacts_through_stakeholder_service(
         create_stakeholder_processing_jobs=AsyncMock(return_value=[]),
     )
     dispatch_research = AsyncMock(return_value=None)
+    hydrate = AsyncMock(return_value=["task-1"])
 
     class FakeStakeholderWriteService:
         def __init__(self, session_arg, organisation_id, actor_user_id):
@@ -246,6 +247,11 @@ async def test_create_deal_adds_selected_contacts_through_stakeholder_service(
         dispatch_research,
         raising=False,
     )
+    monkeypatch.setattr(
+        deals_handler_module,
+        "dispatch_contact_communication_hydration_async",
+        hydrate,
+    )
 
     response = await deals_handler_module.create_deal(
         request=DealCreateRequest(
@@ -273,6 +279,7 @@ async def test_create_deal_adds_selected_contacts_through_stakeholder_service(
         contact_id=contact_id,
         user_id=write_service.actor_user_id,
     )
+    hydrate.assert_awaited_once()
     assert session.commit.await_count == 2
     session.refresh.assert_awaited_once_with(deal)
     create_payload = write_service.create_deal.await_args.args[0]
@@ -281,7 +288,7 @@ async def test_create_deal_adds_selected_contacts_through_stakeholder_service(
 
 
 @pytest.mark.asyncio
-async def test_create_deal_accepts_primary_contact_snapshot() -> None:
+async def test_create_deal_accepts_primary_contact_snapshot(monkeypatch) -> None:
     deal = SimpleNamespace(
         deal_id=uuid4(),
         name="Acme Deal",
@@ -308,6 +315,13 @@ async def test_create_deal_accepts_primary_contact_snapshot() -> None:
         actor_user_id=uuid4(),
         create_deal=AsyncMock(return_value=deal),
     )
+    hydrate = AsyncMock(return_value=["task-1"])
+    monkeypatch.setattr(
+        deals_handler_module,
+        "dispatch_contact_communication_hydration_async",
+        hydrate,
+        raising=False,
+    )
 
     response = await deals_handler_module.create_deal(
         request=DealCreateRequest(
@@ -325,6 +339,11 @@ async def test_create_deal_accepts_primary_contact_snapshot() -> None:
     payload = write_service.create_deal.await_args.args[0]
     assert payload["primary_contact_name"] == "Jane Buyer"
     assert payload["primary_contact_email"] == "jane@acme.com"
+    hydrate.assert_awaited_once_with(
+        organisation_id=write_service.organisation_id,
+        deal_ids=[deal.deal_id],
+        trigger="deal_created",
+    )
     assert response.status == "SUCCESS"
 
 
@@ -367,6 +386,7 @@ async def test_create_deal_keeps_success_when_stakeholder_job_visibility_fails(
         ),
     )
     dispatch_research = AsyncMock(return_value=None)
+    hydrate = AsyncMock(return_value=["task-1"])
 
     class FakeStakeholderWriteService:
         def __init__(self, *_args):
@@ -398,6 +418,11 @@ async def test_create_deal_keeps_success_when_stakeholder_job_visibility_fails(
         "_contact_research_job_response",
         dispatch_research,
         raising=False,
+    )
+    monkeypatch.setattr(
+        deals_handler_module,
+        "dispatch_contact_communication_hydration_async",
+        hydrate,
     )
 
     response = await deals_handler_module.create_deal(
@@ -1536,7 +1561,7 @@ async def test_update_deal_primary_contact_passes_explicit_clear_intent() -> Non
 
 
 @pytest.mark.asyncio
-async def test_update_deal_primary_contact_passes_contact_id() -> None:
+async def test_update_deal_primary_contact_passes_contact_id(monkeypatch) -> None:
     contact_id = uuid4()
     deal = SimpleNamespace(
         deal_id=uuid4(),
@@ -1556,8 +1581,15 @@ async def test_update_deal_primary_contact_passes_contact_id() -> None:
         updated_at=datetime.now(UTC),
     )
     service = SimpleNamespace(
+        organisation_id=uuid4(),
         update_primary_contact=AsyncMock(return_value=deal),
         session=SimpleNamespace(commit=AsyncMock(), refresh=AsyncMock()),
+    )
+    hydrate = AsyncMock(return_value=["task-1"])
+    monkeypatch.setattr(
+        deals_handler_module,
+        "dispatch_contact_communication_hydration_async",
+        hydrate,
     )
 
     result = await deals_handler_module.update_deal_primary_contact(
@@ -1579,6 +1611,11 @@ async def test_update_deal_primary_contact_passes_contact_id() -> None:
         primary_contact_name=None,
         primary_contact_email=None,
         clear_primary_contact=False,
+    )
+    hydrate.assert_awaited_once_with(
+        organisation_id=service.organisation_id,
+        deal_ids=[deal.deal_id],
+        trigger="deal_primary_contact_changed",
     )
 
 

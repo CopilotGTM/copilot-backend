@@ -12,13 +12,12 @@ Architecture (Three-Tier System):
 
     Tier 2: sync_all_deals_stakeholders_org_task (org-level)
                         │
-                        └─→ Loops through all deals, syncs stakeholders
-                        └─→ Triggers calendar/email matching at end
+                        └─→ Claims bounded per-deal stakeholder work
 
     Tier 3: sync_deal_stakeholders_task (per-deal)
                         │
                         └─→ Syncs stakeholders for a single deal
-                        └─→ Triggers calendar/email matching for that deal
+                        └─→ Replays that deal through communication hydration
 
 For stakeholder analysis tasks, see stakeholder_analysis_tasks.py.
 """
@@ -46,23 +45,17 @@ from src.workers.deal_worker.services.deal_change_detector import StakeholderCha
 from src.workers.deal_worker.services.deal_mapper_services.deal_mapping_backfill_claim_service import (
     DealMappingBackfillClaimService,
 )
-from src.workers.deal_worker.services.deal_mapper_services.deal_mapping_downstream_job_service import (
-    DealMappingDownstreamJobService,
-)
 from src.workers.deal_worker.services.deal_mapper_services.deal_mapping_eligibility import (
     DealMappingEligibilityService,
 )
 from src.workers.deal_worker.services.deal_mapper_services.stakeholder_sync_service import (
     StakeholderSyncService,
 )
-from src.workers.deal_worker.tasks.deal_mappers.calendar_matching_tasks import (
-    match_calendar_to_deals_task,
-)
-from src.workers.deal_worker.tasks.deal_mappers.email_matching_tasks import (
-    match_email_to_deals_task,
-)
 from src.workers.deal_worker.tasks.deal_mappers.visible_job_tracking import (
     VisibleDealJobTracker,
+)
+from src.workers.deal_worker.utils.contact_communication_hydration_dispatch import (
+    dispatch_contact_communication_hydration_async,
 )
 
 logger = get_logger(__name__)
@@ -165,32 +158,16 @@ def sync_deal_stakeholders_task(
             change_type in ALWAYS_REMATCH_CHANGE_TYPES
         )
         if trigger_rematching and should_dispatch_rematching:
-            downstream_jobs = await DealMappingDownstreamJobService(org_uuid).claim_rematch_jobs(
-                deal_id=deal_uuid,
-                parent_stakeholder_job_id=UUID(job_id) if job_id else None,
-                change_type=change_type,
+            # Participant changes replay this deal through the same hydration service used by
+            # live sync. This replaces separate calendar/email rematch workers and their scans.
+            rematching_triggered = bool(
+                await dispatch_contact_communication_hydration_async(
+                    organisation_id=org_uuid,
+                    integration_id=UUID(integration_id) if integration_id else None,
+                    deal_ids=[deal_uuid],
+                    trigger="deal_participants_changed",
+                )
             )
-            dispatch_headers = correlation_headers()
-            if downstream_jobs["calendar_dispatch_required"]:
-                match_calendar_to_deals_task.apply_async(
-                    kwargs={
-                        "organisation_id": organisation_id,
-                        "deal_id": deal_id,
-                        "job_id": downstream_jobs["calendar_job_id"],
-                    },
-                    headers=dispatch_headers,
-                )
-                rematching_triggered = True
-            if downstream_jobs["email_dispatch_required"]:
-                match_email_to_deals_task.apply_async(
-                    kwargs={
-                        "organisation_id": organisation_id,
-                        "deal_id": deal_id,
-                        "job_id": downstream_jobs["email_job_id"],
-                    },
-                    headers=dispatch_headers,
-                )
-                rematching_triggered = True
 
         logger.info(
             "Task 1 complete: synced stakeholders for deal",

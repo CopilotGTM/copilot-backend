@@ -42,11 +42,8 @@ from src.service.integrations.sync_health import (
     is_action_required_failure,
     record_sync_failure,
 )
-from src.workers.deal_worker.services.deal_mapper_services.communication_deal_mapping_trigger_service import (
-    CommunicationDealMappingTriggerService,
-)
-from src.workers.deal_worker.utils.communication_contact_materialization_dispatch import (
-    dispatch_communication_contact_materialization_async,
+from src.workers.deal_worker.utils.contact_communication_hydration_dispatch import (
+    dispatch_contact_communication_hydration_async,
 )
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.config import TASK_LIMITS
@@ -286,7 +283,6 @@ def sync_calendar_org_task(
 
         for fetch_data in integration_fetch_list:
             current_integration_id[0] = fetch_data.integration_id
-            integration_sync_started_at = datetime.now(UTC)
             logger.info(
                 "Syncing calendar integration",
                 extra={
@@ -443,25 +439,16 @@ def sync_calendar_org_task(
                     total_events += records_synced
                     communication_deal_mapping = None
                     if records_synced > 0 or sync_result.get("changed_event_ids"):
-                        sync_result[
-                            "communication_contact_materialization_task_id"
-                        ] = await dispatch_communication_contact_materialization_async(
+                        task_ids = await dispatch_contact_communication_hydration_async(
                             organisation_id=org_id,
                             integration_id=fetch_data.integration_id,
                             changed_event_ids=sync_result.get("changed_event_ids", []),
-                            trigger_source="incremental_sync",
+                            trigger="deprecated_calendar_incremental_sync",
                         )
-                        communication_deal_mapping = (
-                            await CommunicationDealMappingTriggerService(
-                                org_id
-                            ).trigger_for_changed_communications(
-                                integration_id=fetch_data.integration_id,
-                                source_kind="calendar",
-                                trigger_source="incremental_sync",
-                                changed_record_ids=sync_result.get("changed_event_ids", []),
-                                sync_started_at=integration_sync_started_at,
-                            )
-                        ).to_dict()
+                        communication_deal_mapping = {
+                            "status": "triggered",
+                            "task_ids": task_ids,
+                        }
 
                     integration_results.append(
                         {

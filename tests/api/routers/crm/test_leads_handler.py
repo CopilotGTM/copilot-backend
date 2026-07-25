@@ -7,6 +7,7 @@ verify behavior without touching real database sessions.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -317,12 +318,18 @@ def test_add_lead_participant(client: TestClient, test_user_ids):
         app.dependency_overrides = original_overrides
 
 
-def test_convert_lead_to_deal(client: TestClient, test_user_ids):
+def test_convert_lead_to_deal(client: TestClient, test_user_ids, monkeypatch):
     """Convert a lead to a deal and assert participant copy count and status."""
     service = FakeLeadReadService(test_user_ids["organisation_id"])
     lead = FakeLead(test_user_ids["organisation_id"])
     service.leads[lead.lead_id] = lead
     service.participants[lead.lead_id] = [FakeLeadParticipant(lead.lead_id, lead.organisation_id)]
+    hydration_dispatch = AsyncMock(return_value=["task-1"])
+    monkeypatch.setattr(
+        "src.api.routers.crm.leads.leads_handler.dispatch_contact_communication_hydration_async",
+        hydration_dispatch,
+        raising=False,
+    )
 
     def _override_user():
         return UserIDs(
@@ -361,6 +368,11 @@ def test_convert_lead_to_deal(client: TestClient, test_user_ids):
         assert data["status"] == "converted"
         assert data["converted_deal_id"] == str(lead.converted_deal_id)
         assert data["copied_participant_count"] == 1
+        hydration_dispatch.assert_awaited_once_with(
+            organisation_id=test_user_ids["organisation_id"],
+            deal_ids=[lead.converted_deal_id],
+            trigger="lead_conversion_committed",
+        )
     finally:
         app.dependency_overrides = original_overrides
 

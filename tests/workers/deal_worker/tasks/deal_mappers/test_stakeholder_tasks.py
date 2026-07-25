@@ -211,377 +211,64 @@ class TestSyncDealStakeholdersTaskEligibility:
         tracker.complete.assert_awaited_once()
 
 
-class TestSyncDealStakeholdersTaskInitialBackfillRematching:
-    def test_initial_backfill_creates_downstream_jobs_and_dispatches_with_job_ids(
-        self, monkeypatch
-    ) -> None:
-        organisation_id = uuid4()
-        deal_id = uuid4()
-        stakeholder_job_id = uuid4()
-        calendar_job_id = uuid4()
-        email_job_id = uuid4()
-        eligibility = DealMappingEligibilityResult(
-            deal_id=deal_id,
-            is_eligible=True,
-            reason=None,
-        )
-        eligibility_service = SimpleNamespace(
-            get_deal_eligibility=AsyncMock(return_value=eligibility)
-        )
-        sync_service = SimpleNamespace(
-            sync_for_deal=AsyncMock(
-                return_value=MockStakeholderSyncResult(
-                    success=True,
-                    created=1,
-                    requires_rematching=True,
-                )
+def test_initial_backfill_dispatches_one_deal_hydration(monkeypatch) -> None:
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    eligibility_service = SimpleNamespace(
+        get_deal_eligibility=AsyncMock(
+            return_value=DealMappingEligibilityResult(
+                deal_id=deal_id,
+                is_eligible=True,
+                reason=None,
             )
         )
-        downstream_service = SimpleNamespace(
-            claim_rematch_jobs=AsyncMock(
-                return_value={
-                    "calendar_job_id": str(calendar_job_id),
-                    "email_job_id": str(email_job_id),
-                    "calendar_dispatch_required": True,
-                    "email_dispatch_required": True,
-                }
+    )
+    sync_service = SimpleNamespace(
+        sync_for_deal=AsyncMock(
+            return_value=MockStakeholderSyncResult(
+                success=True,
+                created=0,
+                requires_rematching=False,
             )
         )
-        tracker = SimpleNamespace(
-            start=AsyncMock(),
-            complete=AsyncMock(),
-            fail=AsyncMock(),
-        )
-        calendar_apply_async = Mock()
-        email_apply_async = Mock()
+    )
+    tracker = SimpleNamespace(start=AsyncMock(), complete=AsyncMock(), fail=AsyncMock())
+    dispatch = AsyncMock(return_value=["task-id"])
+    monkeypatch.setattr(
+        stakeholder_tasks,
+        "DealMappingEligibilityService",
+        lambda _organisation_id: eligibility_service,
+    )
+    monkeypatch.setattr(
+        stakeholder_tasks,
+        "StakeholderSyncService",
+        lambda *_args, **_kwargs: sync_service,
+    )
+    monkeypatch.setattr(
+        stakeholder_tasks,
+        "VisibleDealJobTracker",
+        lambda *_args, **_kwargs: tracker,
+    )
+    monkeypatch.setattr(
+        stakeholder_tasks,
+        "dispatch_contact_communication_hydration_async",
+        dispatch,
+    )
 
-        monkeypatch.setattr(
-            stakeholder_tasks,
-            "DealMappingEligibilityService",
-            lambda _organisation_id: eligibility_service,
-        )
-        monkeypatch.setattr(
-            stakeholder_tasks,
-            "StakeholderSyncService",
-            lambda *_args, **_kwargs: sync_service,
-        )
-        monkeypatch.setattr(
-            stakeholder_tasks,
-            "DealMappingDownstreamJobService",
-            lambda _organisation_id: downstream_service,
-        )
-        monkeypatch.setattr(
-            stakeholder_tasks,
-            "VisibleDealJobTracker",
-            lambda *_args, **_kwargs: tracker,
-        )
-        monkeypatch.setattr(
-            stakeholder_tasks.match_calendar_to_deals_task,
-            "apply_async",
-            calendar_apply_async,
-        )
-        monkeypatch.setattr(
-            stakeholder_tasks.match_email_to_deals_task,
-            "apply_async",
-            email_apply_async,
-        )
+    result = sync_deal_stakeholders_task(
+        organisation_id=str(organisation_id),
+        deal_id=str(deal_id),
+        change_type="INITIAL_BACKFILL",
+        job_id=str(uuid4()),
+    )
 
-        result = sync_deal_stakeholders_task(
-            organisation_id=str(organisation_id),
-            deal_id=str(deal_id),
-            change_type="INITIAL_BACKFILL",
-            job_id=str(stakeholder_job_id),
-        )
-
-        downstream_service.claim_rematch_jobs.assert_awaited_once_with(
-            deal_id=deal_id,
-            parent_stakeholder_job_id=stakeholder_job_id,
-            change_type="INITIAL_BACKFILL",
-        )
-        calendar_apply_async.assert_called_once()
-        assert calendar_apply_async.call_args.kwargs["kwargs"] == {
-            "organisation_id": str(organisation_id),
-            "deal_id": str(deal_id),
-            "job_id": str(calendar_job_id),
-        }
-        email_apply_async.assert_called_once()
-        assert email_apply_async.call_args.kwargs["kwargs"] == {
-            "organisation_id": str(organisation_id),
-            "deal_id": str(deal_id),
-            "job_id": str(email_job_id),
-        }
-        assert result["rematching_triggered"] is True
-
-    def test_initial_backfill_without_new_stakeholders_still_dispatches_downstream_jobs(
-        self, monkeypatch
-    ) -> None:
-        organisation_id = uuid4()
-        deal_id = uuid4()
-        stakeholder_job_id = uuid4()
-        calendar_job_id = uuid4()
-        email_job_id = uuid4()
-        eligibility = DealMappingEligibilityResult(
-            deal_id=deal_id,
-            is_eligible=True,
-            reason=None,
-        )
-        eligibility_service = SimpleNamespace(
-            get_deal_eligibility=AsyncMock(return_value=eligibility)
-        )
-        sync_service = SimpleNamespace(
-            sync_for_deal=AsyncMock(
-                return_value=MockStakeholderSyncResult(
-                    success=True,
-                    created=0,
-                    requires_rematching=False,
-                )
-            )
-        )
-        downstream_service = SimpleNamespace(
-            claim_rematch_jobs=AsyncMock(
-                return_value={
-                    "calendar_job_id": str(calendar_job_id),
-                    "email_job_id": str(email_job_id),
-                    "calendar_dispatch_required": True,
-                    "email_dispatch_required": True,
-                }
-            )
-        )
-        tracker = SimpleNamespace(
-            start=AsyncMock(),
-            complete=AsyncMock(),
-            fail=AsyncMock(),
-        )
-        calendar_apply_async = Mock()
-        email_apply_async = Mock()
-
-        monkeypatch.setattr(
-            stakeholder_tasks,
-            "DealMappingEligibilityService",
-            lambda _organisation_id: eligibility_service,
-        )
-        monkeypatch.setattr(
-            stakeholder_tasks,
-            "StakeholderSyncService",
-            lambda *_args, **_kwargs: sync_service,
-        )
-        monkeypatch.setattr(
-            stakeholder_tasks,
-            "DealMappingDownstreamJobService",
-            lambda _organisation_id: downstream_service,
-        )
-        monkeypatch.setattr(
-            stakeholder_tasks,
-            "VisibleDealJobTracker",
-            lambda *_args, **_kwargs: tracker,
-        )
-        monkeypatch.setattr(
-            stakeholder_tasks.match_calendar_to_deals_task,
-            "apply_async",
-            calendar_apply_async,
-        )
-        monkeypatch.setattr(
-            stakeholder_tasks.match_email_to_deals_task,
-            "apply_async",
-            email_apply_async,
-        )
-
-        result = sync_deal_stakeholders_task(
-            organisation_id=str(organisation_id),
-            deal_id=str(deal_id),
-            change_type="INITIAL_BACKFILL",
-            job_id=str(stakeholder_job_id),
-        )
-
-        downstream_service.claim_rematch_jobs.assert_awaited_once_with(
-            deal_id=deal_id,
-            parent_stakeholder_job_id=stakeholder_job_id,
-            change_type="INITIAL_BACKFILL",
-        )
-        calendar_apply_async.assert_called_once()
-        assert calendar_apply_async.call_args.kwargs["kwargs"]["job_id"] == str(calendar_job_id)
-        email_apply_async.assert_called_once()
-        assert email_apply_async.call_args.kwargs["kwargs"]["job_id"] == str(email_job_id)
-        assert result["rematching_triggered"] is True
-
-    def test_communication_sync_remap_without_new_stakeholders_still_dispatches_downstream_jobs(
-        self, monkeypatch
-    ) -> None:
-        organisation_id = uuid4()
-        deal_id = uuid4()
-        stakeholder_job_id = uuid4()
-        calendar_job_id = uuid4()
-        email_job_id = uuid4()
-        eligibility = DealMappingEligibilityResult(
-            deal_id=deal_id,
-            is_eligible=True,
-            reason=None,
-        )
-        eligibility_service = SimpleNamespace(
-            get_deal_eligibility=AsyncMock(return_value=eligibility)
-        )
-        sync_service = SimpleNamespace(
-            sync_for_deal=AsyncMock(
-                return_value=MockStakeholderSyncResult(
-                    success=True,
-                    created=0,
-                    requires_rematching=False,
-                )
-            )
-        )
-        downstream_service = SimpleNamespace(
-            claim_rematch_jobs=AsyncMock(
-                return_value={
-                    "calendar_job_id": str(calendar_job_id),
-                    "email_job_id": str(email_job_id),
-                    "calendar_dispatch_required": True,
-                    "email_dispatch_required": True,
-                }
-            )
-        )
-        tracker = SimpleNamespace(
-            start=AsyncMock(),
-            complete=AsyncMock(),
-            fail=AsyncMock(),
-        )
-        calendar_apply_async = Mock()
-        email_apply_async = Mock()
-
-        monkeypatch.setattr(
-            stakeholder_tasks,
-            "DealMappingEligibilityService",
-            lambda _organisation_id: eligibility_service,
-        )
-        monkeypatch.setattr(
-            stakeholder_tasks,
-            "StakeholderSyncService",
-            lambda *_args, **_kwargs: sync_service,
-        )
-        monkeypatch.setattr(
-            stakeholder_tasks,
-            "DealMappingDownstreamJobService",
-            lambda _organisation_id: downstream_service,
-        )
-        monkeypatch.setattr(
-            stakeholder_tasks,
-            "VisibleDealJobTracker",
-            lambda *_args, **_kwargs: tracker,
-        )
-        monkeypatch.setattr(
-            stakeholder_tasks.match_calendar_to_deals_task,
-            "apply_async",
-            calendar_apply_async,
-        )
-        monkeypatch.setattr(
-            stakeholder_tasks.match_email_to_deals_task,
-            "apply_async",
-            email_apply_async,
-        )
-
-        result = sync_deal_stakeholders_task(
-            organisation_id=str(organisation_id),
-            deal_id=str(deal_id),
-            change_type="COMMUNICATION_SYNC_REMAP",
-            job_id=str(stakeholder_job_id),
-        )
-
-        downstream_service.claim_rematch_jobs.assert_awaited_once_with(
-            deal_id=deal_id,
-            parent_stakeholder_job_id=stakeholder_job_id,
-            change_type="COMMUNICATION_SYNC_REMAP",
-        )
-        calendar_apply_async.assert_called_once()
-        assert calendar_apply_async.call_args.kwargs["kwargs"]["job_id"] == str(calendar_job_id)
-        email_apply_async.assert_called_once()
-        assert email_apply_async.call_args.kwargs["kwargs"]["job_id"] == str(email_job_id)
-        assert result["rematching_triggered"] is True
-
-    def test_event_rematching_also_creates_downstream_jobs_and_dispatches_with_job_ids(
-        self, monkeypatch
-    ) -> None:
-        organisation_id = uuid4()
-        deal_id = uuid4()
-        calendar_job_id = uuid4()
-        email_job_id = uuid4()
-        eligibility = DealMappingEligibilityResult(
-            deal_id=deal_id,
-            is_eligible=True,
-            reason=None,
-        )
-        eligibility_service = SimpleNamespace(
-            get_deal_eligibility=AsyncMock(return_value=eligibility)
-        )
-        sync_service = SimpleNamespace(
-            sync_for_deal=AsyncMock(
-                return_value=MockStakeholderSyncResult(
-                    success=True,
-                    created=1,
-                    requires_rematching=True,
-                )
-            )
-        )
-        downstream_service = SimpleNamespace(
-            claim_rematch_jobs=AsyncMock(
-                return_value={
-                    "calendar_job_id": str(calendar_job_id),
-                    "email_job_id": str(email_job_id),
-                    "calendar_dispatch_required": True,
-                    "email_dispatch_required": True,
-                }
-            )
-        )
-        tracker = SimpleNamespace(
-            start=AsyncMock(),
-            complete=AsyncMock(),
-            fail=AsyncMock(),
-        )
-        calendar_apply_async = Mock()
-        email_apply_async = Mock()
-
-        monkeypatch.setattr(
-            stakeholder_tasks,
-            "DealMappingEligibilityService",
-            lambda _organisation_id: eligibility_service,
-        )
-        monkeypatch.setattr(
-            stakeholder_tasks,
-            "StakeholderSyncService",
-            lambda *_args, **_kwargs: sync_service,
-        )
-        monkeypatch.setattr(
-            stakeholder_tasks,
-            "DealMappingDownstreamJobService",
-            lambda _organisation_id: downstream_service,
-        )
-        monkeypatch.setattr(
-            stakeholder_tasks,
-            "VisibleDealJobTracker",
-            lambda *_args, **_kwargs: tracker,
-        )
-        monkeypatch.setattr(
-            stakeholder_tasks.match_calendar_to_deals_task,
-            "apply_async",
-            calendar_apply_async,
-        )
-        monkeypatch.setattr(
-            stakeholder_tasks.match_email_to_deals_task,
-            "apply_async",
-            email_apply_async,
-        )
-
-        result = sync_deal_stakeholders_task(
-            organisation_id=str(organisation_id),
-            deal_id=str(deal_id),
-            change_type="PARTICIPANT_ADDED",
-            job_id=str(uuid4()),
-        )
-
-        downstream_service.claim_rematch_jobs.assert_awaited_once()
-        calendar_apply_async.assert_called_once()
-        assert calendar_apply_async.call_args.kwargs["kwargs"]["job_id"] == str(calendar_job_id)
-        email_apply_async.assert_called_once()
-        assert email_apply_async.call_args.kwargs["kwargs"]["job_id"] == str(email_job_id)
-        assert result["rematching_triggered"] is True
+    dispatch.assert_awaited_once_with(
+        organisation_id=organisation_id,
+        integration_id=None,
+        deal_ids=[deal_id],
+        trigger="deal_participants_changed",
+    )
+    assert result["rematching_triggered"] is True
 
 
 class TestSyncAllDealsStakeholdersOrgTaskParameters:
@@ -649,17 +336,6 @@ class TestSyncAllDealsStakeholdersOrgTaskDispatch:
             "apply_async",
             stakeholder_apply_async,
         )
-        monkeypatch.setattr(
-            stakeholder_tasks.match_calendar_to_deals_task,
-            "apply_async",
-            Mock(),
-        )
-        monkeypatch.setattr(
-            stakeholder_tasks.match_email_to_deals_task,
-            "apply_async",
-            Mock(),
-        )
-
         result = sync_all_deals_stakeholders_org_task(
             organisation_id=str(organisation_id),
             trigger_deal_matching=True,

@@ -15,17 +15,20 @@ from src.domain.models.organisation_tables.sync.email_models import (
     DealEmailDirection,
 )
 from src.domain.models.organisation_tables.sync.integration_models import IntegrationType
+from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 from src.workers.deal_worker.services.deal_asset_email_attachment_service import (
     DealAssetEmailAttachmentService,
     _build_attachment_source_record_id,
     _build_storage_path,
     _email_has_attachments_filter,
+    _EmailWithAttachments,
     _is_gmail,
     _is_supported_attachment_mimetype,
     _map_email_direction_to_asset_direction,
     _normalize_mimetype,
     _safe_asset_filename,
 )
+from src.workers.integrations_worker.providers.email.attachment_downloader import AttachmentMeta
 
 
 class _FakeExecuteResult:
@@ -40,6 +43,22 @@ class _CapturingSession:
     async def execute(self, stmt: ClauseElement) -> _FakeExecuteResult:
         self.statements.append(stmt)
         return _FakeExecuteResult()
+
+
+class _ConflictSafeInsertResult:
+    def first(self) -> None:
+        return None
+
+
+class _ConflictSafeInsertSession:
+    def __init__(self) -> None:
+        self.commit_count = 0
+
+    async def execute(self, _stmt: ClauseElement) -> _ConflictSafeInsertResult:
+        return _ConflictSafeInsertResult()
+
+    async def commit(self) -> None:
+        self.commit_count += 1
 
 
 def _compile_sql(stmt: ClauseElement) -> str:
@@ -208,3 +227,46 @@ class TestEmailAttachmentQueryFilters:
         assert "'microsoft'" in stmt
         assert "'gmail'" not in stmt
         assert "'outlook_email'" not in stmt
+
+
+@pytest.mark.asyncio
+async def test_create_deal_asset_returns_false_when_conflict_already_inserted() -> None:
+    organisation_id = UUID(int=1)
+    deal_id = UUID(int=2)
+    session = _ConflictSafeInsertSession()
+    service = DealAssetEmailAttachmentService(organisation_id)
+    email = _EmailWithAttachments(
+        email_id=UUID(int=3),
+        external_message_id="provider-message",
+        internet_message_id="<message@example.com>",
+        subject="Proposal",
+        integration_id=UUID(int=4),
+        integration_type=IntegrationType.GOOGLE,
+        token_info=IntegrationTokenInfo(),
+        direction=DealEmailDirection.INBOUND.value,
+        deal_id=deal_id,
+    )
+    attachment = AttachmentMeta(
+        filename="proposal.pdf",
+        mime_type="application/pdf",
+        size_bytes=1024,
+        attachment_id="attachment-1",
+    )
+
+    async def fake_acquire(_org_id):
+        yield session
+
+    with patch(
+        "src.workers.deal_worker.services.deal_asset_email_attachment_service.acquire_org_async_session",
+        side_effect=fake_acquire,
+    ):
+        inserted = await service._create_deal_asset(  # noqa: SLF001
+            email,
+            attachment,
+            "deal_assets/proposal.pdf",
+            attachment.size_bytes,
+            "source-record-id",
+        )
+
+    assert inserted is False
+    assert session.commit_count == 1

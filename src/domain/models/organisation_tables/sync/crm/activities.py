@@ -405,7 +405,7 @@ class CRMActivityLink(SQLModel, table=True):
         CheckConstraint(
             "link_role IN ("
             "'PRIMARY', 'SENDER', 'RECIPIENT', 'ATTENDEE', 'OWNER', 'MENTIONED', "
-            "'RELATED', 'CREATED', 'RESOLVED', 'ASSIGNEE'"
+            "'RELATED', 'CREATED', 'RESOLVED', 'ASSIGNEE', 'PARTICIPANT'"
             ")",
             name="ck_crm_activity_link_role",
         ),

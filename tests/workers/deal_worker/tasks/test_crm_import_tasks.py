@@ -117,7 +117,10 @@ async def test_worker_scoped_service_loads_import_without_user_id_and_uses_job_a
             matched_by="created",
         )
 
-    async def fake_process_contact(self, row, mapping, contact_writer, *, account_id):
+    async def fake_process_contact(
+        self, row, mapping, contact_writer, *, account_id, allow_unverified
+    ):
+        _ = allow_unverified
         seen_actor_ids.append(self._current_actor_user_id)
         return ContactWriteResult(
             contact=SimpleNamespace(contact_id=contact_id),
@@ -135,7 +138,11 @@ async def test_worker_scoped_service_loads_import_without_user_id_and_uses_job_a
     service._load_rows = AsyncMock(return_value=[row])
     service._prepare_row = AsyncMock(
         return_value={
-            "normalized_values": {"deal.name": "Expansion"},
+            "normalized_values": {
+                "deal.name": "Expansion",
+                "account.name": "Acme",
+                "contact.email": "buyer@example.com",
+            },
             "stage_id": uuid4(),
             "owner_user_id": None,
             "custom_properties": {},
@@ -143,10 +150,12 @@ async def test_worker_scoped_service_loads_import_without_user_id_and_uses_job_a
         }
     )
     service._acquire_identity_locks = AsyncMock()
-    service._process_deal = AsyncMock(return_value=(uuid4(), True))
-    await service.process_next_batch(job.job_id)
+    created_deal_id = uuid4()
+    service._process_deal = AsyncMock(return_value=(created_deal_id, True))
+    result = await service.process_next_batch(job.job_id)
 
     assert seen_actor_ids == [user_id, user_id]
+    assert result.deal_ids == (created_deal_id,)
 
 
 @pytest.mark.asyncio
@@ -234,6 +243,43 @@ async def test_process_csv_propagates_processing_error_for_celery_retry(monkeypa
         await crm_import_tasks.process_csv_import(org_id, import_job_id)
 
     assert failed == {}
+
+
+@pytest.mark.asyncio
+async def test_process_csv_replays_created_deals_after_batch_commit(monkeypatch):
+    crm_import_tasks = _load_task_module()
+    org_id = uuid4()
+    import_job_id = uuid4()
+    deal_ids = (uuid4(), uuid4())
+    job = SimpleNamespace(
+        job_metadata={"crm_import_status": "completed"},
+        result_data={},
+    )
+    batch = SimpleNamespace(
+        job=job,
+        has_more=False,
+        lock_acquired=True,
+        deal_ids=deal_ids,
+    )
+    monkeypatch.setattr(
+        crm_import_tasks,
+        "_run_with_org_and_master_session",
+        AsyncMock(return_value=batch),
+    )
+    hydrate = AsyncMock(return_value=["task-1"])
+    monkeypatch.setattr(
+        crm_import_tasks,
+        "dispatch_contact_communication_hydration_async",
+        hydrate,
+    )
+
+    await crm_import_tasks.process_csv_import(org_id, import_job_id)
+
+    hydrate.assert_awaited_once_with(
+        organisation_id=org_id,
+        deal_ids=list(deal_ids),
+        trigger="crm_import_deals_committed",
+    )
 
 
 def test_crm_import_tasks_are_registered_on_deal_queue():

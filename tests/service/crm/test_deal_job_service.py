@@ -87,11 +87,7 @@ def _stakeholder_processing_group(
 ) -> list[DealJobs]:
     operation_group_id = str(uuid4())
     jobs = []
-    for job_type in (
-        DealJobType.DEAL_EMAIL_REMATCH,
-        DealJobType.DEAL_CALENDAR_REMATCH,
-        DealJobType.STAKEHOLDER_SYNC,
-    ):
+    for job_type in (DealJobType.STAKEHOLDER_SYNC,):
         metadata = {
             "trigger": "stakeholder_created",
             "operation_group_id": operation_group_id,
@@ -160,18 +156,15 @@ async def test_get_active_stakeholder_processing_jobs_returns_visible_jobs_only(
             deal_id=deal_id,
             stakeholder_id=stakeholder_id,
             job_type=DealJobType.STAKEHOLDER_SYNC,
-            status=JobStatus.COMPLETED,
+            status=JobStatus.PENDING,
         ),
     ]
     service = DealJobService(_Session(jobs), org_id, user_id)
 
     active = await service.get_active_stakeholder_processing_jobs(deal_id)
 
-    assert [job["job_type"] for job in active] == [
-        "deal_email_rematch",
-        "deal_calendar_rematch",
-    ]
-    assert {job["status"] for job in active} == {"pending", "in_progress"}
+    assert [job["job_type"] for job in active] == ["stakeholder_sync"]
+    assert {job["status"] for job in active} == {"pending"}
 
 
 @pytest.mark.asyncio
@@ -205,17 +198,11 @@ async def test_get_active_stakeholder_processing_jobs_recovers_unenqueued_group(
 
     active = await service.get_active_stakeholder_processing_jobs(deal_id)
 
-    assert [job["job_type"] for job in active] == [
-        "deal_email_rematch",
-        "deal_calendar_rematch",
-        "stakeholder_sync",
-    ]
+    assert [job["job_type"] for job in active] == ["stakeholder_sync"]
     assert session.commit_count == 1
     assert len(sent_chains) == 1
     assert sent_chains[0]["queue"] == "deal"
     assert [task["task_name"] for task in sent_chains[0]["task_signatures"]] == [
-        "deal.match_email_to_deals",
-        "deal.match_calendar_to_deals",
         "stakeholder.sync_deal_stakeholders",
     ]
     assert [task["kwargs"]["job_id"] for task in sent_chains[0]["task_signatures"]] == [
@@ -240,7 +227,17 @@ async def test_get_active_stakeholder_processing_jobs_hides_incomplete_unenqueue
         deal_id=deal_id,
         stakeholder_id=stakeholder_id,
         enqueue_status="pending",
-    )[:2]
+    )
+    duplicate = _job(
+        organisation_id=org_id,
+        user_id=user_id,
+        deal_id=deal_id,
+        stakeholder_id=stakeholder_id,
+        job_type=DealJobType.STAKEHOLDER_SYNC,
+        status=JobStatus.PENDING,
+        metadata=dict(jobs[0].job_metadata),
+    )
+    jobs.append(duplicate)
 
     async def fake_send_deal_task_chain_async(*args, **kwargs):
         raise AssertionError("incomplete group must not be enqueued")
