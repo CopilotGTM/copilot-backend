@@ -306,8 +306,14 @@ def dependency_overrides(client, test_user_ids):
 class FakeJob:
     """Fake Job for testing."""
 
-    def __init__(self, job_id: UUID, status: JobStatus = JobStatus.PENDING):
+    def __init__(
+        self,
+        job_id: UUID,
+        message_id: UUID | None = None,
+        status: JobStatus = JobStatus.PENDING,
+    ):
         self.job_id = job_id
+        self.message_id = message_id
         self.status = status
         self.error_message = None
         self.job_metadata = {}
@@ -419,11 +425,6 @@ class FakeChatMessageService:
         )
         self.messages[str(user_msg_id)] = user_msg
 
-        # Create job
-        job_id = uuid4()
-        job = FakeJob(job_id=job_id)
-        self.jobs[str(job_id)] = job
-
         # Create assistant message placeholder
         assistant_msg_id = uuid4()
         assistant_msg = FakeMessage(
@@ -434,6 +435,12 @@ class FakeChatMessageService:
             message_type=message_type,
         )
         self.messages[str(assistant_msg_id)] = assistant_msg
+
+        # Create job
+        job_id = uuid4()
+        job = FakeJob(job_id=job_id, message_id=user_msg_id)
+        job.job_metadata = {"assistant_message_id": str(assistant_msg_id)}
+        self.jobs[str(job_id)] = job
 
         return user_msg, job, str(assistant_msg_id)
 
@@ -481,6 +488,28 @@ class FakeChatMessageService:
         )
 
         return session, items, next_cursor
+
+    async def list_active_jobs(self, *, session_id: UUID):
+        """Return active jobs with enough metadata to reconnect test clients."""
+        active_jobs = []
+        for job in self.jobs.values():
+            message = self.messages.get(str(job.message_id))
+            if (
+                message is None
+                or message.session_id != session_id
+                or job.status not in {JobStatus.PENDING, JobStatus.IN_PROGRESS}
+            ):
+                continue
+            active_jobs.append(
+                {
+                    "job_id": job.job_id,
+                    "user_message_id": message.message_id,
+                    "assistant_message_id": job.job_metadata["assistant_message_id"],
+                    "message_type": message.message_type,
+                    "status": job.status,
+                }
+            )
+        return active_jobs
 
     async def get_message_attachments(self, *, session_id: UUID, messages: list):
         """Get attachments for messages (returns empty for testing)."""

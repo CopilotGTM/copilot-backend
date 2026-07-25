@@ -9,6 +9,7 @@ from src.domain.models.organisation_tables.chat_message_models import (
     ChatMessageRole,
     ChatMessageType,
 )
+from src.domain.models.organisation_tables.job_models import JobStatus
 
 T = TypeVar("T")
 
@@ -182,12 +183,23 @@ class ChatMessageListItem(BaseModel):
     )
 
 
+class ActiveChatJob(BaseModel):
+    """Durable identifiers needed to resume an unfinished chat response."""
+
+    job_id: UUID
+    user_message_id: UUID
+    assistant_message_id: UUID
+    message_type: ChatMessageType
+    status: JobStatus
+
+
 class ChatMessagesPage(BaseModel):
     """Authorized session metadata with one cursor page of committed messages."""
 
     session: ChatSessionOut
     items: list[ChatMessageListItem]
     cursor: str | None = None
+    active_jobs: list[ActiveChatJob] = Field(default_factory=list)
 
 
 class ChatAttachmentView(BaseModel):
