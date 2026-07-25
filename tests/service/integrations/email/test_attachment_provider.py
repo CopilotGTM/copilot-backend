@@ -7,13 +7,14 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from src.workers.integrations_worker.providers.email.attachment_downloader import (
+from src.service.integrations.email.attachment_provider import (
     AttachmentMeta,
     DownloadedAttachment,
     download_gmail_attachment,
     download_outlook_attachment,
     filter_junk_attachments,
     list_gmail_attachments,
+    list_gmail_message_attachments,
     list_outlook_attachments,
 )
 
@@ -335,6 +336,26 @@ class TestDownloadOutlookAttachment:
 
 
 class TestListGmailAttachments:
+    @pytest.mark.asyncio
+    async def test_fetches_full_message_payload_before_listing(self):
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get.return_value = _json_response(
+            {
+                "payload": {
+                    "filename": "contract.pdf",
+                    "mimeType": "application/pdf",
+                    "body": {"attachmentId": "att-1", "size": 45_000},
+                }
+            }
+        )
+
+        result = await list_gmail_message_attachments(mock_client, "msg/1")
+
+        assert [attachment.filename for attachment in result] == ["contract.pdf"]
+        call = mock_client.get.call_args
+        assert "msg%2F1" in call.args[0]
+        assert call.kwargs["params"] == {"format": "full"}
+
     def test_extracts_attachment_from_parts(self):
         payload = {
             "mimeType": "multipart/mixed",

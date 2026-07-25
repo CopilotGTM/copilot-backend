@@ -31,9 +31,9 @@ from src.domain.models.organisation_tables.sync.meeting_intelligence import Meet
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.observability.context import correlation_headers
 from src.infra.utils.logger import get_logger
+from src.service.crm.jobs.deal_job_event_publisher import DealJobRedisPublisher
 from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
 from src.service.integrations.transcripts import TranscriptService
-from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
 from src.workers.deal_worker.utils.deal_job_utils import (
     get_association,
     get_deal,

@@ -171,10 +171,38 @@ async def test_create_stakeholder_processing_jobs_opts_user_request_into_events(
 
 
 @pytest.mark.asyncio
-async def test_create_stakeholder_processing_jobs_marks_committed_job_failed_on_publish_error(
+async def test_inline_stakeholders_create_one_deal_level_job_without_arbitrary_anchor(
     monkeypatch,
 ) -> None:
-    """A failed broker publish leaves a durable failed job instead of an invisible orphan."""
+    """A multi-person deal create records all participants and no singular stakeholder."""
+    participant_ids = [uuid4(), uuid4()]
+    session = _Session()
+
+    async def fake_send_deal_task_chain_async(_task_signatures, *, queue="deal"):
+        assert queue == "deal"
+        return str(uuid4())
+
+    monkeypatch.setattr(
+        "src.service.crm.jobs.deal_job_service.send_deal_task_chain_async",
+        fake_send_deal_task_chain_async,
+    )
+
+    jobs = await DealJobService(session, uuid4(), uuid4()).create_stakeholder_processing_jobs(
+        uuid4(),
+        participant_ids=participant_ids,
+    )
+
+    assert len(jobs) == 1
+    assert jobs[0].stakeholder_id is None
+    assert jobs[0].job_metadata["participant_ids"] == [str(value) for value in participant_ids]
+    assert "participant_id" not in jobs[0].job_metadata
+
+
+@pytest.mark.asyncio
+async def test_create_stakeholder_processing_jobs_keeps_committed_job_recoverable_on_publish_error(
+    monkeypatch,
+) -> None:
+    """A failed broker publish must leave durable work eligible for a later retry."""
     session = _Session()
 
     async def fail_publish(*_args, **_kwargs):
@@ -191,7 +219,8 @@ async def test_create_stakeholder_processing_jobs_marks_committed_job_failed_on_
 
     assert session.commit_count == 2
     assert session.rolled_back is False
-    assert [job.status for job in session.added] == [JobStatus.FAILED]
+    assert [job.status for job in session.added] == [JobStatus.PENDING]
+    assert session.added[0].job_metadata["enqueue_status"] == "failed"
 
 
 @pytest.mark.asyncio
@@ -354,6 +383,49 @@ async def test_get_active_stakeholder_processing_jobs_recovers_unenqueued_group(
     ]
     assert all(job.job_metadata["enqueue_status"] == "enqueued" for job in jobs)
     assert all(job.job_metadata["enqueue_recovered"] is True for job in jobs)
+
+
+@pytest.mark.asyncio
+async def test_failed_stakeholder_publish_remains_recoverable_after_retry_failure(
+    monkeypatch,
+) -> None:
+    """Repeated broker failures must not make committed stakeholder work terminal."""
+    org_id = uuid4()
+    user_id = uuid4()
+    deal_id = uuid4()
+    jobs = _stakeholder_processing_group(
+        organisation_id=org_id,
+        user_id=user_id,
+        deal_id=deal_id,
+        stakeholder_id=uuid4(),
+        enqueue_status="failed",
+    )
+    attempts = 0
+
+    async def publish_after_one_failure(_task_signatures, *, queue="deal"):
+        nonlocal attempts
+        assert queue == "deal"
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("broker unavailable")
+        return str(uuid4())
+
+    monkeypatch.setattr(
+        "src.service.crm.jobs.deal_job_service.send_deal_task_chain_async",
+        publish_after_one_failure,
+    )
+    session = _Session(jobs, jobs)
+    service = DealJobService(session, org_id, user_id)
+
+    assert await service.get_active_stakeholder_processing_jobs(deal_id) == []
+    assert jobs[0].status == JobStatus.PENDING
+    assert jobs[0].job_metadata["enqueue_status"] == "failed"
+
+    active = await service.get_active_stakeholder_processing_jobs(deal_id)
+
+    assert [job["job_type"] for job in active] == ["stakeholder_sync"]
+    assert jobs[0].job_metadata["enqueue_status"] == "enqueued"
+    assert attempts == 2
 
 
 @pytest.mark.asyncio

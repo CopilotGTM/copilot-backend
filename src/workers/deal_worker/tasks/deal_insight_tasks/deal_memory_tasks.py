@@ -39,12 +39,12 @@ from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.infra.utils.task_lock import acquire_task_lock, release_task_lock
+from src.service.crm.jobs.deal_job_event_publisher import DealJobRedisPublisher
 from src.workers.deal_worker.celery_app import app
 from src.workers.deal_worker.services.deal_insight_services import (
     DealMemoryError,
     DealMemoryService,
 )
-from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
 from src.workers.deal_worker.utils.pipeline_dispatch import dispatch_deal_insight_pipeline
 
 logger = get_logger(__name__)

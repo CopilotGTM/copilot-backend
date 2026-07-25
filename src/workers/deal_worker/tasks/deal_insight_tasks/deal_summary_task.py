@@ -31,12 +31,12 @@ from src.domain.models.organisation_tables.job_models import DealJobs, JobStatus
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
+from src.service.crm.jobs.deal_job_event_publisher import DealJobRedisPublisher
 from src.workers.deal_worker.celery_app import app
 from src.workers.deal_worker.services.deal_insight_services import (
     DealSummaryError,
     DealSummaryService,
 )
-from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
 
 logger = get_logger(__name__)
 

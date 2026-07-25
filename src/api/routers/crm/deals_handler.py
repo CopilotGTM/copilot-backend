@@ -1310,7 +1310,6 @@ async def create_deal(
         await service.session.commit()
         await service.session.refresh(deal)
 
-        stakeholder_processing_enqueued = False
         processing_jobs = []
         job_service = DealJobService(
             service.session,
@@ -1319,13 +1318,10 @@ async def create_deal(
         )
         if inline_stakeholder_ids:
             try:
-                # The worker syncs the whole deal, so one participant only anchors the
-                # user-visible operation instead of enqueueing the same replay N times.
                 processing_jobs = await job_service.create_stakeholder_processing_jobs(
                     deal.deal_id,
-                    inline_stakeholder_ids[0],
+                    participant_ids=inline_stakeholder_ids,
                 )
-                stakeholder_processing_enqueued = True
             except Exception:
                 await service.session.rollback()
                 logger.error(
@@ -1346,7 +1342,7 @@ async def create_deal(
 
         if (
             request.contact_participants or request.primary_contact_email
-        ) and not stakeholder_processing_enqueued:
+        ) and not inline_stakeholder_ids:
             try:
                 processing_jobs = [
                     await job_service.create_communication_hydration_job(

@@ -236,10 +236,17 @@ async def test_create_deal_adds_selected_contacts_through_stakeholder_service(
             assert organisation_id == write_service.organisation_id
             assert actor_user_id == write_service.actor_user_id
 
-        async def create_stakeholder_processing_jobs(self, deal_id, stakeholder_id):
+        async def create_stakeholder_processing_jobs(
+            self,
+            deal_id,
+            stakeholder_id=None,
+            *,
+            participant_ids=None,
+        ):
             return await job_visibility_service.create_stakeholder_processing_jobs(
                 deal_id,
                 stakeholder_id,
+                participant_ids=participant_ids,
             )
 
     monkeypatch.setattr(
@@ -281,7 +288,8 @@ async def test_create_deal_adds_selected_contacts_through_stakeholder_service(
     stakeholder_service.trigger_deal_mapping_if_ready.assert_not_awaited()
     job_visibility_service.create_stakeholder_processing_jobs.assert_awaited_once_with(
         deal.deal_id,
-        participant_id,
+        None,
+        participant_ids=[participant_id, second_participant_id],
     )
     assert dispatch_research.await_args_list == [
         call(
@@ -375,7 +383,7 @@ async def test_create_deal_accepts_primary_contact_snapshot(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
-async def test_create_deal_keeps_success_when_stakeholder_job_visibility_fails(
+async def test_create_deal_does_not_duplicate_hydration_when_stakeholder_job_enqueue_fails(
     monkeypatch,
 ) -> None:
     contact_id = uuid4()
@@ -431,7 +439,14 @@ async def test_create_deal_keeps_success_when_stakeholder_job_visibility_fails(
         def __init__(self, *_args):
             pass
 
-        async def create_stakeholder_processing_jobs(self, _deal_id, _stakeholder_id):
+        async def create_stakeholder_processing_jobs(
+            self,
+            _deal_id,
+            _stakeholder_id=None,
+            *,
+            participant_ids=None,
+        ):
+            _ = participant_ids
             raise RuntimeError("job visibility failed")
 
         async def create_communication_hydration_job(self, deal_id):
@@ -474,8 +489,8 @@ async def test_create_deal_keeps_success_when_stakeholder_job_visibility_fails(
         contact_id=contact_id,
         user_id=write_service.actor_user_id,
     )
-    fallback_hydration.assert_awaited_once_with(deal.deal_id)
-    assert response.data.processing_jobs[0].job_id == fallback_job.job_id
+    fallback_hydration.assert_not_awaited()
+    assert response.data.processing_jobs == []
 
 
 # =============================================================================

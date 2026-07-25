@@ -1,313 +1,188 @@
-# Email Attachment Deal Assets
+# Email attachment deal assets
 
-This document explains how email attachments become deal assets in CopilotGTM.
-The flow runs in the deal worker after email-to-deal matching and also on a
-periodic catch-up schedule.
+This document describes how an associated Gmail or Outlook email becomes one or
+more deal assets.
 
-## Purpose
+## Ownership
 
-When a Gmail or Outlook email is associated with a deal, useful file attachments
-from that email should appear in the deal's Assets section. The backend does this
-by downloading the attachment from the email provider, storing it in Azure Blob
-Storage, creating a `DealAsset` row, and then dispatching the normal deal asset
-post-upload processing task.
-
-The feature is implemented as backend automation. It does not require a user to
-manually upload the attachment.
-
-## Scope
-
-This document covers email attachments from Gmail and Outlook email sync. Teams
-chat or channel file attachments follow the chat attachment ingestion path and
-are documented separately under the chat and Teams bot documentation.
-
-## Entry Points
-
-| Entry point | File | When it runs |
-|---|---|---|
-| Email matching trigger | `src/workers/deal_worker/tasks/deal_mappers/email_matching_tasks.py` | After email matching finds deals with newly associated emails |
-| Scheduled catch-up | `src/workers/deal_worker/config.py` | Every 30 minutes via `email-attachment-extraction` beat schedule |
-| All-org coordinator | `src/workers/deal_worker/tasks/deal_asset_email_attachment_tasks.py` | Dispatches org-level extraction for all approved organisations |
-| Org-level task | `src/workers/deal_worker/tasks/deal_asset_email_attachment_tasks.py` | Finds deals in one organisation that have emails with attachments |
-| Deal-level task | `src/workers/deal_worker/tasks/deal_asset_email_attachment_tasks.py` | Processes attachments for one specific deal |
-
-## High-Level Flow
-
-```mermaid
-flowchart TD
-    A[Email sync stores Gmail or Outlook emails] --> B[Email matching links emails to deals]
-    B --> C[Dispatch deal_asset.extract_email_attachments_deal]
-    D[Beat schedule every 30 minutes] --> E[deal_asset.extract_email_attachments_all_orgs]
-    E --> F[Find approved organisations]
-    F --> G[Dispatch deal_asset.extract_email_attachments_org]
-    G --> H[Find deals with ACTIVE email associations and has_attachments=true]
-    C --> I[Process one deal]
-    H --> I
-    I --> J[Load one downloadable email per internet_message_id]
-    J --> K[Get OAuth token through Nango]
-    K --> L{Provider}
-    L -->|Gmail| M[Fetch Gmail message payload format=full]
-    M --> N[Walk MIME parts and collect attachmentIds]
-    L -->|Outlook| O[List Microsoft Graph fileAttachment entries]
-    N --> P[Filter junk and unsupported MIME types]
-    O --> P
-    P --> Q[Build per-attachment source_record_id]
-    Q --> R[Skip source IDs already present on this deal]
-    R --> S[Download attachment bytes from provider]
-    S --> T[Upload bytes to Azure Blob Storage]
-    T --> U[Insert DealAsset source_type=email_attachment]
-    U --> V[Dispatch deal_asset.post_upload]
-    V --> W[Checksum, thumbnails, and normal asset processing]
-```
-
-## Celery Task Model
-
-The implementation follows the existing three-tier worker pattern:
-
-1. `deal_asset.extract_email_attachments_all_orgs`
-   - Reads approved organisations from the master schema.
-   - Dispatches one org task per approved organisation.
-
-2. `deal_asset.extract_email_attachments_org`
-   - Uses a Redis task lock per organisation to prevent overlapping org runs.
-   - Calls `DealAssetEmailAttachmentService.process_organisation()`.
-   - Finds candidate deals in that organisation.
-
-3. `deal_asset.extract_email_attachments_deal`
-   - Runs when email matching has just associated emails to a deal.
-   - Calls `DealAssetEmailAttachmentService.process_deal(deal_id)`.
-
-The scheduled task is a catch-up path. The per-deal task is the low-latency path
-that runs soon after email matching.
-
-## Service Flow
-
-Core logic lives in
-`src/workers/deal_worker/services/deal_asset_email_attachment_service.py`.
-
-For each deal:
-
-1. Query active `DealEmailAssociation` rows for the current organisation and
-   deal where the matching `Email` has `has_attachments == true`.
-2. Join to `KnowledgeIntegration` and keep only active integrations with a
-   `connection_id`.
-3. Pick one email record per `internet_message_id`. This prevents duplicate
-   downloads when the same email is synced through multiple users or providers.
-4. Get the provider access token through Nango.
-5. List attachment metadata from the provider.
-6. Filter non-useful or unsupported attachments.
-7. Build stable per-attachment source IDs.
-8. Skip source IDs that already exist as `DealAsset` rows for the same deal.
-9. Download provider attachment bytes.
-10. Upload bytes to Azure Blob Storage.
-11. Insert a `DealAsset` row with `source_type = email_attachment`.
-12. Dispatch `deal_asset.post_upload` for checksum and thumbnail processing.
-
-The service uses fresh database sessions. It does not hold a database session
-while calling Gmail, Microsoft Graph, Nango, or Azure Blob Storage.
-
-## Provider Behavior
-
-### Gmail
-
-Gmail attachment extraction uses:
-
-- `users.messages.get` with `format=full` to fetch the MIME part tree.
-- Recursive MIME traversal to find parts with `body.attachmentId`.
-- `users.messages.attachments.get` to download the attachment bytes.
-
-Gmail returns attachment content as URL-safe base64. The downloader restores
-missing padding and decodes the bytes before upload.
-
-Required permission: Gmail read access, currently satisfied by `gmail.readonly`.
-
-### Outlook Email
-
-Outlook attachment extraction uses Microsoft Graph:
-
-- `GET /me/messages/{message_id}/attachments` to list attachments.
-- Only `#microsoft.graph.fileAttachment` entries are processed.
-- `itemAttachment` entries, such as forwarded embedded emails, are skipped.
-- `GET /me/messages/{message_id}/attachments/{attachment_id}` downloads the
-  file attachment payload.
-
-Microsoft Graph returns attachment content in `contentBytes` as standard base64.
-
-Required permission: delegated mail read access for Outlook email sync.
-
-## Filtering Rules
-
-Filtering happens in two layers.
-
-### Junk Filtering
-
-`filter_junk_attachments()` removes attachments that are unlikely to be useful
-deal assets:
-
-| Rule | Reason |
+| Responsibility | Owner |
 |---|---|
-| File size > 25 MB | Bound runtime and storage cost |
-| File size < 1 KB | Usually tracking pixels or stubs |
-| `.ics` or `text/calendar` | Calendar integration already handles meeting context |
-| `.eml` or `message/rfc822` | Embedded emails are not file assets in the current UI |
-| `image001.png` style names | Common signature image pattern |
-| Small images under 100 KB | Usually logos, icons, or inline signatures |
+| Exact email-to-deal attachment signal | `src/service/crm/communications` |
+| Asset extraction and deduplication | `src/service/crm/assets/email_attachment_service.py` |
+| Gmail and Graph protocol behavior | `src/service/integrations/email/attachment_provider.py` |
+| Checksum, thumbnails, and asset state | `src/service/crm/assets/post_upload_service.py` |
+| Locks, retries, queue publication, and status-event publication | `src/workers/deal_worker/tasks` |
 
-### Supported MIME Policy
+Service modules do not import worker modules or publish Celery work.
 
-After junk filtering, the service checks the normalized MIME type against
-`chat_file_upload_config.ALLOWED_MIMETYPES`. Unsupported active content such as
-HTML is skipped before download and blob creation.
+## Entry points
 
-The MIME type is normalized before:
-
-- Comparing against the allowlist.
-- Uploading to Blob Storage.
-- Persisting in `DealAsset.mimetype`.
-
-## Deduplication
-
-Deduplication is per deal and per provider attachment, not just per email.
-
-The service builds:
+The normal path starts after communication hydration commits an active
+email-to-deal association:
 
 ```text
-email:{sha256(internet_message_id)[:16]}:attachment:{sha256(attachment_id)[:16]}
+email sync or deal replay
+  -> communication hydration commits associations
+  -> hydration returns exact attachment email IDs grouped by deal
+  -> deal_asset.extract_email_attachments_deal(email_ids=[...])
+  -> extraction commits PROCESSING assets
+  -> task publishes deal_asset.post_upload
+  -> post-upload commits ACTIVE or FAILED
+  -> task publishes the committed asset status event
 ```
 
-This value is stored in `DealAsset.source_record_id`. The service checks
-existing `DealAsset` rows for the same organisation, deal, source type, and
-source record ID before downloading.
+Thread history may be loaded to make a deal association decision, but only email
+IDs in the current hydration scope can emit attachment work. This prevents a
+single changed message from widening into a whole-thread or whole-deal provider
+scan.
 
-This matters because one email can contain multiple attachments. A previous
-email-level dedupe strategy could skip the remaining attachments if one
-attachment had already been processed. The current implementation dedupes at
-attachment level.
+The all-organisation and organisation tasks remain available for explicit
+operator repair. They are intentionally not registered in the periodic schedule.
 
-## Storage Path
+## Celery tasks
 
-Email attachment blobs are stored under:
+| Task | Purpose | Retries |
+|---|---|---:|
+| `deal_asset.extract_email_attachments_deal` | Extract one deal, optionally restricted to at most 100 exact email IDs | 3 |
+| `deal_asset.extract_email_attachments_org` | Locked operator repair for one organisation | 2 |
+| `deal_asset.extract_email_attachments_all_orgs` | Fan out operator repair to approved organisations | 0 |
+| `deal_asset.post_upload` | Compute media metadata and finalize one asset | 3 |
+
+The deal task accepts `email_ids=None` only for explicit broad repair. An empty
+list is rejected so an automatic caller cannot accidentally fall through to
+broad mode. When the per-run asset limit is reached, the task republishes
+bounded continuation chunks.
+
+The organisation task publishes every returned post-upload asset and bounded
+deal continuation. Any reported provider error makes the task retry rather than
+returning a successful-looking partial result.
+
+## Extraction
+
+For each canonical `internet_message_id`, extraction:
+
+1. Loads all active, non-deleted, organisation-owned mailbox copies associated
+   with the deal.
+2. Orders copies deterministically.
+3. Resolves the provider token through
+   `src.service.integrations.providers.token_resolution`.
+4. Lists Gmail MIME attachments or Microsoft Graph file attachments.
+5. Filters junk and unsupported MIME types.
+6. Tries the next mailbox copy when one copy cannot be read.
+7. Downloads bytes and computes SHA-256 before choosing the stable asset
+   identity.
+8. Reuses a matching legacy row when possible.
+9. Uploads to a deterministic blob path and inserts a `PROCESSING` `DealAsset`.
+10. Returns committed asset IDs to the task for post-upload publication.
+
+Database sessions are released before provider and Azure operations.
+
+### Provider behavior
+
+Gmail uses:
+
+- `users.messages.get?format=full` for the MIME tree;
+- recursive MIME-part traversal for `body.attachmentId`;
+- `users.messages.attachments.get` for URL-safe base64 content.
+
+Microsoft Graph uses:
+
+- `GET /me/messages/{message_id}/attachments`;
+- only `#microsoft.graph.fileAttachment` rows;
+- `GET /me/messages/{message_id}/attachments/{attachment_id}` for standard
+  base64 content.
+
+Provider path identifiers are URL-escaped. Decoded content over 25 MB is
+rejected.
+
+### Filtering
+
+The provider removes:
+
+- files over 25 MB or under 1 KB;
+- calendar (`.ics`) and forwarded-email (`.eml`) payloads;
+- signature-style image names;
+- images under 100 KB.
+
+Extraction then requires the normalized MIME type to exist in
+`chat_file_upload_config.ALLOWED_MIMETYPES`.
+
+## Stable identity and legacy compatibility
+
+New assets use a deal-scoped, mailbox-independent identity:
 
 ```text
-deal_assets/{deal_id}/email_attachments/{message_hash}/{attachment_hash}/{sanitized_filename}
+message_hash = sha256(internet_message_id)[:16]
+file_hash = sha256(casefold(safe_filename) + NUL + content_sha256)[:32]
+source_record_id = email:{message_hash}:file:{file_hash}
 ```
 
-Where:
+Mailbox-local provider attachment IDs remain provenance only in
+`asset_metadata.provider_attachment_id`.
 
-- `message_hash` is the first 12 characters of the SHA-256 hash of
-  `internet_message_id`.
-- `attachment_hash` is the first 12 characters of the SHA-256 hash of provider
-  `attachment_id`.
-- `sanitized_filename` removes unsafe characters and falls back to `attachment`
-  when the provider filename is empty.
+Before inserting a new row, extraction also checks legacy attachment-ID rows by
+canonical message ID, normalized filename, and checksum. If an old row has no
+checksum but has a blob, the service computes and persists that checksum before
+deciding whether to reuse it.
 
-## DealAsset Record
+The database unique constraint is the final concurrency guard. An insert
+conflict returns the winning `PROCESSING` or recoverable `FAILED` row for
+post-upload republication.
+
+## Storage and asset fields
+
+Blob paths are deterministic:
+
+```text
+deal_assets/{deal_id}/email_attachments/{message_hash}/{identity_hash}/{safe_filename}
+```
 
 Created rows use:
 
 | Field | Value |
 |---|---|
-| `organisation_id` | Current organisation security boundary |
-| `deal_id` | Current deal |
-| `added_by_user_id` | `AUTOMATED_PIPELINE_USER_ID` |
-| `name` / `filename` | Provider filename |
-| `mimetype` | Normalized MIME type |
-| `storage_path` | Azure Blob path |
 | `status` | `PROCESSING` |
-| `direction` | Mapped from `DealEmailAssociation.direction` |
 | `source_type` | `email_attachment` |
-| `source_record_id` | Per-attachment source ID |
-| `source_context` | Email subject context |
-| `asset_metadata.email_id` | Internal email row ID |
-| `asset_metadata.internet_message_id` | RFC message ID |
-| `asset_metadata.provider_attachment_id` | Gmail or Outlook attachment ID |
-| `asset_metadata.integration_type` | Gmail or Outlook integration type |
+| `checksum` | SHA-256 of downloaded bytes |
+| `direction` | `received`, `shared`, or `internal` from the association |
+| `added_by_user_id` | `AUTOMATED_PIPELINE_USER_ID` |
+| `asset_metadata` | Internal email ID, canonical message ID, provider attachment ID, and integration type |
 
-Direction mapping:
+## Post-upload state machine
 
-| Email direction | Asset direction |
-|---|---|
-| `INBOUND` | `received` |
-| `OUTBOUND` | `shared` |
-| `INTERNAL` | `internal` |
-| Unknown | `internal` |
+The post-upload service returns a structured outcome:
 
-## Download URLs
+- `processed`: checksum exists, optional thumbnails are committed, status is
+  `ACTIVE`;
+- `already_processed`: the existing `ACTIVE` row and event are reusable;
+- `retryable_failure`: the row is committed `FAILED` and the task retries;
+- `invalid`: missing asset or unusable input is terminal.
 
-Deal asset download URLs are generated through
-`DealAssetsService.generate_download_url()`. For file assets, it passes a
-download filename to Azure Blob SAS generation so the response uses attachment
-disposition rather than browser inline rendering.
+An asset is never marked `ACTIVE` without a checksum. Thumbnail failure is
+non-fatal only after a usable checksum exists. The service commits before
+returning its event; the task owns event publication and retries a publication
+failure safely.
 
-The blob storage layer sanitizes the filename before adding it to
-`Content-Disposition`.
+Manual uploads use the same post-upload task. If the API commits `PROCESSING`
+but broker publication fails, it returns HTTP 503. Repeating finalize returns
+the same `PROCESSING` row and republishes work.
 
-## Security and Isolation
-
-The flow enforces these boundaries:
-
-- Every org database query filters by `organisation_id`.
-- Deal processing receives `organisation_id` at service construction and
-  `deal_id` at task execution.
-- The integration join requires `KnowledgeIntegration.organisation_id` to match
-  the current organisation.
-- Database sessions are short-lived and released before provider and blob calls.
-- Unsupported MIME types are skipped before blob upload.
-- User-facing download filenames are sanitized before they reach
-  `Content-Disposition`.
-- The org-level task uses a Redis lock to avoid overlapping extraction for the
-  same organisation.
-
-## Failure Behavior
-
-Attachment processing is best-effort:
-
-- A failed attachment increments the error count but does not stop the rest of
-  the email.
-- A failed email increments the error count but does not stop the rest of the
-  deal.
-- A dedupe conflict returns skipped rather than failing the task.
-- If `deal_asset.post_upload` dispatch fails after insertion, the asset remains
-  in `PROCESSING` and must be recovered by operational cleanup or manual
-  re-dispatch.
-
-Task retry behavior:
-
-| Task | Retries | Lock |
-|---|---:|---|
-| Org extraction | 2 | Yes, per organisation |
-| Deal extraction | 3 | No |
-| All-org dispatch | 0 | No |
-
-## Operational Verification
-
-Run focused tests for this flow:
+## Verification
 
 ```bash
 uv run pytest \
-  tests/workers/integrations_worker/providers/email/test_attachment_downloader.py \
-  tests/workers/deal_worker/services/test_deal_asset_email_attachment_service.py \
-  tests/service/integrations/test_email_sync_service_gmail.py \
+  tests/service/integrations/email/test_attachment_provider.py \
+  tests/service/crm/assets \
+  tests/workers/deal_worker/tasks/test_deal_asset_email_attachment_tasks.py \
+  tests/workers/deal_worker/tasks/test_deal_asset_post_upload_task.py \
   tests/workers/deal_worker/tasks/test_email_attachment_task_registration.py \
-  tests/service/crm/test_deal_assets_service.py \
+  tests/workers/deal_worker/test_cron_dispatch.py \
+  tests/api/routers/crm/test_deal_assets_handler.py \
   -q
-```
 
-Run focused lint:
-
-```bash
 uv run ruff check \
-  src/workers/integrations_worker/providers/email/attachment_downloader.py \
-  src/workers/deal_worker/services/deal_asset_email_attachment_service.py \
+  src/service/crm/assets \
+  src/service/integrations/email/attachment_provider.py \
   src/workers/deal_worker/tasks/deal_asset_email_attachment_tasks.py \
-  src/workers/deal_worker/tasks/__init__.py \
-  src/service/integrations/email_sync_service.py \
-  src/service/crm/deal_assets_service.py \
-  src/infra/storage/azure_org_blob_storage.py
-```
-
-To verify task export wiring:
-
-```bash
-uv run pytest tests/workers/deal_worker/tasks/test_email_attachment_task_registration.py -q
+  src/workers/deal_worker/tasks/deal_asset_post_upload_task.py
 ```

@@ -70,6 +70,15 @@ def _stakeholder(*, stakeholder_id: UUID | None = None, deal_id: UUID | None = N
     )
 
 
+def _write_result(stakeholder, *, created: bool = True, reactivated: bool = False):
+    return SimpleNamespace(
+        stakeholder=stakeholder,
+        created=created,
+        reactivated=reactivated,
+        reused=not created and not reactivated,
+    )
+
+
 @pytest.mark.asyncio
 async def test_add_stakeholder_direct_requires_email() -> None:
     result = await add_stakeholder_direct(
@@ -116,7 +125,7 @@ async def test_add_stakeholder_direct_rejects_invalid_enum_values() -> None:
 async def test_add_stakeholder_direct_rejects_internal_email_service_error() -> None:
     with patch("src.agents.tools.crm.add_stakeholder.StakeholderWriteService") as service_cls:
         service = MagicMock()
-        service.create_stakeholder = AsyncMock(
+        service.create_stakeholder_with_outcome = AsyncMock(
             side_effect=StakeholdersServiceError(
                 "This email belongs to an internal team member and cannot be added "
                 "as a stakeholder. Stakeholders must be external contacts only.",
@@ -154,7 +163,7 @@ async def test_add_stakeholder_direct_creates_stakeholder_and_dispatches_jobs() 
         patch("src.agents.tools.crm.add_stakeholder.DealJobService") as job_service_cls,
     ):
         service = MagicMock()
-        service.create_stakeholder = AsyncMock(return_value=stakeholder)
+        service.create_stakeholder_with_outcome = AsyncMock(return_value=_write_result(stakeholder))
         service_cls.return_value = service
         job_service = MagicMock()
         job_service.create_stakeholder_processing_jobs = AsyncMock(return_value=processing_jobs)
@@ -183,7 +192,7 @@ async def test_add_stakeholder_direct_creates_stakeholder_and_dispatches_jobs() 
     access_actor = service_cls.call_args.kwargs["access_actor"]
     assert access_actor.user_id == context.user_id
     assert access_actor.email == context.user_email
-    request = service.create_stakeholder.await_args.args[1]
+    request = service.create_stakeholder_with_outcome.await_args.args[1]
     assert request.email == "BUYER@ACME.COM"
     assert request.name == "Buyer Person"
     assert request.job_title == "VP Sales"
@@ -233,7 +242,7 @@ async def test_add_stakeholder_direct_dispatches_contact_research_for_contact_ba
         ) as contact_research_dispatch,
     ):
         service = MagicMock()
-        service.create_stakeholder = AsyncMock(return_value=stakeholder)
+        service.create_stakeholder_with_outcome = AsyncMock(return_value=_write_result(stakeholder))
         service_cls.return_value = service
         job_service = MagicMock()
         job_service.create_stakeholder_processing_jobs = AsyncMock(return_value=[])
@@ -272,7 +281,7 @@ async def test_add_stakeholder_direct_does_not_research_unlinked_linkedin_placeh
         patch("src.agents.tools.crm.add_stakeholder.DealJobService") as job_service_cls,
     ):
         service = MagicMock()
-        service.create_stakeholder = AsyncMock(return_value=stakeholder)
+        service.create_stakeholder_with_outcome = AsyncMock(return_value=_write_result(stakeholder))
         service_cls.return_value = service
         job_service = MagicMock()
         job_service.create_stakeholder_processing_jobs = AsyncMock(return_value=[])
@@ -303,7 +312,7 @@ async def test_add_stakeholder_direct_returns_success_when_processing_jobs_fail(
         patch("src.agents.tools.crm.add_stakeholder.DealJobService") as job_service_cls,
     ):
         service = MagicMock()
-        service.create_stakeholder = AsyncMock(return_value=stakeholder)
+        service.create_stakeholder_with_outcome = AsyncMock(return_value=_write_result(stakeholder))
         service_cls.return_value = service
         job_service = MagicMock()
         job_service.create_stakeholder_processing_jobs = AsyncMock(
@@ -347,7 +356,7 @@ async def test_add_stakeholder_direct_returns_success_when_research_dispatch_fai
         ),
     ):
         service = MagicMock()
-        service.create_stakeholder = AsyncMock(return_value=stakeholder)
+        service.create_stakeholder_with_outcome = AsyncMock(return_value=_write_result(stakeholder))
         service_cls.return_value = service
         job_service = MagicMock()
         job_service.create_stakeholder_processing_jobs = AsyncMock(return_value=processing_jobs)
@@ -380,7 +389,7 @@ async def test_add_stakeholder_direct_preserves_conflict_data() -> None:
 
     with patch("src.agents.tools.crm.add_stakeholder.StakeholderWriteService") as service_cls:
         service = MagicMock()
-        service.create_stakeholder = AsyncMock(
+        service.create_stakeholder_with_outcome = AsyncMock(
             side_effect=StakeholdersServiceError(
                 "A stakeholder with this email already exists for this deal",
                 status_code=409,

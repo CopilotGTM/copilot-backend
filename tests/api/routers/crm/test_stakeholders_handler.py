@@ -423,6 +423,7 @@ class TestCreateStakeholder:
         assert body["status"] == "SUCCESS"
         assert body["data"]["stakeholder"]["participant_id"] == str(active.participant_id)
         assert body["data"]["stakeholder"]["name"] == "Duplicate"
+        assert body["data"]["processing_jobs"] == []
 
 
 class TestGetDealStakeholders:

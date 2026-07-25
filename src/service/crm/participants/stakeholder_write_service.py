@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.contracts.crm.stakeholders import (
@@ -26,7 +26,10 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
     CRMParticipantType,
 )
-from src.domain.models.organisation_tables.sync.crm.stakeholders import StakeholderSource
+from src.domain.models.organisation_tables.sync.crm.stakeholders import (
+    ApprovalStatus,
+    StakeholderSource,
+)
 from src.infra.utils.logger import get_logger
 from src.service.crm.access.record_access_policy import (
     CRMAccessActor,
@@ -41,7 +44,11 @@ from src.service.crm.contacts.resolution_service import (
 )
 from src.service.crm.contacts.write_service import ContactWriteService
 from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
-from src.service.crm.participants.contracts import StakeholderWriteContext
+from src.service.crm.participants.contracts import (
+    CommunicationStakeholderWriteResult,
+    StakeholderWriteContext,
+    StakeholderWriteResult,
+)
 from src.service.crm.participants.errors import StakeholdersServiceError
 from src.service.crm.participants.stakeholder_adapter import (
     participant_to_stakeholder_detail_dict,
@@ -105,6 +112,97 @@ class StakeholderWriteService:
     def session(self) -> AsyncSession:
         """Return the org-scoped DB session for this service instance."""
         return self.org_session
+
+    async def add_communication_discovered_contacts(
+        self,
+        *,
+        deal_id: UUID,
+        integration_id: UUID,
+        customer_domains: frozenset[str],
+        contact_emails_by_id: dict[UUID, str],
+        source: StakeholderSource,
+    ) -> CommunicationStakeholderWriteResult:
+        """Add same-customer communication participants, capped to one approved hop."""
+        if not contact_emails_by_id:
+            return CommunicationStakeholderWriteResult()
+        await self.session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+            {"lock_key": f"communication-participants:{self.organisation_id}:{deal_id}"},
+        )
+        rows = await self.session.execute(
+            select(CRMDealParticipant).where(
+                col(CRMDealParticipant.organisation_id) == self.organisation_id,
+                col(CRMDealParticipant.deal_id) == deal_id,
+                col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT,
+            )
+        )
+        existing = list(rows.scalars().all())
+        existing_contact_ids = {
+            participant.related_local_id
+            for participant in existing
+            if participant.related_local_id is not None
+        }
+        discovery_sources = {
+            StakeholderSource.EMAIL_DISCOVERY.value,
+            StakeholderSource.CALENDAR_DISCOVERY.value,
+        }
+        discovered_count = sum(
+            participant.participant_source in discovery_sources and not participant.is_deleted
+            for participant in existing
+        )
+        approved = {
+            participant.related_local_id
+            for participant in existing
+            if participant.related_local_id in contact_emails_by_id
+            and participant.participant_source in discovery_sources
+            and participant.approval_status == ApprovalStatus.APPROVED.value
+            and not participant.is_deleted
+        }
+        now = datetime.now(UTC)
+        created = False
+        approved_added = 0
+        pending_added = 0
+        skipped_domain = 0
+        for contact_id in sorted(contact_emails_by_id.keys() - existing_contact_ids, key=str):
+            email = contact_emails_by_id[contact_id]
+            if extract_email_domain(email) not in customer_domains:
+                skipped_domain += 1
+                continue
+            approval_status = (
+                ApprovalStatus.APPROVED.value
+                if discovered_count < 5
+                else ApprovalStatus.PENDING.value
+            )
+            self.session.add(
+                CRMDealParticipant(
+                    organisation_id=self.organisation_id,
+                    integration_id=integration_id,
+                    deal_id=deal_id,
+                    participant_type=CRMParticipantType.CONTACT,
+                    related_local_id=contact_id,
+                    related_email=email,
+                    participant_source=source.value,
+                    approval_status=approval_status,
+                    last_seen_at=now,
+                    source_modified_at=now,
+                    synced_at=now,
+                )
+            )
+            created = True
+            discovered_count += 1
+            if approval_status == ApprovalStatus.APPROVED.value:
+                approved.add(contact_id)
+                approved_added += 1
+            else:
+                pending_added += 1
+        if created:
+            await self.session.flush()
+        return CommunicationStakeholderWriteResult(
+            approved_contact_ids=frozenset(approved),
+            approved_added=approved_added,
+            pending_added=pending_added,
+            skipped_domain=skipped_domain,
+        )
 
     async def _finish_write(self, obj: object | None = None) -> None:
         """Flush pending stakeholder/contact/activity changes before returning DTOs."""
@@ -660,6 +758,22 @@ class StakeholderWriteService:
         *,
         context: StakeholderWriteContext | None = None,
     ) -> StakeholderDetail:
+        """Create or reuse a stakeholder and return the compatibility DTO."""
+        return (
+            await self.create_stakeholder_with_outcome(
+                deal_id,
+                request,
+                context=context,
+            )
+        ).stakeholder
+
+    async def create_stakeholder_with_outcome(
+        self,
+        deal_id: UUID,
+        request: CreateStakeholderRequest,
+        *,
+        context: StakeholderWriteContext | None = None,
+    ) -> StakeholderWriteResult:
         """Manually create a new stakeholder for a deal.
 
         Args:
@@ -774,6 +888,7 @@ class StakeholderWriteService:
             include_deleted=True,
         )
         if existing_participant:
+            was_deleted = existing_participant.is_deleted
             # Existing stakeholder identity is an upsert target. Keep the row ID
             # stable so activity and research references do not split across rows.
             updates = request.model_dump(exclude_unset=True)
@@ -801,7 +916,12 @@ class StakeholderWriteService:
             await self._set_primary_contact_if_first_stakeholder(deal_id, existing_participant)
             await self._finish_write(existing_participant)
             contact = await self._get_participant_contact(existing_participant)
-            return self._participant_detail(existing_participant, contact=contact)
+            return StakeholderWriteResult(
+                stakeholder=self._participant_detail(existing_participant, contact=contact),
+                created=False,
+                reactivated=was_deleted,
+                reused=not was_deleted,
+            )
 
         participant = await self._ensure_deal_participant(
             deal_id=deal_id,
@@ -842,7 +962,12 @@ class StakeholderWriteService:
         await self._finish_write(participant)
 
         contact = await self._get_participant_contact(participant)
-        return self._participant_detail(participant, contact=contact)
+        return StakeholderWriteResult(
+            stakeholder=self._participant_detail(participant, contact=contact),
+            created=True,
+            reactivated=False,
+            reused=False,
+        )
 
     async def update_stakeholder(
         self,

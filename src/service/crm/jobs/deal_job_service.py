@@ -130,9 +130,17 @@ class DealJobService:
     async def create_stakeholder_processing_jobs(
         self,
         deal_id: UUID,
-        stakeholder_id: UUID,
+        stakeholder_id: UUID | None = None,
+        *,
+        participant_ids: list[UUID] | None = None,
     ) -> list[DealJobs]:
         """Create one user-requested job spanning stakeholder sync and hydration."""
+        affected_participant_ids = list(
+            dict.fromkeys(participant_ids or ([stakeholder_id] if stakeholder_id else []))
+        )
+        if not affected_participant_ids:
+            raise ValueError("At least one participant ID is required")
+        deal_level_action = participant_ids is not None
         operation_group_id = str(uuid4())
         job = DealJobs(
             organisation_id=self.organisation_id,
@@ -140,14 +148,20 @@ class DealJobService:
             job_type=DealJobType.STAKEHOLDER_SYNC,
             deal_id=deal_id,
             event_id=None,
-            stakeholder_id=stakeholder_id,
+            stakeholder_id=None if deal_level_action else stakeholder_id,
             status=JobStatus.PENDING,
             job_metadata={
                 "trigger": "stakeholder_created",
                 "enqueue_status": "pending",
                 "operation_group_id": operation_group_id,
-                "stakeholder_id": str(stakeholder_id),
-                "participant_id": str(stakeholder_id),
+                **(
+                    {"participant_ids": [str(value) for value in affected_participant_ids]}
+                    if deal_level_action
+                    else {
+                        "stakeholder_id": str(stakeholder_id),
+                        "participant_id": str(stakeholder_id),
+                    }
+                ),
                 "deal_id": str(deal_id),
             },
         )
@@ -168,7 +182,6 @@ class DealJobService:
                 queue="deal",
             )
         except Exception:
-            job.status = JobStatus.FAILED
             job.error_message = "Failed to enqueue stakeholder processing chain"
             job.job_metadata = {**_metadata(job), "enqueue_status": "failed"}
             await self.session.commit()
@@ -416,7 +429,6 @@ class DealJobService:
                 )
             except Exception:
                 for job in ordered_jobs:
-                    job.status = JobStatus.FAILED
                     job.error_message = "Failed to enqueue stakeholder processing chain"
                     job.job_metadata = {**_metadata(job), "enqueue_status": "failed"}
                 await self.session.commit()
@@ -428,6 +440,7 @@ class DealJobService:
                 continue
 
             for job in ordered_jobs:
+                job.error_message = None
                 job.job_metadata = {
                     **_metadata(job),
                     "enqueue_status": "enqueued",

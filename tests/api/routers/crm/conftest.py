@@ -6,6 +6,7 @@ the stakeholder, insight, and deal API endpoints without database dependencies.
 
 import logging
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -483,6 +484,22 @@ class FakeStakeholdersService:
         _ = context
         self.add_stakeholder(stakeholder)
         return stakeholder
+
+    async def create_stakeholder_with_outcome(self, deal_id: UUID, request, *, context=None):
+        """Return explicit create/reactivate/reuse metadata like the production writer."""
+        prior = {
+            stakeholder.participant_id: stakeholder.is_deleted
+            for stakeholder in self._stakeholders.get(deal_id, [])
+        }
+        stakeholder = await self.create_stakeholder(deal_id, request, context=context)
+        was_present = stakeholder.participant_id in prior
+        was_deleted = prior.get(stakeholder.participant_id, False)
+        return SimpleNamespace(
+            stakeholder=stakeholder,
+            created=not was_present,
+            reactivated=was_present and was_deleted,
+            reused=was_present and not was_deleted,
+        )
 
     async def trigger_deal_mapping_if_ready(self, deal_id: UUID) -> None:
         """No-op stand-in for the current post-create mapping dispatch."""
@@ -1362,7 +1379,9 @@ class FakeDealJobService:
     async def create_stakeholder_processing_jobs(
         self,
         deal_id: UUID,
-        stakeholder_id: UUID,
+        stakeholder_id: UUID | None = None,
+        *,
+        participant_ids: list[UUID] | None = None,
     ) -> list[FakeDealJob]:
         """Create the one visible job spanning stakeholder sync and hydration."""
         job = FakeDealJob(
@@ -1370,7 +1389,7 @@ class FakeDealJobService:
             deal_id=deal_id,
             organisation_id=self.organisation_id,
             job_type=DealJobType.STAKEHOLDER_SYNC,
-            stakeholder_id=stakeholder_id,
+            stakeholder_id=stakeholder_id if participant_ids is None else None,
         )
         self.add_job(job)
         return [job]

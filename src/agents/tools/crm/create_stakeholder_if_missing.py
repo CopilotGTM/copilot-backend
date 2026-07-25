@@ -31,6 +31,7 @@ from src.service.crm.guards.internal_user_guard import is_internal_email
 from src.service.crm.insights.stakeholders_service import (
     StakeholdersServiceError,
 )
+from src.service.crm.jobs.deal_job_service import DealJobService
 from src.service.crm.participants.contracts import StakeholderWriteContext
 from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 from src.workers.deal_worker.utils.contact_research_dispatch import (
@@ -154,9 +155,14 @@ def _format_create_output(
         "updated_fields": [],
         "updated": False,
         "created": action == "created",
+        "reactivated": action == "reactivated",
         "message": "Stakeholder created successfully"
         if action == "created"
-        else "No changes applied to stakeholder",
+        else (
+            "Stakeholder reactivated successfully"
+            if action == "reactivated"
+            else "No changes applied to stakeholder"
+        ),
     }
 
 
@@ -216,7 +222,7 @@ async def create_stakeholder_if_missing(
             stakeholder = await service._find_contact_participant(
                 deal_id=actual_deal_id,
                 email=email,
-                include_deleted=True,
+                include_deleted=False,
             )
 
             if stakeholder:
@@ -230,7 +236,7 @@ async def create_stakeholder_if_missing(
                 return result
 
             try:
-                new_stakeholder = await service.create_stakeholder(
+                write_result = await service.create_stakeholder_with_outcome(
                     actual_deal_id,
                     CreateStakeholderRequest(
                         email=email,
@@ -255,28 +261,55 @@ async def create_stakeholder_if_missing(
                 return None
 
             await session.commit()
+            new_stakeholder = write_result.stakeholder
+            changed_membership = write_result.created or write_result.reactivated
 
-            # Dispatch contact research after the stakeholder create commits.
-            try:
-                await dispatch_contact_research_for_contact(
-                    organisation_id=organisation_id,
-                    contact_id=_stakeholder_contact_id(new_stakeholder),
-                    user_id=context.user_id,
-                    trigger="stakeholder_created",
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to dispatch research for %s",
-                    new_stakeholder.participant_id,
-                    exc_info=True,
-                )
+            if changed_membership:
+                try:
+                    await DealJobService(
+                        session,
+                        organisation_id,
+                        context.user_id or AUTOMATED_PIPELINE_USER_ID,
+                    ).create_stakeholder_processing_jobs(
+                        actual_deal_id,
+                        new_stakeholder.participant_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to dispatch stakeholder processing for %s",
+                        new_stakeholder.participant_id,
+                        exc_info=True,
+                    )
 
+            if changed_membership:
+                # Dispatch contact research after the stakeholder create commits.
+                try:
+                    await dispatch_contact_research_for_contact(
+                        organisation_id=organisation_id,
+                        contact_id=_stakeholder_contact_id(new_stakeholder),
+                        user_id=context.user_id,
+                        trigger="stakeholder_created",
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to dispatch research for %s",
+                        new_stakeholder.participant_id,
+                        exc_info=True,
+                    )
+
+            action = (
+                "created"
+                if write_result.created
+                else "reactivated"
+                if write_result.reactivated
+                else "already_exists"
+            )
             result = _format_create_output(
                 new_stakeholder,
-                action="created",
+                action=action,
             )
             result["deal_id"] = str(actual_deal_id)
-            result["action"] = "created"
+            result["action"] = action
             return result
         except AgentCRMAccessError:
             logger.info("create_stakeholder_if_missing: deal not visible to agent actor")

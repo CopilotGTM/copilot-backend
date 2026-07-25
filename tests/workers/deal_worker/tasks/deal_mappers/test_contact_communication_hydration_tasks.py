@@ -61,7 +61,7 @@ def test_requested_hydration_completes_the_supplied_visible_job(
     result = SimpleNamespace(
         email_deal_ids=set(),
         discovered_contact_ids=set(),
-        attachment_deal_ids=set(),
+        attachment_email_ids_by_deal={},
         to_dict=lambda: {"associations_created": 2},
     )
     service = SimpleNamespace(backfill_deals=AsyncMock(return_value=result))
@@ -257,6 +257,7 @@ async def test_hydration_followups_research_contacts_and_process_email_deals() -
     contact_id = uuid4()
     deal_id = uuid4()
     memory_job_id = uuid4()
+    email_id = uuid4()
 
     with (
         patch(
@@ -277,7 +278,7 @@ async def test_hydration_followups_research_contacts_and_process_email_deals() -
             organisation_id=organisation_id,
             discovered_contact_ids={contact_id},
             email_deal_jobs={deal_id: memory_job_id},
-            attachment_deal_ids={deal_id},
+            attachment_email_ids_by_deal={deal_id: {email_id}},
         )
 
     research.assert_awaited_once_with(
@@ -286,6 +287,7 @@ async def test_hydration_followups_research_contacts_and_process_email_deals() -
         trigger="communication_participant_discovery",
     )
     attachments.apply_async.assert_called_once()
+    assert attachments.apply_async.call_args.kwargs["kwargs"]["email_ids"] == [str(email_id)]
     assert attachments.apply_async.call_args.kwargs["retry"] is True
     assert attachments.apply_async.call_args.kwargs["retry_policy"]["max_retries"] == 3
     insights.assert_called_once_with(
@@ -293,6 +295,40 @@ async def test_hydration_followups_research_contacts_and_process_email_deals() -
         str(deal_id),
         str(memory_job_id),
     )
+
+
+@pytest.mark.asyncio
+async def test_hydration_followups_chunk_exact_attachment_email_ids() -> None:
+    """Large replays stay bounded and never fall back to a deal-wide scan."""
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    email_ids = {uuid4() for _ in range(101)}
+
+    with (
+        patch(
+            "src.workers.deal_worker.tasks.deal_mappers."
+            "contact_communication_hydration_tasks.extract_email_attachments_deal_task"
+        ) as attachments,
+        patch(
+            "src.workers.deal_worker.tasks.deal_mappers."
+            "contact_communication_hydration_tasks.dispatch_deal_insight_pipeline"
+        ),
+    ):
+        await _dispatch_association_followups(
+            organisation_id=organisation_id,
+            discovered_contact_ids=set(),
+            email_deal_jobs={deal_id: uuid4()},
+            attachment_email_ids_by_deal={deal_id: email_ids},
+        )
+
+    assert attachments.apply_async.call_count == 2
+    payloads = [
+        call.kwargs["kwargs"]["email_ids"] for call in attachments.apply_async.call_args_list
+    ]
+    assert [len(payload) for payload in payloads] == [100, 1]
+    assert {value for payload in payloads for value in payload} == {
+        str(email_id) for email_id in email_ids
+    }
 
 
 @pytest.mark.asyncio
@@ -315,7 +351,7 @@ async def test_hydration_followups_skip_attachments_without_signal_but_keep_insi
             organisation_id=organisation_id,
             discovered_contact_ids=set(),
             email_deal_jobs={deal_id: memory_job_id},
-            attachment_deal_ids=set(),
+            attachment_email_ids_by_deal={},
         )
 
     attachments.apply_async.assert_not_called()
@@ -348,7 +384,7 @@ async def test_hydration_followups_keep_insights_when_attachment_publish_fails()
                 organisation_id=organisation_id,
                 discovered_contact_ids=set(),
                 email_deal_jobs={deal_id: memory_job_id},
-                attachment_deal_ids={deal_id},
+                attachment_email_ids_by_deal={deal_id: {uuid4()}},
             )
 
     insights.assert_called_once_with(

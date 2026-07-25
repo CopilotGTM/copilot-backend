@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-import src.workers.deal_worker.services.deal_mapper_services.deal_mapping_backfill_claim_service as backfill_module
+import src.workers.deal_worker.services.deal_mapping_backfill_claim_service as backfill_module
 from src.domain.models.organisation_tables.job_models import DealJobType, JobStatus
-from src.workers.deal_worker.services.deal_mapper_services.deal_mapping_backfill_claim_service import (
+from src.workers.deal_worker.services.deal_mapping_backfill_claim_service import (
     INITIAL_BACKFILL_CANDIDATE_SCAN_LIMIT,
     DealMappingBackfillClaimService,
 )

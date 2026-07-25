@@ -310,7 +310,7 @@ async def create_stakeholder(
     """
     try:
         command = CreateStakeholderCommand.model_validate(request.model_dump())
-        stakeholder_result = await service.create_stakeholder(
+        write_result = await service.create_stakeholder_with_outcome(
             deal_id,
             command,
             context=StakeholderWriteContext(
@@ -321,10 +321,10 @@ async def create_stakeholder(
             ),
         )
         await service.session.commit()
-        stakeholder = _to_api_model(StakeholderDetail, stakeholder_result)
+        stakeholder = _to_api_model(StakeholderDetail, write_result.stakeholder)
         processing_jobs = []
         research_job = None
-        if stakeholder.email:
+        if stakeholder.email and (write_result.created or write_result.reactivated):
             processing_jobs = await deal_job_service.create_stakeholder_processing_jobs(
                 deal_id,
                 stakeholder.participant_id,

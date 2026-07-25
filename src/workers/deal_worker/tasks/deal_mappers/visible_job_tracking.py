@@ -10,7 +10,7 @@ from src.domain.models.organisation_tables.job_models import (
     JobStatus,
 )
 from src.infra.database.sessions import acquire_org_async_session
-from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
+from src.service.crm.jobs.deal_job_event_publisher import DealJobRedisPublisher
 
 
 class VisibleDealJobTracker:

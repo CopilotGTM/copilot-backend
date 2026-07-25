@@ -8,13 +8,25 @@ compatibility facades from leaking tuple shapes into the new service boundary.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Literal
 from uuid import UUID
 
+from src.contracts.crm.stakeholders import StakeholderDetail
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealParticipant
 
 ParticipantChangedReason = Literal["created", "restored", "updated", "skipped"]
 ParticipantMatchedBy = Literal["contact_id", "email", "company_id", "user_id", "created"]
+
+
+class StakeholderChangeType(str, Enum):
+    """Stable reasons serialized in stakeholder-sync task payloads."""
+
+    NEW_DEAL = "NEW_DEAL"
+    PARTICIPANT_ADDED = "PARTICIPANT_ADDED"
+    PARTICIPANT_UPDATED = "PARTICIPANT_UPDATED"
+    PARTICIPANT_REMOVED = "PARTICIPANT_REMOVED"
+    MANUAL_REFRESH = "MANUAL_REFRESH"
 
 
 @dataclass(frozen=True)
@@ -64,10 +76,20 @@ class ParticipantWriteResult:
 class StakeholderWriteResult:
     """Canonical result for stakeholder semantic writes."""
 
-    participant_id: UUID
-    participant: CRMDealParticipant
+    stakeholder: StakeholderDetail
     created: bool
-    matched_by: ParticipantMatchedBy
+    reactivated: bool
+    reused: bool
+
+
+@dataclass(frozen=True)
+class CommunicationStakeholderWriteResult:
+    """Outcome of one communication-discovered participant write batch."""
+
+    approved_contact_ids: frozenset[UUID] = frozenset()
+    approved_added: int = 0
+    pending_added: int = 0
+    skipped_domain: int = 0
 
 
 class ParticipantServiceError(Exception):

@@ -27,7 +27,6 @@ src/workers/deal_worker/
 |   |-- deal_insight_services/ # Meeting-level AI services
 |   |   |-- meeting_prep_service.py    # Meeting briefing generation
 |   |   `-- meeting_summary_service.py # Meeting summary generation
-|   |-- deal_job_publisher.py  # Redis Stream publisher for SSE updates
 |   |-- deal_job_utils.py      # Shared helpers (context builders, fetchers)
 |   |-- deal_meeting_matcher.py
 |   |-- deal_summary_service.py
@@ -56,7 +55,7 @@ src/workers/deal_worker/
   - `stakeholder_service.py` - persists stakeholders discovered from CRM contacts and meeting attendees.
   - `stakeholder_analysis_service.py` - batches stakeholders per deal, builds transcript context, runs `StakeholderAnalysisAgent`, and writes stance/power insights back.
   - `deal_insight_services/` - Contains `MeetingPrepService` and `MeetingSummaryService` that power the AI-driven meeting briefings and summaries. Each follows the fresh session pattern for efficient DB connection management.
-  - `deal_job_publisher.py` - publishes progress/results via Redis Streams for SSE consumption.
+  - `src/service/crm/jobs/deal_job_event_publisher.py` - publishes progress/results via Redis Streams for SSE consumption.
   - `deal_summary_service.py` - orchestrates deal-level transcript aggregation and calls `DealSummaryAgent`, persisting the output on `CRMDeal`.
 
 ---

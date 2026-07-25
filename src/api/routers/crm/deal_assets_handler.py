@@ -32,7 +32,10 @@ from src.api.schemas.deal_asset_models import (
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.deal_asset_models import DealAsset
 from src.infra.utils.logger import get_logger
-from src.service.crm.deal_assets_service import DealAssetsService, DealAssetsServiceError
+from src.service.crm.assets.deal_assets_service import (
+    DealAssetsService,
+    DealAssetsServiceError,
+)
 from src.service.crm.deal_assets_sse_service import DealAssetSSEService
 from src.workers.deal_worker.client import send_deal_task_async
 from sse_starlette.sse import EventSourceResponse
@@ -187,6 +190,7 @@ async def stream_deal_asset_updates(
     service = DealAssetSSEService(organisation_id=user_ids.organisation_id)
 
     async def event_generator():
+        """Yield deal events and release the subscriber connection on exit."""
         try:
             async for event in service.stream_events(deal_id=deal_id):
                 yield event
@@ -329,11 +333,15 @@ async def finalize_file_upload(
                 routing_key="deal",
             )
         except Exception:
-            logger.warning(
-                "Failed to queue post-upload task for asset %s — "
-                "asset saved as processing, worker will retry",
+            logger.error(
+                "Failed to queue post-upload task for asset %s",
                 request.asset_id,
                 exc_info=True,
+            )
+            return Response.error_response(
+                message="Upload saved, but processing could not be queued. Retry finalize.",
+                status_code=503,
+                response=response,
             )
 
         item = await _map_asset_to_item(asset, service)

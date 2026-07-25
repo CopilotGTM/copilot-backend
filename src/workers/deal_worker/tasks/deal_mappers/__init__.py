@@ -3,8 +3,8 @@
 This module contains the task architecture for deal mapping:
 
 Live email/calendar sync and stakeholder changes converge on
-``deal.hydrate_contact_communications``. The older split mapper tasks remain
-through one worker entrypoint.
+``deal.hydrate_contact_communications``. The older split mapper behavior is
+consolidated behind this worker entrypoint.
 """
 
 from src.workers.deal_worker.tasks.deal_mappers.contact_communication_hydration_tasks import (

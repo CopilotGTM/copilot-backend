@@ -1,9 +1,9 @@
-"""Participant-backed stakeholder sync service.
+"""Participant-owned stakeholder normalization service.
 
 The public task name still says "stakeholder sync", but the canonical deal-person
 state is now `CRMDealParticipant`. This service normalizes contact participants,
-links them to durable contacts, rejects internal participants, and queues
-contact research without writing the old stakeholder table.
+links them to durable contacts, rejects internal participants, and returns
+contact research candidates without writing the old stakeholder table.
 """
 
 from __future__ import annotations
@@ -44,6 +44,8 @@ class StakeholderSyncResult:
     deactivated: int = 0
     rejected: int = 0
     skipped: int = 0
+    replay_required: bool = False
+    research_contact_ids: set[UUID] = field(default_factory=set)
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -53,8 +55,8 @@ class StakeholderSyncResult:
 
     @property
     def requires_rematching(self) -> bool:
-        """Return whether new stakeholder participants require downstream rematching."""
-        return self.created > 0
+        """Return whether normalized participant state requires communication replay."""
+        return self.replay_required
 
 
 @dataclass
@@ -69,6 +71,8 @@ class OrgStakeholderSyncResult:
     stakeholders_updated: int = 0
     stakeholders_deactivated: int = 0
     stakeholders_rejected: int = 0
+    replay_required: bool = False
+    research_contact_ids: set[UUID] = field(default_factory=set)
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -78,8 +82,8 @@ class OrgStakeholderSyncResult:
 
     @property
     def requires_rematching(self) -> bool:
-        """Return whether any deal created new stakeholder participants."""
-        return self.stakeholders_created > 0
+        """Return whether any normalized deal requires communication replay."""
+        return self.replay_required
 
 
 class StakeholderSyncService:
@@ -89,14 +93,11 @@ class StakeholderSyncService:
         self,
         organisation_id: UUID,
         *,
-        suppress_research_dispatch: bool = False,
         org_sync_batch_size: int = 100,
     ) -> None:
         self.organisation_id = organisation_id
-        self._suppress_research_dispatch = suppress_research_dispatch
         self._org_sync_batch_size = max(1, org_sync_batch_size)
         self._internal_domains: set[str] | None = None
-        self._pending_research: list[UUID] = []
 
     @staticmethod
     def _normalize_email(email: str) -> str:
@@ -152,7 +153,6 @@ class StakeholderSyncService:
         for batch in self._iter_batches(deal_ids):
             async for session in acquire_org_async_session(self.organisation_id):
                 for deal_id in batch:
-                    pending_research_start = len(self._pending_research)
                     try:
                         async with self._deal_savepoint(session):
                             deal_result = await self._sync_deal_internal(session, deal_id)
@@ -162,12 +162,15 @@ class StakeholderSyncService:
                         result.stakeholders_updated += deal_result.updated
                         result.stakeholders_deactivated += deal_result.deactivated
                         result.stakeholders_rejected += deal_result.rejected
+                        result.replay_required = (
+                            result.replay_required or deal_result.replay_required
+                        )
+                        result.research_contact_ids.update(deal_result.research_contact_ids)
 
                         if deal_result.errors:
                             result.errors.extend(deal_result.errors[:3])
 
                     except Exception as exc:
-                        del self._pending_research[pending_research_start:]
                         result.failed_deals += 1
                         result.errors.append(f"Deal {deal_id}: {str(exc)}")
                         logger.warning(
@@ -183,7 +186,6 @@ class StakeholderSyncService:
                         )
 
                 await session.commit()
-                await self._dispatch_pending_research()
 
         logger.info(
             "Org stakeholder sync complete: org=%s deals=%d/%d created=%d updated=%d",
@@ -254,7 +256,6 @@ class StakeholderSyncService:
                     "skipped_count": result.skipped,
                 },
             )
-            await self._dispatch_pending_research()
             return result
 
         raise RuntimeError("Failed to acquire organization session")
@@ -305,6 +306,7 @@ class StakeholderSyncService:
                     participant.updated_at = datetime.now(UTC)
                     session.add(participant)
                     result.rejected += 1
+                    result.replay_required = True
                 continue
 
             if self._enum_value(participant.approval_status) in {
@@ -332,10 +334,10 @@ class StakeholderSyncService:
                 participant.updated_at = datetime.now(UTC)
                 session.add(participant)
                 result.updated += 1
+                result.replay_required = True
 
             if contact_id := await self._contact_id_needing_research(session, participant):
-                self._pending_research.append(contact_id)
-                result.created += 1
+                result.research_contact_ids.add(contact_id)
 
         return result
 
@@ -378,38 +380,6 @@ class StakeholderSyncService:
         )
         result = await session.execute(stmt)
         return result.scalars().first()
-
-    async def _dispatch_pending_research(self) -> None:
-        if not self._pending_research:
-            return
-        if self._suppress_research_dispatch:
-            self._pending_research.clear()
-            return
-        try:
-            from src.workers.deal_worker.utils.contact_research_dispatch import (
-                dispatch_contact_research_for_contact,
-            )
-
-            for contact_id in self._pending_research:
-                try:
-                    await dispatch_contact_research_for_contact(
-                        organisation_id=self.organisation_id,
-                        contact_id=contact_id,
-                        trigger="stakeholder_sync",
-                    )
-                except Exception:
-                    logger.warning(
-                        "Failed to dispatch research for contact %s",
-                        contact_id,
-                        exc_info=True,
-                        extra={
-                            "event": "stakeholder_sync_contact_research_dispatch_failed",
-                            "organisation_id": str(self.organisation_id),
-                            "contact_id": str(contact_id),
-                        },
-                    )
-        finally:
-            self._pending_research.clear()
 
     async def _enrich_from_contact(
         self,

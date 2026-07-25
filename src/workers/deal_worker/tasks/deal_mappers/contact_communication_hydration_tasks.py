@@ -12,7 +12,7 @@ from src.infra.database.sessions import master_async_session_scope, org_async_se
 from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
-from src.service.crm.discovery.contact_communication_hydration import (
+from src.service.crm.communications.hydration_service import (
     ContactCommunicationHydrationService,
 )
 from src.workers.deal_worker.celery_app import app
@@ -39,6 +39,9 @@ ATTACHMENT_PUBLISH_RETRY_POLICY = {
     "interval_step": 1,
     "interval_max": 2,
 }
+# copilotgtm: keep attachment payloads aligned with hydration's 100-source batch;
+# add a continuation coordinator only if measured replay volume outgrows this bound.
+ATTACHMENT_EMAIL_CHUNK_SIZE = 100
 
 
 # Two delayed retries cover transient database failures without looping indefinitely. The hard
@@ -151,7 +154,10 @@ def hydrate_contact_communications_task(
                 organisation_id=org_id,
                 discovered_contact_ids=set(result.discovered_contact_ids),
                 email_deal_jobs=email_deal_jobs,
-                attachment_deal_ids=set(result.attachment_deal_ids),
+                attachment_email_ids_by_deal={
+                    deal_id: set(email_ids)
+                    for deal_id, email_ids in result.attachment_email_ids_by_deal.items()
+                },
             )
             response = {
                 "status": "success",
@@ -191,7 +197,7 @@ async def _dispatch_association_followups(
     organisation_id: UUID,
     discovered_contact_ids: set[UUID],
     email_deal_jobs: dict[UUID, UUID],
-    attachment_deal_ids: set[UUID],
+    attachment_email_ids_by_deal: dict[UUID, set[UUID]],
 ) -> None:
     """Run idempotent downstream work only after association rows commit."""
     for contact_id in sorted(discovered_contact_ids, key=str):
@@ -213,12 +219,22 @@ async def _dispatch_association_followups(
 
     attachment_publish_error: Exception | None = None
     for deal_id, memory_job_id in sorted(email_deal_jobs.items(), key=lambda item: str(item[0])):
-        if deal_id in attachment_deal_ids:
+        attachment_email_ids = sorted(
+            attachment_email_ids_by_deal.get(deal_id, set()),
+            key=str,
+        )
+        for offset in range(0, len(attachment_email_ids), ATTACHMENT_EMAIL_CHUNK_SIZE):
             try:
                 extract_email_attachments_deal_task.apply_async(
                     kwargs={
                         "organisation_id": str(organisation_id),
                         "deal_id": str(deal_id),
+                        "email_ids": [
+                            str(email_id)
+                            for email_id in attachment_email_ids[
+                                offset : offset + ATTACHMENT_EMAIL_CHUNK_SIZE
+                            ]
+                        ],
                     },
                     headers=correlation_headers(),
                     retry=True,

@@ -20,7 +20,7 @@ from src.api.dependencies.crm_record_access import (
 from src.api.dependencies.organisation_dependencies import UserIDs, get_current_user
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
 from src.api.routers.crm.deal_assets_handler import get_deal_assets_service
-from src.service.crm.deal_assets_service import DealAssetsServiceError
+from src.service.crm.assets.deal_assets_service import DealAssetsServiceError
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -221,6 +221,26 @@ def test_finalize_upload(client: TestClient, assets_dependency_overrides):
     assert body["status"] == "SUCCESS"
     assert body["data"]["status"] == "processing"
     mock_send.assert_awaited_once()
+
+
+def test_finalize_upload_reports_queue_failure(client: TestClient, assets_dependency_overrides):
+    """A committed upload is retryable by the client when task publication fails."""
+    svc = assets_dependency_overrides
+    svc.finalize_file_upload.return_value = _make_fake_asset(status="processing")
+
+    with patch(
+        "src.api.routers.crm.deal_assets_handler.send_deal_task_async",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("broker unavailable"),
+    ):
+        response = client.post(
+            f"{_PREFIX}/{_DEAL_ID}/assets/upload/finalize",
+            json={"asset_id": str(_ASSET_ID)},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["status"] == "ERROR"
+    svc.session.commit.assert_awaited_once()
 
 
 def test_create_link(client: TestClient, assets_dependency_overrides):

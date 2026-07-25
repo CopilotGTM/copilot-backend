@@ -14,7 +14,7 @@
 | Celery Task | `src/workers/deal_worker/tasks/deal_summary_tasks.py` | Job processing, status updates, error handling |
 | Service | `src/workers/deal_worker/services/deal_summary_service.py` | Context building, transcript fetching, agent invocation |
 | Agent | `src/agents/workflows/deal_summary.py` | AI-powered summary generation |
-| Publisher | `src/workers/deal_worker/services/deal_job_publisher.py` | SSE progress updates via Redis |
+| Publisher | `src/service/crm/jobs/deal_job_event_publisher.py` | SSE progress updates via Redis |
 
 ## Available Tasks
 

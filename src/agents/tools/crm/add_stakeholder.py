@@ -265,7 +265,7 @@ async def add_stakeholder_direct(
             access_actor=access_actor,
         )
         try:
-            stakeholder = await service.create_stakeholder(
+            write_result = await service.create_stakeholder_with_outcome(
                 deal_uuid,
                 request,
                 context=StakeholderWriteContext(
@@ -275,6 +275,7 @@ async def add_stakeholder_direct(
                     created_via="add_stakeholder_agent",
                 ),
             )
+            stakeholder = write_result.stakeholder
             await session.commit()
             processing_jobs: list[Any] = []
             processing_error = None
@@ -282,7 +283,9 @@ async def add_stakeholder_direct(
             research_job_type = "contact_research"
             research_error = None
 
-            if _has_rematch_identity(stakeholder):
+            if _has_rematch_identity(stakeholder) and (
+                write_result.created or write_result.reactivated
+            ):
                 try:
                     job_service = DealJobService(
                         session,

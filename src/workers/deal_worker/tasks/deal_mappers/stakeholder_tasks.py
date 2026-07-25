@@ -40,22 +40,25 @@ from src.infra.database.sessions import (
 from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
-from src.workers.deal_worker.celery_app import app
-from src.workers.deal_worker.services.deal_change_detector import StakeholderChangeType
-from src.workers.deal_worker.services.deal_mapper_services.deal_mapping_backfill_claim_service import (
-    DealMappingBackfillClaimService,
-)
-from src.workers.deal_worker.services.deal_mapper_services.deal_mapping_eligibility import (
+from src.service.crm.deals.mapping_eligibility_service import (
     DealMappingEligibilityService,
 )
-from src.workers.deal_worker.services.deal_mapper_services.stakeholder_sync_service import (
+from src.service.crm.participants.contracts import StakeholderChangeType
+from src.service.crm.participants.stakeholder_sync_service import (
     StakeholderSyncService,
+)
+from src.workers.deal_worker.celery_app import app
+from src.workers.deal_worker.services.deal_mapping_backfill_claim_service import (
+    DealMappingBackfillClaimService,
 )
 from src.workers.deal_worker.tasks.deal_mappers.visible_job_tracking import (
     VisibleDealJobTracker,
 )
 from src.workers.deal_worker.utils.contact_communication_hydration_dispatch import (
     dispatch_contact_communication_hydration_async,
+)
+from src.workers.deal_worker.utils.contact_research_dispatch import (
+    dispatch_contact_research_for_contact,
 )
 
 logger = get_logger(__name__)
@@ -162,6 +165,28 @@ def sync_deal_stakeholders_task(
         )
         result = await service.sync_for_deal(deal_uuid)
 
+        research_task_ids: list[str] = []
+        for contact_id in sorted(result.research_contact_ids, key=str):
+            try:
+                research_task_id = await dispatch_contact_research_for_contact(
+                    organisation_id=org_uuid,
+                    contact_id=contact_id,
+                    trigger="stakeholder_sync",
+                )
+                if research_task_id:
+                    research_task_ids.append(research_task_id)
+            except Exception:
+                logger.warning(
+                    "Failed to dispatch stakeholder contact research",
+                    exc_info=True,
+                    extra={
+                        "event": "stakeholder_sync_contact_research_dispatch_failed",
+                        "organisation_id": organisation_id,
+                        "deal_id": deal_id,
+                        "contact_id": str(contact_id),
+                    },
+                )
+
         rematching_triggered = False
 
         should_dispatch_rematching = result.requires_rematching or (
@@ -218,6 +243,7 @@ def sync_deal_stakeholders_task(
             "stakeholders_updated": result.updated,
             "stakeholders_deactivated": result.deactivated,
             "stakeholders_skipped": result.skipped,
+            "research_task_ids": research_task_ids,
             "rematching_triggered": rematching_triggered,
             "integration_id": integration_id,
             "integration_type": integration_type,
