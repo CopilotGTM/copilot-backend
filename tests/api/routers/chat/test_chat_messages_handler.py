@@ -251,6 +251,40 @@ def test_list_messages_empty_session(client: TestClient, messages_dependency_ove
     assert data["cursor"] is None
 
 
+def test_list_messages_includes_active_jobs_for_refresh(
+    client: TestClient,
+    messages_dependency_overrides: FakeChatMessageService,
+    mocker,
+):
+    """A refreshed chat can reconstruct every active SSE subscription."""
+    mocker.patch(
+        "src.api.routers.chat.messages_handler.send_chat_task_async",
+        return_value="mock-task-id",
+    )
+    session_id = str(uuid4())
+    sent = client.post(
+        "/users/chats/send_message",
+        json={"session_id": session_id, "content": "Write a long answer"},
+    )
+    assert sent.status_code == 200
+
+    response = client.get(
+        "/users/chats/messages/list",
+        params={"session_id": session_id},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["active_jobs"] == [
+        {
+            "job_id": sent.json()["data"]["job_id"],
+            "user_message_id": sent.json()["data"]["user_message_id"],
+            "assistant_message_id": sent.json()["data"]["assistant_message_id"],
+            "message_type": "GENERAL_MESSAGE",
+            "status": "pending",
+        }
+    ]
+
+
 def test_list_messages_with_messages(
     client: TestClient, messages_dependency_overrides: FakeChatMessageService, mocker
 ):

@@ -257,6 +257,7 @@ async def list_messages(
         # Build enriched items using service method
         item_dicts = service.build_message_list_items(msgs, atts_urls)
         items: list[ChatMessageListItem] = [ChatMessageListItem(**item) for item in item_dicts]
+        active_jobs = await service.list_active_jobs(session_id=session_id)
         page = ChatMessagesPage(
             session=_to_out(
                 session,
@@ -264,6 +265,7 @@ async def list_messages(
             ),
             items=items,
             cursor=next_cursor,
+            active_jobs=active_jobs,
         )
         return Response.success_response("Messages listed", page)
     except ValueError as e:

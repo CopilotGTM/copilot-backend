@@ -418,6 +418,41 @@ class TestListMessages:
         assert {message.session_id for message in refreshed} == {session_row.session_id}
 
 
+class TestListActiveJobs:
+    @pytest.mark.asyncio
+    async def test_returns_reconnect_metadata_for_active_owned_session_jobs(
+        self, service, mock_db, user_id
+    ):
+        """Active jobs expose durable SSE identifiers without relying on browser state."""
+        session_id = uuid4()
+        message = _make_message_row(session_id=session_id)
+        assistant_message_id = uuid4()
+        job = MagicMock(spec=ChatMessageJob)
+        job.job_id = uuid4()
+        job.user_id = user_id
+        job.status = JobStatus.IN_PROGRESS
+        job.job_metadata = {"assistant_message_id": str(assistant_message_id)}
+        result = MagicMock()
+        result.all.return_value = [(job, message.message_type, message.message_id)]
+        mock_db.execute = AsyncMock(return_value=result)
+
+        active_jobs = await service.list_active_jobs(session_id=session_id)
+
+        assert active_jobs == [
+            {
+                "job_id": job.job_id,
+                "user_message_id": message.message_id,
+                "assistant_message_id": assistant_message_id,
+                "message_type": message.message_type,
+                "status": JobStatus.IN_PROGRESS,
+            }
+        ]
+        sql = str(mock_db.execute.await_args.args[0])
+        assert "chat_messages.session_id" in sql
+        assert "chat_message_jobs.user_id" in sql
+        assert "chat_message_jobs.status IN" in sql
+
+
 # =============================================================================
 # 4. Attachment URLs & List Items
 # =============================================================================

@@ -243,6 +243,45 @@ class ChatMessageService:
         )
         return session, items, next_cursor
 
+    async def list_active_jobs(self, *, session_id: UUID) -> list[dict[str, Any]]:
+        """Return this user's unfinished jobs for one chat session."""
+        stmt = (
+            select(
+                ChatMessageJob,
+                ChatMessage.message_type,
+                ChatMessage.message_id,
+            )
+            .join(
+                ChatMessage,
+                _col_bool(ChatMessage.message_id == ChatMessageJob.message_id),
+            )
+            .where(
+                _col_bool(ChatMessage.session_id == session_id),
+                _col_bool(ChatMessageJob.user_id == self.user_id),
+                _col_bool(ChatMessageJob.chat_type == "GENERAL_CHAT"),
+                _col(ChatMessageJob.status).in_((JobStatus.PENDING, JobStatus.IN_PROGRESS)),
+            )
+            .order_by(_col(ChatMessageJob.created_at))
+        )
+        result = await self.db.execute(stmt)
+        active_jobs: list[dict[str, Any]] = []
+        for job, message_type, user_message_id in result.all():
+            assistant_message_id = (job.job_metadata or {}).get("assistant_message_id")
+            try:
+                assistant_message_uuid = UUID(str(assistant_message_id))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            active_jobs.append(
+                {
+                    "job_id": job.job_id,
+                    "user_message_id": user_message_id,
+                    "assistant_message_id": assistant_message_uuid,
+                    "message_type": message_type,
+                    "status": job.status,
+                }
+            )
+        return active_jobs
+
     async def get_message_attachments(
         self,
         *,
