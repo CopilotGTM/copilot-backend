@@ -151,9 +151,7 @@ async def test_add_stakeholder_direct_creates_stakeholder_and_dispatches_jobs() 
 
     with (
         patch("src.agents.tools.crm.add_stakeholder.StakeholderWriteService") as service_cls,
-        patch(
-            "src.agents.tools.crm.add_stakeholder.StakeholderJobVisibilityService"
-        ) as job_service_cls,
+        patch("src.agents.tools.crm.add_stakeholder.DealJobService") as job_service_cls,
     ):
         service = MagicMock()
         service.create_stakeholder = AsyncMock(return_value=stakeholder)
@@ -227,9 +225,7 @@ async def test_add_stakeholder_direct_dispatches_contact_research_for_contact_ba
 
     with (
         patch("src.agents.tools.crm.add_stakeholder.StakeholderWriteService") as service_cls,
-        patch(
-            "src.agents.tools.crm.add_stakeholder.StakeholderJobVisibilityService"
-        ) as job_service_cls,
+        patch("src.agents.tools.crm.add_stakeholder.DealJobService") as job_service_cls,
         patch(
             "src.workers.deal_worker.utils.contact_research_dispatch."
             "dispatch_contact_research_for_contact",
@@ -273,9 +269,7 @@ async def test_add_stakeholder_direct_does_not_research_unlinked_linkedin_placeh
 
     with (
         patch("src.agents.tools.crm.add_stakeholder.StakeholderWriteService") as service_cls,
-        patch(
-            "src.agents.tools.crm.add_stakeholder.StakeholderJobVisibilityService"
-        ) as job_service_cls,
+        patch("src.agents.tools.crm.add_stakeholder.DealJobService") as job_service_cls,
     ):
         service = MagicMock()
         service.create_stakeholder = AsyncMock(return_value=stakeholder)
@@ -306,9 +300,7 @@ async def test_add_stakeholder_direct_returns_success_when_processing_jobs_fail(
 
     with (
         patch("src.agents.tools.crm.add_stakeholder.StakeholderWriteService") as service_cls,
-        patch(
-            "src.agents.tools.crm.add_stakeholder.StakeholderJobVisibilityService"
-        ) as job_service_cls,
+        patch("src.agents.tools.crm.add_stakeholder.DealJobService") as job_service_cls,
     ):
         service = MagicMock()
         service.create_stakeholder = AsyncMock(return_value=stakeholder)
@@ -348,9 +340,7 @@ async def test_add_stakeholder_direct_returns_success_when_research_dispatch_fai
 
     with (
         patch("src.agents.tools.crm.add_stakeholder.StakeholderWriteService") as service_cls,
-        patch(
-            "src.agents.tools.crm.add_stakeholder.StakeholderJobVisibilityService"
-        ) as job_service_cls,
+        patch("src.agents.tools.crm.add_stakeholder.DealJobService") as job_service_cls,
         patch(
             "src.workers.deal_worker.utils.contact_research_dispatch.dispatch_contact_research_for_contact",
             AsyncMock(side_effect=RuntimeError("broker down")),

@@ -8,7 +8,7 @@ Both services share the same DealJobs table for job storage and tracking.
 
 from __future__ import annotations
 
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +20,9 @@ from src.domain.models.organisation_tables.job_models import (
 )
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.client import send_deal_task_async, send_deal_task_chain_async
+from src.workers.deal_worker.utils.contact_communication_hydration_dispatch import (
+    dispatch_contact_communication_hydration_async,
+)
 
 logger = get_logger(__name__)
 
@@ -91,6 +94,7 @@ def _stakeholder_task_kwargs(job: DealJobs) -> dict:
         "integration_type": None,
         "trigger_rematching": True,
         "job_id": job_id,
+        "emit_events": True,
     }
 
 
@@ -122,6 +126,106 @@ class DealJobService:
         """Clean up resources (placeholder for future async cleanup)."""
         # Session lifecycle is managed by the caller/dependency
         pass
+
+    async def create_stakeholder_processing_jobs(
+        self,
+        deal_id: UUID,
+        stakeholder_id: UUID,
+    ) -> list[DealJobs]:
+        """Create one user-requested job spanning stakeholder sync and hydration."""
+        operation_group_id = str(uuid4())
+        job = DealJobs(
+            organisation_id=self.organisation_id,
+            user_id=self.user_id,
+            job_type=DealJobType.STAKEHOLDER_SYNC,
+            deal_id=deal_id,
+            event_id=None,
+            stakeholder_id=stakeholder_id,
+            status=JobStatus.PENDING,
+            job_metadata={
+                "trigger": "stakeholder_created",
+                "enqueue_status": "pending",
+                "operation_group_id": operation_group_id,
+                "stakeholder_id": str(stakeholder_id),
+                "participant_id": str(stakeholder_id),
+                "deal_id": str(deal_id),
+            },
+        )
+        self.session.add(job)
+        await self.session.flush()
+        await self.session.refresh(job)
+        # Commit before publishing so a fast worker can always load the job it reports.
+        await self.session.commit()
+
+        try:
+            celery_chain_id = await send_deal_task_chain_async(
+                [
+                    {
+                        "task_name": STAKEHOLDER_PROCESSING_TASK_NAMES[job.job_type],
+                        "kwargs": _stakeholder_task_kwargs(job),
+                    }
+                ],
+                queue="deal",
+            )
+        except Exception:
+            job.status = JobStatus.FAILED
+            job.error_message = "Failed to enqueue stakeholder processing chain"
+            job.job_metadata = {**_metadata(job), "enqueue_status": "failed"}
+            await self.session.commit()
+            raise
+
+        job.job_metadata = {
+            **_metadata(job),
+            "enqueue_status": "enqueued",
+            "celery_chain_id": celery_chain_id,
+        }
+        await self.session.commit()
+        return [job]
+
+    async def create_communication_hydration_job(
+        self,
+        deal_id: UUID,
+        *,
+        trigger: str = "deal_created",
+    ) -> DealJobs:
+        """Create a user-visible job for direct deal-scoped communication hydration."""
+        job = DealJobs(
+            organisation_id=self.organisation_id,
+            user_id=self.user_id,
+            job_type=DealJobType.DEAL_COMMUNICATION_HYDRATION,
+            deal_id=deal_id,
+            event_id=None,
+            status=JobStatus.PENDING,
+            job_metadata={"trigger": trigger, "enqueue_status": "pending"},
+        )
+        self.session.add(job)
+        await self.session.flush()
+        await self.session.refresh(job)
+        await self.session.commit()
+
+        try:
+            task_ids = await dispatch_contact_communication_hydration_async(
+                organisation_id=self.organisation_id,
+                deal_ids=[deal_id],
+                trigger=trigger,
+                job_id=job.job_id,
+                job_type=DealJobType.DEAL_COMMUNICATION_HYDRATION,
+                emit_events=True,
+            )
+        except Exception:
+            job.status = JobStatus.FAILED
+            job.error_message = "Failed to enqueue communication hydration"
+            job.job_metadata = {**_metadata(job), "enqueue_status": "failed"}
+            await self.session.commit()
+            raise
+
+        job.job_metadata = {
+            **_metadata(job),
+            "enqueue_status": "enqueued",
+            "celery_task_ids": task_ids,
+        }
+        await self.session.commit()
+        return job
 
     async def create_job(
         self,
@@ -382,10 +486,14 @@ class DealJobService:
             Dict with job info (job_id, job_type, status) keyed by job type, or None
         """
         active_summary_job = await self.get_active_job(deal_id, DealJobType.DEAL_SUMMARY)
+        active_hydration_job = await self.get_active_job(
+            deal_id,
+            DealJobType.DEAL_COMMUNICATION_HYDRATION,
+        )
         stakeholder_processing = await self.get_active_stakeholder_processing_jobs(deal_id)
 
-        if not active_summary_job and not stakeholder_processing:
-            logger.debug("No active deal summary job found for deal %s", deal_id)
+        if not active_summary_job and not active_hydration_job and not stakeholder_processing:
+            logger.debug("No active deal jobs found for deal %s", deal_id)
             return None
 
         response: dict = {}
@@ -404,6 +512,9 @@ class DealJobService:
                 active_summary_job.status,
             )
             response["deal_summary"] = _job_response(active_summary_job)
+
+        if active_hydration_job:
+            response["communication_hydration"] = _job_response(active_hydration_job)
 
         if stakeholder_processing:
             response["stakeholder_processing"] = stakeholder_processing

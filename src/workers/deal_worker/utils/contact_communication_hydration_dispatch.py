@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from src.domain.models.organisation_tables.job_models import DealJobType
 from src.workers.deal_worker.client import send_deal_task_async
 
 TASK_NAME = "deal.hydrate_contact_communications"
@@ -23,8 +24,18 @@ async def dispatch_contact_communication_hydration_async(
     contact_ids: list[UUID | str] | None = None,
     deal_ids: list[UUID | str] | None = None,
     trigger: str,
+    job_id: UUID | None = None,
+    job_type: DealJobType | None = None,
+    emit_events: bool = False,
 ) -> list[str]:
-    """Enqueue bounded source batches or contact-backfill batches after commit."""
+    """Enqueue bounded hydration, forwarding visibility only when explicitly requested."""
+    if (job_id is None) != (job_type is None):
+        raise ValueError("job_id and job_type must be supplied together")
+    if not emit_events and job_id is not None:
+        raise ValueError("job context requires emit_events=True")
+    if emit_events and job_id is None:
+        raise ValueError("emit_events=True requires job_id and job_type")
+
     email_ids = [str(value) for value in changed_email_ids or []]
     event_ids = [str(value) for value in changed_event_ids or []]
     explicit_contact_ids = [str(value) for value in contact_ids or []]
@@ -55,6 +66,20 @@ async def dispatch_contact_communication_hydration_async(
             for offset in range(0, source_count, CHANGED_SOURCE_CHUNK_SIZE)
         )
 
+    # One client-visible job has one terminal state. Background callers may fan out,
+    # but a requested SSE job must stay within one hydration task.
+    if emit_events and len(payloads) != 1:
+        raise ValueError("a visible job requires a single hydration batch")
+    visibility = (
+        {
+            "job_id": str(job_id),
+            "job_type": job_type.value,
+            "emit_events": True,
+        }
+        if emit_events and job_id is not None and job_type is not None
+        else {}
+    )
+
     task_ids: list[str] = []
     # Each payload is independently replay-safe, so Celery can retry one failed chunk without
     # redoing successful chunks or requiring a parent orchestration task.
@@ -65,6 +90,7 @@ async def dispatch_contact_communication_hydration_async(
                 "organisation_id": str(organisation_id),
                 "integration_id": str(integration_id) if integration_id else None,
                 "trigger": trigger,
+                **visibility,
                 **payload,
             },
             queue="deal",

@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import pytest
 import src.workers.deal_worker.tasks.deal_mappers.stakeholder_tasks as stakeholder_tasks
+from src.domain.models.organisation_tables.job_models import DealJobType
 from src.workers.deal_worker.services.deal_mapper_services.deal_mapping_eligibility import (
     DealMappingEligibilityResult,
     DealMappingSkipReason,
@@ -161,6 +162,17 @@ class TestSyncDealStakeholdersTaskParameters:
         assert params["trigger_rematching"].default is True
         assert "job_id" in params
         assert params["job_id"].default is None
+        assert "emit_events" in params
+        assert params["emit_events"].default is False
+
+    def test_rejects_event_request_without_visible_job(self) -> None:
+        with pytest.raises(ValueError, match="job_id"):
+            sync_deal_stakeholders_task(
+                organisation_id=str(uuid4()),
+                deal_id=str(uuid4()),
+                change_type="MANUAL_REFRESH",
+                emit_events=True,
+            )
 
 
 class TestSyncDealStakeholdersTaskEligibility:
@@ -268,6 +280,76 @@ def test_initial_backfill_dispatches_one_deal_hydration(monkeypatch) -> None:
         deal_ids=[deal_id],
         trigger="deal_participants_changed",
     )
+    assert result["rematching_triggered"] is True
+
+
+def test_requested_stakeholder_job_hands_terminal_state_to_hydration(monkeypatch) -> None:
+    """Only an opted-in job streams progress and remains open until hydration finishes."""
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    job_id = uuid4()
+    eligibility_service = SimpleNamespace(
+        get_deal_eligibility=AsyncMock(
+            return_value=DealMappingEligibilityResult(
+                deal_id=deal_id,
+                is_eligible=True,
+                reason=None,
+            )
+        )
+    )
+    sync_service = SimpleNamespace(
+        sync_for_deal=AsyncMock(return_value=MockStakeholderSyncResult(success=True))
+    )
+    tracker = SimpleNamespace(
+        start=AsyncMock(),
+        progress=AsyncMock(),
+        complete=AsyncMock(),
+        fail=AsyncMock(),
+    )
+    tracker_factory = Mock(return_value=tracker)
+    dispatch = AsyncMock(return_value=["hydration-task"])
+    monkeypatch.setattr(
+        stakeholder_tasks,
+        "DealMappingEligibilityService",
+        lambda _organisation_id: eligibility_service,
+    )
+    monkeypatch.setattr(
+        stakeholder_tasks,
+        "StakeholderSyncService",
+        lambda *_args, **_kwargs: sync_service,
+    )
+    monkeypatch.setattr(stakeholder_tasks, "VisibleDealJobTracker", tracker_factory)
+    monkeypatch.setattr(
+        stakeholder_tasks,
+        "dispatch_contact_communication_hydration_async",
+        dispatch,
+    )
+
+    result = sync_deal_stakeholders_task(
+        organisation_id=str(organisation_id),
+        deal_id=str(deal_id),
+        change_type="MANUAL_REFRESH",
+        job_id=str(job_id),
+        emit_events=True,
+    )
+
+    tracker_factory.assert_called_once_with(
+        organisation_id,
+        str(job_id),
+        DealJobType.STAKEHOLDER_SYNC,
+        emit_events=True,
+    )
+    dispatch.assert_awaited_once_with(
+        organisation_id=organisation_id,
+        integration_id=None,
+        deal_ids=[deal_id],
+        trigger="deal_participants_changed",
+        job_id=job_id,
+        job_type=DealJobType.STAKEHOLDER_SYNC,
+        emit_events=True,
+    )
+    tracker.progress.assert_awaited_once()
+    tracker.complete.assert_not_awaited()
     assert result["rematching_triggered"] is True
 
 

@@ -101,6 +101,7 @@ async def test_visible_deal_job_tracker_marks_started_and_publishes_progress(mon
         uuid4(),
         str(uuid4()),
         DealJobType.DEAL_EMAIL_REMATCH,
+        emit_events=True,
     )
     await tracker.start("matching_emails", "Updating related emails", 0.25)
 
@@ -123,6 +124,34 @@ async def test_visible_deal_job_tracker_marks_started_and_publishes_progress(mon
 
 
 @pytest.mark.asyncio
+async def test_visible_deal_job_tracker_advances_without_finishing_the_job() -> None:
+    """A worker handoff publishes one stage while leaving terminal ownership downstream."""
+    publisher = _Publisher(uuid4(), uuid4(), DealJobType.STAKEHOLDER_SYNC.value)
+    tracker = VisibleDealJobTracker(
+        uuid4(),
+        str(uuid4()),
+        DealJobType.STAKEHOLDER_SYNC,
+        emit_events=True,
+    )
+    tracker.publisher = publisher
+
+    await tracker.progress(
+        "hydrating_communications",
+        "Matching communication history",
+        0.55,
+    )
+
+    assert publisher.frames == [
+        {
+            "kind": "progress",
+            "message": "Matching communication history",
+            "stage": "hydrating_communications",
+            "progress": 0.55,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_visible_deal_job_tracker_completes_and_finalizes(monkeypatch):
     """Tracker.complete should persist final payload and emit completion frames."""
     job = _Job()
@@ -138,6 +167,7 @@ async def test_visible_deal_job_tracker_completes_and_finalizes(monkeypatch):
         uuid4(),
         str(uuid4()),
         DealJobType.DEAL_EMAIL_REMATCH,
+        emit_events=True,
     )
     tracker.publisher = publisher
     result_data = {"emails_matched": 2}
@@ -184,6 +214,7 @@ async def test_visible_deal_job_tracker_fails_and_finalizes(monkeypatch):
         uuid4(),
         str(uuid4()),
         DealJobType.DEAL_EMAIL_REMATCH,
+        emit_events=True,
     )
     tracker.publisher = publisher
 
@@ -197,3 +228,26 @@ async def test_visible_deal_job_tracker_fails_and_finalizes(monkeypatch):
         {"kind": "error", "message": "boom", "error_code": "job_failed"},
         {"kind": "finalize", "reason": "error"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_internal_job_updates_status_without_publishing_events(monkeypatch) -> None:
+    """A recovery job remains durable but silent unless its caller explicitly opted in."""
+    job = _Job()
+    session = _Session(job)
+    monkeypatch.setattr(
+        "src.workers.deal_worker.tasks.deal_mappers.visible_job_tracking.acquire_org_async_session",
+        lambda organisation_id: _SessionSource(session),
+    )
+
+    tracker = VisibleDealJobTracker(
+        uuid4(),
+        str(uuid4()),
+        DealJobType.STAKEHOLDER_SYNC,
+    )
+    await tracker.start("syncing", "Syncing stakeholders", 0.2)
+    await tracker.complete({"status": "success"}, "saving", "Saving")
+
+    assert job.status == JobStatus.COMPLETED
+    assert session.commits == 2
+    assert tracker.publisher is None

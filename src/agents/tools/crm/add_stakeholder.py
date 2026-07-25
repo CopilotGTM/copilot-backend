@@ -30,9 +30,7 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
 from src.service.crm.insights.stakeholders_service import (
     StakeholdersServiceError,
 )
-from src.service.crm.jobs.stakeholder_job_visibility_service import (
-    StakeholderJobVisibilityService,
-)
+from src.service.crm.jobs.deal_job_service import DealJobService
 from src.service.crm.participants.contracts import StakeholderWriteContext
 from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 
@@ -286,16 +284,14 @@ async def add_stakeholder_direct(
 
             if _has_rematch_identity(stakeholder):
                 try:
-                    job_visibility_service = StakeholderJobVisibilityService(
+                    job_service = DealJobService(
                         session,
                         organisation_id,
                         user_id,
                     )
-                    processing_jobs = (
-                        await job_visibility_service.create_stakeholder_processing_jobs(
-                            deal_uuid,
-                            stakeholder.participant_id,
-                        )
+                    processing_jobs = await job_service.create_stakeholder_processing_jobs(
+                        deal_uuid,
+                        stakeholder.participant_id,
                     )
                 except Exception as exc:
                     processing_error = str(exc)

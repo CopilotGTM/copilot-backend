@@ -7,6 +7,7 @@ from uuid import UUID
 
 from celery import Task
 
+from src.domain.models.organisation_tables.job_models import DealJobType
 from src.infra.database.sessions import master_async_session_scope, org_async_session_scope
 from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
@@ -17,6 +18,9 @@ from src.service.crm.discovery.contact_communication_hydration import (
 from src.workers.deal_worker.celery_app import app
 from src.workers.deal_worker.tasks.deal_asset_email_attachment_tasks import (
     extract_email_attachments_deal_task,
+)
+from src.workers.deal_worker.tasks.deal_mappers.visible_job_tracking import (
+    VisibleDealJobTracker,
 )
 from src.workers.deal_worker.utils.contact_research_dispatch import (
     dispatch_contact_research_for_contact,
@@ -58,8 +62,16 @@ def hydrate_contact_communications_task(
     contact_ids: list[str] | None = None,
     deal_ids: list[str] | None = None,
     trigger: str = "communication_sync",
+    job_id: str | None = None,
+    job_type: str | None = None,
+    emit_events: bool = False,
 ) -> dict[str, Any]:
     """Run one retry-safe local hydration batch without provider research calls."""
+    if emit_events and (not job_id or not job_type):
+        raise ValueError("emit_events=True requires job_id and job_type")
+    if not emit_events and (job_id or job_type):
+        raise ValueError("job context requires emit_events=True")
+
     org_id = UUID(organisation_id)
     int_id = UUID(integration_id) if integration_id else None
     email_ids = _parse_uuids(changed_email_ids)
@@ -72,12 +84,31 @@ def hydrate_contact_communications_task(
         raise ValueError("contact, deal, and changed-source hydration cannot be mixed")
     if mode_count == 0:
         raise ValueError("a contact, deal, or changed-source payload is required")
+    visible_job_type = DealJobType(job_type) if job_type else None
+    tracker = (
+        VisibleDealJobTracker(
+            org_id,
+            job_id,
+            visible_job_type,
+            emit_events=True,
+        )
+        if emit_events and job_id and visible_job_type
+        else None
+    )
 
     async def _run() -> dict[str, Any]:
         """Open both tenant sessions, commit the projection, and return worker-safe metrics.
 
         The master session identifies internal users while the org session owns all CRM writes.
         """
+        if tracker:
+            progress = (
+                tracker.start
+                if visible_job_type == DealJobType.DEAL_COMMUNICATION_HYDRATION
+                else tracker.progress
+            )
+            await progress("hydrating_communications", "Matching communication history", 0.65)
+
         async with (
             master_async_session_scope() as master_session,
             org_async_session_scope(org_id) as org_session,
@@ -122,13 +153,20 @@ def hydrate_contact_communications_task(
                 email_deal_jobs=email_deal_jobs,
                 attachment_deal_ids=set(result.attachment_deal_ids),
             )
-            return {
+            response = {
                 "status": "success",
                 "organisation_id": organisation_id,
                 "integration_id": integration_id,
                 "trigger": trigger,
                 **result.to_dict(),
             }
+        if tracker:
+            await tracker.complete(
+                response,
+                "saving_communication_links",
+                "Saving communication links",
+            )
+        return response
 
     try:
         return run_async(_run())
@@ -143,6 +181,8 @@ def hydrate_contact_communications_task(
         )
         if self.request.retries < self.max_retries:
             raise self.retry(exc=exc) from exc
+        if tracker:
+            run_async(tracker.fail(str(exc)))
         raise
 
 

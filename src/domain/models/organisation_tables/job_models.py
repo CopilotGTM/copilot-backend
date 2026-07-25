@@ -211,6 +211,7 @@ class DealJobType(StrEnum):
     # Deal-related jobs
     DEAL_SUMMARY = "deal_summary"  # Deal overview summary
     DEAL_UPDATE = "deal_update"  # AI-assisted internal CRM deal update
+    DEAL_COMMUNICATION_HYDRATION = "deal_communication_hydration"
     DEAL_RISK_ANALYSIS = "deal_risk_analysis"  # Risk assessment
     DEAL_NEXT_STEPS = "deal_next_steps"  # Recommended next steps
 

@@ -88,14 +88,7 @@ def resolve_unique_deal_id(
     communication: CommunicationCandidate,
     deals: list[DealCandidate],
 ) -> UUID | None:
-    """Return one explicit or rule-matched deal, leaving ambiguity unassigned."""
-    if communication.existing_deal_ids:
-        return (
-            next(iter(communication.existing_deal_ids))
-            if len(communication.existing_deal_ids) == 1
-            else None
-        )
-
+    """Return the sole current rule match; historical rows never establish eligibility."""
     matching_deal_ids = {
         deal.deal_id for deal in deals if communication_matches_deal(communication, deal)
     }
@@ -178,7 +171,7 @@ class CommunicationDealAssociationService:
         pending_discovery: dict[tuple[UUID, StakeholderSource], set[UUID]] = {}
 
         for email, communication in prepared_emails:
-            deal_ids = set(communication.existing_deal_ids) or {
+            deal_ids = {
                 deal.deal_id for deal in deals if communication_matches_deal(communication, deal)
             }
             if target_deal_ids is not None:
@@ -193,7 +186,7 @@ class CommunicationDealAssociationService:
                 attachment_flag = getattr(email, "has_attachments", False)
                 if attachment_flag is True or attachment_flag == "true":
                     result.attachment_deal_ids.add(deal_id)
-                if communication.existing_deal_ids:
+                if deal_id in communication.existing_deal_ids:
                     await self._update_last_contact(
                         deal_id=deal_id,
                         contact_ids=set(communication.contact_ids),
@@ -227,7 +220,7 @@ class CommunicationDealAssociationService:
             if target_deal_ids is not None and deal_id not in target_deal_ids:
                 result.unmatched += 1
                 continue
-            if communication.existing_deal_ids:
+            if deal_id in communication.existing_deal_ids:
                 await self._update_last_contact(
                     deal_id=deal_id,
                     contact_ids=set(communication.contact_ids),
@@ -404,7 +397,7 @@ class CommunicationDealAssociationService:
         deals: list[DealCandidate],
     ) -> None:
         matches = [deal for deal in deals if communication_matches_deal(communication, deal)]
-        if len(communication.existing_deal_ids) > 1 or len(matches) > 1:
+        if len(matches) > 1:
             result.ambiguous += 1
         else:
             result.unmatched += 1

@@ -88,6 +88,7 @@ def sync_deal_stakeholders_task(
     integration_type: str | None = None,
     trigger_rematching: bool = True,
     job_id: str | None = None,
+    emit_events: bool = False,
 ) -> dict[str, Any]:
     """Task 1: Sync stakeholders for a deal based on CRM participant changes.
 
@@ -98,10 +99,14 @@ def sync_deal_stakeholders_task(
         integration_id: UUID of the CRM integration (optional)
         integration_type: Type of CRM (HUBSPOT, SALESFORCE, etc.)
         trigger_rematching: Whether to trigger Task 2/3 (default True)
+        emit_events: Publish client SSE progress only for an explicitly requested job.
 
     Returns:
         Dict with sync results
     """
+    if emit_events and not job_id:
+        raise ValueError("job_id is required when emit_events=True")
+
     started_at = datetime.now(UTC).isoformat()
 
     logger.info(
@@ -119,7 +124,12 @@ def sync_deal_stakeholders_task(
     async def _run() -> dict[str, Any]:
         org_uuid = UUID(organisation_id)
         deal_uuid = UUID(deal_id)
-        tracker = VisibleDealJobTracker(org_uuid, job_id, DealJobType.STAKEHOLDER_SYNC)
+        tracker = VisibleDealJobTracker(
+            org_uuid,
+            job_id,
+            DealJobType.STAKEHOLDER_SYNC,
+            emit_events=emit_events,
+        )
         eligibility = await DealMappingEligibilityService(org_uuid).get_deal_eligibility(deal_uuid)
         if not eligibility.is_eligible:
             response: dict[str, Any] = {
@@ -160,14 +170,30 @@ def sync_deal_stakeholders_task(
         if trigger_rematching and should_dispatch_rematching:
             # Participant changes replay this deal through the same hydration service used by
             # live sync. This replaces separate calendar/email rematch workers and their scans.
+            visibility = (
+                {
+                    "job_id": UUID(job_id),
+                    "job_type": DealJobType.STAKEHOLDER_SYNC,
+                    "emit_events": True,
+                }
+                if emit_events and job_id
+                else {}
+            )
             rematching_triggered = bool(
                 await dispatch_contact_communication_hydration_async(
                     organisation_id=org_uuid,
                     integration_id=UUID(integration_id) if integration_id else None,
                     deal_ids=[deal_uuid],
                     trigger="deal_participants_changed",
+                    **visibility,
                 )
             )
+            if rematching_triggered and emit_events:
+                await tracker.progress(
+                    "hydrating_communications",
+                    "Matching communication history",
+                    0.55,
+                )
 
         logger.info(
             "Task 1 complete: synced stakeholders for deal",
@@ -197,7 +223,10 @@ def sync_deal_stakeholders_task(
             "integration_type": integration_type,
             "errors": result.errors,
         }
-        await tracker.complete(response, "saving_stakeholders", "Saving stakeholders")
+        # Requested jobs stay open across the queue handoff; hydration owns their terminal
+        # state. Internal recovery jobs remain silent and retain the legacy sync boundary.
+        if not (emit_events and rematching_triggered):
+            await tracker.complete(response, "saving_stakeholders", "Saving stakeholders")
         return response
 
     try:
@@ -222,7 +251,10 @@ def sync_deal_stakeholders_task(
         if job_id:
             run_async(
                 VisibleDealJobTracker(
-                    UUID(organisation_id), job_id, DealJobType.STAKEHOLDER_SYNC
+                    UUID(organisation_id),
+                    job_id,
+                    DealJobType.STAKEHOLDER_SYNC,
+                    emit_events=emit_events,
                 ).fail(str(exc))
             )
 

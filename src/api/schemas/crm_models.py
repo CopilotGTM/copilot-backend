@@ -787,6 +787,7 @@ class DealSummaryJobsStatus(BaseModel):
     """
 
     deal_summary: DealJobResponse | None = None
+    communication_hydration: DealJobResponse | None = None
     stakeholder_processing: list[DealJobResponse] = Field(default_factory=list)
 
 
