@@ -277,6 +277,79 @@ async def test_participant_writer_reuses_contact_participant_with_duplicate_iden
 
 
 @pytest.mark.asyncio
+async def test_participant_writer_uses_active_identity_over_stale_mapping() -> None:
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    deal_id = uuid4()
+    contact_id = uuid4()
+    external_id = "006A:contact:003A"
+    stale = CRMDealParticipant(
+        participant_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_id="stale",
+        deal_id=deal_id,
+        participant_type=CRMParticipantType.CONTACT,
+        relationship_role="Business User",
+        related_local_id=contact_id,
+        is_deleted=True,
+    )
+    active = CRMDealParticipant(
+        participant_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_id="active",
+        deal_id=deal_id,
+        participant_type=CRMParticipantType.CONTACT,
+        relationship_role="Decision Maker",
+        related_local_id=contact_id,
+    )
+
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    writer = SalesforceDealParticipantWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    mapping_helper = MagicMock()
+    mapping_helper.bulk_upsert_integration_mappings = AsyncMock(return_value=2)
+    writer.source_mappings = mapping_helper
+    writer._load_existing_rows = AsyncMock(
+        return_value=(
+            {external_id: stale},
+            {(deal_id, "contact", f"local:{contact_id}"): active},
+        )
+    )  # type: ignore[method-assign]
+
+    result = await writer.apply(
+        participants=[
+            NormalizedSalesforceDealParticipant(
+                deal_external_id="006A",
+                participant_type=CRMParticipantType.CONTACT.value,
+                related_external_id="003A",
+                relationship_role="Economic Buyer",
+                is_primary=True,
+                data_payload={"Id": "role"},
+            )
+        ],
+        deal_pk_map={"006A": deal_id},
+        contact_map={},
+        company_map={},
+        user_map={},
+    )
+
+    assert result.participants_updated == 1
+    assert stale.is_deleted is True
+    assert active.is_deleted is False
+    assert active.relationship_role == "Economic Buyer"
+    assert active.is_primary_contact is True
+    mapped_rows = mapping_helper.bulk_upsert_integration_mappings.await_args.args[0]
+    assert {row.local_object_id for row in mapped_rows} == {active.participant_id}
+
+
+@pytest.mark.asyncio
 async def test_participant_writer_preserves_snapshot_when_provider_relation_is_unresolved() -> None:
     organisation_id = uuid4()
     integration_id = uuid4()
