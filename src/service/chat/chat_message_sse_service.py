@@ -1,8 +1,4 @@
-"""SSE service for chat message job updates using Redis Streams.
-
-Streams structured frames for a specific chat job over Server-Sent Events with
-consume-once support using Redis consumer groups to prevent duplicate message delivery.
-"""
+"""SSE service for replayable chat message job updates using Redis Streams."""
 
 from __future__ import annotations
 
@@ -48,7 +44,7 @@ class ChatMessageSSEService:
         *,
         timeout_seconds: int | None = 900,
         heartbeat_interval: float = 25.0,
-        consume_once: bool = True,
+        consume_once: bool = False,
         resume_from_id: str | None = None,
     ) -> AsyncGenerator[dict, None]:
         """
@@ -60,14 +56,36 @@ class ChatMessageSSEService:
             consume_once: If True, use consumer groups for one-time delivery
             resume_from_id: Last-Event-ID for reconnection handling (SSE standard)
         """
-        # If job already completed, notify frontend and end immediately
-        if await self._is_job_completed():
+        job_status, result_data, error_message = await self._owned_job_state()
+        if job_status == JobStatus.COMPLETED:
             logger.info(
                 "Chat SSE: job already completed org=%s job=%s user=%s",
                 self.organisation_id,
                 self.job_id,
                 self.user_id,
             )
+            yield {"event": "complete", "data": json.dumps({"job_id": self.job_id})}
+            return
+
+        if job_status in {JobStatus.FAILED, JobStatus.CANCELLED}:
+            message = error_message
+            if not message and result_data:
+                message = str(result_data.get("error") or result_data.get("message") or "")
+            if not message:
+                message = (
+                    "Chat job failed" if job_status == JobStatus.FAILED else "Chat job cancelled"
+                )
+            yield {"event": "ready", "data": json.dumps({"job_id": self.job_id})}
+            yield {
+                "event": "error",
+                "data": json.dumps(
+                    {
+                        "job_id": self.job_id,
+                        "message": message,
+                        "reconnect": False,
+                    }
+                ),
+            }
             yield {"event": "complete", "data": json.dumps({"job_id": self.job_id})}
             return
 
@@ -78,7 +96,7 @@ class ChatMessageSSEService:
         yield {"event": "ready", "data": json.dumps({"job_id": self.job_id})}
 
         try:
-            if consume_once:
+            if consume_once and not resume_from_id:
                 async for event in self._stream_with_consumer_group(
                     timeout_seconds, heartbeat_interval, resume_from_id
                 ):
@@ -165,7 +183,6 @@ class ChatMessageSSEService:
             # Check for completion
             if frame.get("type") == "finalize":
                 yield {"event": "complete", "data": json.dumps({"job_id": self.job_id})}
-                await self._cleanup_completed_job()
                 return
 
     async def _stream_legacy_mode(
@@ -237,25 +254,23 @@ class ChatMessageSSEService:
             return {"event": "ping", "data": json.dumps({"t": int(now)})}
         return None
 
-    async def _cleanup_completed_job(self) -> None:
-        """Clean up Redis stream after job completion to prevent message accumulation."""
-        try:
-            if self._streams:
-                await self._streams.delete_stream(self.stream_key)
-                logger.info("Cleaned up completed job stream: %s", self.stream_key)
-        except Exception as e:
-            logger.warning("Failed to cleanup stream %s: %s", self.stream_key, e)
-
-    async def _owned_job_status(self) -> JobStatus | None:
-        """Return the job status only when the authenticated user owns the job."""
+    async def _owned_job_state(
+        self,
+    ) -> tuple[JobStatus | None, dict | None, str | None]:
+        """Return persisted state only when the authenticated user owns the job."""
         async for session in acquire_org_async_session(UUID(self.organisation_id)):
             job = await session.get(ChatMessageJob, UUID(self.job_id))
             # Missing and unowned jobs share one response so callers cannot probe
             # another user's transient chat activity by guessing job IDs.
             if job is None or str(job.user_id) != self.user_id:
-                return None
-            return job.status
-        return None
+                return None, None, None
+            return job.status, job.result_data, job.error_message
+        return None, None, None
+
+    async def _owned_job_status(self) -> JobStatus | None:
+        """Return the job status only when the authenticated user owns the job."""
+        status, _, _ = await self._owned_job_state()
+        return status
 
     async def can_stream(self) -> bool:
         """Return whether this user may consume transient events for the job."""

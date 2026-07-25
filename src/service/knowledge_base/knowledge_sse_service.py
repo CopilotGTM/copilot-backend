@@ -179,7 +179,7 @@ class KnowledgeSourceSSEService:
     def _handle_message(
         self,
         message: dict,
-        allowed_ids_set: set[str] | None,
+        allowed_ids_set: set[str],
         watched_status: dict[str, str],
     ) -> dict | None:
         """Process a single Redis pub/sub message and return an event dict if applicable.
@@ -189,7 +189,7 @@ class KnowledgeSourceSSEService:
         - 'deleted' status indicates source removal (emit special event type)
         """
         source_id = message.get("source_id")
-        if not source_id or (allowed_ids_set and source_id not in allowed_ids_set):
+        if not source_id or source_id not in allowed_ids_set:
             return None
 
         status = str(message.get("status", ""))
@@ -231,7 +231,6 @@ class KnowledgeSourceSSEService:
         start_time = asyncio.get_event_loop().time()
         last_heartbeat = start_time
         watched_status: dict[str, str] = {}
-        allowed_ids_set = {str(sid) for sid in explicit_ids} if explicit_ids else None
 
         try:
             # Handle initial sources
@@ -244,6 +243,8 @@ class KnowledgeSourceSSEService:
                 yield event
                 if event["event"] == "complete":
                     return
+
+            allowed_ids_set = set(watched_status)
 
             # Stream updates from Redis
             async for event in self._stream_redis_updates(
@@ -277,14 +278,14 @@ class KnowledgeSourceSSEService:
         start_time: float,
         last_heartbeat: float,
         watched_status: dict[str, str],
-        allowed_ids_set: set[str] | None,
+        allowed_ids_set: set[str],
         timeout_seconds: int | None,
         heartbeat_interval: float,
     ) -> AsyncGenerator[dict, None]:
         """Stream updates from Redis pub/sub."""
         channel = channel_for_knowledge_update_status(self.organisation_id)
 
-        async for message in self.redis_pubsub.subscribe_to_channel(channel):
+        async for message in self.redis_pubsub.subscribe_and_poll(channel):
             current_time = asyncio.get_event_loop().time()
 
             # Check timeout
@@ -303,6 +304,9 @@ class KnowledgeSourceSSEService:
             if self._should_send_heartbeat(current_time, last_heartbeat, heartbeat_interval):
                 last_heartbeat = current_time
                 yield self._send_event("ping", {"timestamp": int(current_time)})
+
+            if message is None:
+                continue
 
             # Handle status message
             status_event = self._handle_message(message, allowed_ids_set, watched_status)

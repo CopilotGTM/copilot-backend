@@ -187,14 +187,14 @@ async def send_message(
 @router.get(
     "/message_events",
     tags=["chat_messages"],
-    summary="SSE stream for a message job with consume-once delivery",
+    summary="Replayable SSE stream for a message job",
 )
 async def message_events(
     job_id: UUID,
     request: Request,
     user_ids: UserIDs = Depends(get_current_user),
 ):
-    """Stream one user's job events with consume-once reconnect semantics."""
+    """Stream one user's job events with Last-Event-ID replay semantics."""
     service = ChatMessageSSEService(user_ids.organisation_id, job_id, user_ids.user_id)
     if not await service.can_stream():
         await service.close()
@@ -206,16 +206,12 @@ async def message_events(
     # Extract Last-Event-ID header for replay (if provided by browser EventSource on reconnect)
     last_event_id = request.headers.get("last-event-id") or request.headers.get("Last-Event-ID")
 
-    # If client provides Last-Event-ID, they want to resume from that point
-    # In consume-once mode, this helps handle reconnections gracefully
     resume_from_id = last_event_id if last_event_id else None
 
     async def event_generator():
         """Forward stored events and release the Redis stream client on exit."""
         try:
-            # Use consume_once=True by default for one-time message delivery
-            # Pass resume_from_id for potential reconnection handling
-            async for ev in service.stream_events(consume_once=True, resume_from_id=resume_from_id):
+            async for ev in service.stream_events(resume_from_id=resume_from_id):
                 yield ev
         finally:
             try:

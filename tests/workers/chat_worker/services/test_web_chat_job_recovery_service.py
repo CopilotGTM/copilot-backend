@@ -11,6 +11,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.dialects import postgresql
 from src.domain.models.organisation_tables.job_models import JobStatus
+from src.workers.chat_worker.services import stale_job_cleanup_service as recovery_module
 from src.workers.chat_worker.services.stale_job_cleanup_service import (
     ChatStaleJobCleanupService,
 )
@@ -42,19 +43,53 @@ class _LeaseSession:
         self.commits += 1
 
 
-def _pending_web_job(*, attempts: int = 1, enqueue_status: str = "failed"):
+def _pending_web_job(
+    *,
+    attempts: int = 1,
+    enqueue_status: str = "failed",
+    age_seconds: int = 180,
+):
     now = datetime.now(UTC)
     return SimpleNamespace(
         job_id=uuid4(),
         chat_type="GENERAL_CHAT",
         status=JobStatus.PENDING,
-        updated_at=now - timedelta(minutes=3),
+        updated_at=now - timedelta(seconds=age_seconds),
         error_message=None,
         job_metadata={
             "enqueue_status": enqueue_status,
             "enqueue_attempts": attempts,
         },
     )
+
+
+@pytest.mark.parametrize(
+    ("attempts", "expected_seconds"),
+    [(0, 15), (1, 15), (2, 30), (3, 60), (4, 120), (5, 240)],
+)
+def test_web_pending_recovery_uses_exponential_backoff(
+    attempts: int,
+    expected_seconds: int,
+) -> None:
+    assert recovery_module._web_chat_retry_delay_seconds(attempts) == expected_seconds
+
+
+@pytest.mark.asyncio
+async def test_web_pending_recovery_does_not_lease_before_backoff(monkeypatch) -> None:
+    service = ChatStaleJobCleanupService(uuid4())
+    job = _pending_web_job(attempts=2, age_seconds=20)
+    session = _LeaseSession([job])
+
+    async def sessions(_org_id):
+        yield session
+
+    monkeypatch.setattr(recovery_module, "acquire_org_async_session", sessions)
+
+    leased, exhausted = await service._lease_stale_web_chat_pending_jobs(datetime.now(UTC))
+
+    assert leased == []
+    assert exhausted == 0
+    assert job.job_metadata["enqueue_attempts"] == 2
 
 
 @pytest.mark.asyncio
@@ -154,7 +189,7 @@ async def test_web_pending_recovery_republishes_job_id(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_web_pending_recovery_exhausts_retry_budget(monkeypatch) -> None:
     service = ChatStaleJobCleanupService(uuid4())
-    job = _pending_web_job(attempts=5)
+    job = _pending_web_job(attempts=5, age_seconds=300)
     session = _LeaseSession([job])
 
     async def sessions(_org_id):

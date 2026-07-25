@@ -56,7 +56,7 @@ class DealAssetSSEService:
 
         try:
             channel = channel_for_deal_asset_status(self.organisation_id)
-            async for message in self.redis_pubsub.subscribe_to_channel(channel):
+            async for message in self.redis_pubsub.subscribe_and_poll(channel):
                 current_time = asyncio.get_event_loop().time()
 
                 if timeout_seconds and (current_time - start_time) > timeout_seconds:
@@ -66,6 +66,9 @@ class DealAssetSSEService:
                 if (current_time - last_heartbeat) >= heartbeat_interval:
                     last_heartbeat = current_time
                     yield self._send_event("ping", {"timestamp": int(current_time)})
+
+                if message is None:
+                    continue
 
                 # Filter by deal_id if specified
                 if deal_id_str and message.get("deal_id") != deal_id_str:
