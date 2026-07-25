@@ -1,4 +1,4 @@
-"""Redis publisher for deal job progress and results.
+"""Deal-job event publisher for progress and results.
 
 This module provides a publisher for streaming job progress and results
 to clients via Redis Streams, consumed by SSE endpoints.

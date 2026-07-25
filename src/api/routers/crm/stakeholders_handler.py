@@ -46,9 +46,6 @@ from src.service.crm.insights.stakeholders_service import (
     StakeholdersServiceError,
 )
 from src.service.crm.jobs.deal_job_service import DealJobService
-from src.service.crm.jobs.stakeholder_job_visibility_service import (
-    StakeholderJobVisibilityService,
-)
 from src.service.crm.participants.contracts import StakeholderWriteContext
 from src.service.crm.participants.stakeholder_read_service import StakeholderReadService
 from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
@@ -180,19 +177,6 @@ async def get_stakeholder_write_service(
             logger.debug("Stakeholder write service close failed", exc_info=True)
 
 
-async def get_stakeholder_job_visibility_service(
-    user_ids: UserIDs = Depends(get_current_user),
-    session: AsyncSession = Depends(get_org_async_session),
-):
-    """Dependency that yields stakeholder job visibility orchestration."""
-    service = StakeholderJobVisibilityService(
-        session,
-        user_ids.organisation_id,
-        user_ids.user_id,
-    )
-    yield service
-
-
 async def get_stakeholder_deal_job_service(
     user_ids: UserIDs = Depends(get_current_user),
     session: AsyncSession = Depends(get_org_async_session),
@@ -308,9 +292,7 @@ async def create_stakeholder(
     response: FastAPIResponse,
     user_ids: UserIDs = Depends(get_current_user),
     service: StakeholderWriteService = Depends(get_stakeholder_write_service),
-    job_visibility_service: StakeholderJobVisibilityService = Depends(
-        get_stakeholder_job_visibility_service
-    ),
+    deal_job_service: DealJobService = Depends(get_stakeholder_deal_job_service),
 ) -> GenericResponse[CreateStakeholderResponse | StakeholderConflictResponse]:
     """Manually add a new stakeholder to a deal.
 
@@ -328,7 +310,7 @@ async def create_stakeholder(
     """
     try:
         command = CreateStakeholderCommand.model_validate(request.model_dump())
-        stakeholder_result = await service.create_stakeholder(
+        write_result = await service.create_stakeholder_with_outcome(
             deal_id,
             command,
             context=StakeholderWriteContext(
@@ -339,11 +321,11 @@ async def create_stakeholder(
             ),
         )
         await service.session.commit()
-        stakeholder = _to_api_model(StakeholderDetail, stakeholder_result)
+        stakeholder = _to_api_model(StakeholderDetail, write_result.stakeholder)
         processing_jobs = []
         research_job = None
-        if stakeholder.email:
-            processing_jobs = await job_visibility_service.create_stakeholder_processing_jobs(
+        if stakeholder.email and (write_result.created or write_result.reactivated):
+            processing_jobs = await deal_job_service.create_stakeholder_processing_jobs(
                 deal_id,
                 stakeholder.participant_id,
             )

@@ -1,4 +1,4 @@
-"""Tests for team integration email resolution used by deal mappers."""
+"""Tests for application-user mailbox identity resolution."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.sql.elements import ClauseElement
-from src.workers.deal_worker.services.deal_mapper_services.integration_email_resolver import (
+from src.service.integrations.email.mailbox_identity_resolver import (
     CALENDAR_MATCHER_INTEGRATION_TYPES,
     EMAIL_MATCHER_INTEGRATION_TYPES,
     get_active_integration_emails_for_users,

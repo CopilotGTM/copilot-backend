@@ -1,4 +1,4 @@
-"""Tests for participant-backed stakeholder sync behavior."""
+"""Tests for participant-owned stakeholder normalization."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-import src.workers.deal_worker.services.deal_mapper_services.stakeholder_sync_service as stakeholder_sync_module
+import src.service.crm.participants.stakeholder_sync_service as stakeholder_sync_module
 from sqlalchemy.dialects import postgresql
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
@@ -16,7 +16,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMParticipantType,
 )
 from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
-from src.workers.deal_worker.services.deal_mapper_services.stakeholder_sync_service import (
+from src.service.crm.participants.stakeholder_sync_service import (
     OrgStakeholderSyncResult,
     StakeholderSyncResult,
     StakeholderSyncService,
@@ -64,7 +64,7 @@ async def test_sync_deal_collapses_duplicate_contact_participants_by_normalized_
     assert result.skipped == 1
     assert first_participant.related_email == "info@salesforce.com"
     session.add.assert_called_once_with(first_participant)
-    assert service._pending_research == []
+    assert result.research_contact_ids == set()
 
 
 @pytest.mark.asyncio
@@ -104,8 +104,47 @@ async def test_sync_deal_skips_research_when_linked_contact_is_researched() -> N
 
     result = await service._sync_deal_internal(session, deal_id)  # noqa: SLF001
 
+    assert result.research_contact_ids == set()
+
+
+@pytest.mark.asyncio
+async def test_sync_deal_returns_missing_contact_research_without_dispatching() -> None:
+    """Service results carry post-commit work without importing the worker layer."""
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    contact_id = uuid4()
+    service = StakeholderSyncService(organisation_id)
+    service._internal_domains = set()
+    service._enrich_from_contact = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    participant = CRMDealParticipant(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        deal_id=deal_id,
+        participant_type=CRMParticipantType.CONTACT,
+        related_local_id=contact_id,
+        related_email="buyer@example.com",
+        approval_status=ApprovalStatus.APPROVED.value,
+    )
+    service._load_deal = AsyncMock(  # type: ignore[method-assign]
+        return_value=SimpleNamespace(
+            deal_id=deal_id,
+            integration_id=uuid4(),
+            participants=[participant],
+        )
+    )
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        contact_id=contact_id,
+        email="buyer@example.com",
+    )
+    execute_result = MagicMock()
+    execute_result.scalar_one_or_none.return_value = contact
+    session = SimpleNamespace(add=MagicMock(), execute=AsyncMock(return_value=execute_result))
+
+    result = await service._sync_deal_internal(session, deal_id)  # noqa: SLF001
+
+    assert result.research_contact_ids == {contact_id}
     assert result.created == 0
-    assert service._pending_research == []
 
 
 @pytest.mark.asyncio
@@ -134,7 +173,7 @@ async def test_sync_deal_rejects_internal_domain_contact_participants() -> None:
     assert result.created == 0
     assert participant.approval_status == ApprovalStatus.REJECTED.value
     session.add.assert_called_once_with(participant)
-    assert service._pending_research == []
+    assert result.research_contact_ids == set()
 
 
 @pytest.mark.asyncio
@@ -335,8 +374,6 @@ async def test_sync_for_organisation_does_not_use_reserved_created_log_field(mon
             rejected=1,
         )
     )
-    service._dispatch_pending_research = AsyncMock()  # type: ignore[method-assign]
-
     result = await service.sync_for_organisation()
 
     assert isinstance(result, OrgStakeholderSyncResult)
@@ -369,8 +406,6 @@ async def test_sync_for_organisation_processes_multiple_deals_in_one_batch_sessi
             StakeholderSyncResult(deal_id=second_deal_id, updated=1),
         ]
     )
-    service._dispatch_pending_research = AsyncMock()  # type: ignore[method-assign]
-
     result = await service.sync_for_organisation()
 
     assert result.successful_deals == 2
@@ -387,7 +422,6 @@ async def test_sync_for_organisation_processes_multiple_deals_in_one_batch_sessi
     )
     batch_session.commit.assert_awaited_once()
     batch_session.rollback.assert_not_awaited()
-    service._dispatch_pending_research.assert_awaited_once()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -436,8 +470,6 @@ async def test_sync_for_deal_does_not_use_reserved_created_log_field(monkeypatch
             skipped=2,
         )
     )
-    service._dispatch_pending_research = AsyncMock()  # type: ignore[method-assign]
-
     result = await service.sync_for_deal(deal_id)
 
     assert result.created == 3

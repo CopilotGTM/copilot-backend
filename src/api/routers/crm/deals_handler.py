@@ -77,14 +77,8 @@ from src.service.crm.deals.read_service import (
 from src.service.crm.deals.write_service import DealWriteService
 from src.service.crm.jobs.deal_job_service import DealJobService, DealJobServiceError
 from src.service.crm.jobs.deal_job_sse_service import DealJobSSEService
-from src.service.crm.jobs.stakeholder_job_visibility_service import (
-    StakeholderJobVisibilityService,
-)
 from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 from src.service.crm.schema.deal_schema_service import DealSchemaService
-from src.workers.deal_worker.utils.contact_communication_hydration_dispatch import (
-    dispatch_contact_communication_hydration_async,
-)
 from sse_starlette.sse import EventSourceResponse
 
 logger = get_logger("deals_handler")
@@ -1316,19 +1310,18 @@ async def create_deal(
         await service.session.commit()
         await service.session.refresh(deal)
 
+        processing_jobs = []
+        job_service = DealJobService(
+            service.session,
+            service.organisation_id,
+            service.actor_user_id,
+        )
         if inline_stakeholder_ids:
             try:
-                job_visibility_service = StakeholderJobVisibilityService(
-                    service.session,
-                    service.organisation_id,
-                    service.actor_user_id,
+                processing_jobs = await job_service.create_stakeholder_processing_jobs(
+                    deal.deal_id,
+                    participant_ids=inline_stakeholder_ids,
                 )
-                for participant_id in inline_stakeholder_ids:
-                    await job_visibility_service.create_stakeholder_processing_jobs(
-                        deal.deal_id,
-                        participant_id,
-                    )
-                await service.session.commit()
             except Exception:
                 await service.session.rollback()
                 logger.error(
@@ -1347,13 +1340,15 @@ async def create_deal(
                     user_id=service.actor_user_id,
                 )
 
-        if request.contact_participants or request.primary_contact_email:
+        if (
+            request.contact_participants or request.primary_contact_email
+        ) and not inline_stakeholder_ids:
             try:
-                await dispatch_contact_communication_hydration_async(
-                    organisation_id=service.organisation_id,
-                    deal_ids=[deal.deal_id],
-                    trigger="deal_created",
-                )
+                processing_jobs = [
+                    await job_service.create_communication_hydration_job(
+                        deal.deal_id,
+                    )
+                ]
             except Exception:
                 logger.warning(
                     "Failed to replay communications after deal creation",
@@ -1362,6 +1357,14 @@ async def create_deal(
                 )
 
         payload = _map_deal_write_response(deal)
+        payload.processing_jobs = [
+            DealJobResponse(
+                job_id=job.job_id,
+                job_type=job.job_type,
+                status=job.status,
+            )
+            for job in processing_jobs
+        ]
         return Response.created_response(
             message="Deal created successfully", data=payload, response=response
         )
@@ -1475,12 +1478,18 @@ async def update_deal_primary_contact(
         primary_contact_details = _primary_contact_details_from_deal(deal)
         await service.session.commit()
         await service.session.refresh(deal)
+        processing_jobs = []
         try:
-            await dispatch_contact_communication_hydration_async(
-                organisation_id=service.organisation_id,
-                deal_ids=[deal.deal_id],
-                trigger="deal_primary_contact_changed",
-            )
+            processing_jobs = [
+                await DealJobService(
+                    service.session,
+                    service.organisation_id,
+                    service.actor_user_id,
+                ).create_communication_hydration_job(
+                    deal.deal_id,
+                    trigger="deal_primary_contact_changed",
+                )
+            ]
         except Exception:
             logger.warning(
                 "Failed to replay communications after primary contact update",
@@ -1491,6 +1500,14 @@ async def update_deal_primary_contact(
             deal,
             primary_contact_details=primary_contact_details,
         )
+        payload.processing_jobs = [
+            DealJobResponse(
+                job_id=job.job_id,
+                job_type=job.job_type,
+                status=job.status,
+            )
+            for job in processing_jobs
+        ]
         return Response.success_response(
             message="Deal primary contact updated successfully",
             data=payload,

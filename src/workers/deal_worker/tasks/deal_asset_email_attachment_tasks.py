@@ -29,12 +29,15 @@ from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.infra.utils.task_lock import acquire_task_lock, release_task_lock
-from src.workers.deal_worker.celery_app import app
-from src.workers.deal_worker.services.deal_asset_email_attachment_service import (
+from src.service.crm.assets.email_attachment_service import (
     DealAssetEmailAttachmentService,
 )
+from src.workers.deal_worker.celery_app import app
+from src.workers.deal_worker.client import send_deal_task
 
 logger = get_logger(__name__)
+
+MAX_SCOPED_EMAIL_IDS = 100
 
 
 @app.task(
@@ -79,6 +82,29 @@ def extract_email_attachments_org_task(
         org_uuid = UUID(organisation_id)
         service = DealAssetEmailAttachmentService(org_uuid)
         stats = await service.process_organisation()
+        for asset_id in stats.get("post_upload_asset_ids", []):
+            send_deal_task(
+                "deal_asset.post_upload",
+                args=[organisation_id, str(asset_id)],
+                queue="deal",
+            )
+        for continuation in stats.get("continuations", []):
+            email_ids = list(continuation["email_ids"])
+            for offset in range(0, len(email_ids), MAX_SCOPED_EMAIL_IDS):
+                send_deal_task(
+                    "deal_asset.extract_email_attachments_deal",
+                    kwargs={
+                        "organisation_id": organisation_id,
+                        "deal_id": str(continuation["deal_id"]),
+                        "email_ids": email_ids[offset : offset + MAX_SCOPED_EMAIL_IDS],
+                    },
+                    queue="deal",
+                )
+        if stats["total_errors"] > 0:
+            raise RuntimeError(
+                "Organisation email attachment extraction completed with "
+                f"{stats['total_errors']} error(s)"
+            )
         return {
             "status": "success",
             "organisation_id": organisation_id,
@@ -99,13 +125,7 @@ def extract_email_attachments_org_task(
         if self.request.retries < self.max_retries:
             raise self.retry(exc=exc, countdown=120 * (2**self.request.retries)) from exc
 
-        return {
-            "status": "failed",
-            "organisation_id": organisation_id,
-            "started_at": started_at,
-            "completed_at": datetime.now(UTC).isoformat(),
-            "error": str(exc),
-        }
+        raise
     finally:
         release_task_lock(lock_key)
 
@@ -123,12 +143,18 @@ def extract_email_attachments_deal_task(
     self: Task,
     organisation_id: str,
     deal_id: str,
+    email_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Extract email attachments for a single deal.
 
     Triggered downstream from email matching when new emails are
     associated with a deal.
     """
+    if email_ids == []:
+        raise ValueError("email_ids must be non-empty; use None for explicit repair")
+    if email_ids is not None and len(email_ids) > MAX_SCOPED_EMAIL_IDS:
+        raise ValueError(f"email_ids cannot exceed {MAX_SCOPED_EMAIL_IDS}")
+    parsed_email_ids = [UUID(email_id) for email_id in email_ids] if email_ids is not None else None
     started_at = datetime.now(UTC).isoformat()
 
     logger.info(
@@ -139,11 +165,31 @@ def extract_email_attachments_deal_task(
 
     async def _run() -> dict[str, Any]:
         service = DealAssetEmailAttachmentService(UUID(organisation_id))
-        stats = await service.process_deal(UUID(deal_id))
+        stats = await service.process_deal(UUID(deal_id), email_ids=parsed_email_ids)
+        # The service commits PROCESSING rows first. A broker failure must escape this
+        # task so retry can rediscover and republish the same idempotent asset IDs.
+        for asset_id in stats.get("post_upload_asset_ids", []):
+            send_deal_task(
+                "deal_asset.post_upload",
+                args=[organisation_id, str(asset_id)],
+                queue="deal",
+            )
         if stats["errors"] > 0:
             raise RuntimeError(
                 f"Email attachment extraction completed with {stats['errors']} error(s)"
             )
+        remaining_email_ids = list(stats.get("remaining_email_ids", []))
+        if stats.get("limit_reached") and remaining_email_ids:
+            for offset in range(0, len(remaining_email_ids), MAX_SCOPED_EMAIL_IDS):
+                send_deal_task(
+                    "deal_asset.extract_email_attachments_deal",
+                    kwargs={
+                        "organisation_id": organisation_id,
+                        "deal_id": deal_id,
+                        "email_ids": remaining_email_ids[offset : offset + MAX_SCOPED_EMAIL_IDS],
+                    },
+                    queue="deal",
+                )
         return {
             "status": "success",
             "organisation_id": organisation_id,

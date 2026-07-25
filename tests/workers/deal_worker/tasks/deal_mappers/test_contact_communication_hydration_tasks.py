@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 import pytest
+import src.workers.deal_worker.tasks.deal_mappers.contact_communication_hydration_tasks as hydration_tasks
+from src.domain.models.organisation_tables.job_models import DealJobType
 from src.workers.deal_worker.config import DealWorkerConfig
 from src.workers.deal_worker.tasks.deal_mappers.contact_communication_hydration_tasks import (
     _dispatch_association_followups,
@@ -37,6 +40,89 @@ def test_hydration_task_rejects_mixed_deal_and_contact_payloads() -> None:
             contact_ids=[],
             deal_ids=[],
         )
+
+
+@pytest.mark.parametrize(
+    ("job_type", "starting_method"),
+    [
+        (DealJobType.STAKEHOLDER_SYNC, "progress"),
+        (DealJobType.DEAL_COMMUNICATION_HYDRATION, "start"),
+    ],
+)
+def test_requested_hydration_completes_the_supplied_visible_job(
+    monkeypatch,
+    job_type,
+    starting_method,
+) -> None:
+    """Requested hydration publishes stages and owns the parent job's terminal state."""
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    job_id = uuid4()
+    result = SimpleNamespace(
+        email_deal_ids=set(),
+        discovered_contact_ids=set(),
+        attachment_email_ids_by_deal={},
+        to_dict=lambda: {"associations_created": 2},
+    )
+    service = SimpleNamespace(backfill_deals=AsyncMock(return_value=result))
+    tracker = SimpleNamespace(
+        start=AsyncMock(),
+        progress=AsyncMock(),
+        complete=AsyncMock(),
+        fail=AsyncMock(),
+    )
+    tracker_factory = Mock(return_value=tracker)
+
+    class _Scope:
+        def __init__(self, value):
+            self.value = value
+
+        async def __aenter__(self):
+            return self.value
+
+        async def __aexit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(
+        hydration_tasks,
+        "master_async_session_scope",
+        lambda: _Scope(SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        hydration_tasks,
+        "org_async_session_scope",
+        lambda _organisation_id: _Scope(SimpleNamespace(commit=AsyncMock())),
+    )
+    monkeypatch.setattr(
+        hydration_tasks,
+        "ContactCommunicationHydrationService",
+        lambda *_args, **_kwargs: service,
+    )
+    monkeypatch.setattr(
+        hydration_tasks,
+        "_dispatch_association_followups",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(hydration_tasks, "VisibleDealJobTracker", tracker_factory, raising=False)
+
+    response = hydrate_contact_communications_task.run(
+        organisation_id=str(organisation_id),
+        deal_ids=[str(deal_id)],
+        trigger="deal_participants_changed",
+        job_id=str(job_id),
+        job_type=job_type.value,
+        emit_events=True,
+    )
+
+    tracker_factory.assert_called_once_with(
+        organisation_id,
+        str(job_id),
+        job_type,
+        emit_events=True,
+    )
+    getattr(tracker, starting_method).assert_awaited_once()
+    tracker.complete.assert_awaited_once()
+    assert response["associations_created"] == 2
 
 
 @pytest.mark.asyncio
@@ -94,11 +180,84 @@ async def test_dispatch_batches_targeted_deal_backfill(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_dispatch_adds_visibility_only_when_caller_supplies_a_job(monkeypatch) -> None:
+    """Bulk callers stay silent while one requested job is forwarded to its hydration task."""
+    send = AsyncMock(side_effect=["background-task", "visible-task"])
+    monkeypatch.setattr(contact_communication_hydration_dispatch, "send_deal_task_async", send)
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    job_id = uuid4()
+
+    await contact_communication_hydration_dispatch.dispatch_contact_communication_hydration_async(
+        organisation_id=organisation_id,
+        deal_ids=[deal_id],
+        trigger="integration_backfill",
+    )
+    await contact_communication_hydration_dispatch.dispatch_contact_communication_hydration_async(
+        organisation_id=organisation_id,
+        deal_ids=[deal_id],
+        trigger="stakeholder_requested",
+        job_id=job_id,
+        job_type=DealJobType.STAKEHOLDER_SYNC,
+        emit_events=True,
+    )
+
+    background_kwargs = send.await_args_list[0].kwargs["kwargs"]
+    visible_kwargs = send.await_args_list[1].kwargs["kwargs"]
+    assert "job_id" not in background_kwargs
+    assert "job_type" not in background_kwargs
+    assert visible_kwargs["job_id"] == str(job_id)
+    assert visible_kwargs["job_type"] == DealJobType.STAKEHOLDER_SYNC.value
+
+
+@pytest.mark.asyncio
+async def test_dispatch_rejects_one_visible_job_across_multiple_batches(monkeypatch) -> None:
+    """One SSE job cannot be finalized independently by several hydration chunks."""
+    send = AsyncMock()
+    monkeypatch.setattr(contact_communication_hydration_dispatch, "send_deal_task_async", send)
+
+    with pytest.raises(ValueError, match="single hydration batch"):
+        await (
+            contact_communication_hydration_dispatch.dispatch_contact_communication_hydration_async(
+                organisation_id=uuid4(),
+                deal_ids=[uuid4() for _ in range(101)],
+                trigger="requested_bulk_replay",
+                job_id=uuid4(),
+                job_type=DealJobType.STAKEHOLDER_SYNC,
+                emit_events=True,
+            )
+        )
+
+    send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_rejects_job_context_without_event_request(monkeypatch) -> None:
+    """An internal job ID cannot accidentally opt a background hydration into SSE."""
+    send = AsyncMock()
+    monkeypatch.setattr(contact_communication_hydration_dispatch, "send_deal_task_async", send)
+
+    with pytest.raises(ValueError, match="emit_events"):
+        await (
+            contact_communication_hydration_dispatch.dispatch_contact_communication_hydration_async(
+                organisation_id=uuid4(),
+                deal_ids=[uuid4()],
+                trigger="initial_backfill",
+                job_id=uuid4(),
+                job_type=DealJobType.STAKEHOLDER_SYNC,
+            )
+        )
+
+    send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_hydration_followups_research_contacts_and_process_email_deals() -> None:
     organisation_id = uuid4()
     contact_id = uuid4()
     deal_id = uuid4()
     memory_job_id = uuid4()
+    email_id = uuid4()
 
     with (
         patch(
@@ -119,7 +278,7 @@ async def test_hydration_followups_research_contacts_and_process_email_deals() -
             organisation_id=organisation_id,
             discovered_contact_ids={contact_id},
             email_deal_jobs={deal_id: memory_job_id},
-            attachment_deal_ids={deal_id},
+            attachment_email_ids_by_deal={deal_id: {email_id}},
         )
 
     research.assert_awaited_once_with(
@@ -128,6 +287,7 @@ async def test_hydration_followups_research_contacts_and_process_email_deals() -
         trigger="communication_participant_discovery",
     )
     attachments.apply_async.assert_called_once()
+    assert attachments.apply_async.call_args.kwargs["kwargs"]["email_ids"] == [str(email_id)]
     assert attachments.apply_async.call_args.kwargs["retry"] is True
     assert attachments.apply_async.call_args.kwargs["retry_policy"]["max_retries"] == 3
     insights.assert_called_once_with(
@@ -135,6 +295,40 @@ async def test_hydration_followups_research_contacts_and_process_email_deals() -
         str(deal_id),
         str(memory_job_id),
     )
+
+
+@pytest.mark.asyncio
+async def test_hydration_followups_chunk_exact_attachment_email_ids() -> None:
+    """Large replays stay bounded and never fall back to a deal-wide scan."""
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    email_ids = {uuid4() for _ in range(101)}
+
+    with (
+        patch(
+            "src.workers.deal_worker.tasks.deal_mappers."
+            "contact_communication_hydration_tasks.extract_email_attachments_deal_task"
+        ) as attachments,
+        patch(
+            "src.workers.deal_worker.tasks.deal_mappers."
+            "contact_communication_hydration_tasks.dispatch_deal_insight_pipeline"
+        ),
+    ):
+        await _dispatch_association_followups(
+            organisation_id=organisation_id,
+            discovered_contact_ids=set(),
+            email_deal_jobs={deal_id: uuid4()},
+            attachment_email_ids_by_deal={deal_id: email_ids},
+        )
+
+    assert attachments.apply_async.call_count == 2
+    payloads = [
+        call.kwargs["kwargs"]["email_ids"] for call in attachments.apply_async.call_args_list
+    ]
+    assert [len(payload) for payload in payloads] == [100, 1]
+    assert {value for payload in payloads for value in payload} == {
+        str(email_id) for email_id in email_ids
+    }
 
 
 @pytest.mark.asyncio
@@ -157,7 +351,7 @@ async def test_hydration_followups_skip_attachments_without_signal_but_keep_insi
             organisation_id=organisation_id,
             discovered_contact_ids=set(),
             email_deal_jobs={deal_id: memory_job_id},
-            attachment_deal_ids=set(),
+            attachment_email_ids_by_deal={},
         )
 
     attachments.apply_async.assert_not_called()
@@ -190,7 +384,7 @@ async def test_hydration_followups_keep_insights_when_attachment_publish_fails()
                 organisation_id=organisation_id,
                 discovered_contact_ids=set(),
                 email_deal_jobs={deal_id: memory_job_id},
-                attachment_deal_ids={deal_id},
+                attachment_email_ids_by_deal={deal_id: {uuid4()}},
             )
 
     insights.assert_called_once_with(

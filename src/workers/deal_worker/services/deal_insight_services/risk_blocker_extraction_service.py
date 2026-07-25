@@ -29,12 +29,12 @@ from src.domain.models.organisation_tables.sync.risk_blocker_models import (
 )
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.crm.jobs.deal_job_event_publisher import DealJobRedisPublisher
 from src.service.crm.risks.contracts import RiskBlockerActor, RiskBlockerWriteContext
 from src.service.crm.risks.write_service import (
     RiskBlockerWriteService,
     build_extraction_risk_blocker,
 )
-from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
 from src.workers.deal_worker.utils.deal_job_utils import (
     count_deal_emails,
     count_deal_meetings,

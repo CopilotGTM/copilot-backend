@@ -618,7 +618,17 @@ async def test_create_contact_direct_can_link_contact_to_deal() -> None:
 
     # Contact creation and deal linking are one transaction; hydration starts only after it commits.
     assert org_session.commit.await_count == 1
-    dispatch.assert_awaited_once()
+    dispatch.assert_awaited_once_with(
+        "stakeholder.sync_deal_stakeholders",
+        kwargs={
+            "organisation_id": str(context.organisation_id),
+            "deal_id": str(deal_id),
+            "change_type": "PARTICIPANT_ADDED",
+            "integration_id": None,
+            "integration_type": None,
+            "trigger_rematching": True,
+        },
+    )
     assert result["deal_link_status"] == "linked"
     assert result["deal_id"] == str(deal_id)
 

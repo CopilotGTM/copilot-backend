@@ -11,7 +11,10 @@ from src.domain.models.organisation_tables.deal_asset_models import (
     DealAssetLinkStatus,
     DealAssetStatus,
 )
-from src.service.crm.deal_assets_service import DealAssetsService, DealAssetsServiceError
+from src.service.crm.assets.deal_assets_service import (
+    DealAssetsService,
+    DealAssetsServiceError,
+)
 
 
 @pytest.fixture()
@@ -68,7 +71,7 @@ class TestPresignFileUpload:
         fake_url = "https://storage.blob.core.windows.net/container/blob?sig=abc"
 
         with patch(
-            "src.service.crm.deal_assets_service.AzureOrganisationBlobStorage"
+            "src.service.crm.assets.deal_assets_service.AzureOrganisationBlobStorage"
         ) as mock_blob_cls:
             mock_blob = AsyncMock()
             mock_blob.generate_write_sas = AsyncMock(return_value=fake_url)
@@ -95,7 +98,7 @@ class TestPresignFileUpload:
     async def test_defaults_name_to_filename(self, service, deal_id, user_id):
         """A blank user-provided name should fall back to the uploaded filename."""
         with patch(
-            "src.service.crm.deal_assets_service.AzureOrganisationBlobStorage"
+            "src.service.crm.assets.deal_assets_service.AzureOrganisationBlobStorage"
         ) as mock_blob_cls:
             mock_blob = AsyncMock()
             mock_blob.generate_write_sas = AsyncMock(return_value="https://example.com")
@@ -168,6 +171,36 @@ class TestFinalizeFileUpload:
             await service.finalize_file_upload(deal_id=deal_id, asset_id=asset_id)
 
         assert exc_info.value.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_returns_processing_asset_for_safe_republication(
+        self,
+        service,
+        deal_id,
+        mock_session,
+    ):
+        """A client retry repairs broker publication without mutating the asset again."""
+        asset_id = uuid4()
+        processing_asset = DealAsset(
+            asset_id=asset_id,
+            organisation_id=service.organisation_id,
+            deal_id=deal_id,
+            added_by_user_id=uuid4(),
+            name="file.txt",
+            status=DealAssetStatus.PROCESSING.value,
+            storage_path="deal_assets/test/file.txt",
+        )
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = processing_asset
+        mock_session.execute.return_value = mock_result
+
+        result = await service.finalize_file_upload(
+            deal_id=deal_id,
+            asset_id=asset_id,
+        )
+
+        assert result is processing_asset
+        mock_session.flush.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +301,7 @@ class TestGenerateDownloadUrl:
         )
 
         with patch(
-            "src.service.crm.deal_assets_service.AzureOrganisationBlobStorage"
+            "src.service.crm.assets.deal_assets_service.AzureOrganisationBlobStorage"
         ) as mock_blob_cls:
             mock_blob = AsyncMock()
             mock_blob.generate_read_sas = AsyncMock(return_value="https://example.com/download")

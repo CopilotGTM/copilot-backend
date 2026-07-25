@@ -16,12 +16,12 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
-
 from src.infra.utils.logger import get_logger
-from src.workers.integrations_worker.providers._google_api import GMAIL_BASE_URL
-from src.workers.integrations_worker.providers._microsoft_graph import GRAPH_BASE_URL
 
 logger = get_logger(__name__)
+
+GMAIL_BASE_URL = "https://gmail.googleapis.com"
+GRAPH_BASE_URL = "https://graph.microsoft.com"
 
 # 25 MB — maximum attachment size worth processing
 _MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
@@ -188,6 +188,17 @@ def list_gmail_attachments(payload: dict[str, Any]) -> list[AttachmentMeta]:
     results: list[AttachmentMeta] = []
     _walk_gmail_parts(payload, results)
     return results
+
+
+async def list_gmail_message_attachments(
+    client: httpx.AsyncClient,
+    message_id: str,
+) -> list[AttachmentMeta]:
+    """Fetch a full Gmail message and list its separately stored attachments."""
+    url = f"{GMAIL_BASE_URL}/gmail/v1/users/me/messages/{_quote_path_segment(message_id)}"
+    response = await client.get(url, params={"format": "full"})
+    response.raise_for_status()
+    return list_gmail_attachments(response.json().get("payload", {}))
 
 
 def _walk_gmail_parts(part: dict[str, Any], results: list[AttachmentMeta]) -> None:

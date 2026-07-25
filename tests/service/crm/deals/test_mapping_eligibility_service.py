@@ -1,4 +1,4 @@
-"""Tests for shared deal-mapping eligibility decisions."""
+"""Tests for CRM deal-mapping eligibility decisions."""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-import src.workers.deal_worker.services.deal_mapper_services.deal_mapping_eligibility as eligibility_module
+import src.service.crm.deals.mapping_eligibility_service as eligibility_module
 from sqlalchemy.dialects import postgresql
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealStatus,
     CRMParticipantType,
 )
-from src.workers.deal_worker.services.deal_mapper_services.deal_mapping_eligibility import (
+from src.service.crm.deals.mapping_eligibility_service import (
     DealMappingEligibilityService,
     DealMappingSkipReason,
 )

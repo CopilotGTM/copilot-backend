@@ -216,14 +216,15 @@ class DealAssetsService:
         asset_id: UUID,
         checksum: str | None = None,
     ) -> DealAsset:
-        """Mark a pending_upload asset as processing and queue post-upload work.
+        """Mark a pending upload as processing or return it for safe task replay.
 
-        The Celery post-upload task (checksum + thumbnails) transitions to active.
+        The API commits before publishing post-upload. Returning an unchanged
+        processing row lets a client repair a broker failure without another asset.
         """
-        # This transition is a strict state machine gate: only PENDING can move
-        # to PROCESSING, so callers cannot accidentally process stale rows twice.
         asset = await self.get_asset(deal_id, asset_id)
 
+        if asset.status == DealAssetStatus.PROCESSING.value:
+            return asset
         if asset.status != DealAssetStatus.PENDING_UPLOAD.value:
             raise DealAssetsServiceError(
                 f"Asset {asset_id} is not pending upload (status={asset.status})",

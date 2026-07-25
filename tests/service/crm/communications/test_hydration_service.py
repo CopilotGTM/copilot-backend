@@ -1,25 +1,37 @@
-"""Regression tests for relationship-based contact creation and activity hydration."""
+"""Regression tests for communication hydration and historical replay."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 from uuid import UUID, uuid4
 
 import pytest
+import src.service.crm.communications.hydration_service as hydration_module
 from src.domain.models.organisation_tables.sync.calendar import CalendarAttendee, CalendarEvent
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
-from src.domain.models.organisation_tables.sync.email_models import Email, EmailDirection
-from src.service.crm.discovery.communication_deal_association import (
-    CommunicationDealAssociationResult,
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDealParticipant,
+    CRMParticipantType,
 )
-from src.service.crm.discovery.contact_communication_hydration import (
-    ContactCommunicationHydrationContext,
+from src.domain.models.organisation_tables.sync.crm.stakeholders import StakeholderSource
+from src.domain.models.organisation_tables.sync.email_models import Email, EmailDirection
+from src.service.crm.communications.deal_association_service import (
+    AdditionalStakeholderCandidates,
+    CommunicationDealAssociationResult,
+    CommunicationDealAssociationService,
+    DealCandidate,
+)
+from src.service.crm.communications.hydration_service import (
     ContactCommunicationHydrationResult,
     ContactCommunicationHydrationService,
+)
+from src.service.crm.communications.participant_resolution_service import (
+    ContactCommunicationHydrationContext,
     SkipReason,
     build_contact_communication_hydration_plan,
 )
+from src.service.crm.participants.contracts import CommunicationStakeholderWriteResult
 
 ORG_ID = UUID("11111111-1111-1111-1111-111111111111")
 INTEGRATION_ID = UUID("22222222-2222-2222-2222-222222222222")
@@ -40,6 +52,49 @@ def _context() -> ContactCommunicationHydrationContext:
     return ContactCommunicationHydrationContext(
         internal_emails={"seller@ourco.com", "calendar@ourco.com"},
         internal_domains={"ourco.com"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_hydration_delegates_stakeholder_candidates_to_participant_owner() -> None:
+    """Hydration orchestrates discovery while participant-domain code owns the write."""
+    deal_id = uuid4()
+    integration_id = uuid4()
+    contact_id = uuid4()
+    association_result = CommunicationDealAssociationResult(
+        stakeholder_candidates=[
+            AdditionalStakeholderCandidates(
+                deal_id=deal_id,
+                integration_id=integration_id,
+                customer_domains=frozenset({"customer.test"}),
+                contact_emails_by_id={contact_id: "buyer@customer.test"},
+                source=StakeholderSource.EMAIL_DISCOVERY,
+            )
+        ]
+    )
+    writer = MagicMock()
+    writer.add_communication_discovered_contacts = AsyncMock(
+        return_value=CommunicationStakeholderWriteResult(
+            approved_contact_ids=frozenset({contact_id}),
+            approved_added=1,
+        )
+    )
+    service = ContactCommunicationHydrationService(MagicMock(), MagicMock(), ORG_ID)
+
+    with patch(
+        "src.service.crm.communications.hydration_service.StakeholderWriteService",
+        return_value=writer,
+    ):
+        await service._write_stakeholder_candidates(association_result)  # noqa: SLF001
+
+    assert association_result.discovered_contact_ids == {contact_id}
+    assert association_result.participants_added_approved == 1
+    writer.add_communication_discovered_contacts.assert_awaited_once_with(
+        deal_id=deal_id,
+        integration_id=integration_id,
+        customer_domains=frozenset({"customer.test"}),
+        contact_emails_by_id={contact_id: "buyer@customer.test"},
+        source=StakeholderSource.EMAIL_DISCOVERY,
     )
 
 
@@ -147,6 +202,48 @@ def test_plan_skips_internal_role_and_resource_participants() -> None:
     assert plan.skip_counters[SkipReason.ROLE_MAILBOX.value] == 2
     assert plan.skip_counters[SkipReason.INTERNAL_DOMAIN.value] == 1
     assert plan.skip_counters[SkipReason.RESOURCE_ATTENDEE.value] == 1
+
+
+def test_plan_keeps_filtered_contact_identities_per_communication() -> None:
+    """Association must consume the same attendee filtering used by resolution."""
+    email = _email(
+        from_email="seller@ourco.com",
+        to_emails=["buyer@example.com"],
+        cc_emails=["finance@example.com"],
+    )
+    event = _event(
+        attendees=[
+            CalendarAttendee(
+                event_id=uuid4(),
+                email="buyer@example.com",
+                response_status="accepted",
+            ),
+            CalendarAttendee(
+                event_id=uuid4(),
+                email="finance@example.com",
+                response_status="declined",
+            ),
+            CalendarAttendee(
+                event_id=uuid4(),
+                email="room@ourco.com",
+                response_status="accepted",
+                data_payload={"resource": True},
+            ),
+        ]
+    )
+
+    plan = build_contact_communication_hydration_plan(
+        emails=[email],
+        events=[event],
+        context=_context(),
+    )
+
+    assert getattr(plan, "email_contact_identities", {}) == {
+        email.email_id: frozenset({"buyer@example.com", "finance@example.com"})
+    }
+    assert getattr(plan, "event_contact_identities", {}) == {
+        event.event_id: frozenset({"buyer@example.com"})
+    }
 
 
 def test_plan_does_not_turn_large_calendar_events_into_bulk_contact_imports() -> None:
@@ -381,12 +478,11 @@ async def test_changed_source_links_suppressed_identity_when_contact_already_exi
 
     with (
         patch(
-            "src.service.crm.discovery.contact_communication_hydration.ContactWriteService",
+            "src.service.crm.communications.participant_resolution_service.ContactWriteService",
             return_value=writer,
         ),
         patch(
-            "src.service.crm.discovery.contact_communication_hydration."
-            "CommunicationDealAssociationService"
+            "src.service.crm.communications.hydration_service.CommunicationDealAssociationService"
         ) as association_service,
     ):
         association_service.return_value.associate_changed_communications = AsyncMock(
@@ -476,18 +572,17 @@ async def test_changed_source_associates_deals_after_contact_projection() -> Non
     associator.associate_changed_communications = AsyncMock(
         return_value=CommunicationDealAssociationResult(
             email_deal_ids={attachment_deal_id},
-            attachment_deal_ids={attachment_deal_id},
+            attachment_email_ids_by_deal={attachment_deal_id: {email.email_id}},
         )
     )
 
     with (
         patch(
-            "src.service.crm.discovery.contact_communication_hydration.ContactWriteService",
+            "src.service.crm.communications.participant_resolution_service.ContactWriteService",
             return_value=writer,
         ),
         patch(
-            "src.service.crm.discovery.contact_communication_hydration."
-            "CommunicationDealAssociationService",
+            "src.service.crm.communications.hydration_service.CommunicationDealAssociationService",
             return_value=associator,
         ),
     ):
@@ -497,11 +592,14 @@ async def test_changed_source_associates_deals_after_contact_projection() -> Non
         emails=[email],
         events=[],
         identity_contacts={"buyer@example.com": contact},
+        email_contact_identities={email.email_id: frozenset({"buyer@example.com"})},
+        event_contact_identities={},
         integration_id=None,
+        attachment_scope_email_ids={email.email_id},
     )
     assert service._project.await_count == 1  # type: ignore[attr-defined]
     assert result.email_deal_ids == frozenset({attachment_deal_id})
-    assert result.attachment_deal_ids == frozenset({attachment_deal_id})
+    assert result.attachment_email_ids_by_deal == {attachment_deal_id: frozenset({email.email_id})}
 
 
 @pytest.mark.asyncio
@@ -530,24 +628,39 @@ async def test_contact_backfill_reuses_same_deal_association_service() -> None:
     )
     email = _email()
     event = _event()
-    service = ContactCommunicationHydrationService(MagicMock(), MagicMock(), ORG_ID)
+    org_session = MagicMock()
+    org_session.execute = AsyncMock()
+    service = ContactCommunicationHydrationService(org_session, MagicMock(), ORG_ID)
     service._load_contacts = AsyncMock(return_value=[contact])  # type: ignore[method-assign]
     service._load_emails_for_identities = AsyncMock(return_value=[email])  # type: ignore[method-assign]
     service._load_events_for_identities = AsyncMock(return_value=[event])  # type: ignore[method-assign]
+    service._load_context = AsyncMock(return_value=_context())  # type: ignore[method-assign]
     service._project = AsyncMock(return_value=1)  # type: ignore[method-assign]
+    writer = MagicMock()
+    writer.find_or_create_contacts_by_email_batch = AsyncMock(
+        return_value={"buyer@example.com": MagicMock(contact=contact, created=False)}
+    )
+    writer.find_contacts_by_email_batch = AsyncMock(return_value={})
     associator = MagicMock()
     attachment_deal_id = uuid4()
     associator.associate_changed_communications = AsyncMock(
         return_value=CommunicationDealAssociationResult(
             email_deal_ids={attachment_deal_id},
-            attachment_deal_ids={attachment_deal_id},
+            attachment_email_ids_by_deal={
+                attachment_deal_id: {email.email_id},
+            },
         )
     )
 
-    with patch(
-        "src.service.crm.discovery.contact_communication_hydration."
-        "CommunicationDealAssociationService",
-        return_value=associator,
+    with (
+        patch(
+            "src.service.crm.communications.participant_resolution_service.ContactWriteService",
+            return_value=writer,
+        ),
+        patch(
+            "src.service.crm.communications.hydration_service.CommunicationDealAssociationService",
+            return_value=associator,
+        ),
     ):
         result = await service.backfill_contacts([contact.contact_id])
 
@@ -555,12 +668,69 @@ async def test_contact_backfill_reuses_same_deal_association_service() -> None:
         emails=[email],
         events=[event],
         identity_contacts={"buyer@example.com": contact},
+        email_contact_identities={email.email_id: frozenset({"buyer@example.com"})},
+        event_contact_identities={event.event_id: frozenset({"buyer@example.com"})},
         integration_id=None,
         discover_participants=True,
         target_deal_ids=None,
+        attachment_scope_email_ids={email.email_id},
     )
     assert result.email_deal_ids == frozenset({attachment_deal_id})
-    assert result.attachment_deal_ids == frozenset({attachment_deal_id})
+    assert result.attachment_email_ids_by_deal == {
+        attachment_deal_id: frozenset({email.email_id}),
+    }
+
+
+@pytest.mark.asyncio
+async def test_contact_backfill_consumes_history_in_deterministic_bounded_pages(
+    monkeypatch,
+) -> None:
+    """Retained history is fully consumed without loading it into one unbounded batch."""
+    contact = CRMContact(
+        organisation_id=ORG_ID,
+        contact_id=uuid4(),
+        email="buyer@example.com",
+        is_deleted=False,
+    )
+    emails = [_email(external_message_id=f"message-{index}") for index in range(3)]
+    service = ContactCommunicationHydrationService(MagicMock(), MagicMock(), ORG_ID)
+    service._load_contacts = AsyncMock(return_value=[contact])  # type: ignore[method-assign]
+    service._load_emails_for_identities = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[emails[:2], emails[2:]]
+    )
+    service._load_events_for_identities = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    service._load_context = AsyncMock(return_value=_context())  # type: ignore[method-assign]
+    service._project = AsyncMock(side_effect=[2, 1])  # type: ignore[method-assign]
+    writer = MagicMock()
+    writer.find_or_create_contacts_by_email_batch = AsyncMock(return_value={})
+    writer.find_contacts_by_email_batch = AsyncMock(return_value={"buyer@example.com": contact})
+    associator = MagicMock()
+    associator.associate_changed_communications = AsyncMock(
+        side_effect=[
+            CommunicationDealAssociationResult(),
+            CommunicationDealAssociationResult(),
+        ]
+    )
+    monkeypatch.setattr(hydration_module, "HISTORY_PAGE_SIZE", 2)
+
+    with (
+        patch(
+            "src.service.crm.communications.participant_resolution_service.ContactWriteService",
+            return_value=writer,
+        ),
+        patch(
+            "src.service.crm.communications.hydration_service.CommunicationDealAssociationService",
+            return_value=associator,
+        ),
+    ):
+        result = await service.backfill_contacts([contact.contact_id])
+
+    assert result.emails_considered == 3
+    assert service._load_emails_for_identities.await_args_list == [  # type: ignore[attr-defined]
+        call({"buyer@example.com"}, offset=0, limit=2),
+        call({"buyer@example.com"}, offset=2, limit=2),
+    ]
+    assert associator.associate_changed_communications.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -572,12 +742,12 @@ async def test_deal_backfill_replays_only_approved_deal_contacts() -> None:
     service._load_deal_contact_ids = AsyncMock(return_value=contact_ids)  # type: ignore[method-assign]
     service._load_contacts = AsyncMock(return_value=[])  # type: ignore[method-assign]
     service._backfill_contacts = AsyncMock(return_value=_empty_result())  # type: ignore[method-assign]
+    service._load_context = AsyncMock(return_value=_context())  # type: ignore[method-assign]
     associator = MagicMock()
     associator.reconcile_deal_associations = AsyncMock(return_value=0)
 
     with patch(
-        "src.service.crm.discovery.contact_communication_hydration."
-        "CommunicationDealAssociationService",
+        "src.service.crm.communications.hydration_service.CommunicationDealAssociationService",
         return_value=associator,
     ):
         result = await service.backfill_deals(deal_ids)
@@ -592,8 +762,208 @@ async def test_deal_backfill_replays_only_approved_deal_contacts() -> None:
 
 
 @pytest.mark.asyncio
-async def test_deal_backfill_reconciles_stale_associations_before_history_replay() -> None:
-    """Participant removal must clean old links before current contacts add history back."""
+async def test_deal_backfill_resolves_historical_co_participant_before_association() -> None:
+    """Historical replay must expose eligible co-participants to stakeholder discovery."""
+    deal_id = uuid4()
+    buyer = CRMContact(
+        organisation_id=ORG_ID,
+        contact_id=uuid4(),
+        email="buyer@example.com",
+        is_deleted=False,
+    )
+    champion = CRMContact(
+        organisation_id=ORG_ID,
+        contact_id=uuid4(),
+        email="champion@example.com",
+        is_deleted=False,
+    )
+    email = _email(
+        from_email="seller@ourco.com",
+        to_emails=["buyer@example.com"],
+        cc_emails=["champion@example.com"],
+    )
+    org_session = MagicMock()
+    org_session.execute = AsyncMock()
+    service = ContactCommunicationHydrationService(org_session, MagicMock(), ORG_ID)
+    service._load_deal_contact_ids = AsyncMock(  # type: ignore[method-assign]
+        return_value=[buyer.contact_id]
+    )
+    service._load_contacts = AsyncMock(return_value=[buyer])  # type: ignore[method-assign]
+    service._load_emails_for_identities = AsyncMock(return_value=[email])  # type: ignore[method-assign]
+    service._load_events_for_identities = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    service._load_context = AsyncMock(return_value=_context())  # type: ignore[method-assign]
+    service._project = AsyncMock(return_value=1)  # type: ignore[method-assign]
+
+    writer = MagicMock()
+
+    async def resolve_requested_contacts(commands, *, context):
+        _ = context
+        requested = {command.email for command in commands}
+        assert requested == {"buyer@example.com", "champion@example.com"}
+        contacts = {
+            buyer.email: (buyer, False),
+            champion.email: (champion, True),
+        }
+        return {
+            email: MagicMock(contact=contacts[email][0], created=contacts[email][1])
+            for email in requested
+        }
+
+    writer.find_or_create_contacts_by_email_batch = AsyncMock(
+        side_effect=resolve_requested_contacts
+    )
+    writer.find_contacts_by_email_batch = AsyncMock(return_value={})
+    associator = MagicMock()
+    associator.reconcile_deal_associations = AsyncMock(return_value=0)
+    associator.associate_changed_communications = AsyncMock(
+        return_value=CommunicationDealAssociationResult()
+    )
+
+    with (
+        patch(
+            "src.service.crm.communications.participant_resolution_service.ContactWriteService",
+            return_value=writer,
+        ),
+        patch(
+            "src.service.crm.communications.hydration_service.CommunicationDealAssociationService",
+            return_value=associator,
+        ),
+    ):
+        await service.backfill_deals([deal_id])
+
+    assert associator.associate_changed_communications.await_args.kwargs["identity_contacts"] == {
+        "buyer@example.com": buyer,
+        "champion@example.com": champion,
+    }
+
+
+@pytest.mark.asyncio
+async def test_deal_backfill_adds_historical_co_participant_through_domain_writer(
+    monkeypatch,
+) -> None:
+    """Exercise resolution, association policy, and participant mutation as one service flow."""
+    deal_id = uuid4()
+    integration_id = uuid4()
+    buyer = CRMContact(
+        organisation_id=ORG_ID,
+        contact_id=uuid4(),
+        email="buyer@customer.com",
+        is_deleted=False,
+    )
+    champion = CRMContact(
+        organisation_id=ORG_ID,
+        contact_id=uuid4(),
+        email="champion@customer.com",
+        is_deleted=False,
+    )
+    email = _email(
+        from_email="seller@ourco.com",
+        to_emails=["buyer@customer.com"],
+        cc_emails=["champion@customer.com"],
+    )
+    email.internet_message_id = "historical-message"
+    existing_buyer = CRMDealParticipant(
+        organisation_id=ORG_ID,
+        integration_id=integration_id,
+        deal_id=deal_id,
+        participant_type=CRMParticipantType.CONTACT,
+        related_local_id=buyer.contact_id,
+        related_email=buyer.email,
+        participant_source=StakeholderSource.CRM.value,
+        approval_status="APPROVED",
+    )
+    existing_rows = MagicMock()
+    existing_rows.scalars.return_value.all.return_value = [existing_buyer]
+    org_session = MagicMock()
+    org_session.execute = AsyncMock(side_effect=[MagicMock(), MagicMock(), existing_rows])
+    org_session.flush = AsyncMock()
+    service = ContactCommunicationHydrationService(org_session, MagicMock(), ORG_ID)
+    service._load_deal_contact_ids = AsyncMock(return_value=[buyer.contact_id])  # type: ignore[method-assign]
+    service._load_contacts = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[[buyer], [champion]]
+    )
+    service._load_emails_for_identities = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[[email], []]
+    )
+    service._load_events_for_identities = AsyncMock(side_effect=[[], []])  # type: ignore[method-assign]
+    service._load_context = AsyncMock(return_value=_context())  # type: ignore[method-assign]
+    service._project = AsyncMock(return_value=1)  # type: ignore[method-assign]
+    contact_writer = MagicMock()
+
+    async def resolve_requested_contacts(commands, *, context):
+        _ = context
+        requested = {command.email for command in commands}
+        assert requested == {buyer.email, champion.email}
+        contacts = {
+            buyer.email: (buyer, False),
+            champion.email: (champion, True),
+        }
+        return {
+            email: MagicMock(contact=contacts[email][0], created=contacts[email][1])
+            for email in requested
+        }
+
+    contact_writer.find_or_create_contacts_by_email_batch = AsyncMock(
+        side_effect=resolve_requested_contacts
+    )
+    contact_writer.find_contacts_by_email_batch = AsyncMock(return_value={})
+    monkeypatch.setattr(
+        CommunicationDealAssociationService,
+        "reconcile_deal_associations",
+        AsyncMock(return_value=0),
+    )
+    monkeypatch.setattr(
+        CommunicationDealAssociationService,
+        "_load_existing_deal_ids",
+        AsyncMock(return_value=({}, {})),
+    )
+    load_deal_candidates = AsyncMock(
+        return_value=[
+            DealCandidate(
+                deal_id=deal_id,
+                integration_id=integration_id,
+                contact_ids=frozenset({buyer.contact_id}),
+                internal_emails=frozenset({"seller@ourco.com"}),
+                customer_domains=frozenset({"customer.com"}),
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        CommunicationDealAssociationService,
+        "_load_deal_candidates",
+        load_deal_candidates,
+    )
+    associate_email = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        CommunicationDealAssociationService,
+        "_associate_email",
+        associate_email,
+    )
+
+    with patch(
+        "src.service.crm.communications.participant_resolution_service.ContactWriteService",
+        return_value=contact_writer,
+    ):
+        result = await service.backfill_deals([deal_id])
+
+    assert load_deal_candidates.await_args_list == [call({buyer.contact_id, champion.contact_id})]
+    assert associate_email.await_count == 1
+    added_participants = [
+        add_call.args[0]
+        for add_call in org_session.add.call_args_list
+        if isinstance(add_call.args[0], CRMDealParticipant)
+    ]
+    assert [participant.related_local_id for participant in added_participants] == [
+        champion.contact_id
+    ]
+    assert added_participants[0].participant_source == StakeholderSource.EMAIL_DISCOVERY.value
+    assert result.participants_auto_approved == 1
+    assert result.discovered_contact_ids == frozenset({champion.contact_id})
+
+
+@pytest.mark.asyncio
+async def test_deal_backfill_reconciles_stale_associations_after_history_resolution() -> None:
+    """Reconciliation must see every participant resolved by historical replay."""
     deal_id = uuid4()
     contact = CRMContact(
         organisation_id=ORG_ID,
@@ -605,19 +975,20 @@ async def test_deal_backfill_reconciles_stale_associations_before_history_replay
     service._load_deal_contact_ids = AsyncMock(return_value=[contact.contact_id])  # type: ignore[method-assign]
     service._load_contacts = AsyncMock(return_value=[contact])  # type: ignore[method-assign]
     service._backfill_contacts = AsyncMock(return_value=_empty_result())  # type: ignore[method-assign]
+    context = _context()
+    service._load_context = AsyncMock(return_value=context)  # type: ignore[method-assign]
     associator = MagicMock()
     associator.reconcile_deal_associations = AsyncMock(return_value=1)
 
     with patch(
-        "src.service.crm.discovery.contact_communication_hydration."
-        "CommunicationDealAssociationService",
+        "src.service.crm.communications.hydration_service.CommunicationDealAssociationService",
         return_value=associator,
     ):
         await service.backfill_deals([deal_id])
 
     associator.reconcile_deal_associations.assert_awaited_once_with(
         deal_ids=[deal_id],
-        identity_contacts={"buyer@example.com": contact},
+        context=context,
     )
 
 

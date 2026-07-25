@@ -10,7 +10,7 @@ from src.domain.models.organisation_tables.job_models import (
     JobStatus,
 )
 from src.infra.database.sessions import acquire_org_async_session
-from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
+from src.service.crm.jobs.deal_job_event_publisher import DealJobRedisPublisher
 
 
 class VisibleDealJobTracker:
@@ -21,10 +21,13 @@ class VisibleDealJobTracker:
         organisation_id: UUID,
         job_id: str | None,
         job_type: DealJobType,
+        *,
+        emit_events: bool = False,
     ):
         self.organisation_id = organisation_id
         self.job_id = UUID(job_id) if job_id else None
         self.job_type = job_type
+        self.emit_events = emit_events
         self.publisher: DealJobRedisPublisher | None = None
 
     async def start(self, stage: str, message: str, progress: float) -> None:
@@ -39,9 +42,17 @@ class VisibleDealJobTracker:
                 await session.commit()
             break
 
+        if not self.emit_events:
+            return
         publisher = self._ensure_publisher()
         publisher.publish_progress("Queued", "queued", 0.0)
         publisher.publish_progress(message, stage, progress)
+
+    async def progress(self, stage: str, message: str, progress: float) -> None:
+        """Publish an intermediate stage without changing the durable job state."""
+        if not self.job_id or not self.emit_events:
+            return
+        self._ensure_publisher().publish_progress(message, stage, progress)
 
     async def complete(
         self,
@@ -61,6 +72,8 @@ class VisibleDealJobTracker:
                 await session.commit()
             break
 
+        if not self.emit_events:
+            return
         publisher = self._ensure_publisher()
         publisher.publish_progress(saving_message, saving_stage, 0.9)
         publisher.publish_progress("Complete", "complete", 1.0)
@@ -80,6 +93,8 @@ class VisibleDealJobTracker:
                 await session.commit()
             break
 
+        if not self.emit_events:
+            return
         publisher = self._ensure_publisher()
         publisher.publish_error(message, error_code)
         publisher.publish_finalize("error")

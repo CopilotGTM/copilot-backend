@@ -22,10 +22,10 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 )
 from src.service.crm.participants import stakeholder_write_service as stakeholder_write_module
 from src.service.crm.participants.stakeholder_read_service import StakeholderReadService
-from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
-from src.workers.deal_worker.services.deal_mapper_services.stakeholder_sync_service import (
+from src.service.crm.participants.stakeholder_sync_service import (
     StakeholderSyncService,
 )
+from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 
 from tests.api.routers.crm.conftest import FakeStakeholder, create_stakeholder
 
@@ -261,6 +261,7 @@ async def test_get_stakeholder_detail_includes_phone_number() -> None:
         related_local_id=contact_id,
         related_email="detail@example.com",
         related_name="Detail",
+        relationship_role=None,
         stance="CHAMPION",
         decision_power="DECISION_MAKER",
         motivation="Scale infra",

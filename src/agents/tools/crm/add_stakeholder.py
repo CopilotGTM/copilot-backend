@@ -30,9 +30,7 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
 from src.service.crm.insights.stakeholders_service import (
     StakeholdersServiceError,
 )
-from src.service.crm.jobs.stakeholder_job_visibility_service import (
-    StakeholderJobVisibilityService,
-)
+from src.service.crm.jobs.deal_job_service import DealJobService
 from src.service.crm.participants.contracts import StakeholderWriteContext
 from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 
@@ -267,7 +265,7 @@ async def add_stakeholder_direct(
             access_actor=access_actor,
         )
         try:
-            stakeholder = await service.create_stakeholder(
+            write_result = await service.create_stakeholder_with_outcome(
                 deal_uuid,
                 request,
                 context=StakeholderWriteContext(
@@ -277,6 +275,7 @@ async def add_stakeholder_direct(
                     created_via="add_stakeholder_agent",
                 ),
             )
+            stakeholder = write_result.stakeholder
             await session.commit()
             processing_jobs: list[Any] = []
             processing_error = None
@@ -284,18 +283,18 @@ async def add_stakeholder_direct(
             research_job_type = "contact_research"
             research_error = None
 
-            if _has_rematch_identity(stakeholder):
+            if _has_rematch_identity(stakeholder) and (
+                write_result.created or write_result.reactivated
+            ):
                 try:
-                    job_visibility_service = StakeholderJobVisibilityService(
+                    job_service = DealJobService(
                         session,
                         organisation_id,
                         user_id,
                     )
-                    processing_jobs = (
-                        await job_visibility_service.create_stakeholder_processing_jobs(
-                            deal_uuid,
-                            stakeholder.participant_id,
-                        )
+                    processing_jobs = await job_service.create_stakeholder_processing_jobs(
+                        deal_uuid,
+                        stakeholder.participant_id,
                     )
                 except Exception as exc:
                     processing_error = str(exc)

@@ -11,6 +11,7 @@ from fastapi import BackgroundTasks
 from fastapi import Response as FastAPIResponse
 from pydantic import ValidationError
 from src.api.routers.crm.contacts_handler import (
+    add_contact_to_deal,
     create_contact,
     delete_contact,
     get_contact_detail,
@@ -18,7 +19,11 @@ from src.api.routers.crm.contacts_handler import (
     search_contact_create_candidates,
     update_contact,
 )
-from src.api.schemas.crm_contact_models import CreateContactRequest, UpdateContactRequest
+from src.api.schemas.crm_contact_models import (
+    AddContactToDealRequest,
+    CreateContactRequest,
+    UpdateContactRequest,
+)
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
@@ -30,6 +35,7 @@ from src.service.crm.contacts.contracts import (
     ContactArchiveImpact,
     ContactArchiveResult,
     ContactCreateCommand,
+    ContactDealLinkResult,
     ContactWriteResult,
     ContactWriteServiceError,
 )
@@ -826,6 +832,56 @@ async def test_identity_addition_forces_research_after_update(
             "force_refresh": True,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_add_contact_to_deal_publishes_participant_added_trigger(monkeypatch) -> None:
+    """A durable contact link should enqueue the stable participant-added value."""
+    org_id = uuid4()
+    user_id = uuid4()
+    deal_id = uuid4()
+    contact_id = uuid4()
+    dispatch = AsyncMock()
+    session = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
+    service = SimpleNamespace(
+        organisation_id=org_id,
+        org_session=session,
+        add_contact_to_deal=AsyncMock(
+            return_value=ContactDealLinkResult(
+                created=[{"participant_id": str(uuid4())}],
+                skipped=[],
+                contact_participant_changed=True,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "src.workers.deal_worker.client.send_deal_task_async",
+        dispatch,
+    )
+
+    result = await add_contact_to_deal(
+        contact_id=contact_id,
+        body=AddContactToDealRequest(deal_id=deal_id),
+        response=FastAPIResponse(),
+        service=service,
+        user_ids=SimpleNamespace(user_id=user_id, organisation_id=org_id),
+        _crm_write_guard=None,
+        _rl_write=None,
+    )
+
+    assert result.status == "SUCCESS"
+    session.commit.assert_awaited_once()
+    dispatch.assert_awaited_once_with(
+        "stakeholder.sync_deal_stakeholders",
+        kwargs={
+            "organisation_id": str(org_id),
+            "deal_id": str(deal_id),
+            "change_type": "PARTICIPANT_ADDED",
+            "integration_id": None,
+            "integration_type": None,
+            "trigger_rematching": True,
+        },
+    )
 
 
 @pytest.mark.asyncio

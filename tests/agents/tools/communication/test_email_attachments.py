@@ -16,7 +16,7 @@ from src.agents.tools.communication.email_attachments import (
 )
 from src.domain.models.organisation_tables.sync.integration_models import IntegrationType
 from src.infra.config.configs import chat_file_upload_config
-from src.workers.integrations_worker.providers.email.attachment_downloader import (
+from src.service.integrations.email.attachment_provider import (
     AttachmentMeta,
     DownloadedAttachment,
 )

@@ -1,4 +1,4 @@
-"""Create contacts from committed communications and backfill contact activity links.
+"""Hydrate committed communications and backfill contact activity links.
 
 Integration sync calls the changed-source path; manual API and agent-tool contact
 creation call the explicit-contact path. CSV import remains outside this flow.
@@ -6,11 +6,9 @@ creation call the explicit-contact path. CSV import remains outside this flow.
 
 from __future__ import annotations
 
-import re
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from enum import StrEnum
 from typing import Any, cast
 from uuid import UUID
 
@@ -18,7 +16,6 @@ from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import array
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from sqlalchemy.sql import text
 from sqlmodel import col
 from src.domain.models.master_tables.organisation_models import Organisation
 from src.domain.models.master_tables.user_models import User
@@ -39,97 +36,25 @@ from src.domain.models.organisation_tables.sync.email_models import DealEmailAss
 from src.service.crm.activity_feed_projection_service import (
     ActivityFeedProjectionService,
 )
-from src.service.crm.contacts.contracts import ContactCreateCommand, ContactWriteContext
-from src.service.crm.contacts.write_service import ContactWriteService
-from src.service.crm.discovery.communication_deal_association import (
+from src.service.crm.communications.deal_association_service import (
+    CommunicationDealAssociationResult,
     CommunicationDealAssociationService,
 )
+from src.service.crm.communications.participant_resolution_service import (
+    CommunicationParticipantResolution,
+    CommunicationParticipantResolutionService,
+    ContactCommunicationHydrationContext,
+    contacts_for_participants,
+    email_participants,
+    event_participants,
+    identity_contact_map,
+)
 from src.service.crm.guards.internal_user_guard import FREE_EMAIL_DOMAINS
-from src.service.crm.utils.identity import extract_email_domain, is_valid_email, normalize_email
+from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
+from src.service.crm.utils.identity import normalize_email
 from src.service.crm.utils.internal_domains import normalize_internal_domains
 
-# Large meetings are commonly webinars or company-wide events; skip automatic contact creation
-# above this product guardrail rather than flooding CRM with weak attendee identities.
-MAX_CONTACT_DISCOVERY_ATTENDEES = 25
-_ROLE_MAILBOX_LOCAL_PARTS = {
-    "accounts",
-    "admin",
-    "alerts",
-    "apply",
-    "billing",
-    "bot",
-    "calendar",
-    "careers",
-    "compliance",
-    "contact",
-    "donotreply",
-    "events",
-    "finance",
-    "hello",
-    "help",
-    "hr",
-    "info",
-    "insider",
-    "jobs",
-    "legal",
-    "mailerdaemon",
-    "marketing",
-    "newsletter",
-    "noreply",
-    "notification",
-    "notifications",
-    "partners",
-    "postmaster",
-    "privacy",
-    "recruiting",
-    "resource",
-    "room",
-    "sales",
-    "security",
-    "success",
-    "support",
-    "team",
-    "webinar",
-}
-
-
-class SkipReason(StrEnum):
-    """Explain why a communication participant was not eligible for CRM creation."""
-
-    INTERNAL_EMAIL = "internal_email"
-    INTERNAL_DOMAIN = "internal_domain"
-    MALFORMED_EMAIL = "malformed_email"
-    ROLE_MAILBOX = "role_mailbox"
-    DECLINED_ATTENDEE = "declined_attendee"
-    RESOURCE_ATTENDEE = "resource_attendee"
-    NO_INTERNAL_PARTICIPANT = "no_internal_participant"
-    INBOUND_UNENGAGED = "inbound_unengaged"
-    TOO_MANY_ATTENDEES = "too_many_attendees"
-
-
-@dataclass(frozen=True)
-class ContactCommunicationHydrationContext:
-    """Tenant-local identities used to distinguish coworkers from CRM contacts."""
-
-    internal_emails: set[str]
-    internal_domains: set[str]
-
-
-@dataclass(frozen=True)
-class ContactCommunicationCandidate:
-    """One external identity eligible for automatic CRM contact creation."""
-
-    email: str
-    name: str | None
-
-
-@dataclass(frozen=True)
-class ContactCommunicationHydrationPlan:
-    """Activity identities, creation candidates, and filtering counters for one batch."""
-
-    candidates: list[ContactCommunicationCandidate]
-    activity_identities: set[str]
-    skip_counters: dict[str, int]
+HISTORY_PAGE_SIZE = 500
 
 
 @dataclass(frozen=True)
@@ -142,13 +67,16 @@ class ContactCommunicationHydrationResult:
     contacts_reused: int
     activities_projected: int
     skip_counters: dict[str, int]
+    identities_considered: int = 0
     deal_associations_created: int = 0
     deal_associations_ambiguous: int = 0
     deal_associations_deactivated: int = 0
     participants_auto_approved: int = 0
+    participants_added_pending: int = 0
+    participants_skipped_domain: int = 0
     discovered_contact_ids: frozenset[UUID] = field(default_factory=frozenset)
     email_deal_ids: frozenset[UUID] = field(default_factory=frozenset)
-    attachment_deal_ids: frozenset[UUID] = field(default_factory=frozenset)
+    attachment_email_ids_by_deal: dict[UUID, frozenset[UUID]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the result without leaking ORM rows into Celery."""
@@ -158,85 +86,24 @@ class ContactCommunicationHydrationResult:
             "contacts_created": self.contacts_created,
             "contacts_reused": self.contacts_reused,
             "activities_projected": self.activities_projected,
+            "identities_considered": self.identities_considered,
             "deal_associations_created": self.deal_associations_created,
             "deal_associations_ambiguous": self.deal_associations_ambiguous,
             "deal_associations_deactivated": self.deal_associations_deactivated,
             "participants_auto_approved": self.participants_auto_approved,
+            "participants_added_pending": self.participants_added_pending,
+            "participants_skipped_domain": self.participants_skipped_domain,
             "skip_counters": self.skip_counters,
         }
 
 
-def build_contact_communication_hydration_plan(
-    *,
-    emails: list[Email],
-    events: list[CalendarEvent],
-    context: ContactCommunicationHydrationContext,
-) -> ContactCommunicationHydrationPlan:
-    """Extract and deduplicate external human participants from local source rows."""
-    counters: Counter[str] = Counter()
-    candidates: dict[str, str | None] = {}
-    activity_identities: set[str] = set()
-
-    # A sent message is evidence that a coworker intentionally engaged the thread. Inbound-only
-    # threads remain available for activity matching but cannot turn cold outreach into contacts.
-    for thread_emails in _group_email_threads(emails):
-        participants = [
-            participant
-            for email_record in thread_emails
-            for participant in _email_participants(email_record)
-        ]
-        if not _has_internal_participant(participants, context):
-            counters[SkipReason.NO_INTERNAL_PARTICIPANT.value] += 1
-            continue
-        create_contacts = any(
-            _is_internal_identity(email_record.from_email, context)
-            for email_record in thread_emails
-        )
-        if not create_contacts:
-            counters[SkipReason.INBOUND_UNENGAGED.value] += 1
-        for raw_email, name in participants:
-            _add_candidate(
-                candidates,
-                counters,
-                activity_identities,
-                raw_email=raw_email,
-                name=name,
-                context=context,
-                create_contact=create_contacts,
-            )
-
-    # Bound attendee fan-out before identity work so webinar-sized events cannot create
-    # hundreds of contacts. Existing contacts still receive the meeting activity.
-    for event in events:
-        create_contacts = len(event.attendees or []) <= MAX_CONTACT_DISCOVERY_ATTENDEES
-        if not create_contacts:
-            counters[SkipReason.TOO_MANY_ATTENDEES.value] += 1
-        participants = _event_participants(event, counters)
-        if not _has_internal_participant(participants, context):
-            counters[SkipReason.NO_INTERNAL_PARTICIPANT.value] += 1
-            continue
-        for raw_email, name in participants:
-            _add_candidate(
-                candidates,
-                counters,
-                activity_identities,
-                raw_email=raw_email,
-                name=name,
-                context=context,
-                create_contact=create_contacts,
-            )
-
-    return ContactCommunicationHydrationPlan(
-        candidates=[
-            ContactCommunicationCandidate(
-                email=email,
-                name=candidates[email],
-            )
-            for email in sorted(candidates)
-        ],
-        activity_identities=activity_identities,
-        skip_counters=dict(counters),
-    )
+def _merge_attachment_email_ids(
+    target: dict[UUID, set[UUID]],
+    source: dict[UUID, set[UUID] | frozenset[UUID]],
+) -> None:
+    """Merge deal-scoped attachment work while preserving exact source email IDs."""
+    for deal_id, email_ids in source.items():
+        target.setdefault(deal_id, set()).update(email_ids)
 
 
 class ContactCommunicationHydrationService:
@@ -263,48 +130,18 @@ class ContactCommunicationHydrationService:
         """Create contacts from one committed email/calendar change batch."""
         changed_emails = await self._load_changed_emails(changed_email_ids or [])
         events = await self._load_changed_events(changed_event_ids or [])
-        context = await self._load_context()
         # When a reply proves engagement, hydrate the retained thread as one relationship so
         # earlier senders and copied participants receive both a contact and their history.
         emails = await self._load_email_thread_context(changed_emails)
-        plan = build_contact_communication_hydration_plan(
+        resolution = await self._resolve_communication_participants(
             emails=emails,
             events=events,
-            context=context,
-        )
-        if plan.candidates:
-            # copilotgtm: serialize contact identity creation per org until a
-            # unique normalized-email constraint can replace this global lock.
-            await self.org_session.execute(
-                text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
-                {"lock_key": f"contact-communication-hydration:{self.organisation_id}"},
-            )
-        writer = ContactWriteService(
-            self.org_session,
-            self.organisation_id,
-            self.master_session,
-        )
-        resolved = await writer.find_or_create_contacts_by_email_batch(
-            [
-                ContactCreateCommand(email=candidate.email, name=candidate.name)
-                for candidate in plan.candidates
-            ],
-            context=ContactWriteContext(
-                source="contact_communication_hydration",
-                created_via="contact_communication_hydration",
-            ),
-        )
-        identity_contacts = {email: result.contact for email, result in resolved.items()}
-        # Creation guardrails must not hide history from contacts already in the CRM. Resolve
-        # the remaining activity identities without creating a contact when no match exists.
-        unresolved_activity_identities = plan.activity_identities - set(identity_contacts)
-        identity_contacts.update(
-            await writer.find_contacts_by_email_batch(sorted(unresolved_activity_identities))
+            seed_contacts=[],
         )
         projected = await self._project(
             emails=emails,
             events=events,
-            identity_contacts=identity_contacts,
+            identity_contacts=resolution.identity_contacts,
             integration_id=integration_id,
             replace_links=True,
         )
@@ -316,9 +153,13 @@ class ContactCommunicationHydrationService:
         ).associate_changed_communications(
             emails=emails,
             events=events,
-            identity_contacts=identity_contacts,
+            identity_contacts=resolution.identity_contacts,
+            email_contact_identities=resolution.plan.email_contact_identities,
+            event_contact_identities=resolution.plan.event_contact_identities,
             integration_id=integration_id,
+            attachment_scope_email_ids={email.email_id for email in changed_emails},
         )
+        await self._write_stakeholder_candidates(association_result)
         if association_result.discovered_contact_ids:
             expansion = await self._backfill_contacts(
                 sorted(association_result.discovered_contact_ids, key=str),
@@ -331,27 +172,30 @@ class ContactCommunicationHydrationService:
             association_result.ambiguous += expansion.deal_associations_ambiguous
             association_result.discovered_contact_ids.update(expansion.discovered_contact_ids)
             association_result.email_deal_ids.update(expansion.email_deal_ids)
-            association_result.attachment_deal_ids.update(expansion.attachment_deal_ids)
-        created_contact_ids = {
-            result.contact.contact_id for result in resolved.values() if result.created
-        }
-        reused_contact_ids = {
-            contact.contact_id for contact in identity_contacts.values()
-        } - created_contact_ids
+            _merge_attachment_email_ids(
+                association_result.attachment_email_ids_by_deal,
+                expansion.attachment_email_ids_by_deal,
+            )
         return ContactCommunicationHydrationResult(
             emails_considered=len(emails),
             events_considered=len(events),
-            contacts_created=len(created_contact_ids),
-            contacts_reused=len(reused_contact_ids),
+            contacts_created=len(resolution.created_contact_ids),
+            contacts_reused=len(resolution.reused_contact_ids),
             activities_projected=projected,
-            skip_counters=plan.skip_counters,
+            skip_counters=resolution.plan.skip_counters,
+            identities_considered=len(resolution.plan.activity_identities),
             deal_associations_created=association_result.associations_created,
             deal_associations_ambiguous=association_result.ambiguous,
             deal_associations_deactivated=association_result.associations_deactivated,
-            participants_auto_approved=len(association_result.discovered_contact_ids),
+            participants_auto_approved=association_result.participants_added_approved,
+            participants_added_pending=association_result.participants_added_pending,
+            participants_skipped_domain=association_result.participants_skipped_domain,
             discovered_contact_ids=frozenset(association_result.discovered_contact_ids),
             email_deal_ids=frozenset(association_result.email_deal_ids),
-            attachment_deal_ids=frozenset(association_result.attachment_deal_ids),
+            attachment_email_ids_by_deal={
+                deal_id: frozenset(email_ids)
+                for deal_id, email_ids in association_result.attachment_email_ids_by_deal.items()
+            },
         )
 
     async def backfill_contacts(
@@ -378,29 +222,115 @@ class ContactCommunicationHydrationService:
     ) -> ContactCommunicationHydrationResult:
         """Run contact history once; recursive calls disable further participant discovery."""
         contacts = await self._load_contacts(contact_ids)
-        identity_contacts = _identity_contact_map(contacts)
-        identities = set(identity_contacts)
-        emails = await self._load_emails_for_identities(identities)
-        events = await self._load_events_for_identities(identities)
+        if not contacts:
+            return ContactCommunicationHydrationResult(
+                emails_considered=0,
+                events_considered=0,
+                contacts_created=0,
+                contacts_reused=0,
+                activities_projected=0,
+                skip_counters={},
+            )
+        anchor_identity_contacts = identity_contact_map(contacts)
+        identities = set(anchor_identity_contacts)
+        email_offset = 0
+        event_offset = 0
+        emails_complete = False
+        events_complete = False
+        emails_considered = 0
+        events_considered = 0
+        projected = 0
+        created_contact_ids: set[UUID] = set()
+        resolved_contact_ids = {contact.contact_id for contact in contacts}
+        skip_counters: Counter[str] = Counter()
+        activity_identities: set[str] = set()
+        association_result = CommunicationDealAssociationResult()
 
-        projected = await self._project(
-            emails=emails,
-            events=events,
-            identity_contacts=identity_contacts,
-            integration_id=integration_id,
-            replace_links=False,
-        )
-        association_result = await CommunicationDealAssociationService(
-            self.org_session,
-            self.organisation_id,
-        ).associate_changed_communications(
-            emails=emails,
-            events=events,
-            identity_contacts=identity_contacts,
-            integration_id=integration_id,
-            discover_participants=discover_participants,
-            target_deal_ids=target_deal_ids,
-        )
+        while not (emails_complete and events_complete):
+            emails = (
+                []
+                if emails_complete
+                else await self._load_emails_for_identities(
+                    identities,
+                    offset=email_offset,
+                    limit=HISTORY_PAGE_SIZE,
+                )
+            )
+            events = (
+                []
+                if events_complete
+                else await self._load_events_for_identities(
+                    identities,
+                    offset=event_offset,
+                    limit=HISTORY_PAGE_SIZE,
+                )
+            )
+            emails_complete = emails_complete or len(emails) < HISTORY_PAGE_SIZE
+            events_complete = events_complete or len(events) < HISTORY_PAGE_SIZE
+            email_offset += len(emails)
+            event_offset += len(events)
+            if not emails and not events:
+                continue
+
+            resolution = await self._resolve_communication_participants(
+                emails=emails,
+                events=events,
+                seed_contacts=contacts,
+            )
+            emails_considered += len(emails)
+            events_considered += len(events)
+            created_contact_ids.update(resolution.created_contact_ids)
+            resolved_contact_ids.update(
+                contact.contact_id for contact in resolution.identity_contacts.values()
+            )
+            skip_counters.update(resolution.plan.skip_counters)
+            activity_identities.update(resolution.plan.activity_identities)
+            projected += await self._project(
+                emails=emails,
+                events=events,
+                identity_contacts=resolution.identity_contacts,
+                integration_id=integration_id,
+                replace_links=False,
+            )
+            page_associations = await CommunicationDealAssociationService(
+                self.org_session,
+                self.organisation_id,
+            ).associate_changed_communications(
+                emails=emails,
+                events=events,
+                identity_contacts=resolution.identity_contacts,
+                email_contact_identities=resolution.plan.email_contact_identities,
+                event_contact_identities=resolution.plan.event_contact_identities,
+                integration_id=integration_id,
+                discover_participants=discover_participants,
+                target_deal_ids=target_deal_ids,
+                attachment_scope_email_ids={email.email_id for email in emails},
+            )
+            await self._write_stakeholder_candidates(page_associations)
+            association_result.associations_created += page_associations.associations_created
+            association_result.ambiguous += page_associations.ambiguous
+            association_result.unmatched += page_associations.unmatched
+            association_result.associations_deactivated += (
+                page_associations.associations_deactivated
+            )
+            association_result.discovered_contact_ids.update(
+                page_associations.discovered_contact_ids
+            )
+            association_result.participants_added_approved += (
+                page_associations.participants_added_approved
+            )
+            association_result.participants_added_pending += (
+                page_associations.participants_added_pending
+            )
+            association_result.participants_skipped_domain += (
+                page_associations.participants_skipped_domain
+            )
+            association_result.email_deal_ids.update(page_associations.email_deal_ids)
+            _merge_attachment_email_ids(
+                association_result.attachment_email_ids_by_deal,
+                page_associations.attachment_email_ids_by_deal,
+            )
+
         if discover_participants and association_result.discovered_contact_ids:
             expansion = await self._backfill_contacts(
                 sorted(association_result.discovered_contact_ids, key=str),
@@ -413,21 +343,30 @@ class ContactCommunicationHydrationService:
             association_result.ambiguous += expansion.deal_associations_ambiguous
             association_result.discovered_contact_ids.update(expansion.discovered_contact_ids)
             association_result.email_deal_ids.update(expansion.email_deal_ids)
-            association_result.attachment_deal_ids.update(expansion.attachment_deal_ids)
+            _merge_attachment_email_ids(
+                association_result.attachment_email_ids_by_deal,
+                expansion.attachment_email_ids_by_deal,
+            )
         return ContactCommunicationHydrationResult(
-            emails_considered=len(emails),
-            events_considered=len(events),
-            contacts_created=0,
-            contacts_reused=len(contacts),
+            emails_considered=emails_considered,
+            events_considered=events_considered,
+            contacts_created=len(created_contact_ids),
+            contacts_reused=len(resolved_contact_ids - created_contact_ids),
             activities_projected=projected,
-            skip_counters={},
+            skip_counters=dict(skip_counters),
+            identities_considered=len(activity_identities),
             deal_associations_created=association_result.associations_created,
             deal_associations_ambiguous=association_result.ambiguous,
             deal_associations_deactivated=association_result.associations_deactivated,
-            participants_auto_approved=len(association_result.discovered_contact_ids),
+            participants_auto_approved=association_result.participants_added_approved,
+            participants_added_pending=association_result.participants_added_pending,
+            participants_skipped_domain=association_result.participants_skipped_domain,
             discovered_contact_ids=frozenset(association_result.discovered_contact_ids),
             email_deal_ids=frozenset(association_result.email_deal_ids),
-            attachment_deal_ids=frozenset(association_result.attachment_deal_ids),
+            attachment_email_ids_by_deal={
+                deal_id: frozenset(email_ids)
+                for deal_id, email_ids in association_result.attachment_email_ids_by_deal.items()
+            },
         )
 
     async def backfill_deals(
@@ -438,19 +377,20 @@ class ContactCommunicationHydrationService:
     ) -> ContactCommunicationHydrationResult:
         """Replay retained communications for approved contacts on changed deals."""
         contact_ids = await self._load_deal_contact_ids(deal_ids)
-        contacts = await self._load_contacts(contact_ids)
-        deactivated = await CommunicationDealAssociationService(
-            self.org_session,
-            self.organisation_id,
-        ).reconcile_deal_associations(
-            deal_ids=deal_ids,
-            identity_contacts=_identity_contact_map(contacts),
-        )
         result = await self._backfill_contacts(
             contact_ids,
             integration_id=integration_id,
             discover_participants=True,
             target_deal_ids=set(deal_ids),
+        )
+        # Reconcile after replay so every historical participant resolved above can
+        # participate in the same current-policy and global-uniqueness decision.
+        deactivated = await CommunicationDealAssociationService(
+            self.org_session,
+            self.organisation_id,
+        ).reconcile_deal_associations(
+            deal_ids=deal_ids,
+            context=await self._load_context(),
         )
         if not deactivated:
             return result
@@ -458,6 +398,44 @@ class ContactCommunicationHydrationService:
             result,
             deal_associations_deactivated=(result.deal_associations_deactivated + deactivated),
         )
+
+    async def _resolve_communication_participants(
+        self,
+        *,
+        emails: list[Email],
+        events: list[CalendarEvent],
+        seed_contacts: list[CRMContact],
+    ) -> CommunicationParticipantResolution:
+        """Resolve every eligible identity before projection and deal association."""
+        return await CommunicationParticipantResolutionService(
+            self.org_session,
+            self.master_session,
+            self.organisation_id,
+        ).resolve(
+            emails=emails,
+            events=events,
+            context=await self._load_context(),
+            seed_contacts=seed_contacts,
+        )
+
+    async def _write_stakeholder_candidates(
+        self,
+        association_result: CommunicationDealAssociationResult,
+    ) -> None:
+        """Delegate communication-discovered participant mutations to their domain owner."""
+        writer = StakeholderWriteService(self.org_session, self.organisation_id)
+        for candidates in association_result.stakeholder_candidates:
+            outcome = await writer.add_communication_discovered_contacts(
+                deal_id=candidates.deal_id,
+                integration_id=candidates.integration_id,
+                customer_domains=candidates.customer_domains,
+                contact_emails_by_id=candidates.contact_emails_by_id,
+                source=candidates.source,
+            )
+            association_result.discovered_contact_ids.update(outcome.approved_contact_ids)
+            association_result.participants_added_approved += outcome.approved_added
+            association_result.participants_added_pending += outcome.pending_added
+            association_result.participants_skipped_domain += outcome.skipped_domain
 
     async def _load_deal_contact_ids(self, deal_ids: list[UUID]) -> list[UUID]:
         """Load approved contact anchors for targeted deal creation/participant replay."""
@@ -498,7 +476,7 @@ class ContactCommunicationHydrationService:
         projected = 0
 
         for email in emails:
-            contacts = _contacts_for_participants(_email_participants(email), identity_contacts)
+            contacts = contacts_for_participants(email_participants(email), identity_contacts)
             if not contacts:
                 continue
             contact_ids = {contact.contact_id for contact in contacts}
@@ -532,8 +510,8 @@ class ContactCommunicationHydrationService:
                     projected += 1
 
         for event in events:
-            contacts = _contacts_for_participants(
-                _event_participants(event, Counter()), identity_contacts
+            contacts = contacts_for_participants(
+                event_participants(event, Counter()), identity_contacts
             )
             if not contacts:
                 continue
@@ -690,7 +668,13 @@ class ContactCommunicationHydrationService:
         )
         return list(result.scalars().all())
 
-    async def _load_emails_for_identities(self, identities: set[str]) -> list[Email]:
+    async def _load_emails_for_identities(
+        self,
+        identities: set[str],
+        *,
+        offset: int = 0,
+        limit: int = HISTORY_PAGE_SIZE,
+    ) -> list[Email]:
         """Find retained local emails involving any identity from explicit contacts."""
         if not identities:
             return []
@@ -700,7 +684,8 @@ class ContactCommunicationHydrationService:
             for column in (Email.to_emails, Email.cc_emails, Email.bcc_emails)
         ]
         result = await self.org_session.execute(
-            select(Email).where(
+            select(Email)
+            .where(
                 col(Email.organisation_id) == self.organisation_id,
                 col(Email.is_deleted).is_(False),
                 or_(
@@ -708,10 +693,19 @@ class ContactCommunicationHydrationService:
                     *participant_filters,
                 ),
             )
+            .order_by(col(Email.email_id))
+            .offset(offset)
+            .limit(limit)
         )
         return list(result.scalars().all())
 
-    async def _load_events_for_identities(self, identities: set[str]) -> list[CalendarEvent]:
+    async def _load_events_for_identities(
+        self,
+        identities: set[str],
+        *,
+        offset: int = 0,
+        limit: int = HISTORY_PAGE_SIZE,
+    ) -> list[CalendarEvent]:
         """Find retained calendar events involving any identity from explicit contacts."""
         if not identities:
             return []
@@ -728,6 +722,9 @@ class ContactCommunicationHydrationService:
                     col(CalendarEvent.event_id).in_(attendee_events),
                 ),
             )
+            .order_by(col(CalendarEvent.event_id))
+            .offset(offset)
+            .limit(limit)
         )
         return list(result.scalars().unique().all())
 
@@ -770,147 +767,3 @@ class ContactCommunicationHydrationService:
         for association in result.scalars().all():
             grouped.setdefault(association.event_id, []).append(association)
         return grouped
-
-
-def _is_role_mailbox(email: str) -> bool:
-    local_part = email.rsplit("@", 1)[0].split("+", 1)[0]
-    compact = re.sub(r"[^a-z0-9]", "", local_part)
-    tokens = set(re.findall(r"[a-z0-9]+", local_part))
-    return compact in _ROLE_MAILBOX_LOCAL_PARTS or bool(tokens & _ROLE_MAILBOX_LOCAL_PARTS)
-
-
-def _usable_display_name(name: str | None) -> str | None:
-    if not name:
-        return None
-    cleaned = " ".join(name.strip().split())
-    if not cleaned or "@" in cleaned:
-        return None
-    return cleaned
-
-
-def _email_participants(email: Email) -> list[tuple[str | None, str | None]]:
-    """Return sender and recipient identities from a locally persisted email row."""
-    return [
-        (email.from_email, email.from_name),
-        *[(value, None) for value in email.to_emails or []],
-        *[(value, None) for value in email.cc_emails or []],
-        *[(value, None) for value in email.bcc_emails or []],
-    ]
-
-
-def _group_email_threads(emails: list[Email]) -> list[list[Email]]:
-    """Group retained messages by provider thread without guessing from subject text."""
-    grouped: dict[tuple[str, UUID, str], list[Email]] = {}
-    for email in emails:
-        key = (
-            ("thread", email.integration_id, email.thread_id)
-            if email.thread_id
-            else ("message", email.integration_id, str(email.email_id))
-        )
-        grouped.setdefault(key, []).append(email)
-    return list(grouped.values())
-
-
-def _is_internal_identity(
-    raw_email: str | None,
-    context: ContactCommunicationHydrationContext,
-) -> bool:
-    """Return whether an address is an exact coworker or configured company-domain identity."""
-    normalized = normalize_email(raw_email)
-    return bool(
-        normalized
-        and is_valid_email(normalized)
-        and (
-            normalized in context.internal_emails
-            or extract_email_domain(normalized) in context.internal_domains
-        )
-    )
-
-
-def _event_participants(
-    event: CalendarEvent,
-    counters: Counter[str],
-) -> list[tuple[str | None, str | None]]:
-    """Return eligible identities while counting declined and resource attendee exclusions."""
-    participants: list[tuple[str | None, str | None]] = [
-        (event.organiser_email, event.organiser_name)
-    ]
-    for attendee in event.attendees or []:
-        # Providers retain declined invitees and room/resource attendees in event payloads;
-        # neither represents a useful human relationship to materialize as a CRM contact.
-        if str(attendee.response_status or "").lower() == "declined":
-            counters[SkipReason.DECLINED_ATTENDEE.value] += 1
-        elif _is_resource_attendee(attendee.data_payload):
-            counters[SkipReason.RESOURCE_ATTENDEE.value] += 1
-        else:
-            participants.append((attendee.email, attendee.display_name))
-    return participants
-
-
-def _add_candidate(
-    candidates: dict[str, str | None],
-    counters: Counter[str],
-    activity_identities: set[str],
-    *,
-    raw_email: str | None,
-    name: str | None,
-    context: ContactCommunicationHydrationContext,
-    create_contact: bool,
-) -> None:
-    """Collect an external activity identity, then optionally allow automatic creation."""
-    normalized = normalize_email(raw_email)
-    domain = extract_email_domain(normalized)
-    if not normalized or not is_valid_email(normalized):
-        counters[SkipReason.MALFORMED_EMAIL.value] += 1
-    elif normalized in context.internal_emails:
-        counters[SkipReason.INTERNAL_EMAIL.value] += 1
-    elif domain in context.internal_domains:
-        counters[SkipReason.INTERNAL_DOMAIN.value] += 1
-    else:
-        activity_identities.add(normalized)
-        if not create_contact:
-            return
-        if _is_role_mailbox(normalized):
-            counters[SkipReason.ROLE_MAILBOX.value] += 1
-            return
-        usable_name = _usable_display_name(name)
-        if normalized not in candidates or candidates[normalized] is None:
-            candidates[normalized] = usable_name
-
-
-def _has_internal_participant(
-    participants: list[tuple[str | None, str | None]],
-    context: ContactCommunicationHydrationContext,
-) -> bool:
-    """Require one known internal participant before a communication can create contacts."""
-    return any(_is_internal_identity(raw_email, context) for raw_email, _name in participants)
-
-
-def _is_resource_attendee(payload: dict | None) -> bool:
-    """Recognize provider room/resource attendee payloads that are not people."""
-    return isinstance(payload, dict) and (
-        payload.get("resource") is True or str(payload.get("type", "")).lower() == "resource"
-    )
-
-
-def _identity_contact_map(contacts: list[CRMContact]) -> dict[str, CRMContact]:
-    """Index explicit contacts by primary and additional normalized email addresses."""
-    result: dict[str, CRMContact] = {}
-    for contact in contacts:
-        for raw_email in [contact.email, *(contact.additional_emails or [])]:
-            if email := normalize_email(raw_email):
-                result[email] = contact
-    return result
-
-
-def _contacts_for_participants(
-    participants: list[tuple[str | None, str | None]],
-    identity_contacts: dict[str, CRMContact],
-) -> list[CRMContact]:
-    """Deduplicate contacts whose known identities appear in a source participant list."""
-    contacts: dict[UUID, CRMContact] = {}
-    for raw_email, _name in participants:
-        contact = identity_contacts.get(normalize_email(raw_email) or "")
-        if contact:
-            contacts[contact.contact_id] = contact
-    return list(contacts.values())

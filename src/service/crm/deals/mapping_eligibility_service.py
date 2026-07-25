@@ -1,4 +1,4 @@
-"""Shared eligibility checks for deal-mapping worker tasks."""
+"""Shared eligibility checks for CRM deal mapping."""
 
 from __future__ import annotations
 

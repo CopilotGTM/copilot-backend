@@ -27,7 +27,7 @@ from src.domain.models.organisation_tables.sync.deal_memory_models import DealMe
 from src.domain.models.organisation_tables.sync.email_models import Email
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
-from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
+from src.service.crm.jobs.deal_job_event_publisher import DealJobRedisPublisher
 from src.workers.deal_worker.utils.deal_job_utils import get_deal, get_organisation_agent_context
 
 logger = get_logger(__name__)

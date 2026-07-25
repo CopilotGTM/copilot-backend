@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import selectinload
 from sqlmodel import col
@@ -38,9 +38,14 @@ from src.domain.models.organisation_tables.sync.email_models import (
     Email,
 )
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
+from src.service.crm.communications.participant_resolution_service import (
+    ContactCommunicationHydrationContext,
+    build_contact_communication_hydration_plan,
+)
+from src.service.crm.contacts.write_service import ContactWriteService
 from src.service.crm.utils.account import normalize_account_domain
 from src.service.crm.utils.identity import extract_email_domain
-from src.workers.deal_worker.services.deal_mapper_services.integration_email_resolver import (
+from src.service.integrations.email.mailbox_identity_resolver import (
     EMAIL_MATCHER_INTEGRATION_TYPES,
     get_active_integration_emails_grouped_by_user,
 )
@@ -70,6 +75,17 @@ class DealCandidate:
     customer_domains: frozenset[str] = field(default_factory=frozenset)
 
 
+@dataclass(frozen=True)
+class AdditionalStakeholderCandidates:
+    """Participant-domain write request derived from a confident communication match."""
+
+    deal_id: UUID
+    integration_id: UUID
+    customer_domains: frozenset[str]
+    contact_emails_by_id: dict[UUID, str]
+    source: StakeholderSource
+
+
 @dataclass
 class CommunicationDealAssociationResult:
     """Counts emitted by one bounded hydration association pass."""
@@ -80,22 +96,19 @@ class CommunicationDealAssociationResult:
     unmatched: int = 0
     associations_deactivated: int = 0
     discovered_contact_ids: set[UUID] = field(default_factory=set)
+    stakeholder_candidates: list[AdditionalStakeholderCandidates] = field(default_factory=list)
+    participants_added_approved: int = 0
+    participants_added_pending: int = 0
+    participants_skipped_domain: int = 0
     email_deal_ids: set[UUID] = field(default_factory=set)
-    attachment_deal_ids: set[UUID] = field(default_factory=set)
+    attachment_email_ids_by_deal: dict[UUID, set[UUID]] = field(default_factory=dict)
 
 
 def resolve_unique_deal_id(
     communication: CommunicationCandidate,
     deals: list[DealCandidate],
 ) -> UUID | None:
-    """Return one explicit or rule-matched deal, leaving ambiguity unassigned."""
-    if communication.existing_deal_ids:
-        return (
-            next(iter(communication.existing_deal_ids))
-            if len(communication.existing_deal_ids) == 1
-            else None
-        )
-
+    """Return the sole current rule match; historical rows never establish eligibility."""
     matching_deal_ids = {
         deal.deal_id for deal in deals if communication_matches_deal(communication, deal)
     }
@@ -127,6 +140,9 @@ class CommunicationDealAssociationService:
         events: list[CalendarEvent],
         identity_contacts: dict[str, CRMContact],
         integration_id: UUID | None,
+        attachment_scope_email_ids: set[UUID],
+        email_contact_identities: dict[UUID, frozenset[str]] | None = None,
+        event_contact_identities: dict[UUID, frozenset[str]] | None = None,
         discover_participants: bool = True,
         target_deal_ids: set[UUID] | None = None,
     ) -> CommunicationDealAssociationResult:
@@ -144,6 +160,11 @@ class CommunicationDealAssociationService:
                     self._email_participant_emails(email),
                     identity_contacts,
                     frozenset(email_deals.get(email.internet_message_id or "", set())),
+                    contact_identity_emails=(
+                        email_contact_identities.get(email.email_id, frozenset())
+                        if email_contact_identities is not None
+                        else None
+                    ),
                 ),
             )
             for email in emails
@@ -155,6 +176,11 @@ class CommunicationDealAssociationService:
                     self._event_participant_emails(event),
                     identity_contacts,
                     frozenset(event_deals.get(event.event_id, set())),
+                    contact_identity_emails=(
+                        event_contact_identities.get(event.event_id, frozenset())
+                        if event_contact_identities is not None
+                        else None
+                    ),
                 ),
             )
             for event in events
@@ -168,17 +194,28 @@ class CommunicationDealAssociationService:
         # would turn a genuinely ambiguous communication into a false unique match.
         deals = await self._load_deal_candidates(contact_ids)
         deals_by_id = {deal.deal_id: deal for deal in deals}
-        contact_emails_by_id = {
-            contact.contact_id: email for email, contact in identity_contacts.items()
-        }
         result = CommunicationDealAssociationResult(
             considered=len(emails) + len(events),
             associations_deactivated=cancelled_count,
         )
-        pending_discovery: dict[tuple[UUID, StakeholderSource], set[UUID]] = {}
+        pending_discovery: dict[
+            tuple[UUID, StakeholderSource],
+            dict[UUID, set[str]],
+        ] = {}
+
+        def remember_discovery(
+            deal_id: UUID,
+            source: StakeholderSource,
+            communication: CommunicationCandidate,
+        ) -> None:
+            """Retain identities that supplied evidence for this communication match."""
+            contact_emails = pending_discovery.setdefault((deal_id, source), {})
+            for email in communication.contact_emails:
+                if contact := identity_contacts.get(email):
+                    contact_emails.setdefault(contact.contact_id, set()).add(email)
 
         for email, communication in prepared_emails:
-            deal_ids = set(communication.existing_deal_ids) or {
+            deal_ids = {
                 deal.deal_id for deal in deals if communication_matches_deal(communication, deal)
             }
             if target_deal_ids is not None:
@@ -191,18 +228,24 @@ class CommunicationDealAssociationService:
                 # The model is typed as bool but backed by a string column. Accept only the two
                 # canonical values that the extractor's SQL predicate can process.
                 attachment_flag = getattr(email, "has_attachments", False)
-                if attachment_flag is True or attachment_flag == "true":
-                    result.attachment_deal_ids.add(deal_id)
-                if communication.existing_deal_ids:
+                if email.email_id in attachment_scope_email_ids and (
+                    attachment_flag is True or attachment_flag == "true"
+                ):
+                    result.attachment_email_ids_by_deal.setdefault(deal_id, set()).add(
+                        email.email_id
+                    )
+                if deal_id in communication.existing_deal_ids:
                     await self._update_last_contact(
                         deal_id=deal_id,
                         contact_ids=set(communication.contact_ids),
                         contact_time=email.received_at or email.sent_at,
                     )
                     if discover_participants and deal_id in deals_by_id:
-                        pending_discovery.setdefault(
-                            (deal_id, StakeholderSource.EMAIL_DISCOVERY), set()
-                        ).update(communication.contact_ids)
+                        remember_discovery(
+                            deal_id,
+                            StakeholderSource.EMAIL_DISCOVERY,
+                            communication,
+                        )
                     continue
                 if await self._associate_email(
                     email,
@@ -212,9 +255,11 @@ class CommunicationDealAssociationService:
                 ):
                     result.associations_created += 1
                     if discover_participants:
-                        pending_discovery.setdefault(
-                            (deal_id, StakeholderSource.EMAIL_DISCOVERY), set()
-                        ).update(communication.contact_ids)
+                        remember_discovery(
+                            deal_id,
+                            StakeholderSource.EMAIL_DISCOVERY,
+                            communication,
+                        )
 
         for event, communication in prepared_events:
             if str(event.status or "").lower() == "cancelled":
@@ -227,16 +272,18 @@ class CommunicationDealAssociationService:
             if target_deal_ids is not None and deal_id not in target_deal_ids:
                 result.unmatched += 1
                 continue
-            if communication.existing_deal_ids:
+            if deal_id in communication.existing_deal_ids:
                 await self._update_last_contact(
                     deal_id=deal_id,
                     contact_ids=set(communication.contact_ids),
                     contact_time=self._completed_event_time(event),
                 )
                 if discover_participants and deal_id in deals_by_id:
-                    pending_discovery.setdefault(
-                        (deal_id, StakeholderSource.CALENDAR_DISCOVERY), set()
-                    ).update(communication.contact_ids)
+                    remember_discovery(
+                        deal_id,
+                        StakeholderSource.CALENDAR_DISCOVERY,
+                        communication,
+                    )
                 continue
             if await self._associate_event(
                 event,
@@ -247,16 +294,31 @@ class CommunicationDealAssociationService:
             ):
                 result.associations_created += 1
                 if discover_participants:
-                    pending_discovery.setdefault(
-                        (deal_id, StakeholderSource.CALENDAR_DISCOVERY), set()
-                    ).update(communication.contact_ids)
+                    remember_discovery(
+                        deal_id,
+                        StakeholderSource.CALENDAR_DISCOVERY,
+                        communication,
+                    )
 
-        for (deal_id, source), discovery_contact_ids in pending_discovery.items():
-            result.discovered_contact_ids.update(
-                await self._discover_participants(
-                    deal=deals_by_id[deal_id],
-                    contact_emails_by_id=contact_emails_by_id,
-                    contact_ids=discovery_contact_ids,
+        for (deal_id, source), discovery_contact_emails in pending_discovery.items():
+            deal = deals_by_id[deal_id]
+            if deal.integration_id is None:
+                continue
+            result.stakeholder_candidates.append(
+                AdditionalStakeholderCandidates(
+                    deal_id=deal_id,
+                    integration_id=deal.integration_id,
+                    customer_domains=deal.customer_domains,
+                    contact_emails_by_id={
+                        contact_id: min(
+                            emails,
+                            key=lambda email: (
+                                extract_email_domain(email) not in deal.customer_domains,
+                                email,
+                            ),
+                        )
+                        for contact_id, emails in discovery_contact_emails.items()
+                    },
                     source=source,
                 )
             )
@@ -267,25 +329,38 @@ class CommunicationDealAssociationService:
         self,
         *,
         deal_ids: list[UUID],
-        identity_contacts: dict[str, CRMContact],
+        context: ContactCommunicationHydrationContext,
     ) -> int:
-        """Remove active links that no longer satisfy current deal participants."""
+        """Remove active links that no longer satisfy current participant policy."""
         if not deal_ids:
             return 0
         email_rows, event_rows = await self._load_associated_communications(deal_ids)
+        emails = [email for _association, email in email_rows]
+        events = [event for _association, event in event_rows]
+        plan = build_contact_communication_hydration_plan(
+            emails=emails,
+            events=events,
+            context=context,
+        )
+        identity_contacts = await ContactWriteService(
+            self.session,
+            self.organisation_id,
+        ).find_contacts_by_email_batch(sorted(plan.activity_identities))
         contact_ids = {contact.contact_id for contact in identity_contacts.values()}
-        target_deal_ids = set(deal_ids)
-        deals_by_id = {
-            deal.deal_id: deal
-            for deal in await self._load_deal_candidates(contact_ids)
-            if deal.deal_id in target_deal_ids
-        }
+        deals = await self._load_deal_candidates(contact_ids)
+        deals_by_id = {deal.deal_id: deal for deal in deals}
         projection = ActivityFeedProjectionService(self.session, self.organisation_id)
         removed = 0
 
         for email_association, email in email_rows:
             communication = self._candidate_for_participants(
-                self._email_participant_emails(email), identity_contacts, frozenset()
+                self._email_participant_emails(email),
+                identity_contacts,
+                frozenset(),
+                contact_identity_emails=plan.email_contact_identities.get(
+                    email.email_id,
+                    frozenset(),
+                ),
             )
             deal = deals_by_id.get(email_association.deal_id)
             if deal and communication_matches_deal(communication, deal):
@@ -297,12 +372,17 @@ class CommunicationDealAssociationService:
 
         for event_association, event in event_rows:
             communication = self._candidate_for_participants(
-                self._event_participant_emails(event), identity_contacts, frozenset()
+                self._event_participant_emails(event),
+                identity_contacts,
+                frozenset(),
+                contact_identity_emails=plan.event_contact_identities.get(
+                    event.event_id,
+                    frozenset(),
+                ),
             )
-            deal = deals_by_id.get(event_association.deal_id)
             if str(event.status or "").lower() == "cancelled":
                 event_association.status = AssociationStatus.CANCELLED
-            elif deal and communication_matches_deal(communication, deal):
+            elif resolve_unique_deal_id(communication, deals) == event_association.deal_id:
                 continue
             else:
                 event_association.status = AssociationStatus.REMOVED
@@ -380,19 +460,26 @@ class CommunicationDealAssociationService:
         participant_emails: set[str],
         identity_contacts: dict[str, CRMContact],
         existing_deal_ids: frozenset[UUID],
+        *,
+        contact_identity_emails: frozenset[str] | None = None,
     ) -> CommunicationCandidate:
         normalized_emails = {
             email for raw in participant_emails if (email := self._normalize_email(raw))
         }
+        eligible_contact_emails = (
+            normalized_emails
+            if contact_identity_emails is None
+            else {email for raw in contact_identity_emails if (email := self._normalize_email(raw))}
+        )
         return CommunicationCandidate(
             contact_ids=frozenset(
                 identity_contacts[email].contact_id
-                for email in normalized_emails
+                for email in eligible_contact_emails
                 if email in identity_contacts
             ),
             participant_emails=frozenset(normalized_emails),
             contact_emails=frozenset(
-                email for email in normalized_emails if email in identity_contacts
+                email for email in eligible_contact_emails if email in identity_contacts
             ),
             existing_deal_ids=existing_deal_ids,
         )
@@ -404,7 +491,7 @@ class CommunicationDealAssociationService:
         deals: list[DealCandidate],
     ) -> None:
         matches = [deal for deal in deals if communication_matches_deal(communication, deal)]
-        if len(communication.existing_deal_ids) > 1 or len(matches) > 1:
+        if len(matches) > 1:
             result.ambiguous += 1
         else:
             result.unmatched += 1
@@ -572,89 +659,6 @@ class CommunicationDealAssociationService:
                     )
                 )
         return candidates
-
-    async def _discover_participants(
-        self,
-        *,
-        deal: DealCandidate,
-        contact_emails_by_id: dict[UUID, str],
-        contact_ids: set[UUID],
-        source: StakeholderSource,
-    ) -> set[UUID]:
-        """Add co-participants from a confidently linked communication, capped to one hop."""
-        if not contact_ids or deal.integration_id is None:
-            return set()
-        await self.session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
-            {"lock_key": f"communication-participants:{self.organisation_id}:{deal.deal_id}"},
-        )
-        rows = await self.session.execute(
-            select(CRMDealParticipant).where(
-                col(CRMDealParticipant.organisation_id) == self.organisation_id,
-                col(CRMDealParticipant.deal_id) == deal.deal_id,
-                col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT,
-            )
-        )
-        existing = list(rows.scalars().all())
-        existing_contact_ids = {
-            participant.related_local_id
-            for participant in existing
-            if participant.related_local_id is not None
-        }
-        discovered_count = sum(
-            participant.participant_source
-            in {
-                StakeholderSource.EMAIL_DISCOVERY.value,
-                StakeholderSource.CALENDAR_DISCOVERY.value,
-            }
-            and not participant.is_deleted
-            for participant in existing
-        )
-        approved: set[UUID] = {
-            participant.related_local_id
-            for participant in existing
-            if participant.related_local_id in contact_ids
-            and participant.participant_source
-            in {
-                StakeholderSource.EMAIL_DISCOVERY.value,
-                StakeholderSource.CALENDAR_DISCOVERY.value,
-            }
-            and participant.approval_status == ApprovalStatus.APPROVED.value
-            and not participant.is_deleted
-        }
-        now = datetime.now(UTC)
-        created = False
-        for contact_id in sorted(contact_ids - existing_contact_ids, key=str):
-            email = contact_emails_by_id.get(contact_id)
-            if not email or extract_email_domain(email) not in deal.customer_domains:
-                continue
-            status = (
-                ApprovalStatus.APPROVED.value
-                if discovered_count < 5
-                else ApprovalStatus.PENDING.value
-            )
-            self.session.add(
-                CRMDealParticipant(
-                    organisation_id=self.organisation_id,
-                    integration_id=deal.integration_id,
-                    deal_id=deal.deal_id,
-                    participant_type=CRMParticipantType.CONTACT,
-                    related_local_id=contact_id,
-                    related_email=email,
-                    participant_source=source.value,
-                    approval_status=status,
-                    last_seen_at=now,
-                    source_modified_at=now,
-                    synced_at=now,
-                )
-            )
-            created = True
-            discovered_count += 1
-            if status == ApprovalStatus.APPROVED.value:
-                approved.add(contact_id)
-        if created:
-            await self.session.flush()
-        return approved
 
     async def _associate_email(
         self,

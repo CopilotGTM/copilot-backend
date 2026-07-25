@@ -17,8 +17,8 @@ from src.service.crm.contacts.contracts import (
 from src.service.crm.contacts.deal_link_service import ContactDealLinkService
 from src.service.crm.contacts.read_service import ContactReadService
 from src.service.crm.contacts.write_service import ContactWriteService
+from src.service.crm.participants.contracts import StakeholderChangeType
 from src.workers.deal_worker.client import send_deal_task_async
-from src.workers.deal_worker.services.deal_change_detector import StakeholderChangeType
 from src.workers.deal_worker.utils.contact_communication_hydration_dispatch import (
     dispatch_contact_communication_hydration_async,
 )

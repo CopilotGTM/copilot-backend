@@ -68,11 +68,24 @@ async def test_create_stakeholder_if_missing_without_contact_skips_research() ->
         patch(
             "src.agents.tools.crm.create_stakeholder_if_missing.StakeholderWriteService"
         ) as service_cls,
+        patch(
+            "src.agents.tools.crm.create_stakeholder_if_missing.DealJobService"
+        ) as job_service_cls,
     ):
         service = MagicMock()
         service._find_contact_participant = AsyncMock(return_value=None)
-        service.create_stakeholder = AsyncMock(return_value=stakeholder)
+        service.create_stakeholder_with_outcome = AsyncMock(
+            return_value=SimpleNamespace(
+                stakeholder=stakeholder,
+                created=True,
+                reactivated=False,
+                reused=False,
+            )
+        )
         service_cls.return_value = service
+        job_service = MagicMock()
+        job_service.create_stakeholder_processing_jobs = AsyncMock(return_value=[])
+        job_service_cls.return_value = job_service
 
         result = await create_stakeholder_if_missing(
             context=context,
@@ -89,6 +102,10 @@ async def test_create_stakeholder_if_missing_without_contact_skips_research() ->
     assert result["participant_id"] == str(participant_id)
     assert result["deal_id"] == str(deal_id)
     assert "stakeholder_id" not in result
+    job_service.create_stakeholder_processing_jobs.assert_awaited_once_with(
+        deal_id,
+        participant_id,
+    )
 
 
 @pytest.mark.asyncio
@@ -112,6 +129,9 @@ async def test_create_stakeholder_if_missing_dispatches_contact_research_for_con
             "src.agents.tools.crm.create_stakeholder_if_missing.StakeholderWriteService"
         ) as service_cls,
         patch(
+            "src.agents.tools.crm.create_stakeholder_if_missing.DealJobService"
+        ) as job_service_cls,
+        patch(
             "src.agents.tools.crm.create_stakeholder_if_missing."
             "dispatch_contact_research_for_contact",
             AsyncMock(return_value=str(uuid4())),
@@ -119,8 +139,18 @@ async def test_create_stakeholder_if_missing_dispatches_contact_research_for_con
     ):
         service = MagicMock()
         service._find_contact_participant = AsyncMock(return_value=None)
-        service.create_stakeholder = AsyncMock(return_value=stakeholder)
+        service.create_stakeholder_with_outcome = AsyncMock(
+            return_value=SimpleNamespace(
+                stakeholder=stakeholder,
+                created=True,
+                reactivated=False,
+                reused=False,
+            )
+        )
         service_cls.return_value = service
+        job_service = MagicMock()
+        job_service.create_stakeholder_processing_jobs = AsyncMock(return_value=[])
+        job_service_cls.return_value = job_service
 
         result = await create_stakeholder_if_missing(
             context=context,
@@ -140,3 +170,113 @@ async def test_create_stakeholder_if_missing_dispatches_contact_research_for_con
     )
     assert result is not None
     assert result["action"] == "created"
+
+
+@pytest.mark.asyncio
+async def test_create_stakeholder_if_missing_reactivates_and_replays_soft_deleted_match() -> None:
+    """A removed stakeholder is missing from the deal and must re-enter the unified flow."""
+    context = _context()
+    deal_id = uuid4()
+    stakeholder = _participant_only_stakeholder(uuid4())
+
+    with (
+        patch(
+            "src.agents.tools.crm.create_stakeholder_if_missing.is_internal_email",
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            "src.agents.tools.crm.create_stakeholder_if_missing.StakeholderWriteService"
+        ) as service_cls,
+        patch(
+            "src.agents.tools.crm.create_stakeholder_if_missing.DealJobService"
+        ) as job_service_cls,
+        patch(
+            "src.agents.tools.crm.create_stakeholder_if_missing."
+            "dispatch_contact_research_for_contact",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        service = MagicMock()
+        service._find_contact_participant = AsyncMock(return_value=None)
+        service.create_stakeholder_with_outcome = AsyncMock(
+            return_value=SimpleNamespace(
+                stakeholder=stakeholder,
+                created=False,
+                reactivated=True,
+                reused=False,
+            )
+        )
+        service_cls.return_value = service
+        job_service = MagicMock()
+        job_service.create_stakeholder_processing_jobs = AsyncMock(return_value=[])
+        job_service_cls.return_value = job_service
+
+        result = await create_stakeholder_if_missing(
+            context=context,
+            deal_id=str(deal_id),
+            input_data=CreateStakeholderIfMissingInput(email=stakeholder.email),
+        )
+
+    service._find_contact_participant.assert_awaited_once_with(
+        deal_id=deal_id,
+        email=stakeholder.email,
+        include_deleted=False,
+    )
+    job_service.create_stakeholder_processing_jobs.assert_awaited_once_with(
+        deal_id,
+        stakeholder.participant_id,
+    )
+    assert result is not None
+    assert result["action"] == "reactivated"
+
+
+@pytest.mark.asyncio
+async def test_create_stakeholder_if_missing_reports_reused_race_as_existing() -> None:
+    """A concurrent identity reuse must not be reported or replayed as a new create."""
+    context = _context()
+    deal_id = uuid4()
+    stakeholder = _participant_only_stakeholder(uuid4())
+
+    with (
+        patch(
+            "src.agents.tools.crm.create_stakeholder_if_missing.is_internal_email",
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            "src.agents.tools.crm.create_stakeholder_if_missing.StakeholderWriteService"
+        ) as service_cls,
+        patch(
+            "src.agents.tools.crm.create_stakeholder_if_missing.DealJobService"
+        ) as job_service_cls,
+        patch(
+            "src.agents.tools.crm.create_stakeholder_if_missing."
+            "dispatch_contact_research_for_contact",
+            AsyncMock(return_value=None),
+        ) as research_dispatch,
+    ):
+        service = MagicMock()
+        service._find_contact_participant = AsyncMock(return_value=None)
+        service.create_stakeholder_with_outcome = AsyncMock(
+            return_value=SimpleNamespace(
+                stakeholder=stakeholder,
+                created=False,
+                reactivated=False,
+                reused=True,
+            )
+        )
+        service_cls.return_value = service
+        job_service = MagicMock()
+        job_service.create_stakeholder_processing_jobs = AsyncMock(return_value=[])
+        job_service_cls.return_value = job_service
+
+        result = await create_stakeholder_if_missing(
+            context=context,
+            deal_id=str(deal_id),
+            input_data=CreateStakeholderIfMissingInput(email=stakeholder.email),
+        )
+
+    assert result is not None
+    assert result["action"] == "already_exists"
+    assert result["created"] is False
+    job_service.create_stakeholder_processing_jobs.assert_not_awaited()
+    research_dispatch.assert_not_awaited()

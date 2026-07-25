@@ -13,13 +13,17 @@ A communication is associated automatically only when all of these are true:
 
 1. A participant resolves to an approved contact participant on an open deal.
 2. The same communication contains the deal owner or an active internal user participant.
-3. Exactly one open deal satisfies both conditions.
 
-An existing association is retained during changed-source hydration. Deal-scoped replay
-revalidates it against the current participant rule, so removing a contact removes stale
-email and meeting links. Multiple existing or rule-matched deals remain
-ambiguous; the activity stays visible through its contact/account links and is not guessed
-onto a deal. Cancelled meetings deactivate an existing link and are not newly associated.
+Emails are associated with every open deal satisfying both conditions. Calendar events
+are associated only when exactly one open deal satisfies them; multiple matches remain
+ambiguous because one meeting must not be guessed onto a deal.
+
+Existing association rows are retry/history state, not matching evidence. Every hydration
+or replay evaluates the current participant rule first. A stale link to another or deleted
+deal therefore cannot suppress a newly valid email/deal link, select a calendar deal, or
+launch attachment/insight follow-up work. Deal-scoped replay also revalidates links on the
+requested deal, so removing a contact removes that deal's stale email and meeting links.
+Cancelled meetings deactivate existing links and are not newly associated.
 
 No created-date or rolling-window rule is used. A deal created after earlier meetings can
 recover that history through the same deal-scoped replay.
@@ -31,7 +35,7 @@ provider sync commits changed IDs
   -> bounded hydration task
   -> resolve/create contacts
   -> project contact/account activity
-  -> choose one unambiguous deal
+  -> choose every eligible email deal or one unambiguous calendar deal
   -> insert retry-safe compatibility association
   -> project the deal-owned activity card
   -> update approved participant last-contact time
@@ -53,6 +57,30 @@ coordinator dispatch the hydration worker with bounded `deal_ids`. The worker lo
 approved contacts for those deals and reuses the same association rule. This covers deals
 created after mailbox integration and migrations without an organisation-wide
 email/calendar mapper.
+
+Creating a deal with inline stakeholders starts one visible, deal-scoped stakeholder job.
+That job processes the whole deal and owns the communication replay; it is not repeated
+once per stakeholder. Primary-contact-only creation, a primary-contact update, or failure
+to create the stakeholder job starts one visible `deal_communication_hydration` job
+through the same deal job service, so historical communication is still recovered.
+
+## Progress visibility
+
+Hydration emits client progress only when its caller explicitly sets `emit_events=True`
+and supplies a durable `DealJobs.job_id`. A job ID alone is not permission to communicate:
+scheduled backfill also uses durable internal jobs for recovery. User-triggered deal and
+stakeholder operations opt in and return the job ID so the client can subscribe to the
+existing deal-job SSE endpoint. Integration sync, CRM import, scheduled backfill, and other
+bulk/background callers keep the default `emit_events=False`; they run the identical
+hydration logic without creating Redis progress streams.
+
+For a stakeholder-triggered replay, the same job remains active across stakeholder sync
+and hydration. Stakeholder sync hands the job to hydration instead of finalizing it early.
+Hydration completes the job after association writes commit and downstream research,
+attachment, and insight dispatch has been attempted. An attachment publish failure retries
+the hydration job; research and insight dispatch failures are logged independently. The
+downstream tasks themselves are not part of this job's completion boundary and may continue
+after it completes.
 
 ## Operational properties
 

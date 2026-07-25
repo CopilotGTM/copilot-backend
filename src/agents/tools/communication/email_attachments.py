@@ -42,12 +42,7 @@ from src.infra.media.chat_attachment_text import (
     is_image_mimetype,
 )
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
-from src.service.integrations.providers.token_resolution import (
-    IntegrationTokenInfo,
-    get_access_token,
-)
-from src.workers.integrations_worker.providers._google_api import GMAIL_BASE_URL
-from src.workers.integrations_worker.providers.email.attachment_downloader import (
+from src.service.integrations.email.attachment_provider import (
     AttachmentMeta,
     DownloadedAttachment,
     attachment_filter_reason,
@@ -57,6 +52,11 @@ from src.workers.integrations_worker.providers.email.attachment_downloader impor
     list_gmail_attachments,
     list_outlook_attachments,
 )
+from src.service.integrations.providers.token_resolution import (
+    IntegrationTokenInfo,
+    get_access_token,
+)
+from src.workers.integrations_worker.providers._google_api import GMAIL_BASE_URL
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext

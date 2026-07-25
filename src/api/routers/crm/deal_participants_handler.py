@@ -111,10 +111,10 @@ async def add_deal_participants(
 
         if result.contact_participant_changed:
             try:
-                from src.workers.deal_worker.client import send_deal_task_async
-                from src.workers.deal_worker.services.deal_change_detector import (
+                from src.service.crm.participants.contracts import (
                     StakeholderChangeType,
                 )
+                from src.workers.deal_worker.client import send_deal_task_async
 
                 await send_deal_task_async(
                     "stakeholder.sync_deal_stakeholders",
@@ -188,10 +188,10 @@ async def remove_deal_participant(
 
         if contact_changed:
             try:
-                from src.workers.deal_worker.client import send_deal_task_async
-                from src.workers.deal_worker.services.deal_change_detector import (
+                from src.service.crm.participants.contracts import (
                     StakeholderChangeType,
                 )
+                from src.workers.deal_worker.client import send_deal_task_async
 
                 await send_deal_task_async(
                     "stakeholder.sync_deal_stakeholders",

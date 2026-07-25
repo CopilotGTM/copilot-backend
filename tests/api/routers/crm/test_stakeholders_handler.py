@@ -110,8 +110,6 @@ class TestCreateStakeholder:
         assert body["data"]["stakeholder"]["email"] == "new.buyer@example.com"
         assert body["data"]["stakeholder"]["name"] == "New Buyer"
         assert [job["job_type"] for job in body["data"]["processing_jobs"]] == [
-            "deal_email_rematch",
-            "deal_calendar_rematch",
             "stakeholder_sync",
         ]
         assert {job["status"] for job in body["data"]["processing_jobs"]} == {"pending"}
@@ -229,8 +227,6 @@ class TestCreateStakeholder:
         assert stakeholder["phone_number"] == "+1 555-0101"
         assert stakeholder["linkedin_url"] == "https://linkedin.com/in/selected-buyer"
         assert [job["job_type"] for job in body["data"]["processing_jobs"]] == [
-            "deal_email_rematch",
-            "deal_calendar_rematch",
             "stakeholder_sync",
         ]
         assert body["data"]["research_job"] is None
@@ -393,8 +389,6 @@ class TestCreateStakeholder:
         assert body["data"]["stakeholder"]["name"] == "Restored Name"
         assert body["data"]["stakeholder"]["job_title"] == "Restored Title"
         assert [job["job_type"] for job in body["data"]["processing_jobs"]] == [
-            "deal_email_rematch",
-            "deal_calendar_rematch",
             "stakeholder_sync",
         ]
         assert body["data"]["research_job"] is None
@@ -429,6 +423,7 @@ class TestCreateStakeholder:
         assert body["status"] == "SUCCESS"
         assert body["data"]["stakeholder"]["participant_id"] == str(active.participant_id)
         assert body["data"]["stakeholder"]["name"] == "Duplicate"
+        assert body["data"]["processing_jobs"] == []
 
 
 class TestGetDealStakeholders:

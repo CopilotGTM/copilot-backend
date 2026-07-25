@@ -1,4 +1,4 @@
-"""Initial backfill claim service for deal-mapping workers."""
+"""Worker-owned initial backfill claim service for deal mapping."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from src.domain.models.organisation_tables.job_models import (
     JobStatus,
 )
 from src.infra.database.sessions import acquire_org_async_session
-from src.workers.deal_worker.services.deal_mapper_services.deal_mapping_eligibility import (
+from src.service.crm.deals.mapping_eligibility_service import (
     DealMappingEligibilityService,
 )
 from src.workers.deal_worker.utils.pipeline_dispatch import AUTOMATED_PIPELINE_USER_ID

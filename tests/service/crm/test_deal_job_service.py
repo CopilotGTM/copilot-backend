@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
+from src.service.crm.jobs import deal_job_service as deal_job_service_module
 from src.service.crm.jobs.deal_job_service import DealJobService
 
 
@@ -42,6 +43,20 @@ class _Session:
     def __init__(self, *results: list[DealJobs]) -> None:
         self._results = list(results)
         self.commit_count = 0
+        self.added: list[DealJobs] = []
+        self.rolled_back = False
+
+    def add(self, job: DealJobs) -> None:
+        """Capture new jobs created by command-side service methods."""
+        self.added.append(job)
+
+    async def flush(self) -> None:
+        """Satisfy the AsyncSession write contract without a database."""
+        return None
+
+    async def refresh(self, _job: DealJobs) -> None:
+        """Keep generated in-memory IDs unchanged after a synthetic flush."""
+        return None
 
     async def execute(self, _stmt):
         """Return next fake result for one execute invocation."""
@@ -50,6 +65,10 @@ class _Session:
     async def commit(self):
         """Track commits made by recovery paths."""
         self.commit_count += 1
+
+    async def rollback(self) -> None:
+        """Record unexpected rollback paths for failure assertions."""
+        self.rolled_back = True
 
 
 def _job(
@@ -116,6 +135,160 @@ def test_stakeholder_visibility_job_types_are_defined() -> None:
     assert DealJobType.DEAL_EMAIL_REMATCH.value == "deal_email_rematch"
     assert DealJobType.DEAL_CALENDAR_REMATCH.value == "deal_calendar_rematch"
     assert DealJobType.STAKEHOLDER_SYNC.value == "stakeholder_sync"
+
+
+@pytest.mark.asyncio
+async def test_create_stakeholder_processing_jobs_opts_user_request_into_events(
+    monkeypatch,
+) -> None:
+    """A user-triggered job explicitly opts into SSE before entering the worker."""
+    organisation_id = uuid4()
+    user_id = uuid4()
+    deal_id = uuid4()
+    stakeholder_id = uuid4()
+    session = _Session()
+    sent_chains = []
+
+    async def fake_send_deal_task_chain_async(task_signatures, *, queue="deal"):
+        sent_chains.append({"task_signatures": task_signatures, "queue": queue})
+        return str(uuid4())
+
+    monkeypatch.setattr(
+        "src.service.crm.jobs.deal_job_service.send_deal_task_chain_async",
+        fake_send_deal_task_chain_async,
+    )
+
+    service = DealJobService(session, organisation_id, user_id)
+    jobs = await service.create_stakeholder_processing_jobs(deal_id, stakeholder_id)
+
+    assert jobs == session.added
+    assert [job.job_type for job in jobs] == [DealJobType.STAKEHOLDER_SYNC]
+    assert session.commit_count == 2
+    assert sent_chains[0]["task_signatures"][0]["kwargs"]["emit_events"] is True
+    assert sent_chains[0]["task_signatures"][0]["kwargs"]["job_id"] == str(jobs[0].job_id)
+    assert UUID(jobs[0].job_metadata["operation_group_id"])
+    assert jobs[0].job_metadata["enqueue_status"] == "enqueued"
+
+
+@pytest.mark.asyncio
+async def test_inline_stakeholders_create_one_deal_level_job_without_arbitrary_anchor(
+    monkeypatch,
+) -> None:
+    """A multi-person deal create records all participants and no singular stakeholder."""
+    participant_ids = [uuid4(), uuid4()]
+    session = _Session()
+
+    async def fake_send_deal_task_chain_async(_task_signatures, *, queue="deal"):
+        assert queue == "deal"
+        return str(uuid4())
+
+    monkeypatch.setattr(
+        "src.service.crm.jobs.deal_job_service.send_deal_task_chain_async",
+        fake_send_deal_task_chain_async,
+    )
+
+    jobs = await DealJobService(session, uuid4(), uuid4()).create_stakeholder_processing_jobs(
+        uuid4(),
+        participant_ids=participant_ids,
+    )
+
+    assert len(jobs) == 1
+    assert jobs[0].stakeholder_id is None
+    assert jobs[0].job_metadata["participant_ids"] == [str(value) for value in participant_ids]
+    assert "participant_id" not in jobs[0].job_metadata
+
+
+@pytest.mark.asyncio
+async def test_create_stakeholder_processing_jobs_keeps_committed_job_recoverable_on_publish_error(
+    monkeypatch,
+) -> None:
+    """A failed broker publish must leave durable work eligible for a later retry."""
+    session = _Session()
+
+    async def fail_publish(*_args, **_kwargs):
+        raise RuntimeError("broker unavailable")
+
+    monkeypatch.setattr(
+        "src.service.crm.jobs.deal_job_service.send_deal_task_chain_async",
+        fail_publish,
+    )
+    service = DealJobService(session, uuid4(), uuid4())
+
+    with pytest.raises(RuntimeError, match="broker unavailable"):
+        await service.create_stakeholder_processing_jobs(uuid4(), uuid4())
+
+    assert session.commit_count == 2
+    assert session.rolled_back is False
+    assert [job.status for job in session.added] == [JobStatus.PENDING]
+    assert session.added[0].job_metadata["enqueue_status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_create_communication_hydration_job_opts_user_request_into_events(
+    monkeypatch,
+) -> None:
+    organisation_id = uuid4()
+    user_id = uuid4()
+    deal_id = uuid4()
+    session = _Session()
+    dispatches = []
+
+    async def fake_dispatch(**kwargs):
+        dispatches.append(kwargs)
+        return ["hydration-task"]
+
+    monkeypatch.setattr(
+        deal_job_service_module,
+        "dispatch_contact_communication_hydration_async",
+        fake_dispatch,
+        raising=False,
+    )
+
+    job = await DealJobService(
+        session,
+        organisation_id,
+        user_id,
+    ).create_communication_hydration_job(deal_id)
+
+    assert job.job_type == DealJobType.DEAL_COMMUNICATION_HYDRATION
+    assert session.commit_count == 2
+    assert dispatches == [
+        {
+            "organisation_id": organisation_id,
+            "deal_ids": [deal_id],
+            "trigger": "deal_created",
+            "job_id": job.job_id,
+            "job_type": DealJobType.DEAL_COMMUNICATION_HYDRATION,
+            "emit_events": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_communication_hydration_job_marks_publish_failure(
+    monkeypatch,
+) -> None:
+    session = _Session()
+
+    async def fail_dispatch(**_kwargs):
+        raise RuntimeError("broker unavailable")
+
+    monkeypatch.setattr(
+        deal_job_service_module,
+        "dispatch_contact_communication_hydration_async",
+        fail_dispatch,
+    )
+
+    with pytest.raises(RuntimeError, match="broker unavailable"):
+        await DealJobService(
+            session,
+            uuid4(),
+            uuid4(),
+        ).create_communication_hydration_job(uuid4())
+
+    assert session.commit_count == 2
+    assert session.added[0].status == JobStatus.FAILED
+    assert session.added[0].job_metadata["enqueue_status"] == "failed"
 
 
 @pytest.mark.asyncio
@@ -213,6 +386,49 @@ async def test_get_active_stakeholder_processing_jobs_recovers_unenqueued_group(
 
 
 @pytest.mark.asyncio
+async def test_failed_stakeholder_publish_remains_recoverable_after_retry_failure(
+    monkeypatch,
+) -> None:
+    """Repeated broker failures must not make committed stakeholder work terminal."""
+    org_id = uuid4()
+    user_id = uuid4()
+    deal_id = uuid4()
+    jobs = _stakeholder_processing_group(
+        organisation_id=org_id,
+        user_id=user_id,
+        deal_id=deal_id,
+        stakeholder_id=uuid4(),
+        enqueue_status="failed",
+    )
+    attempts = 0
+
+    async def publish_after_one_failure(_task_signatures, *, queue="deal"):
+        nonlocal attempts
+        assert queue == "deal"
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("broker unavailable")
+        return str(uuid4())
+
+    monkeypatch.setattr(
+        "src.service.crm.jobs.deal_job_service.send_deal_task_chain_async",
+        publish_after_one_failure,
+    )
+    session = _Session(jobs, jobs)
+    service = DealJobService(session, org_id, user_id)
+
+    assert await service.get_active_stakeholder_processing_jobs(deal_id) == []
+    assert jobs[0].status == JobStatus.PENDING
+    assert jobs[0].job_metadata["enqueue_status"] == "failed"
+
+    active = await service.get_active_stakeholder_processing_jobs(deal_id)
+
+    assert [job["job_type"] for job in active] == ["stakeholder_sync"]
+    assert jobs[0].job_metadata["enqueue_status"] == "enqueued"
+    assert attempts == 2
+
+
+@pytest.mark.asyncio
 async def test_get_active_stakeholder_processing_jobs_hides_incomplete_unenqueued_group(
     monkeypatch,
 ) -> None:
@@ -278,4 +494,29 @@ async def test_get_active_contact_research_job_is_scoped_to_contact() -> None:
         "job_id": research_job.job_id,
         "job_type": "contact_research",
         "status": "in_progress",
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_active_deal_jobs_status_includes_communication_hydration() -> None:
+    org_id = uuid4()
+    user_id = uuid4()
+    deal_id = uuid4()
+    hydration_job = _job(
+        organisation_id=org_id,
+        user_id=user_id,
+        deal_id=deal_id,
+        job_type=DealJobType.DEAL_COMMUNICATION_HYDRATION,
+        status=JobStatus.IN_PROGRESS,
+    )
+    service = DealJobService(_Session([], [hydration_job], []), org_id, user_id)
+
+    active = await service.get_active_deal_jobs_status(deal_id)
+
+    assert active == {
+        "communication_hydration": {
+            "job_id": hydration_job.job_id,
+            "job_type": "deal_communication_hydration",
+            "status": "in_progress",
+        }
     }

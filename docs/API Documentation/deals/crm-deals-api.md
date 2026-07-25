@@ -1116,19 +1116,9 @@ GET /users/crm/deals/{deal_id}
       "deal_summary": null,
       "stakeholder_processing": [
         {
-          "job_id": "54d810af-6ea7-41c0-b6b9-d74c21b94e31",
-          "job_type": "deal_email_rematch",
-          "status": "in_progress"
-        },
-        {
-          "job_id": "0df77c72-ff0a-4cc5-80f0-ded2a84690af",
-          "job_type": "deal_calendar_rematch",
-          "status": "pending"
-        },
-        {
           "job_id": "6f1145c6-2b30-43cf-a6cd-3c147e88e58b",
           "job_type": "stakeholder_sync",
-          "status": "pending"
+          "status": "in_progress"
         }
       ]
     },
@@ -1151,7 +1141,7 @@ GET /users/crm/deals/{deal_id}
 | `company_industry` / `company_website` / `company_linkedin_url` / `company_country` | string \| null | Account profile values populated from the linked CRM company record. These are not `CRMDeal` columns. |
 | `associated_contact_count` / `associated_company_count` / `note_count` | number \| null | Top-level relationship/provider metrics. Display near relationship sections; do not duplicate as Get Details scalar rows. |
 | `source_modified_at` / `last_seen_at` / `synced_at` | datetime | System read-only sync metadata for advanced view and troubleshooting. |
-| `active_deal_jobs` | object \| null | Active deal-level jobs for reconnect. `stakeholder_processing` contains active `deal_email_rematch`, `deal_calendar_rematch`, and `stakeholder_sync` jobs created by stakeholder add. |
+| `active_deal_jobs` | object \| null | Active deal-level jobs for reconnect. `stakeholder_processing` contains the active `stakeholder_sync` job spanning participant normalization and communication hydration. |
 
 `active_deal_jobs.stakeholder_processing` is empty or omitted when no active
 post-stakeholder-create processing is running. Use it to restore a deal-level

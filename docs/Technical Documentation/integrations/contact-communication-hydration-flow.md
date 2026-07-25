@@ -279,7 +279,12 @@ Each task opens organisation and master sessions, performs one bounded batch, co
 - Manual/tool contacts are committed before historical backfill is enqueued.
 - A hydration task failure rolls back that task's database transaction and is retried by Celery.
 - A post-commit enqueue failure cannot roll back the original source/contact transaction.
-- API and agent-tool enqueue failures are currently best-effort and logged. There is no general reconciliation scheduler for those missed handoffs yet.
+- Stakeholder actions persist a pending visible job before publication. A failed
+  publish remains pending and is retried when active stakeholder work is
+  reconnected.
+- Direct contact-hydration dispatches without a visible stakeholder job remain
+  best-effort and logged; there is no general reconciliation scheduler for
+  those handoffs yet.
 
 ## Research Policy
 
@@ -301,8 +306,13 @@ New callers should use `deal.hydrate_contact_communications` rather than the cal
 
 ## Current Limitations and Upgrade Points
 
-- Manual/API/tool enqueue is best-effort after commit. A periodic reconciliation job could be added if missed handoffs become operationally significant.
-- Explicit-contact mode searches all locally stored historical communications for up to 100 contacts. It is currently used by manual web/tool creation; very large tenants may eventually need time windows or cursor-based reconciliation.
+- Direct manual-contact hydration without a stakeholder job is best-effort
+  after commit. A periodic reconciliation job could be added if those missed
+  handoffs become operationally significant.
+- Explicit-contact and deal-replay modes consume all locally stored historical
+  communications in deterministic 500-row email/event pages. There is no date
+  cutoff; the dispatcher still bounds each task to at most 100 requested
+  contacts or deals.
 - Changed-email mode reloads the complete retained provider thread for each changed batch. This intentionally preserves all discussion participants; exceptionally large threads may eventually need a participant projection table.
 - Automatic identity creation uses one advisory transaction lock per organisation. A normalized contact-identity table with a database unique constraint is the clean upgrade if this lock becomes a throughput bottleneck.
 - Hydration can only connect data already persisted locally. It does not ask a provider for older history that was never synced.
@@ -311,7 +321,9 @@ New callers should use `deal.hydrate_contact_communications` rather than the cal
 
 | Responsibility | Code |
 |---|---|
-| Hydration planning and execution | `src/service/crm/discovery/contact_communication_hydration.py` |
+| Participant planning and contact resolution | `src/service/crm/communications/participant_resolution_service.py` |
+| Hydration planning and execution | `src/service/crm/communications/hydration_service.py` |
+| Communication-to-deal matching | `src/service/crm/communications/deal_association_service.py` |
 | Communication activity projection | `src/service/crm/activity_feed_projection_service.py` |
 | Post-commit batching/dispatch | `src/workers/deal_worker/utils/contact_communication_hydration_dispatch.py` |
 | Celery task and retry policy | `src/workers/deal_worker/tasks/deal_mappers/contact_communication_hydration_tasks.py` |

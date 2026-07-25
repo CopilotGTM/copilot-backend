@@ -560,16 +560,6 @@ behavior is written to the active `CONTACT` row in `crm_deal_participants`.
     },
     "processing_jobs": [
       {
-        "job_id": "54d810af-6ea7-41c0-b6b9-d74c21b94e31",
-        "job_type": "deal_email_rematch",
-        "status": "pending"
-      },
-      {
-        "job_id": "0df77c72-ff0a-4cc5-80f0-ded2a84690af",
-        "job_type": "deal_calendar_rematch",
-        "status": "pending"
-      },
-      {
         "job_id": "6f1145c6-2b30-43cf-a6cd-3c147e88e58b",
         "job_type": "stakeholder_sync",
         "status": "pending"
@@ -610,16 +600,6 @@ Selected contact response when cached contact research already exists:
       "active_research_job": null
     },
     "processing_jobs": [
-      {
-        "job_id": "54d810af-6ea7-41c0-b6b9-d74c21b94e31",
-        "job_type": "deal_email_rematch",
-        "status": "pending"
-      },
-      {
-        "job_id": "2dad9c62-3a1b-4ea5-b3b0-8267112c9222",
-        "job_type": "deal_calendar_rematch",
-        "status": "pending"
-      },
       {
         "job_id": "bddb0b2d-efae-4d93-b76d-2a2d3ebbbd3a",
         "job_type": "stakeholder_sync",

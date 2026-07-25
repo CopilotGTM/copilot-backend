@@ -1,4 +1,4 @@
-"""Resolve active integration emails for user-owned integrations.
+"""Resolve active mailbox identities for application users.
 
 Used by deal mappers to expand internal team participants with their connected
 mailbox/calendar accounts.

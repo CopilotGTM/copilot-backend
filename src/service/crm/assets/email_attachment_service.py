@@ -13,13 +13,14 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from typing import Any, cast
-from urllib.parse import quote
+from itertools import groupby
+from typing import Any
 from uuid import UUID
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.orm import aliased
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import col
 from src.domain.models.organisation_tables.deal_asset_models import (
@@ -41,15 +42,18 @@ from src.infra.config.configs import chat_file_upload_config
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.logger import get_logger
-from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
-from src.workers.integrations_worker.providers.email.attachment_downloader import (
+from src.service.integrations.email.attachment_provider import (
     AttachmentMeta,
     build_attachment_source_record_id,
     download_gmail_attachment,
     download_outlook_attachment,
     filter_junk_attachments,
-    list_gmail_attachments,
+    list_gmail_message_attachments,
     list_outlook_attachments,
+)
+from src.service.integrations.providers.token_resolution import (
+    IntegrationTokenInfo,
+    get_access_token,
 )
 
 logger = get_logger(__name__)
@@ -82,20 +86,35 @@ class _EmailWithAttachments:
     deal_id: UUID
 
 
-def _build_attachment_source_record_id(internet_message_id: str, attachment_id: str) -> str:
-    """Retain the local name while sharing the provenance contract with readers."""
+def _build_legacy_attachment_source_record_id(
+    internet_message_id: str,
+    attachment_id: str,
+) -> str:
+    """Reproduce the provider-local source key used by existing asset rows."""
     return build_attachment_source_record_id(internet_message_id, attachment_id)
+
+
+def _build_attachment_source_record_id(
+    internet_message_id: str,
+    filename: str,
+    content_sha256: str,
+) -> str:
+    """Build the mailbox-independent identity for one canonical message file."""
+    msg_hash = hashlib.sha256(internet_message_id.encode()).hexdigest()[:16]
+    normalized_filename = _safe_asset_filename(filename).casefold()
+    file_hash = hashlib.sha256(f"{normalized_filename}\0{content_sha256}".encode()).hexdigest()[:32]
+    return f"email:{msg_hash}:file:{file_hash}"
 
 
 def _build_storage_path(
     deal_id: UUID,
     internet_message_id: str,
-    attachment_id: str,
+    source_identity: str,
     filename: str,
 ) -> str:
     """Build Azure Blob Storage path for an email attachment asset."""
     msg_hash = hashlib.sha256(internet_message_id.encode()).hexdigest()[:12]
-    attachment_hash = hashlib.sha256(attachment_id.encode()).hexdigest()[:12]
+    attachment_hash = hashlib.sha256(source_identity.encode()).hexdigest()[:12]
     sanitized = _safe_asset_filename(filename)
     return f"deal_assets/{deal_id}/email_attachments/{msg_hash}/{attachment_hash}/{sanitized}"
 
@@ -157,14 +176,19 @@ class DealAssetEmailAttachmentService:
         self.organisation_id = organisation_id
         self.storage = AzureOrganisationBlobStorage(organisation_id=organisation_id)
 
-    async def process_deal(self, deal_id: UUID) -> dict[str, Any]:
+    async def process_deal(
+        self,
+        deal_id: UUID,
+        *,
+        email_ids: list[UUID] | None = None,
+    ) -> dict[str, Any]:
         """Process all unprocessed email attachments for a single deal.
 
         Entry point when called directly (per-deal task). Owns storage
         lifecycle — closes storage when done.
         """
         try:
-            return await self._process_deal_internal(deal_id)
+            return await self._process_deal_internal(deal_id, email_ids=email_ids)
         finally:
             await self._close_storage()
 
@@ -178,6 +202,8 @@ class DealAssetEmailAttachmentService:
             "deals_processed": 0,
             "total_assets_created": 0,
             "total_errors": 0,
+            "post_upload_asset_ids": [],
+            "continuations": [],
         }
 
         try:
@@ -189,10 +215,19 @@ class DealAssetEmailAttachmentService:
             )
 
             for deal_id in deal_ids:
-                deal_stats = await self._process_deal_internal(deal_id)
+                deal_stats = await self._process_deal_internal(deal_id, email_ids=None)
                 stats["deals_processed"] += 1
                 stats["total_assets_created"] += deal_stats["assets_created"]
                 stats["total_errors"] += deal_stats["errors"]
+                stats["post_upload_asset_ids"].extend(deal_stats.get("post_upload_asset_ids", []))
+                remaining_email_ids = deal_stats.get("remaining_email_ids", [])
+                if deal_stats.get("limit_reached") and remaining_email_ids:
+                    stats["continuations"].append(
+                        {
+                            "deal_id": str(deal_id),
+                            "email_ids": list(remaining_email_ids),
+                        }
+                    )
 
             return stats
 
@@ -209,7 +244,12 @@ class DealAssetEmailAttachmentService:
         finally:
             await self._close_storage()
 
-    async def _process_deal_internal(self, deal_id: UUID) -> dict[str, Any]:
+    async def _process_deal_internal(
+        self,
+        deal_id: UUID,
+        *,
+        email_ids: list[UUID] | None,
+    ) -> dict[str, Any]:
         """Core deal processing logic. Does NOT close storage — caller owns that."""
         stats: dict[str, Any] = {
             "deal_id": str(deal_id),
@@ -217,33 +257,90 @@ class DealAssetEmailAttachmentService:
             "assets_created": 0,
             "assets_skipped_dedup": 0,
             "errors": 0,
+            "limit_reached": False,
+            "remaining_email_ids": [],
+            "post_upload_asset_ids": [],
         }
 
         try:
-            emails = await self._find_emails_needing_extraction(deal_id)
-            stats["emails_with_attachments"] = len(emails)
+            emails = await self._find_emails_needing_extraction(
+                deal_id,
+                email_ids=email_ids,
+            )
+            canonical_messages = [
+                list(copies)
+                for _message_id, copies in groupby(
+                    emails,
+                    key=lambda email: email.internet_message_id,
+                )
+            ]
+            stats["emails_with_attachments"] = len(canonical_messages)
 
-            if not emails:
+            if not canonical_messages:
                 return stats
 
             total_created = 0
-            for email_rec in emails:
+            scoped_email_ids = set(email_ids or [])
+
+            def remaining_ids(start_index: int) -> list[str]:
+                """Choose one replayable copy ID for each unvisited message."""
+                return [
+                    str(
+                        next(
+                            (copy.email_id for copy in copies if copy.email_id in scoped_email_ids),
+                            copies[0].email_id,
+                        )
+                    )
+                    for copies in canonical_messages[start_index:]
+                ]
+
+            for message_index, copies in enumerate(canonical_messages):
                 if total_created >= MAX_ATTACHMENTS_PER_DEAL:
                     logger.info(
                         "Hit max attachments (%d) for deal %s",
                         MAX_ATTACHMENTS_PER_DEAL,
                         deal_id,
                     )
+                    stats["limit_reached"] = True
+                    stats["remaining_email_ids"] = remaining_ids(message_index)
                     break
 
-                created, skipped, errs = await self._process_single_email(
-                    email_rec,
-                    remaining=MAX_ATTACHMENTS_PER_DEAL - total_created,
-                )
-                stats["assets_created"] += created
-                stats["assets_skipped_dedup"] += skipped
-                stats["errors"] += errs
-                total_created += created
+                message_succeeded = False
+                # copilotgtm: connected copies are normally single digits; try each one
+                # before adding health ranking or a cap based on measured mailbox volume.
+                for email_rec in copies:
+                    try:
+                        (
+                            created,
+                            skipped,
+                            post_upload_asset_ids,
+                            limit_reached,
+                        ) = await self._process_single_email(
+                            email_rec,
+                            remaining=MAX_ATTACHMENTS_PER_DEAL - total_created,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Mailbox copy failed for canonical message %s",
+                            email_rec.internet_message_id,
+                            exc_info=True,
+                        )
+                        continue
+                    stats["assets_created"] += created
+                    stats["assets_skipped_dedup"] += skipped
+                    stats["post_upload_asset_ids"].extend(
+                        str(asset_id) for asset_id in post_upload_asset_ids
+                    )
+                    total_created += created
+                    stats["limit_reached"] = limit_reached
+                    message_succeeded = True
+                    if limit_reached:
+                        stats["remaining_email_ids"] = remaining_ids(message_index)
+                    break
+                if not message_succeeded:
+                    stats["errors"] += 1
+                if stats["limit_reached"]:
+                    break
 
             return stats
 
@@ -277,6 +374,7 @@ class DealAssetEmailAttachmentService:
                     col(DealEmailAssociation.organisation_id) == self.organisation_id,
                     col(DealEmailAssociation.status) == "ACTIVE",
                     col(Email.organisation_id) == self.organisation_id,
+                    col(Email.is_deleted).is_(False),
                     _email_has_attachments_filter(),
                 )
                 .distinct()
@@ -287,12 +385,24 @@ class DealAssetEmailAttachmentService:
 
         return []
 
-    async def _find_emails_needing_extraction(self, deal_id: UUID) -> list[_EmailWithAttachments]:
-        """Find emails associated with a deal that have attachments not yet
-        extracted. Picks one email per internet_message_id (the one with an
-        active integration we can download from).
-        """
+    async def _find_emails_needing_extraction(
+        self,
+        deal_id: UUID,
+        *,
+        email_ids: list[UUID] | None = None,
+    ) -> list[_EmailWithAttachments]:
+        """Find every active mailbox copy that can provide associated attachments."""
         async for session in acquire_org_async_session(self.organisation_id):
+            scoped_message_ids = None
+            if email_ids is not None:
+                seed_email = aliased(Email)
+                scoped_message_ids = select(seed_email.internet_message_id).where(
+                    seed_email.organisation_id == self.organisation_id,
+                    seed_email.email_id.in_(email_ids),
+                    seed_email.is_deleted.is_(False),
+                    seed_email.has_attachments == "true",
+                    seed_email.internet_message_id.is_not(None),
+                )
             stmt = (
                 select(
                     col(Email.email_id),
@@ -318,6 +428,7 @@ class DealAssetEmailAttachmentService:
                     col(DealEmailAssociation.organisation_id) == self.organisation_id,
                     col(DealEmailAssociation.status) == "ACTIVE",
                     col(Email.organisation_id) == self.organisation_id,
+                    col(Email.is_deleted).is_(False),
                     _email_has_attachments_filter(),
                     col(KnowledgeIntegration.organisation_id) == self.organisation_id,
                     col(KnowledgeIntegration.is_active) == True,  # noqa: E712
@@ -325,9 +436,14 @@ class DealAssetEmailAttachmentService:
                         EMAIL_PROVIDER_INTEGRATION_TYPES
                     ),
                 )
-                .distinct(col(Email.internet_message_id))
-                .order_by(col(Email.internet_message_id), col(Email.email_id))
+                .order_by(
+                    col(Email.internet_message_id),
+                    col(Email.integration_id),
+                    col(Email.email_id),
+                )
             )
+            if scoped_message_ids is not None:
+                stmt = stmt.where(col(Email.internet_message_id).in_(scoped_message_ids))
 
             result = await session.execute(stmt)
             rows = result.all()
@@ -362,102 +478,85 @@ class DealAssetEmailAttachmentService:
         self,
         email_rec: _EmailWithAttachments,
         remaining: int,
-    ) -> tuple[int, int, int]:
-        """Process attachments for one email. Returns (created, skipped, errors)."""
+    ) -> tuple[int, int, list[UUID], bool]:
+        """Process one mailbox copy and return committed work without publishing it."""
         created = 0
         skipped = 0
-        errors = 0
+        post_upload_asset_ids: list[UUID] = []
+        is_gmail_type = _is_gmail(email_rec.integration_type)
 
-        try:
-            is_gmail_type = _is_gmail(email_rec.integration_type)
+        token = await get_access_token(email_rec.token_info)
 
+        async with httpx.AsyncClient(
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=60.0,
+        ) as client:
             if is_gmail_type:
-                from src.workers.integrations_worker.providers._google_api import (
-                    get_access_token,
+                att_metas = await list_gmail_message_attachments(
+                    client,
+                    email_rec.external_message_id,
                 )
             else:
-                from src.workers.integrations_worker.providers._microsoft_graph import (  # noqa: E501
-                    get_access_token,
+                att_metas = await list_outlook_attachments(client, email_rec.external_message_id)
+
+            filtered = filter_junk_attachments(att_metas)
+            source_ids = [
+                _build_legacy_attachment_source_record_id(
+                    email_rec.internet_message_id,
+                    att_meta.attachment_id,
                 )
-
-            token = await get_access_token(email_rec.token_info)
-
-            async with httpx.AsyncClient(
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=60.0,
-            ) as client:
-                # List attachments with metadata
-                if is_gmail_type:
-                    payload = await self._fetch_gmail_payload(client, email_rec.external_message_id)
-                    att_metas = list_gmail_attachments(payload)
-                else:
-                    att_metas = await list_outlook_attachments(
-                        client, email_rec.external_message_id
-                    )
-
-                filtered = filter_junk_attachments(att_metas)
-                source_ids = [
-                    _build_attachment_source_record_id(
-                        email_rec.internet_message_id,
-                        att_meta.attachment_id,
-                    )
-                    for att_meta in filtered
-                ]
-                existing_source_ids = await self._find_existing_attachment_source_ids(
-                    email_rec.deal_id,
-                    source_ids,
-                )
-
-                for att_meta in filtered:
-                    if created >= remaining:
-                        break
-
-                    if not _is_supported_attachment_mimetype(att_meta.mime_type):
-                        logger.info(
-                            "Skipping email attachment %s: unsupported mimetype=%s",
-                            att_meta.filename,
-                            att_meta.mime_type,
-                        )
-                        skipped += 1
-                        continue
-
-                    source_record_id = _build_attachment_source_record_id(
-                        email_rec.internet_message_id,
-                        att_meta.attachment_id,
-                    )
-                    if source_record_id in existing_source_ids:
-                        skipped += 1
-                        continue
-
-                    try:
-                        c, s = await self._download_and_create_asset(
-                            client,
-                            email_rec,
-                            att_meta,
-                            is_gmail_type,
-                            source_record_id,
-                        )
-                        created += c
-                        skipped += s
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to process attachment %s from email %s: %s",
-                            att_meta.filename,
-                            email_rec.email_id,
-                            e,
-                        )
-                        errors += 1
-
-        except Exception as e:
-            logger.error(
-                "Failed to process email %s attachments: %s",
-                email_rec.email_id,
-                e,
-                exc_info=True,
+                for att_meta in filtered
+            ]
+            existing_assets = await self._find_existing_attachment_assets(
+                email_rec.deal_id,
+                source_ids,
             )
-            errors += 1
 
-        return created, skipped, errors
+            for att_meta in filtered:
+                if not _is_supported_attachment_mimetype(att_meta.mime_type):
+                    logger.info(
+                        "Skipping email attachment with unsupported mimetype=%s",
+                        att_meta.mime_type,
+                    )
+                    skipped += 1
+                    continue
+
+                legacy_source_id = _build_legacy_attachment_source_record_id(
+                    email_rec.internet_message_id,
+                    att_meta.attachment_id,
+                )
+                if existing_asset := existing_assets.get(legacy_source_id):
+                    skipped += 1
+                    if (
+                        existing_asset.status
+                        in {
+                            DealAssetStatus.PROCESSING.value,
+                            DealAssetStatus.FAILED.value,
+                        }
+                        and existing_asset.storage_path
+                    ):
+                        post_upload_asset_ids.append(existing_asset.asset_id)
+                    continue
+
+                if created >= remaining:
+                    return created, skipped, post_upload_asset_ids, True
+
+                (
+                    attachment_created,
+                    attachment_skipped,
+                    post_upload_asset_id,
+                ) = await self._download_and_create_asset(
+                    client,
+                    email_rec,
+                    att_meta,
+                    is_gmail_type,
+                )
+                created += attachment_created
+                skipped += attachment_skipped
+                if post_upload_asset_id is not None:
+                    post_upload_asset_ids.append(post_upload_asset_id)
+
+        return created, skipped, post_upload_asset_ids, False
 
     async def _download_and_create_asset(
         self,
@@ -465,9 +564,8 @@ class DealAssetEmailAttachmentService:
         email_rec: _EmailWithAttachments,
         att_meta: AttachmentMeta,
         is_gmail_type: bool,
-        source_record_id: str,
-    ) -> tuple[int, int]:
-        """Download one attachment and create DealAsset. Returns (created, skipped)."""
+    ) -> tuple[int, int, UUID | None]:
+        """Download one attachment and return counts plus required post-upload work."""
         if is_gmail_type:
             downloaded = await download_gmail_attachment(
                 client,
@@ -481,10 +579,33 @@ class DealAssetEmailAttachmentService:
                 att_meta.attachment_id,
             )
 
+        checksum = hashlib.sha256(downloaded.content).hexdigest()
+        existing_asset = await self._find_legacy_asset_by_content(
+            email_rec.deal_id,
+            email_rec.internet_message_id,
+            att_meta.filename,
+            checksum,
+        )
+        if existing_asset is not None:
+            needs_post_upload = (
+                existing_asset.status
+                in {
+                    DealAssetStatus.PROCESSING.value,
+                    DealAssetStatus.FAILED.value,
+                }
+                and existing_asset.storage_path
+            )
+            return 0, 1, existing_asset.asset_id if needs_post_upload else None
+
+        source_record_id = _build_attachment_source_record_id(
+            email_rec.internet_message_id,
+            att_meta.filename,
+            checksum,
+        )
         storage_path = _build_storage_path(
             email_rec.deal_id,
             email_rec.internet_message_id,
-            att_meta.attachment_id,
+            source_record_id,
             att_meta.filename,
         )
         await self.storage.upload_bytes(
@@ -493,51 +614,89 @@ class DealAssetEmailAttachmentService:
             content_type=_normalize_mimetype(att_meta.mime_type),
         )
 
-        inserted = await self._create_deal_asset(
+        inserted, post_upload_asset_id = await self._create_deal_asset(
             email_rec,
             att_meta,
             storage_path,
             downloaded.size_bytes,
             source_record_id,
+            checksum,
         )
-        return (1, 0) if inserted else (0, 1)
-
-    async def _fetch_gmail_payload(
-        self, client: httpx.AsyncClient, message_id: str
-    ) -> dict[str, Any]:
-        """Fetch Gmail message payload for attachment metadata."""
-        from src.workers.integrations_worker.providers._google_api import (
-            GMAIL_BASE_URL,
-        )
-
-        url = f"{GMAIL_BASE_URL}/gmail/v1/users/me/messages/{quote(message_id, safe='')}"
-        # format=full required to get the MIME parts tree with attachmentIds
-        response = await client.get(url, params={"format": "full"})
-        response.raise_for_status()
-        return cast(dict[str, Any], response.json().get("payload", {}))
+        return (1, 0, post_upload_asset_id) if inserted else (0, 1, post_upload_asset_id)
 
     # ── Phase 3: Create DealAsset record (fresh session) ────────────
 
-    async def _find_existing_attachment_source_ids(
+    async def _find_existing_attachment_assets(
         self,
         deal_id: UUID,
         source_record_ids: list[str],
-    ) -> set[str]:
-        """Return already-processed email attachment source IDs for this deal."""
+    ) -> dict[str, DealAsset]:
+        """Return existing rows so retries can distinguish complete and stranded work."""
         if not source_record_ids:
-            return set()
+            return {}
 
         async for session in acquire_org_async_session(self.organisation_id):
-            stmt = select(col(DealAsset.source_record_id)).where(
+            stmt = select(DealAsset).where(
                 col(DealAsset.organisation_id) == self.organisation_id,
                 col(DealAsset.deal_id) == deal_id,
                 col(DealAsset.source_type) == DealAssetSourceType.EMAIL_ATTACHMENT.value,
                 col(DealAsset.source_record_id).in_(source_record_ids),
             )
             result = await session.execute(stmt)
-            return {row[0] for row in result.all() if row[0]}
+            return {
+                asset.source_record_id: asset
+                for asset in result.scalars().all()
+                if asset.source_record_id
+            }
 
-        return set()
+        return {}
+
+    async def _find_legacy_asset_by_content(
+        self,
+        deal_id: UUID,
+        internet_message_id: str,
+        filename: str,
+        checksum: str,
+    ) -> DealAsset | None:
+        """Reuse a verified legacy row when another mailbox exposes different provider IDs."""
+        candidates: list[DealAsset] = []
+        normalized_filename = _safe_asset_filename(filename).casefold()
+        async for session in acquire_org_async_session(self.organisation_id):
+            result = await session.execute(
+                select(DealAsset).where(
+                    col(DealAsset.organisation_id) == self.organisation_id,
+                    col(DealAsset.deal_id) == deal_id,
+                    col(DealAsset.source_type) == DealAssetSourceType.EMAIL_ATTACHMENT.value,
+                    func.lower(col(DealAsset.filename)) == normalized_filename,
+                )
+            )
+            candidates = list(result.scalars().all())
+            break
+
+        for candidate in candidates:
+            metadata = dict(candidate.asset_metadata or {})
+            if metadata.get("internet_message_id") != internet_message_id:
+                continue
+            if candidate.checksum == checksum:
+                return candidate
+            if candidate.checksum is not None or not candidate.storage_path:
+                continue
+
+            # The candidate query is complete before Azure I/O so a slow legacy checksum
+            # recovery never pins an organisation database connection.
+            legacy_checksum = await self.storage.compute_checksum(candidate.storage_path)
+            if legacy_checksum != checksum:
+                continue
+            async for session in acquire_org_async_session(self.organisation_id):
+                stored = await session.get(DealAsset, candidate.asset_id)
+                if stored is not None and stored.checksum is None:
+                    stored.checksum = legacy_checksum
+                    session.add(stored)
+                    await session.commit()
+                break
+            candidate.checksum = legacy_checksum
+            return candidate
+        return None
 
     async def _create_deal_asset(
         self,
@@ -546,12 +705,12 @@ class DealAssetEmailAttachmentService:
         storage_path: str,
         size_bytes: int,
         source_record_id: str,
-    ) -> bool:
-        """Insert a DealAsset. Returns True if inserted, False if dedup hit."""
+        checksum: str,
+    ) -> tuple[bool, UUID | None]:
+        """Insert one asset and return whether it was created plus post-upload work."""
         asset_filename = _safe_asset_filename(att_meta.filename)
         source_context = f"Email: {email_rec.subject or '(no subject)'}"[:500]
         direction = _map_email_direction_to_asset_direction(email_rec.direction)
-        inserted_asset_id: UUID | None = None
 
         async for session in acquire_org_async_session(self.organisation_id):
             stmt = (
@@ -564,6 +723,7 @@ class DealAssetEmailAttachmentService:
                     filename=asset_filename,
                     mimetype=_normalize_mimetype(att_meta.mime_type),
                     size_bytes=size_bytes,
+                    checksum=checksum,
                     storage_path=storage_path,
                     status=DealAssetStatus.PROCESSING.value,
                     direction=direction,
@@ -585,38 +745,37 @@ class DealAssetEmailAttachmentService:
             await session.commit()
 
             if row:
-                inserted_asset_id = row[0]
                 logger.info(
                     "Created DealAsset for %s from email %s on deal %s",
                     att_meta.filename,
                     email_rec.internet_message_id,
                     email_rec.deal_id,
                 )
+                return True, row[0]
 
-        # Session released — dispatch post-upload outside the session block
-        if inserted_asset_id:
-            self._dispatch_post_upload(inserted_asset_id)
-            return True
-
-        return False
-
-    def _dispatch_post_upload(self, asset_id: UUID) -> None:
-        """Dispatch post-upload task for checksum + thumbnail generation."""
-        try:
-            from src.workers.deal_worker.client import send_deal_task
-
-            send_deal_task(
-                "deal_asset.post_upload",
-                args=[str(self.organisation_id), str(asset_id)],
-                queue="deal",
+            existing_result = await session.execute(
+                select(DealAsset).where(
+                    col(DealAsset.organisation_id) == self.organisation_id,
+                    col(DealAsset.deal_id) == email_rec.deal_id,
+                    col(DealAsset.source_type) == DealAssetSourceType.EMAIL_ATTACHMENT.value,
+                    col(DealAsset.source_record_id) == source_record_id,
+                    col(DealAsset.filename) == asset_filename,
+                )
             )
-        except Exception:
-            logger.warning(
-                "Failed to dispatch post-upload for asset %s — "
-                "asset will stay in PROCESSING until manually resolved",
-                asset_id,
-                exc_info=True,
-            )
+            existing = existing_result.scalar_one_or_none()
+            if (
+                existing
+                and existing.status
+                in {
+                    DealAssetStatus.PROCESSING.value,
+                    DealAssetStatus.FAILED.value,
+                }
+                and existing.storage_path
+            ):
+                return False, existing.asset_id
+            return False, None
+
+        return False, None
 
     # ── Helpers ──────────────────────────────────────────────────────
 
