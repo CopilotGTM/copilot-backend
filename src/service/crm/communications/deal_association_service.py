@@ -3,8 +3,8 @@
 Contact communication hydration calls this module after it resolves activity
 participants. The pure resolver keeps relationship activity on contact/account
 feeds unless both a deal contact and a current internal deal participant are
-present. Emails may belong to every deal satisfying that rule, while calendar
-events still require one unambiguous deal.
+present. Emails and calendar events may belong to every deal satisfying that
+rule.
 """
 
 from __future__ import annotations
@@ -151,7 +151,10 @@ class CommunicationDealAssociationService:
         cancelled_event_ids = {
             event.event_id for event in events if str(event.status or "").lower() == "cancelled"
         }
-        cancelled_count = await self._cancel_event_associations(cancelled_event_ids)
+        cancelled_count = await self._cancel_event_associations(
+            cancelled_event_ids,
+            deal_ids=target_deal_ids,
+        )
         email_deals, event_deals = await self._load_existing_deal_ids(emails, events)
         prepared_emails = [
             (
@@ -190,8 +193,7 @@ class CommunicationDealAssociationService:
             for _, communication in [*prepared_emails, *prepared_events]
             for contact_id in communication.contact_ids
         }
-        # Always resolve against every eligible deal. Limiting candidates to a replay target
-        # would turn a genuinely ambiguous communication into a false unique match.
+        # Resolve against every eligible deal before applying an optional replay target.
         deals = await self._load_deal_candidates(contact_ids)
         deals_by_id = {deal.deal_id: deal for deal in deals}
         result = CommunicationDealAssociationResult(
@@ -265,40 +267,44 @@ class CommunicationDealAssociationService:
             if str(event.status or "").lower() == "cancelled":
                 result.unmatched += 1
                 continue
-            deal_id = resolve_unique_deal_id(communication, deals)
-            if deal_id is None:
-                self._count_unresolved(result, communication, deals)
-                continue
-            if target_deal_ids is not None and deal_id not in target_deal_ids:
+            # TODO(copilotgtm): Meetings mirror email matching so replay works with parallel
+            # deals. Decide whether shared meetings should instead require explicit ownership.
+            deal_ids = {
+                deal.deal_id for deal in deals if communication_matches_deal(communication, deal)
+            }
+            if target_deal_ids is not None:
+                deal_ids.intersection_update(target_deal_ids)
+            if not deal_ids:
                 result.unmatched += 1
                 continue
-            if deal_id in communication.existing_deal_ids:
-                await self._update_last_contact(
+            for deal_id in sorted(deal_ids, key=str):
+                if deal_id in communication.existing_deal_ids:
+                    await self._update_last_contact(
+                        deal_id=deal_id,
+                        contact_ids=set(communication.contact_ids),
+                        contact_time=self._completed_event_time(event),
+                    )
+                    if discover_participants and deal_id in deals_by_id:
+                        remember_discovery(
+                            deal_id,
+                            StakeholderSource.CALENDAR_DISCOVERY,
+                            communication,
+                        )
+                    continue
+                if await self._associate_event(
+                    event,
                     deal_id=deal_id,
                     contact_ids=set(communication.contact_ids),
-                    contact_time=self._completed_event_time(event),
-                )
-                if discover_participants and deal_id in deals_by_id:
-                    remember_discovery(
-                        deal_id,
-                        StakeholderSource.CALENDAR_DISCOVERY,
-                        communication,
-                    )
-                continue
-            if await self._associate_event(
-                event,
-                deal_id=deal_id,
-                contact_ids=set(communication.contact_ids),
-                contact_emails=set(communication.contact_emails),
-                integration_id=integration_id,
-            ):
-                result.associations_created += 1
-                if discover_participants:
-                    remember_discovery(
-                        deal_id,
-                        StakeholderSource.CALENDAR_DISCOVERY,
-                        communication,
-                    )
+                    contact_emails=set(communication.contact_emails),
+                    integration_id=integration_id,
+                ):
+                    result.associations_created += 1
+                    if discover_participants:
+                        remember_discovery(
+                            deal_id,
+                            StakeholderSource.CALENDAR_DISCOVERY,
+                            communication,
+                        )
 
         for (deal_id, source), discovery_contact_emails in pending_discovery.items():
             deal = deals_by_id[deal_id]
@@ -380,9 +386,10 @@ class CommunicationDealAssociationService:
                     frozenset(),
                 ),
             )
+            deal = deals_by_id.get(event_association.deal_id)
             if str(event.status or "").lower() == "cancelled":
                 event_association.status = AssociationStatus.CANCELLED
-            elif resolve_unique_deal_id(communication, deals) == event_association.deal_id:
+            elif deal and communication_matches_deal(communication, deal):
                 continue
             else:
                 event_association.status = AssociationStatus.REMOVED
@@ -436,17 +443,25 @@ class CommunicationDealAssociationService:
             if association.event is not None
         ]
 
-    async def _cancel_event_associations(self, event_ids: set[UUID]) -> int:
-        """Cancel active deal links when their provider meeting is cancelled."""
+    async def _cancel_event_associations(
+        self,
+        event_ids: set[UUID],
+        *,
+        deal_ids: set[UUID] | None,
+    ) -> int:
+        """Cancel active meeting links, restricted to replayed deals when supplied."""
         if not event_ids:
             return 0
-        rows = await self.session.execute(
-            select(CalendarEventDealAssociation).where(
-                col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
-                col(CalendarEventDealAssociation.event_id).in_(event_ids),
-                col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE.value,
-            )
+        # Provider event IDs are not a tenant boundary, and targeted replay must not
+        # mutate the same meeting's association on an unrelated deal.
+        statement = select(CalendarEventDealAssociation).where(
+            col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
+            col(CalendarEventDealAssociation.event_id).in_(event_ids),
+            col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE.value,
         )
+        if deal_ids is not None:
+            statement = statement.where(col(CalendarEventDealAssociation.deal_id).in_(deal_ids))
+        rows = await self.session.execute(statement)
         associations = list(rows.scalars().all())
         projection = ActivityFeedProjectionService(self.session, self.organisation_id)
         for association in associations:

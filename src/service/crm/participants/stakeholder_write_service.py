@@ -153,11 +153,20 @@ class StakeholderWriteService:
         approved = {
             participant.related_local_id
             for participant in existing
-            if participant.related_local_id in contact_emails_by_id
+            if participant.related_local_id is not None
+            and participant.related_local_id in contact_emails_by_id
             and participant.participant_source in discovery_sources
             and participant.approval_status == ApprovalStatus.APPROVED.value
             and not participant.is_deleted
         }
+        projection_participants = [
+            participant
+            for participant in existing
+            if participant.related_local_id in contact_emails_by_id
+            and participant.participant_source in discovery_sources
+            and participant.approval_status == ApprovalStatus.APPROVED.value
+            and not participant.is_deleted
+        ]
         now = datetime.now(UTC)
         created = False
         approved_added = 0
@@ -173,30 +182,42 @@ class StakeholderWriteService:
                 if discovered_count < 5
                 else ApprovalStatus.PENDING.value
             )
-            self.session.add(
-                CRMDealParticipant(
-                    organisation_id=self.organisation_id,
-                    integration_id=integration_id,
-                    deal_id=deal_id,
-                    participant_type=CRMParticipantType.CONTACT,
-                    related_local_id=contact_id,
-                    related_email=email,
-                    participant_source=source.value,
-                    approval_status=approval_status,
-                    last_seen_at=now,
-                    source_modified_at=now,
-                    synced_at=now,
-                )
+            participant = CRMDealParticipant(
+                organisation_id=self.organisation_id,
+                integration_id=integration_id,
+                deal_id=deal_id,
+                participant_type=CRMParticipantType.CONTACT,
+                related_local_id=contact_id,
+                related_email=email,
+                participant_source=source.value,
+                approval_status=approval_status,
+                last_seen_at=now,
+                source_modified_at=now,
+                synced_at=now,
             )
+            self.session.add(participant)
             created = True
             discovered_count += 1
             if approval_status == ApprovalStatus.APPROVED.value:
                 approved.add(contact_id)
                 approved_added += 1
+                projection_participants.append(participant)
             else:
                 pending_added += 1
         if created:
             await self.session.flush()
+        if projection_participants:
+            # Project new rows and replayed discovery rows. The activity upsert is idempotent,
+            # so a later hydration pass repairs historical missing cards without duplicates.
+            projection = ActivityFeedProjectionService(self.session, self.organisation_id)
+            for participant in projection_participants:
+                await projection.upsert_stakeholder_added(
+                    participant,
+                    contact=await self._get_participant_contact(participant),
+                    source=participant.participant_source,
+                    source_label="Communication discovery",
+                    created_via="communication_hydration",
+                )
         return CommunicationStakeholderWriteResult(
             approved_contact_ids=frozenset(approved),
             approved_added=approved_added,
