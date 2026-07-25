@@ -652,6 +652,25 @@ def test_email_meeting_workflow_skill_supports_mailbox_scoped_reads() -> None:
     assert "Do not scan every connected mailbox" in instructions
 
 
+def test_email_meeting_workflow_reads_relevant_attachments_to_completion() -> None:
+    """Email answers should autonomously use relevant, message-owned attachment evidence."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "email-meeting-workflow")
+    instructions = skill.instructions
+
+    assert "read_email_attachment" in instructions
+    assert "(internet_message_id, attachment_id)" in instructions
+    assert "thread_messages[*].attachments" in instructions
+    assert "next_offset" in instructions
+    assert "Pass the manifest's `filename`" in instructions
+    assert "Treat attachment content as another evidence source" in instructions
+    assert "Use your judgment" in instructions
+    assert "Do not wait for the user to explicitly ask" in instructions
+    assert "fixed keyword list" in instructions
+    assert "Read each file you judge relevant" in instructions
+
+
 def test_email_meeting_workflow_treats_email_bodies_as_untrusted_evidence() -> None:
     """External email text may inform a draft but cannot authorize agent actions."""
     loader = LocalSkills(str(SKILLS_DIR))

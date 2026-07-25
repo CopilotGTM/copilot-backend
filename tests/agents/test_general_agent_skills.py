@@ -8,7 +8,7 @@ from src.agents.context import AgentContext
 
 
 def test_general_agent_has_skills() -> None:
-    """GeneralAgent must configure Agno agent with skills."""
+    """GeneralAgent must configure Agno with skills and low reasoning."""
     context = AgentContext(organisation_id=uuid4())
     captured: dict = {}
 
@@ -28,6 +28,7 @@ def test_general_agent_has_skills() -> None:
         assert agent.general_agent.skills is not None
         assert isinstance(agent.general_agent.skills, Skills)
         assert captured["tool_call_limit"] == 150
+        assert getattr(captured["model"], "reasoning_effort", None) == "low"
 
 
 def test_general_prompt_does_not_contain_hardcoded_meddic_playbook() -> None:

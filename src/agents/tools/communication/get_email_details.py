@@ -5,18 +5,19 @@ Tool for retrieving detailed information about a specific email.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
-from uuid import UUID
 
 from sqlalchemy import select
 
 from src.agents.tools.base import db_session_lock, execute_with_capabilities
-from src.agents.tools.communication.mailbox_emails import _resolve_readable_mailbox
+from src.agents.tools.communication.email_attachments import (
+    list_email_attachments,
+    resolve_readable_email_source,
+)
 from src.agents.tools.crm.access import (
-    AgentCRMAccessError,
-    require_agent_deal_access,
     resolve_agent_access_actor,
 )
 from src.domain.models.organisation_tables.sync.calendar import AssociationStatus
@@ -42,6 +43,24 @@ _DEFAULT_THREAD_MESSAGES = 15
 _MAX_THREAD_MESSAGES = 25
 _MAX_MESSAGE_CHARACTERS = 8_000
 _MAX_THREAD_CHARACTERS = 60_000
+# copilotgtm: four parallel mailbox calls bound provider pressure; use a shared
+# provider rate limiter if attachment hydration moves outside this one tool call.
+_ATTACHMENT_MANIFEST_CONCURRENCY = 4
+
+
+def _format_attachment_manifest(email: Email, attachment: dict[str, Any]) -> dict[str, Any]:
+    """Normalize cached and legacy metadata without changing its readability decision."""
+    output = {
+        "attachment_id": attachment.get("attachment_id"),
+        "internet_message_id": email.internet_message_id,
+        "filename": attachment.get("filename") or attachment.get("name"),
+        "size_bytes": attachment.get("size_bytes", attachment.get("size")),
+        "mime_type": attachment.get("mime_type"),
+        "readable": attachment.get("readable", bool(attachment.get("attachment_id"))),
+    }
+    if "unreadable_reason" in attachment:
+        output["unreadable_reason"] = attachment.get("unreadable_reason")
+    return output
 
 
 def _format_email_details(
@@ -75,11 +94,7 @@ def _format_email_details(
         "has_attachments": email.has_attachments,
         "labels": email.labels or [],
         "attachments": [
-            {
-                "name": attachment.get("name"),
-                "size": attachment.get("size"),
-                "mime_type": attachment.get("mime_type"),
-            }
+            _format_attachment_manifest(email, attachment)
             for attachment in (email.attachments or [])
         ]
         if email.has_attachments
@@ -102,6 +117,95 @@ def _format_email_details(
         content_characters += len(visible_html)
     output["content_characters"] = content_characters
     return output
+
+
+async def _hydrate_attachment_manifests(
+    output: dict[str, Any],
+    *,
+    context: AgentContext,
+    mailbox_email: str | None,
+    deal_id: str | None,
+) -> None:
+    """Populate provider handles once per message after the DB session is released.
+
+    The selected message is repeated inside `thread_messages`. Hydrating unique
+    RFC Message-IDs prevents duplicate provider calls while preserving each
+    attachment's owning-message boundary in both response locations.
+    """
+    messages = [output, *output.get("thread_messages", [])]
+    manifests_by_message: dict[str, dict[str, Any]] = {}
+    pending_message_ids: list[str] = []
+    seen_message_ids: set[str] = set()
+
+    for message in messages:
+        message_id = message.get("internet_message_id")
+        if not message_id or not message.get("has_attachments"):
+            continue
+        existing = message.get("attachments") or []
+        if existing and all(item.get("attachment_id") for item in existing):
+            manifests_by_message.setdefault(
+                message_id,
+                {"status": "success", "attachments": existing},
+            )
+            seen_message_ids.add(message_id)
+            continue
+        if message_id in seen_message_ids:
+            continue
+        seen_message_ids.add(message_id)
+        pending_message_ids.append(message_id)
+
+    semaphore = asyncio.Semaphore(_ATTACHMENT_MANIFEST_CONCURRENCY)
+
+    async def _hydrate_one(message_id: str) -> dict[str, Any]:
+        """Load one manifest while the shared semaphore limits provider pressure."""
+        async with semaphore:
+            return await list_email_attachments(
+                message_id,
+                context=context,
+                mailbox_email=mailbox_email,
+                deal_id=deal_id,
+            )
+
+    hydrated = await asyncio.gather(
+        *(_hydrate_one(message_id) for message_id in pending_message_ids)
+    )
+    manifests_by_message.update(
+        zip(
+            pending_message_ids,
+            hydrated,
+            strict=True,
+        )
+    )
+
+    for message in messages:
+        message_id = message.get("internet_message_id")
+        result = manifests_by_message.get(message_id)
+        if result is None:
+            message["attachment_manifest_status"] = (
+                "not_applicable" if not message.get("has_attachments") else "unavailable"
+            )
+            continue
+        if result.get("status") == "success":
+            message["attachments"] = result.get("attachments", [])
+            message["attachment_manifest_status"] = "complete"
+        else:
+            message["attachment_manifest_status"] = "unavailable"
+            message["attachment_manifest_error"] = result.get("code")
+
+    output["attachment_instance_count"] = len(output.get("attachments") or [])
+    output["readable_attachment_count"] = sum(
+        bool(item.get("readable")) for item in output.get("attachments") or []
+    )
+    if "thread_messages" in output:
+        thread_attachments = [
+            attachment
+            for message in output["thread_messages"]
+            for attachment in message.get("attachments") or []
+        ]
+        output["thread_attachment_instance_count"] = len(thread_attachments)
+        output["thread_readable_attachment_count"] = sum(
+            bool(item.get("readable")) for item in thread_attachments
+        )
 
 
 async def get_email_details(
@@ -168,69 +272,29 @@ async def get_email_details(
         return None
     effective_thread_limit = min(max_thread_messages, _MAX_THREAD_MESSAGES)
 
-    # Acquire session on-demand (fresh session pattern)
+    try:
+        source = await resolve_readable_email_source(
+            context=context,
+            internet_message_id=internet_message_id,
+            mailbox_email=mailbox_email,
+            deal_id=effective_deal_id,
+            require_provider=False,
+        )
+    except Exception:
+        logger.exception("get_email_details: failed to resolve authorized email")
+        return None
+    if source is None or source.email is None:
+        logger.info("get_email_details: email is unavailable in the requested scope")
+        return None
+
+    email = source.email
+    parsed_deal_id = source.deal_id
+
+    # The shared resolver has already enforced mailbox/deal access. This second,
+    # short session loads thread history and CRM enrichment only.
     async with context.acquire_session() as session:
-        # Type-safe column access pattern
         email_c = cast(Any, Email).__table__.c
         assoc_c = cast(Any, DealEmailAssociation).__table__.c
-
-        integration = None
-        parsed_deal_id: UUID | None = None
-        if mailbox_email:
-            try:
-                integration = await _resolve_readable_mailbox(
-                    context=context,
-                    mailbox_email=mailbox_email,
-                    session=session,
-                )
-            except Exception:
-                logger.exception("get_email_details: failed to resolve mailbox")
-                return None
-            if integration is None:
-                logger.info("get_email_details: mailbox is not connected or readable")
-                return None
-        else:
-            try:
-                parsed_deal_id = UUID(cast(str, effective_deal_id))
-                await require_agent_deal_access(context, session, parsed_deal_id)
-            except (ValueError, AgentCRMAccessError):
-                logger.info("get_email_details: deal is invalid or not visible to agent actor")
-                return None
-
-        # The org condition is the tenant boundary; mailbox ownership or the
-        # authorized active deal association is the narrower record boundary.
-        email_stmt = (
-            select(Email)
-            .where(
-                email_c.organisation_id == organisation_id,
-                email_c.internet_message_id == internet_message_id,
-                email_c.is_deleted.is_(False),
-            )
-            .order_by(email_c.received_at.desc(), email_c.email_id.desc())
-            .limit(1)
-        )
-        if integration is not None:
-            email_stmt = email_stmt.where(email_c.integration_id == integration.integration_id)
-        else:
-            email_stmt = email_stmt.join(
-                DealEmailAssociation,
-                assoc_c.internet_message_id == email_c.internet_message_id,
-            ).where(
-                assoc_c.organisation_id == organisation_id,
-                assoc_c.deal_id == parsed_deal_id,
-                assoc_c.status == AssociationStatus.ACTIVE.value,
-            )
-
-        try:
-            result = await session.execute(email_stmt)
-            email = result.scalars().first()
-        except Exception as e:
-            logger.exception(f"get_email_details: error fetching email: {e}")
-            return None
-
-        if not email:
-            logger.info(f"get_email_details: email not found: {internet_message_id}")
-            return None
 
         thread_messages = [email]
         if include_thread and email.thread_id:
@@ -245,7 +309,7 @@ async def get_email_details(
                 .order_by(email_c.received_at.desc(), email_c.email_id.desc())
                 .limit(effective_thread_limit + 1)
             )
-            if integration is None:
+            if parsed_deal_id is not None:
                 # Deal reads may use organization-wide synchronized copies, but
                 # only messages actively associated with the authorized deal.
                 thread_stmt = thread_stmt.join(
@@ -304,11 +368,9 @@ async def get_email_details(
             include_html=include_html,
             max_body_length=effective_body_limit,
         )
-        output["access_scope"] = "mailbox" if integration is not None else "deal"
-        output["scope_id"] = (
-            str(integration.integration_id) if integration is not None else str(parsed_deal_id)
-        )
-        if integration is not None:
+        output["access_scope"] = source.access_scope
+        output["scope_id"] = str(source.scope_id)
+        if source.access_scope == "mailbox":
             output["mailbox_email"] = mailbox_email.strip().lower() if mailbox_email else None
 
         # Add deal associations to output
@@ -365,8 +427,16 @@ async def get_email_details(
                 for message in formatted_thread
             )
 
-        logger.info(f"get_email_details: returning details for email {internet_message_id}")
-        return output
+    # Provider listing is intentionally outside the database session. Gmail or
+    # Graph latency must not hold an org-scoped pooled connection.
+    await _hydrate_attachment_manifests(
+        output,
+        context=context,
+        mailbox_email=mailbox_email,
+        deal_id=str(parsed_deal_id) if parsed_deal_id else None,
+    )
+    logger.info(f"get_email_details: returning details for email {internet_message_id}")
+    return output
 
 
 def create_get_email_details(
