@@ -266,21 +266,25 @@ def test_chat_worker_scaledobject_watches_all_consumed_queues() -> None:
     }
 
 
-def test_dev_chat_worker_renders_memory_guardrails() -> None:
-    """Assert dev chat worker uses the same Celery memory guardrails as prod."""
-    manifests = _render_all_manifests()
-    deployment = next(
-        doc
-        for doc in manifests
-        if doc.get("kind") == "Deployment"
-        and doc["metadata"]["name"] == "copilot-backend-chat-worker"
-    )
+def test_chat_worker_renders_bounded_concurrency_and_memory_guardrails() -> None:
+    """Keep the measured chat capacity and child recycling in every environment."""
+    for values_file in (
+        "charts/application/values-dev.yaml",
+        "charts/application/values-prod.yaml",
+    ):
+        manifests = _render_all_manifests(values_file)
+        deployment = next(
+            doc
+            for doc in manifests
+            if doc.get("kind") == "Deployment"
+            and doc["metadata"]["name"] == "copilot-backend-chat-worker"
+        )
 
-    container = deployment["spec"]["template"]["spec"]["containers"][0]
+        container = deployment["spec"]["template"]["spec"]["containers"][0]
 
-    assert "--concurrency=1" in container["command"]
-    assert "--max-tasks-per-child=25" in container["command"]
-    assert "--max-memory-per-child=700000" in container["command"]
+        assert "--concurrency=2" in container["command"]
+        assert "--max-tasks-per-child=25" in container["command"]
+        assert "--max-memory-per-child=700000" in container["command"]
 
 
 def test_worker_deployments_render_celery_events_and_health_probes() -> None:
