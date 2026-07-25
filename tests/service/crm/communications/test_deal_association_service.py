@@ -399,6 +399,50 @@ async def test_changed_email_associates_every_matching_deal() -> None:
 
 
 @pytest.mark.asyncio
+async def test_changed_meeting_associates_every_matching_deal() -> None:
+    """One meeting may be valid activity for multiple deals sharing its participants."""
+    contact_id = uuid4()
+    deal_ids = {uuid4(), uuid4()}
+    event = SimpleNamespace(
+        event_id=uuid4(),
+        status="confirmed",
+        organiser_email="owner@acme.test",
+        attendees=[SimpleNamespace(email="buyer@customer.test")],
+    )
+    service = CommunicationDealAssociationService(MagicMock(), uuid4())
+    service._cancel_event_associations = AsyncMock(return_value=0)  # type: ignore[method-assign]
+    service._load_existing_deal_ids = AsyncMock(return_value=({}, {}))  # type: ignore[method-assign]
+    service._load_deal_candidates = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            DealCandidate(
+                deal_id=deal_id,
+                contact_ids=frozenset({contact_id}),
+                internal_emails=frozenset({"owner@acme.test"}),
+            )
+            for deal_id in deal_ids
+        ]
+    )
+    service._associate_event = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    result = await service.associate_changed_communications(
+        emails=[],
+        events=[event],
+        identity_contacts={
+            "buyer@customer.test": SimpleNamespace(contact_id=contact_id),
+        },
+        integration_id=None,
+        attachment_scope_email_ids=set(),
+    )
+
+    assert result.associations_created == 2
+    assert result.ambiguous == 0
+    assert {
+        call.kwargs["deal_id"]
+        for call in service._associate_event.await_args_list  # type: ignore[attr-defined]
+    } == deal_ids
+
+
+@pytest.mark.asyncio
 async def test_association_returns_stakeholder_candidates_without_writing_participants() -> None:
     """Communication policy should describe participant writes, not perform them."""
     contact_id = uuid4()
@@ -1207,8 +1251,62 @@ async def test_changed_cancelled_meeting_deactivates_existing_association() -> N
         attachment_scope_email_ids=set(),
     )
 
-    service._cancel_event_associations.assert_awaited_once_with({event_id})
+    service._cancel_event_associations.assert_awaited_once_with({event_id}, deal_ids=None)
     assert result.associations_deactivated == 1
+
+
+@pytest.mark.asyncio
+async def test_targeted_cancelled_meeting_deactivates_only_replayed_deal(
+    monkeypatch,
+) -> None:
+    """Deal replay must not cancel the same meeting's link on another deal."""
+    event_id = uuid4()
+    target_deal_id = uuid4()
+    other_deal_id = uuid4()
+    target_association = SimpleNamespace(
+        association_id=uuid4(),
+        deal_id=target_deal_id,
+        status=association_module.AssociationStatus.ACTIVE,
+        updated_at=None,
+    )
+    other_association = SimpleNamespace(
+        association_id=uuid4(),
+        deal_id=other_deal_id,
+        status=association_module.AssociationStatus.ACTIVE,
+        updated_at=None,
+    )
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = [target_association]
+    session = MagicMock()
+
+    async def execute_scoped(statement):
+        deal_filter = next(
+            value for key, value in statement.compile().params.items() if key.startswith("deal_id_")
+        )
+        assert set(deal_filter) == {target_deal_id}
+        return result
+
+    session.execute = AsyncMock(side_effect=execute_scoped)
+    projection = MagicMock()
+    projection.soft_delete_activity_projection = AsyncMock()
+    monkeypatch.setattr(
+        association_module,
+        "ActivityFeedProjectionService",
+        lambda *_args: projection,
+    )
+    service = CommunicationDealAssociationService(session, uuid4())
+
+    cancelled = await service._cancel_event_associations(  # noqa: SLF001
+        {event_id},
+        deal_ids={target_deal_id},
+    )
+
+    assert cancelled == 1
+    assert target_association.status == association_module.AssociationStatus.CANCELLED
+    assert other_association.status == association_module.AssociationStatus.ACTIVE
+    projection.soft_delete_activity_projection.assert_awaited_once_with(
+        target_association.association_id
+    )
 
 
 @pytest.mark.asyncio
@@ -1340,10 +1438,10 @@ async def test_deal_replay_removes_meeting_anchored_only_by_declined_attendee(
 
 
 @pytest.mark.asyncio
-async def test_deal_replay_removes_meeting_that_now_matches_multiple_deals(
+async def test_deal_replay_keeps_meeting_that_matches_multiple_deals(
     monkeypatch,
 ) -> None:
-    """A meeting must not keep any association when its current match is ambiguous."""
+    """Replay must preserve each meeting link that still satisfies participant policy."""
     target_deal_id = uuid4()
     other_deal_id = uuid4()
     contact_id = uuid4()
@@ -1408,6 +1506,7 @@ async def test_deal_replay_removes_meeting_that_now_matches_multiple_deals(
         ),
     )
 
-    assert removed == 1
-    assert association.status == association_module.AssociationStatus.REMOVED
+    assert removed == 0
+    assert association.status == association_module.AssociationStatus.ACTIVE
+    projection.soft_delete_activity_projection.assert_not_awaited()
     contact_writer.find_contacts_by_email_batch.assert_awaited_once_with(["buyer@customer.com"])

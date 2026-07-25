@@ -877,6 +877,17 @@ async def test_deal_backfill_adds_historical_co_participant_through_domain_write
     org_session = MagicMock()
     org_session.execute = AsyncMock(side_effect=[MagicMock(), MagicMock(), existing_rows])
     org_session.flush = AsyncMock()
+    projection = MagicMock()
+    projection.upsert_stakeholder_added = AsyncMock()
+    monkeypatch.setattr(
+        "src.service.crm.participants.stakeholder_write_service.ActivityFeedProjectionService",
+        lambda *_args: projection,
+    )
+    monkeypatch.setattr(
+        "src.service.crm.participants.stakeholder_write_service."
+        "StakeholderWriteService._get_participant_contact",
+        AsyncMock(return_value=champion),
+    )
     service = ContactCommunicationHydrationService(org_session, MagicMock(), ORG_ID)
     service._load_deal_contact_ids = AsyncMock(return_value=[buyer.contact_id])  # type: ignore[method-assign]
     service._load_contacts = AsyncMock(  # type: ignore[method-assign]
