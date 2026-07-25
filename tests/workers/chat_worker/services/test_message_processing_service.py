@@ -674,6 +674,17 @@ class TestSaveResults:
 
 
 class TestErrorHandling:
+    def test_publish_failure_frames_closes_live_stream(self, service):
+        """A terminal worker failure tells connected clients to stop waiting."""
+        service.publisher = MagicMock()
+
+        service._publish_failure_frames(uuid4(), "Agent crashed")
+
+        frames = [call.args[0] for call in service.publisher.publish.call_args_list]
+        assert [frame["type"] for frame in frames] == ["error", "finalize"]
+        assert frames[0]["message"] == "Agent crashed"
+        assert frames[1]["reason"] == "error"
+
     @patch("src.workers.chat_worker.services.message_processing_service.acquire_org_session")
     def test_mark_job_failed_sets_status(self, mock_acquire_org, service):
         """_mark_job_failed sets job status to FAILED with error message."""
@@ -721,9 +732,6 @@ class TestErrorHandling:
 
 class TestProcessFlow:
     @patch(
-        "src.workers.chat_worker.services.message_processing_service.MessageProcessingService._schedule_stream_cleanup"
-    )
-    @patch(
         "src.workers.chat_worker.services.message_processing_service.MessageProcessingService._publish_final_frames"
     )
     @patch(
@@ -736,7 +744,7 @@ class TestProcessFlow:
         "src.workers.chat_worker.services.message_processing_service.MessageProcessingService._load_job_data"
     )
     def test_happy_path_load_execute_save(
-        self, mock_load, mock_execute, mock_save, mock_publish, mock_cleanup, service
+        self, mock_load, mock_execute, mock_save, mock_publish, service
     ):
         """Phase 1→2→3 completes successfully, returns True."""
         mock_load.return_value = _make_conversation_data()
@@ -769,6 +777,9 @@ class TestProcessFlow:
         "src.workers.chat_worker.services.message_processing_service.MessageProcessingService._mark_job_failed"
     )
     @patch(
+        "src.workers.chat_worker.services.message_processing_service.MessageProcessingService._publish_failure_frames"
+    )
+    @patch(
         "src.workers.chat_worker.services.message_processing_service.MessageProcessingService._save_results"
     )
     @patch(
@@ -778,15 +789,23 @@ class TestProcessFlow:
         "src.workers.chat_worker.services.message_processing_service.MessageProcessingService._load_job_data"
     )
     def test_agent_failure_marks_job_failed(
-        self, mock_load, mock_execute, mock_save, mock_fail, service
+        self,
+        mock_load,
+        mock_execute,
+        mock_save,
+        mock_publish_failure,
+        mock_fail,
+        service,
     ):
         """Agent exception → _mark_job_failed called, returns False."""
+        job_id = uuid4()
         mock_load.return_value = _make_conversation_data()
         mock_execute.side_effect = RuntimeError("Agent crashed")
 
-        result = service.process(uuid4())
+        result = service.process(job_id)
         assert result is False
-        mock_fail.assert_called_once()
+        mock_fail.assert_called_once_with(job_id, "Agent crashed")
+        mock_publish_failure.assert_called_once_with(job_id, "Agent crashed")
 
 
 # =============================================================================

@@ -12,7 +12,6 @@ No sessions are held during long-running operations (LLM calls).
 
 from __future__ import annotations
 
-import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -36,7 +35,6 @@ from src.infra.database.sessions import (
     acquire_org_session,
 )
 from src.infra.messaging.redis_channels import channel_for_chat_job
-from src.infra.messaging.redis_client import get_redis_client
 from src.infra.messaging.redis_streams import xadd_json_frame
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
@@ -59,6 +57,7 @@ FRAME_TYPE_VISUALIZATION = "visualization"
 FRAME_TYPE_STRUCTURED_DATA = "structured_data"
 FRAME_TYPE_TASK_LIST = "task_list"
 FRAME_TYPE_TOKEN_USAGE = "token.usage"
+FRAME_TYPE_ERROR = "error"
 
 
 @dataclass
@@ -175,13 +174,15 @@ class MessageProcessingService:
             return True
 
         except Exception as e:
+            error_message = str(e)
             logger.exception(
                 "Message processing failed org=%s job=%s error=%s",
                 self.organisation_id,
                 job_id,
                 e,
             )
-            self._mark_job_failed(job_id, str(e))
+            self._mark_job_failed(job_id, error_message)
+            self._publish_failure_frames(job_id, error_message)
             return False
 
     def _load_job_data(self, job_id: UUID, celery_task=None) -> ConversationData | None:
@@ -745,9 +746,6 @@ class MessageProcessingService:
         # Publish final frames (outside of session)
         self._publish_final_frames(data, result)
 
-        # Schedule stream cleanup
-        self._schedule_stream_cleanup(data.job_id)
-
     def _publish_final_frames(self, data: ConversationData, result: AgentResult) -> None:
         """Publish final frames to Redis."""
         if not self.publisher:
@@ -797,30 +795,30 @@ class MessageProcessingService:
             }
         )
 
-    def _schedule_stream_cleanup(self, job_id: UUID, delay_seconds: int = 30) -> None:
-        """Schedule Redis stream cleanup in background thread."""
-        cleanup_thread = threading.Thread(
-            target=self._cleanup_job_stream,
-            args=(job_id, delay_seconds),
-            daemon=True,
+    def _publish_failure_frames(self, job_id: UUID, error_message: str) -> None:
+        """Publish the terminal failure so a connected SSE client can stop waiting."""
+        if not self.publisher:
+            return
+        base_frame = {
+            "job_id": str(job_id),
+            "version": "1.0",
+            "timestamp": time.time(),
+        }
+        self.publisher.publish(
+            {
+                **base_frame,
+                "type": FRAME_TYPE_ERROR,
+                "code": "chat_processing_failed",
+                "message": error_message,
+            }
         )
-        cleanup_thread.start()
-
-    def _cleanup_job_stream(self, job_id: UUID, delay_seconds: int) -> None:
-        """Clean up Redis stream for completed job after a delay."""
-        try:
-            time.sleep(delay_seconds)
-            stream_key = channel_for_chat_job(self.organisation_id, job_id)
-            client = get_redis_client()
-            result = client.delete(stream_key)
-
-            if result:
-                logger.info("Cleaned up stream for completed job: %s", stream_key)
-            else:
-                logger.debug("Stream was already cleaned up: %s", stream_key)
-
-        except Exception as e:
-            logger.warning("Failed to cleanup stream for job %s: %s", job_id, e)
+        self.publisher.publish(
+            {
+                **base_frame,
+                "type": FRAME_TYPE_FINALIZE,
+                "reason": "error",
+            }
+        )
 
     def _mark_job_failed(self, job_id: UUID, error_message: str) -> None:
         """Mark job as failed.

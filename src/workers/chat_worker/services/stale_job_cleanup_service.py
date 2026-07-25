@@ -2,8 +2,8 @@
 
 Eight passes run with fresh organization sessions:
 
-1. WEB CHAT PENDING - republish unclaimed jobs older than two minutes. The web
-   worker claims jobs under a row lock, so duplicate broker deliveries are safe.
+1. WEB CHAT PENDING - republish unclaimed jobs with exponential backoff. The
+   web worker claims jobs under a row lock, so duplicate broker deliveries are safe.
 
 2. WHATSAPP PENDING - lease and republish jobs older than two minutes.
 
@@ -66,8 +66,8 @@ CHAT_JOB_PENDING_THRESHOLD_MIN = 60
 CHAT_JOB_IN_PROGRESS_THRESHOLD_MIN = 30
 REMINDER_TRIGGERED_THRESHOLD_MIN = 30
 REMINDER_RUN_THRESHOLD_MIN = 30
-# Atomic worker claims make duplicate delivery harmless, so recovery can start
-# after one 15-second beat interval instead of delaying a failed publish for minutes.
+# Atomic worker claims make duplicate delivery harmless, so the first recovery
+# can start after one 15-second beat interval.
 DURABLE_CHAT_PENDING_REQUEUE_AFTER_SECONDS = 15
 WEB_CHAT_MAX_ENQUEUE_ATTEMPTS = 5
 WEB_CHAT_RECOVERY_BATCH_SIZE = 500
@@ -92,6 +92,12 @@ _WHATSAPP_STATIC_FAILURE_MESSAGE = (
 
 # Max consecutive failures before permanently failing a reminder
 MAX_CONSECUTIVE_FAILURES = 3
+
+
+def _web_chat_retry_delay_seconds(attempts: int) -> int:
+    """Return the delay after the most recent durable enqueue attempt."""
+    exponent = min(max(attempts - 1, 0), WEB_CHAT_MAX_ENQUEUE_ATTEMPTS - 1)
+    return int(DURABLE_CHAT_PENDING_REQUEUE_AFTER_SECONDS * (2**exponent))
 
 
 async def enqueue_web_chat_job(organisation_id: UUID, job_id: UUID) -> str:
@@ -350,9 +356,31 @@ class ChatStaleJobCleanupService:
         self, now: datetime
     ) -> tuple[list[tuple[UUID, int]], int]:
         """Lease unclaimed web jobs before publishing outside the transaction."""
-        cutoff = now - timedelta(seconds=DURABLE_CHAT_PENDING_REQUEUE_AFTER_SECONDS)
         enqueue_status = ChatMessageJob.job_metadata["enqueue_status"].as_string()
+        enqueue_attempts = ChatMessageJob.job_metadata["enqueue_attempts"].as_integer()
         recoverable_statuses = ("pending", "failed", "enqueuing", "requeueing", "enqueued")
+        retry_windows = [
+            and_(
+                enqueue_attempts == attempts,
+                col(ChatMessageJob.updated_at)
+                < now - timedelta(seconds=_web_chat_retry_delay_seconds(attempts)),
+            )
+            for attempts in range(2, WEB_CHAT_MAX_ENQUEUE_ATTEMPTS)
+        ]
+        retry_due = or_(
+            and_(
+                or_(enqueue_attempts.is_(None), enqueue_attempts <= 1),
+                col(ChatMessageJob.updated_at)
+                < now - timedelta(seconds=_web_chat_retry_delay_seconds(1)),
+            ),
+            *retry_windows,
+            and_(
+                enqueue_attempts >= WEB_CHAT_MAX_ENQUEUE_ATTEMPTS,
+                col(ChatMessageJob.updated_at)
+                < now
+                - timedelta(seconds=_web_chat_retry_delay_seconds(WEB_CHAT_MAX_ENQUEUE_ATTEMPTS)),
+            ),
+        )
         leased: list[tuple[UUID, int]] = []
         exhausted = 0
 
@@ -362,7 +390,7 @@ class ChatStaleJobCleanupService:
                 .where(
                     col(ChatMessageJob.chat_type) == "GENERAL_CHAT",
                     col(ChatMessageJob.status) == JobStatus.PENDING,
-                    col(ChatMessageJob.updated_at) < cutoff,
+                    retry_due,
                     or_(
                         enqueue_status.is_(None),
                         enqueue_status.in_(recoverable_statuses),
@@ -381,6 +409,9 @@ class ChatStaleJobCleanupService:
                 if metadata.get("enqueue_status") not in {None, *recoverable_statuses}:
                     continue
                 attempts = int(metadata.get("enqueue_attempts") or 0)
+                retry_cutoff = now - timedelta(seconds=_web_chat_retry_delay_seconds(attempts))
+                if job.updated_at >= retry_cutoff:
+                    continue
                 if attempts >= WEB_CHAT_MAX_ENQUEUE_ATTEMPTS:
                     job.status = JobStatus.FAILED
                     job.error_message = "Web chat enqueue retry budget exhausted"

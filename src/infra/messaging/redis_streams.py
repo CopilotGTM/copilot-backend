@@ -56,6 +56,7 @@ __all__ = [
 #   from src.infra.messaging.redis_channels import channel_for_chat_job
 
 DATA_FIELD = "data"
+DEFAULT_STREAM_TTL_SECONDS: int = 1800
 
 
 class AsyncRedisConnectionManager:
@@ -361,19 +362,26 @@ def xadd_json_frame(
     *,
     maxlen: int = 500,
     approximate: bool = True,
+    ttl_seconds: int = DEFAULT_STREAM_TTL_SECONDS,
 ) -> str | None:
-    """Add a JSON frame to a Redis Stream using sync client.
+    """Add a JSON frame and renew the producer-owned stream expiry.
 
     Returns the generated entry ID or None if failure.
     """
     client = get_redis_client()
     try:
-        return client.xadd(
+        pipeline = client.pipeline(transaction=True)
+        pipeline.xadd(
             stream_key,
             {DATA_FIELD: json.dumps(frame)},
             maxlen=maxlen,
             approximate=approximate,
         )
+        pipeline.expire(stream_key, ttl_seconds)
+        entry_id = pipeline.execute()[0]
+        if isinstance(entry_id, bytes):
+            return entry_id.decode()
+        return str(entry_id)
     except Exception as e:  # pragma: no cover (network issues)
         logger.warning("Failed to XADD to %s: %s", stream_key, e)
         return None

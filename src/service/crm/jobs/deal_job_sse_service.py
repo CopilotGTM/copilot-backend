@@ -217,7 +217,6 @@ class DealJobSSEService:
                             "event": "complete",
                             "data": json.dumps({"job_id": self.job_id}),
                         }
-                        await self._cleanup_stream()
                         return
 
         except asyncio.CancelledError:
@@ -282,12 +281,3 @@ class DealJobSSEService:
         except Exception:
             logger.debug("Failed to check job status", exc_info=True)
             return None, None, False
-
-    async def _cleanup_stream(self) -> None:
-        """Delete the per-job Redis stream after completion."""
-        try:
-            if self._streams:
-                await self._streams.delete_stream(self.stream_key)
-                logger.info("Cleaned up deal job stream: %s", self.stream_key)
-        except Exception as e:
-            logger.warning("Failed to cleanup stream %s: %s", self.stream_key, e)

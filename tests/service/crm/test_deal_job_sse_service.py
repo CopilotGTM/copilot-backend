@@ -76,8 +76,8 @@ async def test_stream_events_failed_emits_ready_error_and_complete(monkeypatch) 
 
 
 @pytest.mark.asyncio
-async def test_stream_events_finalize_cleans_up_stream(monkeypatch) -> None:
-    """Finalize events clear stream key and emit completion frame."""
+async def test_stream_events_finalize_retains_stream_for_replay(monkeypatch) -> None:
+    """Finalize leaves the producer-TTL stream available to reconnecting clients."""
     service = DealJobSSEService(uuid4(), uuid4(), uuid4())
 
     async def fake_get_job_status():
@@ -121,7 +121,7 @@ async def test_stream_events_finalize_cleans_up_stream(monkeypatch) -> None:
     assert events[0]["event"] == "ready"
     assert events[1]["event"] == "frame"
     assert events[2]["event"] == "complete"
-    assert fake_streams.deleted_key == service.stream_key
+    assert fake_streams.deleted_key is None
 
 
 @pytest.mark.asyncio

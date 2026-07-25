@@ -160,16 +160,15 @@ class AttachmentSSEService:
     async def _stream_updates(
         self,
         watched_status: dict[str, str],
-        explicit_ids: set[UUID] | None,
+        allowed_ids: set[str],
         start_time: float,
         last_heartbeat: float,
         timeout_seconds: int | None,
         heartbeat_interval: float,
     ):
         channel = channel_for_attachment_updates(self.organisation_id)
-        explicit_id_strs: set[str] | None = {str(i) for i in explicit_ids} if explicit_ids else None
 
-        async for message in self.redis_pubsub.subscribe_to_channel(channel):
+        async for message in self.redis_pubsub.subscribe_and_poll(channel):
             current_time = asyncio.get_event_loop().time()
             if self._should_timeout(start_time, current_time, timeout_seconds):
                 yield self._send_event("timeout", {"message": "timeout", "reconnect": True})
@@ -178,10 +177,13 @@ class AttachmentSSEService:
                 last_heartbeat = current_time
                 yield self._send_event("ping", {"timestamp": int(current_time)})
 
+            if message is None:
+                continue
+
             att_id = message.get("attachment_id")
             if not att_id:
                 continue
-            if explicit_id_strs is not None and att_id not in explicit_id_strs:
+            if att_id not in allowed_ids:
                 continue
             watched_status[att_id] = message.get("status") or ""
             yield self._send_event("status", [message])
@@ -212,10 +214,12 @@ class AttachmentSSEService:
                     # Nothing more to stream
                     return
 
+            allowed_ids = set(watched_status)
+
             # Stream updates from Redis only (no DB required)
             async for evt in self._stream_updates(
                 watched_status,
-                explicit_ids,
+                allowed_ids,
                 start_time,
                 last_heartbeat,
                 timeout_seconds,
