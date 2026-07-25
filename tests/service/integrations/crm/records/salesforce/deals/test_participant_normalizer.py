@@ -69,6 +69,31 @@ def test_contact_reference_primary_survives_nonprimary_contact_role() -> None:
     assert extraction.primary_contact_by_deal == {"006A": "003A"}
 
 
+def test_same_contact_roles_merge_primary_and_business_role() -> None:
+    extraction = extract_participants(
+        [
+            {
+                "OpportunityId": "006A",
+                "ContactId": "003A",
+                "Role": None,
+                "IsPrimary": True,
+            },
+            {
+                "OpportunityId": "006A",
+                "ContactId": "003A",
+                "Role": "Decision Maker",
+                "IsPrimary": False,
+            },
+        ],
+        company_external_id_by_deal={},
+    )
+
+    assert len(extraction.participants) == 1
+    participant = extraction.participants[0]
+    assert participant.relationship_role == "Decision Maker"
+    assert participant.is_primary is True
+
+
 def test_contact_reference_fields_use_salesforce_reference_metadata() -> None:
     fields = contact_reference_fields_from_definitions(
         [

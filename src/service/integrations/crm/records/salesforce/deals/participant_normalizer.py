@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
+from dataclasses import replace
 from typing import Any
 
 from src.domain.models.organisation_tables.sync.crm.associations import (
@@ -244,18 +245,55 @@ def extract_participants(
 def _dedup_participants(
     participants: list[NormalizedSalesforceDealParticipant],
 ) -> list[NormalizedSalesforceDealParticipant]:
-    seen: set[tuple[str, str, str, str | None]] = set()
+    positions: dict[tuple[str, str, str], int] = {}
     out: list[NormalizedSalesforceDealParticipant] = []
     for participant in participants:
         key = (
             participant.deal_external_id,
             participant.participant_type,
             participant.related_external_id,
-            participant.relationship_role,
         )
-        if key in seen:
+        position = positions.get(key)
+        if position is not None:
+            current = out[position]
+            incoming_role_is_business = bool(
+                participant.relationship_role
+                and "primary contact" not in _normalized_label(participant.relationship_role)
+            )
+            current_role_is_business = bool(
+                current.relationship_role
+                and "primary contact" not in _normalized_label(current.relationship_role)
+            )
+            use_incoming_role = incoming_role_is_business and not current_role_is_business
+            out[position] = replace(
+                current,
+                relationship_role=(
+                    participant.relationship_role
+                    if use_incoming_role
+                    else current.relationship_role or participant.relationship_role
+                ),
+                is_primary=current.is_primary
+                or participant.is_primary
+                or _is_primary_contact_role(current.relationship_role)
+                or _is_primary_contact_role(participant.relationship_role),
+                data_payload=participant.data_payload
+                if use_incoming_role
+                else current.data_payload,
+                decision_power=(
+                    participant.decision_power
+                    if current.decision_power in {None, DecisionPower.UNKNOWN.value}
+                    and participant.decision_power not in {None, DecisionPower.UNKNOWN.value}
+                    else current.decision_power
+                ),
+                stance=(
+                    participant.stance
+                    if current.stance in {None, StakeholderStance.UNKNOWN.value}
+                    and participant.stance not in {None, StakeholderStance.UNKNOWN.value}
+                    else current.stance
+                ),
+            )
             continue
-        seen.add(key)
+        positions[key] = len(out)
         out.append(participant)
     return out
 
@@ -294,6 +332,14 @@ def _coerce_bool(value: Any) -> bool:
     if isinstance(value, (int, float)):
         return value != 0
     return False
+
+
+def _is_primary_contact_role(role: str | None) -> bool:
+    return bool(role and "primary contact" in _normalized_label(role))
+
+
+def _normalized_label(value: str) -> str:
+    return " ".join(value.strip().lower().replace("-", " ").replace("_", " ").split())
 
 
 def _field_semantics(field_name: str, label: str | None) -> dict[str, Any]:

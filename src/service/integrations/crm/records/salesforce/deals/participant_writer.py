@@ -123,17 +123,19 @@ class SalesforceDealParticipantWriter:
                 related_name = related_hit.name
                 related_email = _normalize_email(related_hit.email)
 
-            existing = existing_by_external.get(external_id) or existing_by_external.get(
+            mapped_existing = existing_by_external.get(external_id) or existing_by_external.get(
                 legacy_external_id
             )
-            if existing is None:
-                existing = _find_by_identity(
-                    existing_by_identity=existing_by_identity,
-                    deal_id=deal_id,
-                    participant_type=participant.participant_type,
-                    related_local_id=related_local_id,
-                    related_email=related_email,
-                )
+            identity_existing = _find_by_identity(
+                existing_by_identity=existing_by_identity,
+                deal_id=deal_id,
+                participant_type=participant.participant_type,
+                related_local_id=related_local_id
+                or (mapped_existing.related_local_id if mapped_existing else None),
+                related_email=related_email
+                or (mapped_existing.related_email if mapped_existing else None),
+            )
+            existing = identity_existing or mapped_existing
             if existing is None:
                 row = self._new_row(
                     participant=participant,
