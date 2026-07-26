@@ -1,7 +1,17 @@
-"""Hydrate committed communications and backfill contact activity links.
+"""Hydrate committed communications into contact, account, and deal activity.
 
-Integration sync calls the changed-source path; manual API and agent-tool contact
-creation call the explicit-contact path. CSV import remains outside this flow.
+Integration sync calls the changed-source path after email/calendar rows commit.
+Deal participant changes call the targeted deal path after stakeholder
+normalization, while manual API and agent-tool contact creation call the
+explicit-contact path. Committed CSV deal imports also use targeted deal
+hydration rather than a separate mapper.
+
+This service owns local history loading and orchestration: it resolves
+communication identities to contacts, projects contact/account activity, asks
+the association service to match eligible deals, writes confidently discovered
+stakeholders, and hydrates newly approved contacts once. The recursive pass
+disables further discovery so one communication cannot expand a deal's
+stakeholder graph without bound.
 """
 
 from __future__ import annotations
@@ -54,6 +64,8 @@ from src.service.crm.participants.stakeholder_write_service import StakeholderWr
 from src.service.crm.utils.identity import normalize_email
 from src.service.crm.utils.internal_domains import normalize_internal_domains
 
+# copilotgtm: cap each retained-history query at 500 rows to bound ORM memory;
+# replace offset paging only if measured contact histories make it a bottleneck.
 HISTORY_PAGE_SIZE = 500
 
 
@@ -127,7 +139,14 @@ class ContactCommunicationHydrationService:
         changed_email_ids: list[UUID] | None = None,
         changed_event_ids: list[UUID] | None = None,
     ) -> ContactCommunicationHydrationResult:
-        """Create contacts from one committed email/calendar change batch."""
+        """Hydrate one committed email/calendar change batch.
+
+        This path does not run stakeholder normalization. It resolves all
+        eligible participants, projects contact/account activity, creates deal
+        associations that satisfy current stakeholder rules, then performs one
+        non-recursive history expansion for newly approved stakeholders.
+        """
+        # --- Step 1: load only the committed source rows and retained thread context ---
         changed_emails = await self._load_changed_emails(changed_email_ids or [])
         events = await self._load_changed_events(changed_event_ids or [])
         # When a reply proves engagement, hydrate the retained thread as one relationship so
@@ -138,6 +157,7 @@ class ContactCommunicationHydrationService:
             events=events,
             seed_contacts=[],
         )
+        # --- Step 2: project relationship activity before selecting deal ownership ---
         projected = await self._project(
             emails=emails,
             events=events,
@@ -145,6 +165,7 @@ class ContactCommunicationHydrationService:
             integration_id=integration_id,
             replace_links=True,
         )
+        # --- Step 3: create qualifying deal links and collect discovery candidates ---
         # Deal association consumes the exact contacts resolved above. Running it after direct
         # projection keeps one transaction and avoids a second organisation-wide mapper scan.
         association_result = await CommunicationDealAssociationService(
@@ -160,6 +181,8 @@ class ContactCommunicationHydrationService:
             attachment_scope_email_ids={email.email_id for email in changed_emails},
         )
         await self._write_stakeholder_candidates(association_result)
+        # Auto-approved discoveries get exactly one history pass. Disabling discovery
+        # in that pass prevents stakeholder-of-stakeholder recursion.
         if association_result.discovered_contact_ids:
             expansion = await self._backfill_contacts(
                 sorted(association_result.discovered_contact_ids, key=str),
@@ -204,7 +227,12 @@ class ContactCommunicationHydrationService:
         *,
         integration_id: UUID | None = None,
     ) -> ContactCommunicationHydrationResult:
-        """Attach retained communication history to already-created contacts."""
+        """Attach retained history to explicit contacts and eligible deals.
+
+        Manual/tool contact creation enters here after the contact exists. The
+        first pass may discover same-domain deal stakeholders, followed by one
+        non-recursive history pass for the newly approved contacts.
+        """
         return await self._backfill_contacts(
             contact_ids,
             integration_id=integration_id,
@@ -220,7 +248,14 @@ class ContactCommunicationHydrationService:
         discover_participants: bool,
         target_deal_ids: set[UUID] | None,
     ) -> ContactCommunicationHydrationResult:
-        """Run contact history once; recursive calls disable further participant discovery."""
+        """Page through contact history and optionally allow one discovery generation.
+
+        ``target_deal_ids`` narrows writes during deal replay but never widens
+        eligibility: every association must still pass the approved-contact and
+        internal-participant rules in the association service.
+        """
+        # Anchor identities come only from active, org-scoped contacts supplied by
+        # the caller; communication co-participants are resolved separately per page.
         contacts = await self._load_contacts(contact_ids)
         if not contacts:
             return ContactCommunicationHydrationResult(
@@ -246,6 +281,8 @@ class ContactCommunicationHydrationService:
         activity_identities: set[str] = set()
         association_result = CommunicationDealAssociationResult()
 
+        # Email and meeting histories advance independently because one source may
+        # exhaust before the other. Stable ID ordering makes each offset deterministic.
         while not (emails_complete and events_complete):
             emails = (
                 []
@@ -272,6 +309,8 @@ class ContactCommunicationHydrationService:
             if not emails and not events:
                 continue
 
+            # Resolve the full page before projection so contact/account activity and
+            # deal matching consume the same participant interpretation.
             resolution = await self._resolve_communication_participants(
                 emails=emails,
                 events=events,
@@ -292,6 +331,8 @@ class ContactCommunicationHydrationService:
                 integration_id=integration_id,
                 replace_links=False,
             )
+            # Association follows direct projection in the same transaction. If it
+            # rolls back, neither partial card ownership nor stakeholder writes commit.
             page_associations = await CommunicationDealAssociationService(
                 self.org_session,
                 self.organisation_id,
@@ -331,6 +372,8 @@ class ContactCommunicationHydrationService:
                 page_associations.attachment_email_ids_by_deal,
             )
 
+        # Perform one bounded expansion after all anchor pages are known. The nested
+        # call disables discovery, so new contacts can add history but not another tier.
         if discover_participants and association_result.discovered_contact_ids:
             expansion = await self._backfill_contacts(
                 sorted(association_result.discovered_contact_ids, key=str),
@@ -375,7 +418,13 @@ class ContactCommunicationHydrationService:
         *,
         integration_id: UUID | None = None,
     ) -> ContactCommunicationHydrationResult:
-        """Replay retained communications for approved contacts on changed deals."""
+        """Replay changed deals from their approved stakeholder contacts.
+
+        Called after deal/stakeholder changes. It loads only approved contact
+        anchors for the requested deals, hydrates their retained history, allows
+        one bounded discovery pass, then reconciles old associations against the
+        complete current-policy view.
+        """
         contact_ids = await self._load_deal_contact_ids(deal_ids)
         result = await self._backfill_contacts(
             contact_ids,
@@ -422,7 +471,12 @@ class ContactCommunicationHydrationService:
         self,
         association_result: CommunicationDealAssociationResult,
     ) -> None:
-        """Delegate communication-discovered participant mutations to their domain owner."""
+        """Write confident communication discoveries through the participant domain.
+
+        The association service only gathers evidence. The stakeholder writer
+        enforces customer-domain rules and the five-contact auto-approval cap;
+        this method feeds only approved IDs into the single non-recursive expansion.
+        """
         writer = StakeholderWriteService(self.org_session, self.organisation_id)
         for candidates in association_result.stakeholder_candidates:
             outcome = await writer.add_communication_discovered_contacts(
@@ -466,7 +520,12 @@ class ContactCommunicationHydrationService:
         integration_id: UUID | None,
         replace_links: bool,
     ) -> int:
-        """Project loaded communications onto resolved contacts and their companies."""
+        """Project loaded communications onto resolved contacts and their companies.
+
+        Existing deal associations own their visible activity cards. Otherwise a
+        direct communication card is created, and a later association in this
+        transaction can transfer ownership without duplicating the activity.
+        """
         email_associations = await self._load_email_associations(emails)
         event_associations = await self._load_event_associations(events)
         projection = ActivityFeedProjectionService(
@@ -475,6 +534,8 @@ class ContactCommunicationHydrationService:
         )
         projected = 0
 
+        # Existing association rows own deal-visible email cards; participant links
+        # still include every eligible contact resolved from the source message.
         for email in emails:
             contacts = contacts_for_participants(email_participants(email), identity_contacts)
             if not contacts:
@@ -509,6 +570,8 @@ class ContactCommunicationHydrationService:
                 ):
                     projected += 1
 
+        # Meetings mirror email projection, but future meetings do not advance
+        # engagement recency until their scheduled time has passed.
         for event in events:
             contacts = contacts_for_participants(
                 event_participants(event, Counter()), identity_contacts
@@ -675,7 +738,11 @@ class ContactCommunicationHydrationService:
         offset: int = 0,
         limit: int = HISTORY_PAGE_SIZE,
     ) -> list[Email]:
-        """Find retained local emails involving any identity from explicit contacts."""
+        """Page retained org emails involving any approved anchor identity.
+
+        JSON participant arrays are queried directly so history hydration stays
+        source-driven and never falls back to an organisation-wide mapper.
+        """
         if not identities:
             return []
         identity_array = array(sorted(identities))
@@ -706,7 +773,11 @@ class ContactCommunicationHydrationService:
         offset: int = 0,
         limit: int = HISTORY_PAGE_SIZE,
     ) -> list[CalendarEvent]:
-        """Find retained calendar events involving any identity from explicit contacts."""
+        """Page retained org events involving any approved anchor identity.
+
+        Organizer and attendee storage differ, so both sources are queried while
+        the outer event predicate preserves the tenant boundary.
+        """
         if not identities:
             return []
         attendee_events = select(col(CalendarAttendee.event_id)).where(

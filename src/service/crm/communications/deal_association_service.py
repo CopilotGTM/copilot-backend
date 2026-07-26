@@ -1,9 +1,17 @@
-"""Associate hydrated communications with eligible CRM deals.
+"""Associate already-hydrated communications with eligible CRM deals.
 
-Contact communication hydration calls this module after it resolves activity
-participants. The pure resolver keeps relationship activity on contact/account
-feeds unless both a deal contact and a current internal deal participant are
-present. Emails and calendar events may belong to every deal satisfying that
+``ContactCommunicationHydrationService`` calls this module with source rows and
+the contacts resolved from their participants. This module does not search
+email/calendar history and does not create or approve stakeholder memberships;
+it only refreshes engagement time on existing approved participants. It creates
+email/meeting associations only when a communication contains both an approved
+deal contact and the deal owner or another current internal participant.
+
+After a confident match, the service returns contact evidence and the deal's
+customer domains to hydration. The participant-domain writer applies the domain
+rule and decides which contacts are auto-approved or left pending; hydration
+then performs one non-recursive history expansion for newly approved contacts.
+A communication may belong to every open deal that independently satisfies the
 rule.
 """
 
@@ -127,9 +135,10 @@ def communication_matches_deal(
 
 
 class CommunicationDealAssociationService:
-    """Map hydrated email/calendar records without starting an organisation scan."""
+    """Map a supplied hydration batch without scanning unrelated communications."""
 
     def __init__(self, session: AsyncSession, organisation_id: UUID) -> None:
+        """Bind one tenant transaction used by hydration and activity projection."""
         self.session = session
         self.organisation_id = organisation_id
 
@@ -146,8 +155,17 @@ class CommunicationDealAssociationService:
         discover_participants: bool = True,
         target_deal_ids: set[UUID] | None = None,
     ) -> CommunicationDealAssociationResult:
-        """Associate one hydration batch without scanning unrelated communications."""
+        """Associate one supplied hydration batch under current deal policy.
+
+        ``identity_contacts`` and the per-source identity maps must come from the
+        same participant-resolution pass. Existing active associations are
+        treated as retry state, not proof of current eligibility. When
+        ``target_deal_ids`` is supplied for replay, it narrows eligible matches
+        and cancellation writes to those deals.
+        """
         _ = integration_id
+        # Apply provider cancellations before attempting matches so a cancelled
+        # meeting cannot be reactivated later in the same hydration pass.
         cancelled_event_ids = {
             event.event_id for event in events if str(event.status or "").lower() == "cancelled"
         }
@@ -155,6 +173,8 @@ class CommunicationDealAssociationService:
             cancelled_event_ids,
             deal_ids=target_deal_ids,
         )
+        # Existing links make retries idempotent, but the current participant
+        # predicates below still decide whether each communication qualifies.
         email_deals, event_deals = await self._load_existing_deal_ids(emails, events)
         prepared_emails = [
             (
@@ -188,6 +208,8 @@ class CommunicationDealAssociationService:
             )
             for event in events
         ]
+        # Candidate deals are loaded from approved contact anchors only. Pending
+        # discoveries cannot qualify a deal until the participant writer approves them.
         contact_ids = {
             contact_id
             for _, communication in [*prepared_emails, *prepared_events]
@@ -216,6 +238,7 @@ class CommunicationDealAssociationService:
                 if contact := identity_contacts.get(email):
                     contact_emails.setdefault(contact.contact_id, set()).add(email)
 
+        # --- Associate emails and retain discovery evidence from confident matches ---
         for email, communication in prepared_emails:
             deal_ids = {
                 deal.deal_id for deal in deals if communication_matches_deal(communication, deal)
@@ -236,6 +259,8 @@ class CommunicationDealAssociationService:
                     result.attachment_email_ids_by_deal.setdefault(deal_id, set()).add(
                         email.email_id
                     )
+                # A retry refreshes engagement/discovery evidence without creating a
+                # second association or activity card.
                 if deal_id in communication.existing_deal_ids:
                     await self._update_last_contact(
                         deal_id=deal_id,
@@ -263,6 +288,7 @@ class CommunicationDealAssociationService:
                             communication,
                         )
 
+        # --- Associate meetings under the same two-party eligibility rule ---
         for event, communication in prepared_events:
             if str(event.status or "").lower() == "cancelled":
                 result.unmatched += 1
@@ -306,6 +332,9 @@ class CommunicationDealAssociationService:
                             communication,
                         )
 
+        # --- Hand same-domain candidate evidence back to the participant domain ---
+        # Choosing a customer-domain identity first avoids rejecting a contact that
+        # also appeared under an unrelated alias in the same communication batch.
         for (deal_id, source), discovery_contact_emails in pending_discovery.items():
             deal = deals_by_id[deal_id]
             if deal.integration_id is None:
@@ -337,7 +366,13 @@ class CommunicationDealAssociationService:
         deal_ids: list[UUID],
         context: ContactCommunicationHydrationContext,
     ) -> int:
-        """Remove active links that no longer satisfy current participant policy."""
+        """Remove replayed links that no longer satisfy current participant policy.
+
+        Reconciliation runs after targeted history hydration, when all retained
+        participants have been resolved under one current context. Source rows
+        remain intact; only association status and its activity projection are
+        soft-deleted.
+        """
         if not deal_ids:
             return 0
         email_rows, event_rows = await self._load_associated_communications(deal_ids)
@@ -358,6 +393,7 @@ class CommunicationDealAssociationService:
         projection = ActivityFeedProjectionService(self.session, self.organisation_id)
         removed = 0
 
+        # Re-evaluate emails without trusting the historical association as evidence.
         for email_association, email in email_rows:
             communication = self._candidate_for_participants(
                 self._email_participant_emails(email),
@@ -376,6 +412,8 @@ class CommunicationDealAssociationService:
             await projection.soft_delete_activity_projection(email_association.association_id)
             removed += 1
 
+        # Provider cancellation is distinct from a policy mismatch so downstream
+        # consumers can tell source cancellation from stakeholder-driven removal.
         for event_association, event in event_rows:
             communication = self._candidate_for_participants(
                 self._event_participant_emails(event),
@@ -478,6 +516,12 @@ class CommunicationDealAssociationService:
         *,
         contact_identity_emails: frozenset[str] | None = None,
     ) -> CommunicationCandidate:
+        """Build one normalized candidate from resolver-approved contact identities.
+
+        ``participant_emails`` retains all people needed for the internal-user
+        half of matching. ``contact_identity_emails`` limits the customer half to
+        identities accepted by participant resolution.
+        """
         normalized_emails = {email for raw in participant_emails if (email := normalize_email(raw))}
         eligible_contact_emails = (
             normalized_emails
@@ -503,6 +547,7 @@ class CommunicationDealAssociationService:
         communication: CommunicationCandidate,
         deals: list[DealCandidate],
     ) -> None:
+        """Classify a candidate as ambiguous or unmatched for result metrics."""
         matches = [deal for deal in deals if communication_matches_deal(communication, deal)]
         if len(matches) > 1:
             result.ambiguous += 1
@@ -510,6 +555,7 @@ class CommunicationDealAssociationService:
             result.unmatched += 1
 
     def _email_participant_emails(self, email: Email) -> set[str]:
+        """Collect sender and all recipient fields used by matching and discovery."""
         return {
             value
             for value in [
@@ -522,6 +568,7 @@ class CommunicationDealAssociationService:
         }
 
     def _event_participant_emails(self, event: CalendarEvent) -> set[str]:
+        """Collect organizer and attendee identities from one loaded event."""
         return {
             value
             for value in [
@@ -536,6 +583,7 @@ class CommunicationDealAssociationService:
         emails: list[Email],
         events: list[CalendarEvent],
     ) -> tuple[dict[str, set[UUID]], dict[UUID, set[UUID]]]:
+        """Load active associations as retry state, grouped by source identity."""
         email_deals: dict[str, set[UUID]] = {}
         event_deals: dict[UUID, set[UUID]] = {}
         message_ids = {email.internet_message_id for email in emails if email.internet_message_id}
@@ -573,6 +621,12 @@ class CommunicationDealAssociationService:
         self,
         contact_ids: set[UUID],
     ) -> list[DealCandidate]:
+        """Load open deals eligible through at least one approved resolved contact.
+
+        Matching also requires an internal identity derived from the owner,
+        active user participants, or their connected mailboxes. Customer domains
+        are carried only for post-match stakeholder discovery.
+        """
         if not contact_ids:
             return []
         participants_rel = cast(Any, CRMDeal.participants)
@@ -610,6 +664,8 @@ class CommunicationDealAssociationService:
             if deal.owner_id:
                 user_ids.add(deal.owner_id)
             user_ids_by_deal[deal.deal_id] = user_ids
+        # Connected mailbox aliases count as internal participation; relying only on
+        # CRM owner_email would miss mail sent from a user's alternate integration.
         integration_emails_by_user = await get_active_integration_emails_grouped_by_user(
             session=self.session,
             organisation_id=self.organisation_id,
@@ -676,6 +732,11 @@ class CommunicationDealAssociationService:
         contact_ids: set[UUID],
         contact_emails: set[str],
     ) -> bool:
+        """Upsert one active deal-email link and transfer activity-card ownership.
+
+        The unique constraint is the retry boundary. Active conflicts produce no
+        returned row, while removed/cancelled rows are deliberately reactivated.
+        """
         _ = contact_ids
         if not email.internet_message_id:
             return False
@@ -755,6 +816,11 @@ class CommunicationDealAssociationService:
         contact_emails: set[str],
         integration_id: UUID | None,
     ) -> bool:
+        """Upsert one active deal-meeting link and transfer activity-card ownership.
+
+        As with email, the source/deal unique constraint makes Celery replay
+        idempotent and permits only removed or cancelled links to reactivate.
+        """
         _ = contact_ids, contact_emails
         association = CalendarEventDealAssociation(
             organisation_id=self.organisation_id,
@@ -763,6 +829,8 @@ class CommunicationDealAssociationService:
             status=AssociationStatus.ACTIVE,
             match_score=1.0,
         )
+        # The source/deal unique constraint is the retry boundary. Only an insert
+        # or deliberate reactivation may project a deal-owned meeting card.
         insert_stmt = pg_insert(CalendarEventDealAssociation).values(
             association_id=association.association_id,
             organisation_id=association.organisation_id,

@@ -1,25 +1,16 @@
-"""Celery tasks for stakeholder synchronization.
+"""Normalize participant-backed deal stakeholders and schedule targeted hydration.
 
-Task 1a: sync_deal_stakeholders_task - Sync stakeholders for a single deal
-Task 1b: sync_all_deals_stakeholders_org_task - Sync stakeholders for ALL deals in an org
-Task 1c: sync_all_deals_stakeholders_all_orgs_task - Sync stakeholders for ALL orgs (Tier 1)
+These Celery tasks are the worker boundary around ``StakeholderSyncService``.
+The service links existing CRM deal participants to contacts, rejects internal
+people, and normalizes stakeholder state; it does not search email or calendar
+history. When normalization requests replay or the change type can invalidate
+old matches, the per-deal task hands the deal to contact communication
+hydration, which owns history loading, deal association, and
+communication-based stakeholder discovery.
 
-Architecture (Three-Tier System):
----------------------------------
-    Tier 1: sync_all_deals_stakeholders_all_orgs_task (all orgs - coordinator)
-                        │
-                        └─→ Dispatches Tier 2 for each approved org
-
-    Tier 2: sync_all_deals_stakeholders_org_task (org-level)
-                        │
-                        └─→ Claims bounded per-deal stakeholder work
-
-    Tier 3: sync_deal_stakeholders_task (per-deal)
-                        │
-                        └─→ Syncs stakeholders for a single deal
-                        └─→ Replays that deal through communication hydration
-
-For stakeholder analysis tasks, see stakeholder_analysis_tasks.py.
+The all-org coordinator dispatches org-level batch claimers, and each claimer
+dispatches bounded per-deal tasks. This keeps retries scoped to one deal instead
+of repeating an organisation-wide scan.
 """
 
 from __future__ import annotations
@@ -62,7 +53,11 @@ from src.workers.deal_worker.utils.contact_research_dispatch import (
 )
 
 logger = get_logger(__name__)
+# copilotgtm: claim at most 100 deals per org task so dispatch remains bounded;
+# add continuation scheduling only if measured backfill throughput requires it.
 INITIAL_BACKFILL_CLAIM_LIMIT = 100
+# These change types can invalidate communication matches even when normalization
+# produces no row delta, so they must still replay the deal through hydration.
 ALWAYS_REMATCH_CHANGE_TYPES = {
     "INITIAL_BACKFILL",
     "COMMUNICATION_SYNC_REMAP",
@@ -93,7 +88,17 @@ def sync_deal_stakeholders_task(
     job_id: str | None = None,
     emit_events: bool = False,
 ) -> dict[str, Any]:
-    """Task 1: Sync stakeholders for a deal based on CRM participant changes.
+    """Normalize one deal's participant-backed stakeholders, then request replay.
+
+    ``StakeholderSyncService`` owns only normalization. If the approved
+    stakeholder set may have changed, this task dispatches targeted deal
+    hydration; that downstream transaction loads communication history, creates
+    qualifying email/meeting associations, discovers additional stakeholders,
+    and reconciles stale links.
+
+    The task is safe to retry because normalization is idempotent and hydration
+    has its own uniqueness boundaries. A visible job remains open across the
+    queue handoff so hydration, not this producer, emits the terminal event.
 
     Args:
         organisation_id: UUID of the organization (string)
@@ -107,6 +112,8 @@ def sync_deal_stakeholders_task(
     Returns:
         Dict with sync results
     """
+    # Celery acknowledges only after completion. A retry repeats normalization and
+    # may republish hydration, so both sides must retain their idempotency guards.
     if emit_events and not job_id:
         raise ValueError("job_id is required when emit_events=True")
 
@@ -133,6 +140,8 @@ def sync_deal_stakeholders_task(
             DealJobType.STAKEHOLDER_SYNC,
             emit_events=emit_events,
         )
+        # Reject ineligible deals before normalization creates participant state or
+        # dispatches any downstream history work.
         eligibility = await DealMappingEligibilityService(org_uuid).get_deal_eligibility(deal_uuid)
         if not eligibility.is_eligible:
             response: dict[str, Any] = {
@@ -159,12 +168,15 @@ def sync_deal_stakeholders_task(
             0.25,
         )
 
-        # Deal-level: service manages its own fresh session lifecycle.
+        # Normalize only participant-backed stakeholders. Email/calendar searches
+        # happen later in ContactCommunicationHydrationService.
         service = StakeholderSyncService(
             org_uuid,
         )
         result = await service.sync_for_deal(deal_uuid)
 
+        # Research enriches normalized contacts but is not part of the stakeholder
+        # transaction. A publish failure is logged and does not roll back valid links.
         research_task_ids: list[str] = []
         for contact_id in sorted(result.research_contact_ids, key=str):
             try:
@@ -189,6 +201,8 @@ def sync_deal_stakeholders_task(
 
         rematching_triggered = False
 
+        # Some explicit participant changes require replay even if normalization was
+        # already current: removing a participant can make an old association stale.
         should_dispatch_rematching = result.requires_rematching or (
             change_type in ALWAYS_REMATCH_CHANGE_TYPES
         )
@@ -309,14 +323,16 @@ def sync_all_deals_stakeholders_org_task(
     organisation_id: str,
     trigger_deal_matching: bool = True,
 ) -> dict[str, Any]:
-    """Org-level task: Sync stakeholders for ALL deals in an organization.
+    """Claim and dispatch one bounded batch of deal stakeholder normalization.
 
-    This task is triggered after CRM initial sync to ensure all deals have their
-    stakeholders synced. This is required for calendar/email matching to work,
-    as matching depends on the stakeholder lookup tables.
+    CRM initial sync and recovery flows use this task to claim pending deal jobs.
+    Each claimed deal gets its own normalization task and, when requested, its
+    own targeted hydration replay. This task never scans communications or runs
+    one organisation-wide matcher.
 
-    After syncing all stakeholders, this task triggers calendar and email matching
-    for the entire org.
+    Claim state prevents concurrent org tasks from dispatching the same unit of
+    work. If publication fails, the claim is marked failed so recovery can pick
+    it up rather than leaving it silently reserved.
 
     Args:
         organisation_id: UUID of the organization (string)
@@ -326,6 +342,8 @@ def sync_all_deals_stakeholders_org_task(
     Returns:
         Dict with org-level sync results
     """
+    # Retrying this coordinator is safe because the claim service, not in-memory
+    # iteration state, decides which per-deal jobs remain dispatchable.
     started_at = datetime.now(UTC).isoformat()
 
     logger.info(
@@ -340,6 +358,8 @@ def sync_all_deals_stakeholders_org_task(
     async def _run() -> dict[str, Any]:
         org_uuid = UUID(organisation_id)
 
+        # Claim before publishing so overlapping org-level workers cannot fan out
+        # duplicate initial-backfill work for the same deal.
         service = DealMappingBackfillClaimService(org_uuid)
         result = await service.claim_stakeholder_backfill_batch(limit=INITIAL_BACKFILL_CLAIM_LIMIT)
         deal_tasks: list[dict[str, Any]] = []
@@ -364,6 +384,8 @@ def sync_all_deals_stakeholders_org_task(
                     }
                 )
             except Exception as e:
+                # Return the durable claim to a recoverable failed state when the
+                # broker handoff never happened.
                 await service.mark_dispatch_failed(
                     job_id=UUID(deal_task["job_id"]),
                     error=str(e),
@@ -430,9 +452,9 @@ def sync_all_deals_stakeholders_org_task(
 def sync_all_deals_stakeholders_all_orgs_task() -> dict[str, Any]:
     """Tier 1: Sync stakeholders for ALL deals in ALL approved organizations.
 
-    This is a coordinator task that:
+    This coordinator:
     1. Queries master DB for all approved organizations
-    2. Dispatches Tier 2 tasks (sync_all_deals_stakeholders_org_task) for each org
+    2. Dispatches an org-level bounded claimer for each organization
     3. Returns summary of dispatched tasks
 
     Useful for:
@@ -454,6 +476,8 @@ def sync_all_deals_stakeholders_all_orgs_task() -> dict[str, Any]:
             "org_tasks": [...]
         }
     """
+    # This task owns no stakeholder writes. Re-running it may enqueue another org
+    # claimer, but the downstream durable claim boundary prevents duplicate deal work.
     started_at = datetime.now(UTC).isoformat()
 
     async def _dispatch_all_orgs() -> dict[str, Any]:
@@ -463,7 +487,8 @@ def sync_all_deals_stakeholders_all_orgs_task() -> dict[str, Any]:
             extra={"event": "stakeholder_sync_all_orgs_started"},
         )
 
-        # Query all approved organizations from master DB
+        # Read organisation identities from the master database; tenant schemas
+        # are opened only by the downstream org/per-deal workers.
         org_ids: list[UUID] = []
         async for master_session in acquire_master_async_session():
             stmt = select(col(Organisation.organisation_id)).where(
@@ -500,7 +525,8 @@ def sync_all_deals_stakeholders_all_orgs_task() -> dict[str, Any]:
             },
         )
 
-        # Dispatch Tier 2 task for each organization
+        # Fan out one lightweight claimer per organisation instead of holding a
+        # master session while tenant work runs.
         org_tasks = []
         orgs_triggered = 0
         orgs_skipped = 0

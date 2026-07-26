@@ -468,6 +468,24 @@ def build_deal_insight_pipeline(
     )
 
 
+def _detach_pipeline_result_backends(result) -> None:
+    """Prevent unused producer-side results from unsubscribing through Redis."""
+    pending = [result]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+
+        if hasattr(current, "backend"):
+            current.backend = None
+        parent = getattr(current, "parent", None)
+        if parent is not None:
+            pending.append(parent)
+        pending.extend(getattr(current, "results", None) or ())
+
+
 def dispatch_deal_insight_pipeline(
     organisation_id: str,
     deal_id: str,
@@ -504,7 +522,8 @@ def dispatch_deal_insight_pipeline(
         pipeline = chain(*prefix_signatures, pipeline)
 
     # Headers are already attached to the individual signatures that need them.
-    pipeline.apply_async()
+    result = pipeline.apply_async()
+    _detach_pipeline_result_backends(result)
 
 
 async def dispatch_deal_insight_pipeline_async(
@@ -544,7 +563,8 @@ async def dispatch_deal_insight_pipeline_async(
 
     # Headers are already attached to the individual signatures that need them.
     try:
-        pipeline.apply_async()
+        result = pipeline.apply_async()
+        _detach_pipeline_result_backends(result)
     except Exception as exc:
         # Job rows are committed before broker publish. Mark this undispatched
         # attempt failed so retries do not leave misleading PENDING jobs behind.
