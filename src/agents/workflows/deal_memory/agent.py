@@ -9,8 +9,8 @@ from __future__ import annotations
 from uuid import UUID
 
 from agno.agent import Agent
-from agno.models.azure.openai_chat import AzureOpenAI
 from agno.models.message import Message
+from agno.models.openai.responses import OpenAIResponses
 
 from src.agents.common.token_tracking import TokenUsageData, extract_token_usage
 from src.agents.context import AgentContext
@@ -21,6 +21,7 @@ from src.agents.workflows.deal_memory.prompts import (
     get_expected_output_format,
 )
 from src.infra.config.agent_config import agent_config
+from src.infra.config.configs import openai_config
 from src.infra.utils.logger import get_logger
 from src.service.orgnisation.kai_training_service import with_organisation_context_policy
 
@@ -53,16 +54,21 @@ class DealMemoryAgent:
 
         tools = get_tools_for_agent("DealMemoryAgent", self.context, lambda: None)
         config = agent_config.get_config("deal_memory_agent")
+        endpoint = (openai_config.AZURE_OPENAI_ENDPOINT or "").rstrip("/")
+        api_key = openai_config.AZURE_OPENAI_API_KEY
+        if not endpoint or not api_key:
+            raise RuntimeError("Azure OpenAI Responses API is not configured")
 
         self.agent = Agent(
-            model=AzureOpenAI(
+            model=OpenAIResponses(
                 id=config.model,
-                api_version=config.api_version,
-                reasoning_effort="high",
+                api_key=api_key,
+                base_url=f"{endpoint}/openai/v1/",
+                reasoning_effort="low",
                 retries=config.retries,
                 delay_between_retries=1,
                 exponential_backoff=True,
-                request_params={"parallel_tool_calls": True},
+                parallel_tool_calls=True,
             ),
             description="Deal Memory Agent",
             tools=tools,
@@ -110,9 +116,9 @@ class DealMemoryAgent:
 
         response = await self.agent.arun(message_list)
 
-        self.last_token_usage = extract_token_usage(response, agent_name="DealMemoryAgent")
-
         content = response.content
-        if isinstance(content, str):
-            return content
-        return str(content)
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError("DealMemoryAgent returned no content")
+
+        self.last_token_usage = extract_token_usage(response, agent_name="DealMemoryAgent")
+        return content

@@ -193,7 +193,7 @@ Always listen to both queues; otherwise AI workloads or deterministic jobs will 
 
 | Schedule | Task | Purpose |
 |----------|------|---------|
-| Every 15 minutes at `:03,:18,:33,:48` | `stakeholder.sync_all_deals_stakeholders_all_orgs` | Refresh stakeholder mappings and downstream matching for all approved organisations. |
+| Every 2 hours at `HH:03` | `stakeholder.sync_all_deals_stakeholders_all_orgs` | Refresh stakeholder mappings and downstream matching for all approved organisations. |
 | Manual only; not scheduled | `deal.cleanup_stale_jobs_all_orgs` | Mark stale deal jobs as failed so they do not remain stuck indefinitely. |
 | Nightly at `20:00 UTC` | `deal.trigger_send_unsent_meeting_recordings_all_orgs` | Catch upcoming active Google/Microsoft integration meetings that were missed by event-driven send paths. |
 | Every 3 hours at `HH:10` | `deal_memory.trigger_backfill_all_orgs` | Backfill deal memory for organisations that have source data but no memory state. |
