@@ -26,6 +26,11 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.crm.utils.identity import extract_email_domain, normalize_email
+from src.service.crm.utils.internal_domains import (
+    is_internal_email,
+    normalize_internal_domains,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -98,10 +103,6 @@ class StakeholderSyncService:
         self.organisation_id = organisation_id
         self._org_sync_batch_size = max(1, org_sync_batch_size)
         self._internal_domains: set[str] | None = None
-
-    @staticmethod
-    def _normalize_email(email: str) -> str:
-        return email.strip().lower()
 
     @staticmethod
     def _enum_value(value: Any) -> str | None:
@@ -284,7 +285,7 @@ class StakeholderSyncService:
                 result.skipped += 1
                 continue
 
-            email = self._normalize_email(participant.related_email or "")
+            email = normalize_email(participant.related_email) or ""
             if not email:
                 result.skipped += 1
                 logger.debug("Skipped participant %s - no email", participant.participant_id)
@@ -300,7 +301,7 @@ class StakeholderSyncService:
                 continue
             seen_emails.add(email)
 
-            if self._is_internal_email(email, internal_domains):
+            if is_internal_email(email, internal_domains):
                 if self._enum_value(participant.approval_status) != ApprovalStatus.REJECTED.value:
                     participant.approval_status = ApprovalStatus.REJECTED.value
                     participant.updated_at = datetime.now(UTC)
@@ -424,14 +425,8 @@ class StakeholderSyncService:
             )
             org_result = await master_session.execute(org_stmt)
             domains_raw = org_result.scalar_one_or_none()
-            if domains_raw and isinstance(domains_raw, list):
-                for domain in domains_raw:
-                    if not domain or not domain.strip():
-                        continue
-                    normalized = domain.strip().lower()
-                    domains.add(normalized)
-                    if normalized.startswith("www."):
-                        domains.add(normalized[4:])
+            if isinstance(domains_raw, list):
+                domains.update(normalize_internal_domains(domains_raw))
 
         if not domains:
             participant_stmt = select(func.distinct(col(CRMDealParticipant.related_email))).where(
@@ -439,17 +434,11 @@ class StakeholderSyncService:
             )
             participant_result = await session.execute(participant_stmt)
             for (email,) in participant_result.all():
-                if email and "@" in email:
-                    domains.add(email.strip().lower().split("@")[-1])
+                if domain := extract_email_domain(email):
+                    domains.add(domain)
 
         self._internal_domains = domains
         return domains
-
-    @staticmethod
-    def _is_internal_email(email: str, internal_domains: set[str]) -> bool:
-        if not email or "@" not in email:
-            return False
-        return email.split("@")[-1].lower() in internal_domains
 
     async def _reject_internal_stakeholders(self, session: AsyncSession, deal_id: UUID) -> int:
         internal_domains = await self._collect_internal_domains(session)
@@ -468,8 +457,8 @@ class StakeholderSyncService:
 
         count = 0
         for participant in participants:
-            email = self._normalize_email(participant.related_email or "")
-            if self._is_internal_email(email, internal_domains):
+            email = normalize_email(participant.related_email)
+            if is_internal_email(email, internal_domains):
                 participant.approval_status = ApprovalStatus.REJECTED.value
                 participant.updated_at = datetime.now(UTC)
                 session.add(participant)
