@@ -54,71 +54,6 @@ class DealAssetFinalizeRequest(BaseModel):
     )
 
 
-class DealAssetLinkCreateRequest(BaseModel):
-    """Add an external link as a deal asset."""
-
-    name: str = Field(
-        ...,
-        min_length=1,
-        max_length=500,
-        description="Display name for the linked asset.",
-    )
-    external_url: str = Field(
-        ...,
-        min_length=1,
-        max_length=2048,
-        description="URL of the external resource.",
-    )
-    external_source: str | None = Field(
-        default=None,
-        max_length=100,
-        description="Source system (e.g. google_drive, sharepoint).",
-    )
-    category: str | None = Field(
-        default=None,
-        max_length=100,
-        description="Asset category (e.g. proposal, contract).",
-    )
-    direction: str = Field(
-        default="internal",
-        pattern=r"^(received|shared|internal)$",
-        description="Direction of the asset: received, shared, or internal.",
-    )
-
-    @field_validator("name")
-    @classmethod
-    def name_not_empty(cls, v: str) -> str:
-        stripped = v.strip()
-        if not stripped:
-            raise ValueError("Name cannot be empty or whitespace-only")
-        return stripped
-
-    @field_validator("external_url")
-    @classmethod
-    def url_not_empty(cls, v: str) -> str:
-        stripped = v.strip()
-        if not stripped:
-            raise ValueError("External URL cannot be empty or whitespace-only")
-        return stripped
-
-
-class DealAssetUpdateRequest(BaseModel):
-    """Partial update for an existing deal asset."""
-
-    name: str | None = Field(default=None, max_length=500)
-    category: str | None = Field(default=None, max_length=100)
-    direction: str | None = Field(
-        default=None,
-        pattern=r"^(received|shared|internal)$",
-    )
-    external_url: str | None = Field(default=None, max_length=2048)
-    external_source: str | None = Field(default=None, max_length=100)
-    link_status: str | None = Field(
-        default=None,
-        pattern=r"^(ok|active|broken|unknown)$",
-    )
-
-
 # ── Response Schemas ─────────────────────────────────────────────────────────
 
 
@@ -141,10 +76,6 @@ class DealAssetItem(BaseModel):
     thumbnail_medium_url: str | None = Field(
         default=None, description="Time-limited SAS URL for medium thumbnail."
     )
-    external_url: str | None
-    external_source: str | None
-    link_status: str | None
-    link_checked_at: datetime | None
     kb_source_id: UUID | None
     source_type: str
     source_context: str | None
@@ -171,3 +102,7 @@ class DealAssetsPage(BaseModel):
 
     items: list[DealAssetItem] = Field(description="List of deal assets.")
     total_count: int = Field(description="Total number of assets for this deal.")
+    next_cursor: str | None = Field(
+        default=None,
+        description="Cursor for the next page, or null when this is the final page.",
+    )

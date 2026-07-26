@@ -1,10 +1,10 @@
-"""Deal Assets API handler - endpoints for managing deal file and link assets."""
+"""Deal Assets API handler for managing files attached to deals."""
 
 from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.crm_record_access import (
@@ -23,11 +23,9 @@ from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.deal_asset_models import (
     DealAssetFinalizeRequest,
     DealAssetItem,
-    DealAssetLinkCreateRequest,
     DealAssetPresignRequest,
     DealAssetPresignResponse,
     DealAssetsPage,
-    DealAssetUpdateRequest,
 )
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.deal_asset_models import DealAsset
@@ -90,10 +88,6 @@ async def _map_asset_to_item(asset: DealAsset, service: DealAssetsService) -> De
         download_url=download_url,
         thumbnail_small_url=thumb_small,
         thumbnail_medium_url=thumb_medium,
-        external_url=asset.external_url,
-        external_source=asset.external_source,
-        link_status=asset.link_status,
-        link_checked_at=asset.link_checked_at,
         kb_source_id=asset.kb_source_id,
         source_type=asset.source_type,
         source_context=asset.source_context,
@@ -147,22 +141,32 @@ async def list_all_assets(
     "/{deal_id}/assets",
     response_model=GenericResponse[DealAssetsPage],
     summary="List deal assets",
-    description="Retrieve all assets (files and links) for a specific deal",
+    description="Retrieve all files for a specific deal",
     dependencies=[Depends(rate_limit_user_read), Depends(require_deal_view)],
 )
 async def list_deal_assets(
     deal_id: UUID,
     response: FastAPIResponse,
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: str | None = Query(default=None),
     service: DealAssetsService = Depends(get_deal_assets_service),
 ) -> GenericResponse[DealAssetsPage]:
-    """List all non-deleted assets for a deal, ordered by newest first."""
+    """List one newest-first cursor page of non-deleted files for a deal."""
     try:
-        assets, total_count = await service.list_assets(deal_id=deal_id)
+        assets, next_cursor, total_count = await service.list_assets(
+            deal_id=deal_id,
+            limit=limit,
+            cursor=cursor,
+        )
         items = [await _map_asset_to_item(asset, service) for asset in assets]
 
         return Response.success_response(
             message="Assets retrieved successfully",
-            data=DealAssetsPage(items=items, total_count=total_count),
+            data=DealAssetsPage(
+                items=items,
+                total_count=total_count,
+                next_cursor=next_cursor,
+            ),
         )
     except DealAssetsServiceError as exc:
         logger.warning("Deal assets access error: %s", exc.message, exc_info=True)
@@ -360,106 +364,6 @@ async def finalize_file_upload(
             exc_info=True,
         )
         await service.session.rollback()
-        return Response.error_response(
-            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
-        )
-
-
-@deal_assets_router.post(
-    "/{deal_id}/assets/links",
-    response_model=GenericResponse[DealAssetItem],
-    status_code=201,
-    summary="Create external link",
-    description="Add an external link as a deal asset",
-    dependencies=[Depends(require_deal_collaborate)],
-)
-async def create_deal_asset_link(
-    deal_id: UUID,
-    request: DealAssetLinkCreateRequest,
-    response: FastAPIResponse,
-    user_ids: UserIDs = Depends(get_current_user),
-    service: DealAssetsService = Depends(get_deal_assets_service),
-    _rl_write: None = Depends(rate_limit_user_write),
-) -> GenericResponse[DealAssetItem]:
-    """Create an external link asset for a deal."""
-    try:
-        asset = await service.create_link(
-            deal_id=deal_id,
-            user_id=user_ids.user_id,
-            name=request.name,
-            external_url=request.external_url,
-            external_source=request.external_source,
-            category=request.category,
-            direction=request.direction,
-        )
-        await service.session.commit()
-
-        item = await _map_asset_to_item(asset, service)
-        return Response.created_response(
-            message="Link asset created successfully",
-            data=item,
-            response=response,
-        )
-    except DealAssetsServiceError as exc:
-        logger.warning("Failed to create link asset: %s", exc.message, exc_info=True)
-        await service.session.rollback()
-        return Response.error_response(
-            message=exc.message, status_code=exc.status_code, response=response
-        )
-    except Exception as exc:
-        logger.error(
-            "Unexpected error creating link asset for deal %s: %s",
-            deal_id,
-            exc,
-            exc_info=True,
-        )
-        await service.session.rollback()
-        return Response.error_response(
-            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
-        )
-
-
-@deal_assets_router.patch(
-    "/{deal_id}/assets/{asset_id}",
-    response_model=GenericResponse[DealAssetItem],
-    summary="Update deal asset",
-    description="Partially update a deal asset's metadata",
-    dependencies=[Depends(require_deal_collaborate)],
-)
-async def update_deal_asset(
-    deal_id: UUID,
-    asset_id: UUID,
-    request: DealAssetUpdateRequest,
-    response: FastAPIResponse,
-    service: DealAssetsService = Depends(get_deal_assets_service),
-    _rl_write: None = Depends(rate_limit_user_write),
-) -> GenericResponse[DealAssetItem]:
-    """Apply partial updates to an asset."""
-    try:
-        asset = await service.update_asset(
-            deal_id=deal_id,
-            asset_id=asset_id,
-            updates=request.model_dump(exclude_unset=True),
-        )
-        await service.session.commit()
-
-        item = await _map_asset_to_item(asset, service)
-        return Response.success_response(message="Asset updated successfully", data=item)
-    except DealAssetsServiceError as exc:
-        await service.session.rollback()
-        logger.warning("Failed to update asset: %s", exc.message, exc_info=True)
-        return Response.error_response(
-            message=exc.message, status_code=exc.status_code, response=response
-        )
-    except Exception as exc:
-        await service.session.rollback()
-        logger.error(
-            "Unexpected error updating asset %s for deal %s: %s",
-            asset_id,
-            deal_id,
-            exc,
-            exc_info=True,
-        )
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )

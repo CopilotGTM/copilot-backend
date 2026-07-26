@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.deal_asset_models import (
     DealAsset,
-    DealAssetLinkStatus,
     DealAssetStatus,
 )
+from src.infra.utils.cursor import decode_cursor, encode_cursor
+from src.service.crm.access.record_access_policy import CRMSystemActor
 from src.service.crm.assets.deal_assets_service import (
     DealAssetsService,
     DealAssetsServiceError,
@@ -69,22 +71,16 @@ class TestPresignFileUpload:
     ):
         """Pending status must be stored before issuing upload URL and metadata."""
         fake_url = "https://storage.blob.core.windows.net/container/blob?sig=abc"
+        service.storage.generate_write_sas = AsyncMock(return_value=fake_url)
 
-        with patch(
-            "src.service.crm.assets.deal_assets_service.AzureOrganisationBlobStorage"
-        ) as mock_blob_cls:
-            mock_blob = AsyncMock()
-            mock_blob.generate_write_sas = AsyncMock(return_value=fake_url)
-            mock_blob_cls.return_value = mock_blob
-
-            asset, url, expires = await service.presign_file_upload(
-                deal_id=deal_id,
-                user_id=user_id,
-                filename="report.pdf",
-                mimetype="application/pdf",
-                size_bytes=1024,
-                name="Q4 Report",
-            )
+        asset, url, expires = await service.presign_file_upload(
+            deal_id=deal_id,
+            user_id=user_id,
+            filename="report.pdf",
+            mimetype="application/pdf",
+            size_bytes=1024,
+            name="Q4 Report",
+        )
 
         assert asset.status == DealAssetStatus.PENDING_UPLOAD.value
         assert asset.filename == "report.pdf"
@@ -92,26 +88,21 @@ class TestPresignFileUpload:
         assert url == fake_url
         assert expires == 15 * 60
         mock_session.add.assert_called_once_with(asset)
-        mock_blob.generate_write_sas.assert_awaited_once_with(asset.storage_path, minutes=15)
+        service.storage.generate_write_sas.assert_awaited_once_with(asset.storage_path, minutes=15)
 
     @pytest.mark.asyncio
     async def test_defaults_name_to_filename(self, service, deal_id, user_id):
         """A blank user-provided name should fall back to the uploaded filename."""
-        with patch(
-            "src.service.crm.assets.deal_assets_service.AzureOrganisationBlobStorage"
-        ) as mock_blob_cls:
-            mock_blob = AsyncMock()
-            mock_blob.generate_write_sas = AsyncMock(return_value="https://example.com")
-            mock_blob_cls.return_value = mock_blob
+        service.storage.generate_write_sas = AsyncMock(return_value="https://example.com")
 
-            asset, _, _ = await service.presign_file_upload(
-                deal_id=deal_id,
-                user_id=user_id,
-                filename="deck.pptx",
-                mimetype="application/vnd.ms-powerpoint",
-                size_bytes=2048,
-                name=None,
-            )
+        asset, _, _ = await service.presign_file_upload(
+            deal_id=deal_id,
+            user_id=user_id,
+            filename="deck.pptx",
+            mimetype="application/vnd.ms-powerpoint",
+            size_bytes=2048,
+            name=None,
+        )
 
         assert asset.name == "deck.pptx"
 
@@ -204,28 +195,109 @@ class TestFinalizeFileUpload:
 
 
 # ---------------------------------------------------------------------------
-# TestCreateLink
+# TestListAssets
 # ---------------------------------------------------------------------------
 
 
-class TestCreateLink:
-    """Link asset creation should persist link-specific fields only."""
+class TestListAssets:
+    """Deal asset reads expose blob-backed files only."""
 
     @pytest.mark.asyncio
-    async def test_creates_active_link_asset(self, service, deal_id, user_id, mock_session):
-        """Creating a link asset must immediately mark it active and keep no storage path."""
-        asset = await service.create_link(
-            deal_id=deal_id,
-            user_id=user_id,
-            name="Google Doc",
-            external_url="https://docs.google.com/document/d/abc",
+    async def test_filters_out_rows_without_storage_paths(self, service, deal_id, mock_session):
+        """Historical external-link rows stay stored but are absent from API reads."""
+        count_result = MagicMock()
+        count_result.scalar.return_value = 0
+        assets_result = MagicMock()
+        assets_result.scalars.return_value.all.return_value = []
+        mock_session.execute.side_effect = [count_result, assets_result]
+
+        await service.list_assets(deal_id, limit=50, cursor=None)
+
+        for call in mock_session.execute.await_args_list:
+            compiled = str(call.args[0].compile(compile_kwargs={"literal_binds": True}))
+            assert "deal_assets.storage_path IS NOT NULL" in compiled
+
+    @pytest.mark.asyncio
+    async def test_returns_a_stable_cursor_page(self, service, deal_id, mock_session):
+        """Cursor pages use created_at plus asset_id as a deterministic tie-breaker."""
+        created_at = datetime.now(UTC)
+        assets = [
+            DealAsset(
+                asset_id=uuid4(),
+                organisation_id=service.organisation_id,
+                deal_id=deal_id,
+                added_by_user_id=uuid4(),
+                name=f"file-{index}.pdf",
+                storage_path=f"deal_assets/file-{index}.pdf",
+                created_at=created_at,
+            )
+            for index in range(2)
+        ]
+        count_result = MagicMock()
+        count_result.scalar.return_value = 2
+        assets_result = MagicMock()
+        assets_result.scalars.return_value.all.return_value = assets
+        mock_session.execute.side_effect = [count_result, assets_result]
+
+        items, next_cursor, total = await service.list_assets(
+            deal_id,
+            limit=1,
+            cursor=None,
         )
 
-        assert asset.status == DealAssetStatus.ACTIVE.value
-        assert asset.external_url == "https://docs.google.com/document/d/abc"
-        assert asset.storage_path is None
-        assert asset.link_status == DealAssetLinkStatus.UNKNOWN.value
-        mock_session.add.assert_called_once_with(asset)
+        assert items == [assets[0]]
+        assert total == 2
+        assert next_cursor is not None
+        assert decode_cursor(next_cursor) == (created_at, assets[0].asset_id)
+        statement = mock_session.execute.await_args_list[1].args[0]
+        compiled = str(statement.compile(compile_kwargs={"literal_binds": True}))
+        assert "ORDER BY deal_assets.created_at DESC, deal_assets.asset_id DESC" in compiled
+        assert "LIMIT 2" in compiled
+
+    @pytest.mark.asyncio
+    async def test_rejects_an_invalid_cursor(self, service, deal_id):
+        """Malformed cursors become a client error instead of an internal error."""
+        with pytest.raises(DealAssetsServiceError) as exc_info:
+            await service.list_assets(deal_id, limit=50, cursor="not-a-cursor")
+
+        assert exc_info.value.status_code == 400
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "cursor",
+        [
+            "",
+            encode_cursor(datetime(2026, 1, 1), uuid4()),
+        ],
+    )
+    async def test_rejects_empty_or_timezone_naive_cursors(self, service, deal_id, cursor):
+        """Supplied cursors must contain a non-empty, timezone-aware position."""
+        with pytest.raises(DealAssetsServiceError) as exc_info:
+            await service.list_assets(deal_id, limit=50, cursor=cursor)
+
+        assert exc_info.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_org_wide_listing_filters_out_rows_without_storage_paths(
+        self, service, mock_session
+    ):
+        """The organisation-wide asset API follows the same file-only contract."""
+        service = DealAssetsService(
+            mock_session,
+            service.organisation_id,
+            CRMSystemActor(source="test"),
+        )
+        count_result = MagicMock()
+        count_result.scalar.return_value = 0
+        assets_result = MagicMock()
+        assets_result.scalars.return_value.all.return_value = []
+        mock_session.execute.side_effect = [count_result, assets_result]
+
+        await service.list_all_assets()
+
+        for call in mock_session.execute.await_args_list:
+            compiled = str(call.args[0].compile(compile_kwargs={"literal_binds": True}))
+            assert "deal_assets.storage_path IS NOT NULL" in compiled
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +319,20 @@ class TestGetAsset:
             await service.get_asset(deal_id, uuid4())
 
         assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_lookup_requires_a_storage_path(self, service, deal_id, mock_session):
+        """Direct reads cannot expose historical external-link rows."""
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_session.execute.return_value = mock_result
+
+        with pytest.raises(DealAssetsServiceError):
+            await service.get_asset(deal_id, uuid4())
+
+        statement = mock_session.execute.await_args.args[0]
+        compiled = str(statement.compile(compile_kwargs={"literal_binds": True}))
+        assert "deal_assets.storage_path IS NOT NULL" in compiled
 
 
 # ---------------------------------------------------------------------------
@@ -285,19 +371,19 @@ class TestGenerateDownloadUrl:
     """Download URL assertions for temporary links and content-disposition handling."""
 
     @pytest.mark.asyncio
-    async def test_generates_download_url_with_attachment_disposition_filename(
-        self, service, deal_id
-    ):
-        """Download URL should carry sanitized filename metadata for browser safety."""
+    async def test_reuses_one_storage_client_for_all_urls(self, mock_session, org_id, deal_id):
+        """A request reuses and closes one storage client for files and thumbnails."""
         asset = DealAsset(
             asset_id=uuid4(),
-            organisation_id=service.organisation_id,
+            organisation_id=org_id,
             deal_id=deal_id,
             added_by_user_id=uuid4(),
             name="unsafe.html",
             filename='unsafe"\r\n.html',
             status=DealAssetStatus.ACTIVE.value,
             storage_path="deal_assets/test/unsafe.html",
+            thumbnail_small_path="deal_assets/test/thumb-small.jpg",
+            thumbnail_medium_path="deal_assets/test/thumb-medium.jpg",
         )
 
         with patch(
@@ -306,12 +392,18 @@ class TestGenerateDownloadUrl:
             mock_blob = AsyncMock()
             mock_blob.generate_read_sas = AsyncMock(return_value="https://example.com/download")
             mock_blob_cls.return_value = mock_blob
+            service = DealAssetsService(mock_session, org_id)
 
             url = await service.generate_download_url(asset)
+            await service.generate_thumbnail_urls(asset)
+            await service.close()
 
         assert url == "https://example.com/download"
-        mock_blob.generate_read_sas.assert_awaited_once_with(
+        mock_blob_cls.assert_called_once_with(org_id)
+        mock_blob.generate_read_sas.assert_any_await(
             asset.storage_path,
             minutes=30,
             download_filename=asset.filename,
         )
+        assert mock_blob.generate_read_sas.await_count == 3
+        mock_blob.close.assert_awaited_once()

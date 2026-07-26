@@ -50,10 +50,6 @@ def _make_fake_asset(
     asset.filename = overrides.get("filename", "proposal.pdf")
     asset.mimetype = overrides.get("mimetype", "application/pdf")
     asset.size_bytes = overrides.get("size_bytes", 12345)
-    asset.external_url = overrides.get("external_url")
-    asset.external_source = overrides.get("external_source")
-    asset.link_status = overrides.get("link_status")
-    asset.link_checked_at = overrides.get("link_checked_at")
     asset.kb_source_id = overrides.get("kb_source_id")
     asset.source_type = overrides.get("source_type", "manual_upload")
     asset.source_context = overrides.get("source_context")
@@ -131,20 +127,33 @@ _PREFIX = "/users/crm/deals"
 
 
 def test_list_deal_assets(client: TestClient, assets_dependency_overrides):
-    """GET /{deal_id}/assets returns 200 with items list."""
+    """GET /{deal_id}/assets returns one cursor page of file assets."""
     svc = assets_dependency_overrides
     fake_asset = _make_fake_asset()
-    svc.list_assets.return_value = ([fake_asset], 1)
+    svc.list_assets.return_value = ([fake_asset], "next-token", 2)
 
-    resp = client.get(f"{_PREFIX}/{_DEAL_ID}/assets")
+    resp = client.get(
+        f"{_PREFIX}/{_DEAL_ID}/assets",
+        params={"limit": 1, "cursor": "current-token"},
+    )
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["status"] == "SUCCESS"
     data = body["data"]
-    assert data["total_count"] == 1
+    assert data["total_count"] == 2
+    assert data["next_cursor"] == "next-token"
     assert len(data["items"]) == 1
     assert data["items"][0]["asset_id"] == str(fake_asset.asset_id)
+    assert "external_url" not in data["items"][0]
+    assert "external_source" not in data["items"][0]
+    assert "link_status" not in data["items"][0]
+    assert "link_checked_at" not in data["items"][0]
+    svc.list_assets.assert_awaited_once_with(
+        deal_id=_DEAL_ID,
+        limit=1,
+        cursor="current-token",
+    )
 
 
 def test_get_deal_asset(client: TestClient, assets_dependency_overrides):
@@ -243,46 +252,24 @@ def test_finalize_upload_reports_queue_failure(client: TestClient, assets_depend
     svc.session.commit.assert_awaited_once()
 
 
-def test_create_link(client: TestClient, assets_dependency_overrides):
-    """POST /{deal_id}/assets/links returns 201."""
-    svc = assets_dependency_overrides
-    fake_asset = _make_fake_asset(
-        external_url="https://docs.google.com/spreadsheet/123",
-        external_source="google_drive",
-        filename=None,
-        mimetype=None,
-        size_bytes=None,
-        storage_path=None,
+def test_external_link_creation_route_is_removed(client: TestClient, assets_dependency_overrides):
+    """The deal-assets API no longer accepts external links."""
+    response = client.post(
+        f"{_PREFIX}/{_DEAL_ID}/assets/links",
+        json={"name": "Budget", "external_url": "https://example.com/budget"},
     )
-    svc.create_link.return_value = fake_asset
 
-    payload = {
-        "name": "Budget Spreadsheet",
-        "external_url": "https://docs.google.com/spreadsheet/123",
-        "external_source": "google_drive",
-    }
-    resp = client.post(f"{_PREFIX}/{_DEAL_ID}/assets/links", json=payload)
-
-    assert resp.status_code == 201, resp.text
-    body = resp.json()
-    assert body["status"] == "SUCCESS"
-    assert body["data"]["external_url"] == "https://docs.google.com/spreadsheet/123"
+    assert response.status_code == 405
 
 
-def test_update_asset(client: TestClient, assets_dependency_overrides):
-    """PATCH /{deal_id}/assets/{asset_id} returns 200."""
-    svc = assets_dependency_overrides
-    fake_asset = _make_fake_asset(name="Updated Name", category="contract")
-    svc.update_asset.return_value = fake_asset
+def test_asset_update_route_is_removed(client: TestClient, assets_dependency_overrides):
+    """The generic asset PATCH surface is not part of the file-only API."""
+    response = client.patch(
+        f"{_PREFIX}/{_DEAL_ID}/assets/{_ASSET_ID}",
+        json={"name": "Updated Name"},
+    )
 
-    payload = {"name": "Updated Name", "category": "contract"}
-    resp = client.patch(f"{_PREFIX}/{_DEAL_ID}/assets/{_ASSET_ID}", json=payload)
-
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["status"] == "SUCCESS"
-    assert body["data"]["name"] == "Updated Name"
-    assert body["data"]["category"] == "contract"
+    assert response.status_code == 405
 
 
 def test_delete_asset(client: TestClient, assets_dependency_overrides):
