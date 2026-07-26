@@ -1,7 +1,9 @@
-"""Deal-job event publisher for progress and results.
+"""Publish transient deal-job progress frames for the SSE read path.
 
-This module provides a publisher for streaming job progress and results
-to clients via Redis Streams, consumed by SSE endpoints.
+Celery workers and agent workflows use ``DealJobRedisPublisher`` alongside the
+durable ``DealJobs`` row. Redis Streams provide live progress and short replay
+windows; the database remains the source of truth for terminal status and
+result recovery when a stream frame is missing.
 """
 
 from __future__ import annotations
@@ -15,7 +17,8 @@ from src.infra.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Frame type constants (matching chat system conventions)
+# These wire values are shared with the frontend/chat streaming conventions.
+# Changing them is a client contract change, not an internal refactor.
 FRAME_TYPE_PROGRESS = "progress.update"
 FRAME_TYPE_ANSWER_REPLACE = "answer.replace"
 FRAME_TYPE_ERROR = "error"
@@ -28,13 +31,21 @@ FRAME_TYPE_SUMMARY_TICK = "import.summary.tick"
 
 
 class DealJobRedisPublisher:
-    """Publish JSON frames to a Redis Stream for any deal job.
+    """Celery tasks append live frames through this tenant/job-scoped stream writer.
 
-    This publisher is used by Celery tasks to stream progress updates
-    and results back to clients via SSE.
+    Publishers never own durable job state. Most append failures are logged and
+    returned as ``None`` by ``xadd_json_frame``, but initial Redis client creation
+    can still raise to the worker. SSE reconnect uses Redis entry IDs for live
+    replay and the ``DealJobs`` row for terminal recovery.
     """
 
     def __init__(self, organisation_id: UUID, job_id: UUID, job_type: str, maxlen: int = 100):
+        """Bind one stream and its approximate retained-frame limit.
+
+        ``maxlen`` approximately limits retained entries per stream, while the
+        producer also renews the shared stream TTL. It does not cap frame bytes
+        or total Redis memory, so terminal recovery stays database-backed.
+        """
         self._stream_key = channel_for_deal_job(organisation_id, job_id)
         self.organisation_id = organisation_id
         self._job_type = job_type
@@ -43,12 +54,19 @@ class DealJobRedisPublisher:
         self._sequence = 0
 
     def publish(self, frame: dict) -> None:
-        """Publish a frame to the Redis stream."""
+        """Add transport metadata and append one frame.
+
+        The input mapping is mutated in place. ``sequence`` is local to this
+        publisher instance and may restart on worker retry; Redis entry IDs, not
+        this counter, are the SSE resume cursor.
+        """
         frame["sequence"] = self._sequence
         frame["timestamp"] = time.time()
         frame["job_type"] = self._job_type
         frame["job_id"] = self._job_id
         self._sequence += 1
+        # Append-time failures return None and are logged. Initial Redis client
+        # creation occurs before the helper's exception boundary and can still raise.
         if xadd_json_frame(self._stream_key, frame, maxlen=self._maxlen) is None:
             logger.warning(
                 "Failed to publish frame to Redis stream",
@@ -61,7 +79,7 @@ class DealJobRedisPublisher:
             )
 
     def publish_progress(self, message: str, stage: str, progress: float) -> None:
-        """Publish a progress update.
+        """Publish a user-visible stage update without changing durable status.
 
         Args:
             message: Human-readable progress message
@@ -78,7 +96,7 @@ class DealJobRedisPublisher:
         )
 
     def publish_result(self, result_data: dict) -> None:
-        """Publish the final result.
+        """Replace the client's displayed result with the worker payload.
 
         Args:
             result_data: The job result data to send to the client
@@ -93,7 +111,8 @@ class DealJobRedisPublisher:
     def publish_error(self, message: str, error_code: str) -> None:
         """Publish an error message.
 
-        Use this for user-facing errors that explain why the job failed.
+        Callers should persist failure state as the recovery source; this frame
+        is only the live notification and may be absent on reconnect.
 
         Args:
             message: Human-readable error message
@@ -108,7 +127,7 @@ class DealJobRedisPublisher:
         )
 
     def publish_finalize(self, reason: str = "done") -> None:
-        """Publish completion signal.
+        """Tell a live SSE consumer to close after the terminal frames.
 
         Args:
             reason: Completion reason ('done' or 'error')
@@ -121,7 +140,7 @@ class DealJobRedisPublisher:
         )
 
     def publish_deal_started(self, deal_index: int, row_number: int, deal_name: str | None) -> None:
-        """Publish the start of processing for one deal row."""
+        """Open progress reporting for one row in a multi-deal import."""
         self.publish(
             {
                 "type": FRAME_TYPE_DEAL_STARTED,
@@ -139,7 +158,7 @@ class DealJobRedisPublisher:
         message: str,
         deal_name: str | None = None,
     ) -> None:
-        """Publish step-by-step progress for one deal row."""
+        """Report the current import step without implying row completion."""
         self.publish(
             {
                 "type": FRAME_TYPE_DEAL_PROGRESS,
@@ -160,7 +179,7 @@ class DealJobRedisPublisher:
         deal_name: str | None,
         warnings: list[dict] | None = None,
     ) -> None:
-        """Publish successful completion for one deal row.
+        """Report a terminal non-error outcome for one import row.
 
         outcome: created | updated | skipped
         """
@@ -184,7 +203,7 @@ class DealJobRedisPublisher:
         error_code: str,
         message: str,
     ) -> None:
-        """Publish failed processing for one deal row."""
+        """Report a terminal error for one row while the import continues."""
         self.publish(
             {
                 "type": FRAME_TYPE_DEAL_FAILED,
@@ -207,7 +226,7 @@ class DealJobRedisPublisher:
         failed: int,
         warnings: int,
     ) -> None:
-        """Publish running import totals for lightweight live dashboards."""
+        """Publish aggregate import totals without replaying every row payload."""
         self.publish(
             {
                 "type": FRAME_TYPE_SUMMARY_TICK,

@@ -1,9 +1,14 @@
-"""Service for managing deal-level jobs (deal summary, stakeholder analysis, etc.).
+"""Persist, publish, and recover user-visible deal-level jobs.
 
-This service handles deal-level async operations that are NOT tied to a specific meeting/event.
-For meeting-level jobs (briefing, meeting summary, followup), use DealMeetingJobService.
+Deal and stakeholder API/tool entry points use this service for work not owned
+by one meeting event. ``DealMeetingJobService`` handles event-scoped job
+requests; both services share ``DealJobs`` for durable status and SSE reconnection.
 
-Both services share the same DealJobs table for job storage and tracking.
+Stakeholder and communication-hydration jobs commit their visible row before
+queue publication so fast workers can always load it. Their enqueue metadata
+records whether the broker handoff was confirmed. Stakeholder reads may
+republish an unconfirmed group, so recovery is intentionally at-least-once and
+depends on downstream idempotency.
 """
 
 from __future__ import annotations
@@ -26,24 +31,27 @@ from src.workers.deal_worker.utils.contact_communication_hydration_dispatch impo
 
 logger = get_logger(__name__)
 
-# Task name for deal summary processing (dedicated task for deal-level jobs)
+# Celery registration used for all generic deal-level analysis jobs.
 DEAL_SUMMARY_TASK_NAME = "deal_summary_task.process"
 
-# Active jobs are the only jobs clients should reconnect to.
+# Terminal jobs are replayed by the SSE service, not advertised as reconnectable work.
 ACTIVE_JOB_STATUSES = {JobStatus.PENDING, JobStatus.IN_PROGRESS}
 
-# Deterministic post-stakeholder-create operations surfaced as deal-level activity.
+# Eligible stakeholder mutations surface one visible job whose normal replay path
+# continues into targeted hydration before terminal state.
 STAKEHOLDER_PROCESSING_JOB_TYPES = {
     DealJobType.STAKEHOLDER_SYNC,
 }
 
+# Recovery preserves this order when the visible operation grows beyond one task.
 STAKEHOLDER_PROCESSING_ORDER = (DealJobType.STAKEHOLDER_SYNC,)
 
+# Each visible job type must map to the exact registered Celery task name.
 STAKEHOLDER_PROCESSING_TASK_NAMES = {
     DealJobType.STAKEHOLDER_SYNC: "stakeholder.sync_deal_stakeholders",
 }
 
-# Deal-level job types (not tied to a specific event)
+# These types are allowed through ``create_job`` and always persist with event_id=None.
 DEAL_LEVEL_JOB_TYPES = {
     DealJobType.DEAL_SUMMARY,
     DealJobType.DEAL_RISK_ANALYSIS,
@@ -53,10 +61,12 @@ DEAL_LEVEL_JOB_TYPES = {
 
 
 def _enum_value(value) -> str:
+    """Serialize SQLModel enum fields whether loaded as enums or raw strings."""
     return value.value if hasattr(value, "value") else str(value)
 
 
 def _job_response(job: DealJobs) -> dict:
+    """Return the stable subset embedded in active-job API responses."""
     return {
         "job_id": job.job_id,
         "job_type": _enum_value(job.job_type),
@@ -65,11 +75,13 @@ def _job_response(job: DealJobs) -> dict:
 
 
 def _metadata(job: DealJobs) -> dict:
+    """Treat legacy or malformed non-dict metadata as empty recovery state."""
     value = job.job_metadata
     return value if isinstance(value, dict) else {}
 
 
 def _is_unenqueued_stakeholder_group_job(job: DealJobs) -> bool:
+    """Identify visible stakeholder work whose broker handoff is unconfirmed."""
     metadata = _metadata(job)
     return (
         job.job_type in STAKEHOLDER_PROCESSING_JOB_TYPES
@@ -80,6 +92,7 @@ def _is_unenqueued_stakeholder_group_job(job: DealJobs) -> bool:
 
 
 def _stakeholder_task_kwargs(job: DealJobs) -> dict:
+    """Rebuild the deterministic task payload stored indirectly by a job row."""
     if not job.deal_id:
         raise ValueError("Stakeholder processing job is missing deal_id")
 
@@ -99,7 +112,7 @@ def _stakeholder_task_kwargs(job: DealJobs) -> dict:
 
 
 class DealJobServiceError(Exception):
-    """Custom exception for deal job service errors."""
+    """Carry an HTTP-safe message and status from the service to API callers."""
 
     def __init__(self, message: str, status_code: int = 500):
         self.message = message
@@ -108,23 +121,23 @@ class DealJobServiceError(Exception):
 
 
 class DealJobService:
-    """
-    Service for creating and managing deal-level jobs.
+    """Create and query non-event jobs in one organisation.
 
     Deal-level jobs are operations on the entire deal, not tied to a specific meeting.
-    Examples: Deal Summary, Stakeholder Analysis, Deal Risk Analysis.
-
-    Uses the same DealJobs table but with event_id=None.
+    New rows belong to ``user_id`` for SSE authorization. Deal/contact lookups
+    retain the organisation boundary; user-private contact research additionally
+    filters by the requesting user.
     """
 
     def __init__(self, session: AsyncSession, organisation_id: UUID, user_id: UUID):
+        """Bind the tenant write session and owner of newly created visible jobs."""
         self.session = session
         self.organisation_id = organisation_id
         self.user_id = user_id
 
     async def close(self) -> None:
-        """Clean up resources (placeholder for future async cleanup)."""
-        # Session lifecycle is managed by the caller/dependency
+        """Leave cleanup to the FastAPI dependency that owns the shared session."""
+        # This service does not allocate a second connection or external client.
         pass
 
     async def create_stakeholder_processing_jobs(
@@ -134,7 +147,16 @@ class DealJobService:
         *,
         participant_ids: list[UUID] | None = None,
     ) -> list[DealJobs]:
-        """Create one user-requested job spanning stakeholder sync and hydration."""
+        """Create and publish one visible stakeholder-normalization operation.
+
+        On eligible rematching paths the stakeholder worker continues into
+        targeted hydration; otherwise it owns terminal SSE state itself. The job
+        row commits before publication so the worker can load it.
+        ``enqueue_status`` makes that non-atomic boundary observable. Recovery
+        may republish work that reached Celery but crashed before its confirmation
+        commit, so the worker must remain idempotent.
+        """
+        # Preserve caller order while removing duplicate participant IDs from metadata.
         affected_participant_ids = list(
             dict.fromkeys(participant_ids or ([stakeholder_id] if stakeholder_id else []))
         )
@@ -169,6 +191,7 @@ class DealJobService:
         await self.session.flush()
         await self.session.refresh(job)
         # Commit before publishing so a fast worker can always load the job it reports.
+        # Until the later "enqueued" commit, recovery treats publication as unconfirmed.
         await self.session.commit()
 
         try:
@@ -182,11 +205,14 @@ class DealJobService:
                 queue="deal",
             )
         except Exception:
+            # Persist the unconfirmed handoff rather than leaving an unexplained PENDING
+            # row. Broker timeouts can be ambiguous, so recovery remains at-least-once.
             job.error_message = "Failed to enqueue stakeholder processing chain"
             job.job_metadata = {**_metadata(job), "enqueue_status": "failed"}
             await self.session.commit()
             raise
 
+        # Confirm publication only after the broker returns its chain ID.
         job.job_metadata = {
             **_metadata(job),
             "enqueue_status": "enqueued",
@@ -201,7 +227,12 @@ class DealJobService:
         *,
         trigger: str = "deal_created",
     ) -> DealJobs:
-        """Create a user-visible job for direct deal-scoped communication hydration."""
+        """Create a visible job for direct deal-scoped communication hydration.
+
+        The row commits before dispatch for worker visibility. Unlike deterministic
+        stakeholder recovery, a dispatch exception marks this job terminally failed
+        so clients do not reconnect to work that was never published.
+        """
         job = DealJobs(
             organisation_id=self.organisation_id,
             user_id=self.user_id,
@@ -214,6 +245,7 @@ class DealJobService:
         self.session.add(job)
         await self.session.flush()
         await self.session.refresh(job)
+        # Publish only after the job is durable; hydration may start immediately.
         await self.session.commit()
 
         try:
@@ -226,12 +258,15 @@ class DealJobService:
                 emit_events=True,
             )
         except Exception:
+            # No worker owns this job after a failed handoff, so expose a terminal
+            # failure rather than an indefinitely active row.
             job.status = JobStatus.FAILED
             job.error_message = "Failed to enqueue communication hydration"
             job.job_metadata = {**_metadata(job), "enqueue_status": "failed"}
             await self.session.commit()
             raise
 
+        # Record every chunk/task ID returned by the bounded hydration dispatcher.
         job.job_metadata = {
             **_metadata(job),
             "enqueue_status": "enqueued",
@@ -247,8 +282,12 @@ class DealJobService:
         *,
         metadata: dict | None = None,
     ) -> DealJobs:
-        """
-        Create a new deal-level job and enqueue the task.
+        """Create a generic deal-level analysis job and enqueue its worker.
+
+        This lower-level method does not deduplicate; convenience methods such as
+        ``create_deal_summary_job`` perform active-job reuse first. Queue
+        publication precedes commit so a broker failure can roll back the row.
+        A commit failure after successful publication has no recovery record here.
 
         Args:
             job_type: Type of deal-level job to create
@@ -285,7 +324,8 @@ class DealJobService:
         await self.session.flush()
         await self.session.refresh(job)
 
-        # Enqueue Celery task (use async client to avoid blocking event loop)
+        # Use the async publisher so a broker round trip does not block the API loop.
+        # A publish failure rolls back both the ID and pending job state.
         try:
             await send_deal_task_async(
                 DEAL_SUMMARY_TASK_NAME,
@@ -309,12 +349,10 @@ class DealJobService:
         return job
 
     async def create_deal_summary_job(self, deal_id: UUID) -> DealJobs:
-        """
-        Create a deal summary job.
+        """Return an active summary job or create one for the whole deal.
 
         Analyzes all meeting transcripts for the deal to generate a comprehensive summary.
-
-        Idempotent - returns existing job if one is already running.
+        Reusing active work keeps retries and browser reconnects on one SSE stream.
 
         Args:
             deal_id: The deal to generate a summary for
@@ -345,10 +383,11 @@ class DealJobService:
         deal_id: UUID,
         job_type: DealJobType,
     ) -> DealJobs | None:
-        """
-        Get the currently running deal-level job for a specific type.
+        """Return active deal-level work for idempotency and reconnection.
 
-        Used for idempotency and job recovery when user reconnects.
+        The organisation predicate is the tenant boundary for the caller-supplied
+        deal ID. ``event_id IS NULL`` prevents meeting jobs from satisfying a
+        deal-level lookup.
 
         Args:
             deal_id: The deal to check
@@ -369,7 +408,13 @@ class DealJobService:
         return result.scalars().first()
 
     async def get_active_stakeholder_processing_jobs(self, deal_id: UUID) -> list[dict]:
-        """Return active deterministic stakeholder post-create jobs for a deal."""
+        """Recover and return visible stakeholder work confirmed as enqueued.
+
+        Unconfirmed queue handoffs are republished from deterministic job
+        metadata. They may already have reached Celery, so replay is at-least-once.
+        Incomplete groups stay hidden because this service cannot reconstruct them.
+        """
+        # The organisation predicate is the tenant boundary for the requested deal.
         stmt = (
             select(DealJobs)
             .where(
@@ -383,8 +428,10 @@ class DealJobService:
         )
         result = await self.session.execute(stmt)
         jobs = result.scalars().all()
+        # Recovery may mutate enqueue metadata before the response is filtered.
         jobs = await self._recover_unenqueued_stakeholder_processing_groups(jobs)
 
+        # Never advertise an unconfirmed broker handoff as active user-visible work.
         return [
             _job_response(job)
             for job in jobs
@@ -396,12 +443,15 @@ class DealJobService:
     async def _recover_unenqueued_stakeholder_processing_groups(
         self, jobs: list[DealJobs]
     ) -> list[DealJobs]:
+        """Republish complete deterministic groups whose enqueue is unconfirmed."""
         groups: dict[str, list[DealJobs]] = {}
         for job in jobs:
             if _is_unenqueued_stakeholder_group_job(job):
                 groups.setdefault(str(_metadata(job)["operation_group_id"]), []).append(job)
 
         for operation_group_id, group_jobs in groups.items():
+            # A partial group cannot be replayed safely because missing job rows also
+            # mean missing task IDs and visible terminal-state ownership.
             if len(group_jobs) != len(STAKEHOLDER_PROCESSING_ORDER):
                 logger.warning(
                     "Stakeholder processing group is incomplete; hiding from active jobs org=%s group=%s jobs=%s",
@@ -415,6 +465,7 @@ class DealJobService:
             if any(job_type not in by_type for job_type in STAKEHOLDER_PROCESSING_ORDER):
                 continue
 
+            # Rebuild the chain in its declared order; do not trust database row order.
             ordered_jobs = [by_type[job_type] for job_type in STAKEHOLDER_PROCESSING_ORDER]
             try:
                 celery_chain_id = await send_deal_task_chain_async(
@@ -428,6 +479,8 @@ class DealJobService:
                     queue="deal",
                 )
             except Exception:
+                # Persist the unconfirmed result but keep the group eligible for a
+                # future at-least-once recovery attempt.
                 for job in ordered_jobs:
                     job.error_message = "Failed to enqueue stakeholder processing chain"
                     job.job_metadata = {**_metadata(job), "enqueue_status": "failed"}
@@ -439,6 +492,7 @@ class DealJobService:
                 )
                 continue
 
+            # Mark the handoff confirmed only after Celery returns a chain ID.
             for job in ordered_jobs:
                 job.error_message = None
                 job.job_metadata = {
@@ -461,7 +515,11 @@ class DealJobService:
         self,
         contact_id: UUID,
     ) -> dict | None:
-        """Return the active contact research job for one contact."""
+        """Return this user's newest active research job for one contact.
+
+        Contact identity lives in JSON metadata, so the query first applies
+        organisation and user boundaries, then filters those trusted rows in memory.
+        """
         stmt = (
             select(DealJobs)
             .where(
@@ -486,8 +544,7 @@ class DealJobService:
         return _job_response(job)
 
     async def get_active_deal_jobs_status(self, deal_id: UUID) -> dict | None:
-        """
-        Get active deal-level jobs status for API response.
+        """Build the active-job payload used for deal-page SSE reconnection.
 
         Returns a dict suitable for DealSummaryJobsStatus schema, or None if no active jobs.
         Used by deals_handler to include active job info for SSE reconnection.
@@ -511,7 +568,7 @@ class DealJobService:
 
         response: dict = {}
 
-        # Ensure job_id exists before returning
+        # A persisted job without its generated primary key cannot form a valid SSE URL.
         if active_summary_job and not active_summary_job.job_id:
             logger.warning(
                 "Active deal summary job found but job_id is None for deal %s",
@@ -535,5 +592,5 @@ class DealJobService:
         return response or None
 
     async def get_job(self, job_id: UUID) -> DealJobs | None:
-        """Get a job by ID."""
+        """Load a tenant-local job by primary key; callers enforce user ownership."""
         return await self.session.get(DealJobs, job_id)

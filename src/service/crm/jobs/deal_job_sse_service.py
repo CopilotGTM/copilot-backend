@@ -1,7 +1,13 @@
-"""SSE service for deal job updates using Redis Streams.
+"""Authorize and stream user-visible deal-job events over SSE.
 
-Works with any DealJobType - the job_type is included in each frame.
-Handles job recovery when users reconnect after disconnection.
+Deal and meeting routers validate access through this service before returning
+an ``EventSourceResponse``. Terminal state is replayed from the tenant database;
+pending/in-progress jobs read best-effort frames from a per-job Redis Stream and
+resume with the client's Redis ``Last-Event-ID``.
+
+The database is authoritative because Redis retention is intentionally short.
+A missing progress frame must not prevent a completed, failed, or cancelled job
+from producing a terminal response after reconnect.
 """
 
 from __future__ import annotations
@@ -24,14 +30,16 @@ FRAME_TYPE_FINALIZE = "finalize"
 
 
 class DealJobSSEService:
-    """
-    Generic SSE service for streaming deal job updates.
+    """Stream one user's tenant-local job with database-backed recovery.
 
-    Works with any DealJobType - the job_type is included in each frame.
-    Supports job recovery when user reconnects (resume from where they left off).
+    Router-level authorization should call ``ensure_user_access`` before
+    ``stream_events``; that successful precheck is the Redis security boundary.
+    The stream repeats ownership enforcement before returning database results,
+    but falls back to Redis if the second database read is unavailable.
     """
 
     def __init__(self, organisation_id: UUID, job_id: UUID, user_id: UUID) -> None:
+        """Bind the stream key plus the user identity used for database authorization."""
         self.organisation_id = str(organisation_id)
         self.job_id = str(job_id)
         self.user_id = str(user_id)
@@ -39,11 +47,12 @@ class DealJobSSEService:
         self._streams: AsyncRedisStreams | None = None
 
     async def close(self) -> None:
-        """Close the Redis streams connection."""
+        """Close the lazily opened Redis client without masking request completion."""
         try:
             if self._streams:
                 await self._streams.close()
         except Exception:
+            # Cleanup failure is operational noise; the SSE generator is already ending.
             logger.debug("Redis streams close failed (deal job SSE)", exc_info=True)
 
     async def stream_events(
@@ -53,20 +62,20 @@ class DealJobSSEService:
         timeout_seconds: int = 300,  # 5 min timeout
         heartbeat_interval: float = 25.0,
     ) -> AsyncGenerator[dict, None]:
-        """
-        Yield SSE events for any deal job from Redis Stream.
+        """Yield recovered terminal state or live Redis frames for one job.
 
-        Handles the following edge cases:
-        1. Job already completed - returns cached result immediately
-        2. Job in progress - streams events from Redis
-        3. User reconnects mid-job - resumes from Last-Event-ID when provided
+        Completed/failed/cancelled rows return without opening Redis. Active jobs
+        begin at ``resume_from_id`` or replay the retained stream from ``0-0``.
+        Heartbeats keep intermediaries from closing an otherwise quiet request;
+        timeout ends this HTTP stream but does not cancel the durable job.
 
         Args:
             timeout_seconds: Max time before timing out the stream
             heartbeat_interval: Time between heartbeat pings
         """
 
-        # Check job status first (handles reconnection and authorization scenarios)
+        # Read durable state before Redis so reconnect after stream trimming still
+        # returns terminal output and repeats the user-ownership check.
         job_status, result_data, access_denied = await self._get_job_status()
 
         if access_denied:
@@ -111,6 +120,8 @@ class DealJobSSEService:
             return
 
         if job_status == JobStatus.FAILED:
+            # Failure detail may live in result_data or the durable error_message
+            # normalized by _get_job_status.
             logger.info(
                 "Deal job SSE: job failed org=%s job=%s",
                 self.organisation_id,
@@ -136,6 +147,8 @@ class DealJobSSEService:
             return
 
         if job_status == JobStatus.CANCELLED:
+            # Cancellation is terminal but uses the error event shape expected by
+            # current clients, followed by complete so they close the connection.
             logger.info(
                 "Deal job SSE: job cancelled org=%s job=%s",
                 self.organisation_id,
@@ -155,7 +168,7 @@ class DealJobSSEService:
             yield {"event": "complete", "data": json.dumps({"job_id": self.job_id})}
             return
 
-        # Job is pending or in progress - stream from Redis
+        # Pending/in-progress work needs the transient Redis channel for live frames.
         self._streams = AsyncRedisStreams()
 
         logger.info(
@@ -167,7 +180,7 @@ class DealJobSSEService:
             resume_from_id,
         )
 
-        # Initial ready event
+        # Emit readiness before a blocking Redis read so clients know subscription succeeded.
         yield {"event": "ready", "data": json.dumps({"job_id": self.job_id})}
 
         try:
@@ -175,10 +188,12 @@ class DealJobSSEService:
             start_time = loop.time()
             last_heartbeat = start_time
             next_id = resume_from_id or "0-0"
+            # Wake twice per heartbeat interval even without frames, leaving enough
+            # time to send a ping before common proxy idle timeouts.
             block_ms = int((heartbeat_interval / 2) * 1000)
 
             while True:
-                # Check timeout
+                # Timeout governs only this HTTP connection; the worker keeps running.
                 now = loop.time()
                 if timeout_seconds and (now - start_time) > timeout_seconds:
                     yield {
@@ -192,7 +207,7 @@ class DealJobSSEService:
                     }
                     return
 
-                # Send heartbeat if needed
+                # Heartbeats are SSE liveness signals and are not stored in Redis.
                 if (now - last_heartbeat) >= heartbeat_interval:
                     last_heartbeat = now
                     yield {"event": "ping", "data": json.dumps({"t": int(now)})}
@@ -201,17 +216,21 @@ class DealJobSSEService:
                     self.stream_key,
                     next_id,
                     block_ms=block_ms,
+                    # Bound each response batch so one noisy stream cannot monopolize
+                    # the event loop before pending heartbeats/timeouts are rechecked.
                     count=50,
                 )
                 if not entries:
                     continue
 
                 for entry_id, frame in entries:
+                    # Advance after every delivered Redis entry so Last-Event-ID resumes
+                    # strictly after the last frame observed by this generator.
                     next_id = entry_id
-                    # Send frame event (includes job_type from the worker)
+                    # Worker frames already include job type and publisher metadata.
                     yield {"id": entry_id, "event": "frame", "data": json.dumps(frame)}
 
-                    # Check for completion
+                    # Finalize is the live-stream terminal marker; durable recovery uses DB status.
                     if frame.get("type") == "finalize":
                         yield {
                             "event": "complete",
@@ -220,7 +239,8 @@ class DealJobSSEService:
                         return
 
         except asyncio.CancelledError:
-            # Client disconnected - this is expected, log at debug level
+            # Client disconnect is normal control flow and must propagate so Starlette
+            # can cancel the response promptly.
             logger.debug(
                 "Deal job SSE client disconnected org=%s job=%s",
                 self.organisation_id,
@@ -228,6 +248,8 @@ class DealJobSSEService:
             )
             raise
         except Exception as e:
+            # A transient Redis/read failure invites client reconnect; durable job
+            # status remains unchanged and will be checked again on the next request.
             logger.error("Deal job SSE stream error: %s", e, exc_info=True)
             yield {
                 "event": "error",
@@ -245,7 +267,8 @@ class DealJobSSEService:
         """Check whether the current user can access this job.
 
         If a route is deal-scoped, pass the requested deal_id so a valid user
-        cannot subscribe to one of their jobs through another deal URL.
+        cannot subscribe to one of their jobs through another deal URL. The
+        organisation-specific session is the tenant boundary for the job UUID.
 
         Returns:
             True: Job exists and belongs to the current user and requested deal.
@@ -261,11 +284,18 @@ class DealJobSSEService:
                     return False
                 return deal_id is None or job.deal_id == deal_id
         except Exception:
+            # ``None`` deliberately makes routers fail closed as not found when the
+            # ownership check is unavailable.
             logger.debug("Failed to validate deal job access", exc_info=True)
         return None
 
     async def _get_job_status(self) -> tuple[JobStatus | None, dict | None, bool]:
-        """Get current job status and result from database."""
+        """Load durable status/result and repeat user ownership enforcement.
+
+        Database errors degrade to unknown state so a route-authorized stream can
+        still attempt Redis. This method never returns another user's database
+        result, but Redis fallback relies on the router's earlier access check.
+        """
         try:
             async for session in acquire_org_async_session(UUID(self.organisation_id)):
                 job = await session.get(DealJobs, UUID(self.job_id))
@@ -274,10 +304,13 @@ class DealJobSSEService:
                 if str(job.user_id) != self.user_id:
                     return None, None, True
                 result_data = job.result_data
+                # Workers persist the human-readable failure separately from normal
+                # result payloads; normalize it for the terminal SSE branch.
                 if job.status == JobStatus.FAILED and job.error_message:
                     result_data = {"error": job.error_message}
                 return job.status, result_data, False
             return None, None, False
         except Exception:
+            # Live progress may remain available during a transient DB read failure.
             logger.debug("Failed to check job status", exc_info=True)
             return None, None, False

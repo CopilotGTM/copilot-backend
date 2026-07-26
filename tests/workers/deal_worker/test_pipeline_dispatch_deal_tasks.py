@@ -65,6 +65,45 @@ class _FakeAsyncSession(_FakeSession):
         self.committed = True
 
 
+def test_dispatch_does_not_run_redis_result_cleanup(monkeypatch) -> None:
+    """Fire-and-forget dispatch must not unsubscribe unused results from Redis."""
+    cleanup_calls = []
+
+    class ResultBackend:
+        def remove_pending_result(self, result) -> None:
+            cleanup_calls.append(result)
+
+    class PublishedResult:
+        def __init__(self, *, parent=None, results=None) -> None:
+            self.backend = ResultBackend()
+            self.parent = parent
+            self.results = results or []
+
+        def __del__(self) -> None:
+            if self.backend is not None:
+                self.backend.remove_pending_result(self)
+
+    class Pipeline:
+        def apply_async(self):
+            parent = PublishedResult()
+            child = PublishedResult()
+            return PublishedResult(parent=parent, results=[child])
+
+    monkeypatch.setattr(
+        pipeline_dispatch,
+        "build_deal_insight_pipeline",
+        lambda *_args, **_kwargs: Pipeline(),
+    )
+
+    pipeline_dispatch.dispatch_deal_insight_pipeline(
+        str(uuid4()),
+        str(uuid4()),
+        str(uuid4()),
+    )
+
+    assert cleanup_calls == []
+
+
 @pytest.mark.asyncio
 async def test_create_pipeline_jobs_async_commits_exact_meeting_task_job(monkeypatch) -> None:
     """Recall's async path must persist source-bound jobs before Celery receives IDs."""
