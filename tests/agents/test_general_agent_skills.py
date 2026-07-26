@@ -7,20 +7,28 @@ from agno.skills import Skills
 from src.agents.context import AgentContext
 
 
-def test_general_agent_has_skills() -> None:
-    """GeneralAgent must configure Agno with skills and low reasoning."""
+def test_general_agent_uses_azure_responses_with_skills() -> None:
+    """Tool-enabled Terra reasoning must use Azure's Responses endpoint."""
     context = AgentContext(organisation_id=uuid4())
     captured: dict = {}
 
-    def fake_agno_agent(**kwargs):
+    def _fake_agno_agent(**kwargs):
         captured.update(kwargs)
         mock = MagicMock()
         mock.skills = kwargs.get("skills")
         return mock
 
     with (
-        patch("src.agents.workflows.general.agent.AgnoAgent", side_effect=fake_agno_agent),
+        patch("src.agents.workflows.general.agent.AgnoAgent", side_effect=_fake_agno_agent),
         patch("src.agents.workflows.general.agent.get_tools_for_agent", return_value=[]),
+        patch(
+            "src.infra.config.configs.openai_config.AZURE_OPENAI_ENDPOINT",
+            "https://example.openai.azure.com/",
+        ),
+        patch(
+            "src.infra.config.configs.openai_config.AZURE_OPENAI_API_KEY",
+            "test-key",
+        ),
     ):
         from src.agents.workflows.general.agent import GeneralAgent
 
@@ -28,7 +36,10 @@ def test_general_agent_has_skills() -> None:
         assert agent.general_agent.skills is not None
         assert isinstance(agent.general_agent.skills, Skills)
         assert captured["tool_call_limit"] == 150
-        assert getattr(captured["model"], "reasoning_effort", None) == "low"
+        model = captured["model"]
+        assert model.name == "OpenAIResponses"
+        assert model.base_url == "https://example.openai.azure.com/openai/v1/"
+        assert model.reasoning_effort == "low"
 
 
 def test_general_prompt_does_not_contain_hardcoded_meddic_playbook() -> None:

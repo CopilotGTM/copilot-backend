@@ -5,6 +5,7 @@ from uuid import uuid4
 from src.agents.context import AgentContext
 from src.agents.timezone import DEFAULT_AGENT_TIMEZONE, resolve_agent_timezone_identifier
 from src.agents.workflows.general.agent import GeneralAgent
+from src.infra.config.configs import openai_config
 
 
 def test_resolve_agent_timezone_identifier_uses_valid_user_timezone() -> None:
@@ -27,8 +28,18 @@ def test_general_agent_enables_datetime_context_with_user_timezone(mocker) -> No
 
     mocker.patch("src.agents.workflows.general.agent.get_tools_for_agent", return_value=[])
     mocker.patch(
-        "src.agents.workflows.general.agent.AzureOpenAI",
+        "src.agents.workflows.general.agent.OpenAIResponses",
         side_effect=lambda **kwargs: kwargs,
+    )
+    mocker.patch.object(
+        openai_config,
+        "AZURE_OPENAI_ENDPOINT",
+        "https://example.openai.azure.com/",
+    )
+    mocker.patch.object(
+        openai_config,
+        "AZURE_OPENAI_API_KEY",
+        "test-key",
     )
     mocker.patch("src.agents.workflows.general.agent.LocalSkills", side_effect=lambda path: path)
     mocker.patch(
@@ -57,8 +68,18 @@ def test_general_agent_uses_anchored_datetime_when_provided(mocker) -> None:
 
     mocker.patch("src.agents.workflows.general.agent.get_tools_for_agent", return_value=[])
     mocker.patch(
-        "src.agents.workflows.general.agent.AzureOpenAI",
+        "src.agents.workflows.general.agent.OpenAIResponses",
         side_effect=lambda **kwargs: kwargs,
+    )
+    mocker.patch.object(
+        openai_config,
+        "AZURE_OPENAI_ENDPOINT",
+        "https://example.openai.azure.com/",
+    )
+    mocker.patch.object(
+        openai_config,
+        "AZURE_OPENAI_API_KEY",
+        "test-key",
     )
     mocker.patch("src.agents.workflows.general.agent.LocalSkills", side_effect=lambda path: path)
     mocker.patch(

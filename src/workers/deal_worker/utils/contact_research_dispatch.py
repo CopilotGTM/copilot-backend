@@ -62,6 +62,8 @@ async def dispatch_contact_research_async(
     force_refresh: bool = False,
 ) -> str | None:
     """Create and enqueue a contact research job when the contact is eligible."""
+    effective_user_id = user_id or AUTOMATED_PIPELINE_USER_ID
+
     async for session in acquire_org_async_session(organisation_id):
         # Lock the contact through job creation so simultaneous API/meeting/email
         # triggers cannot both pass dedupe; the org predicate is the tenant boundary.
@@ -107,6 +109,7 @@ async def dispatch_contact_research_async(
         existing = await session.execute(
             select(DealJobs).where(
                 col(DealJobs.organisation_id) == organisation_id,
+                col(DealJobs.user_id) == effective_user_id,
                 col(DealJobs.job_type) == DealJobType.CONTACT_RESEARCH,
                 col(DealJobs.status).in_(ACTIVE_JOB_STATUSES),
                 col(DealJobs.updated_at) >= datetime.now(UTC) - CONTACT_RESEARCH_JOB_STALE_AFTER,
@@ -114,6 +117,10 @@ async def dispatch_contact_research_async(
             )
         )
         for job in existing.scalars().all():
+            # A returned job ID must remain streamable by the caller. Research
+            # dedupe therefore never hands one user's visible job to another.
+            if getattr(job, "user_id", effective_user_id) != effective_user_id:
+                continue
             metadata = job.job_metadata or {}
             job_updated_at = getattr(job, "updated_at", None) or getattr(job, "created_at", None)
             if job_updated_at and job_updated_at < datetime.now(UTC) - (
@@ -131,7 +138,7 @@ async def dispatch_contact_research_async(
 
         job = DealJobs(
             organisation_id=organisation_id,
-            user_id=user_id or AUTOMATED_PIPELINE_USER_ID,
+            user_id=effective_user_id,
             job_type=DealJobType.CONTACT_RESEARCH,
             status=JobStatus.PENDING,
             job_metadata={

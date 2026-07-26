@@ -1,6 +1,12 @@
 # Stakeholder System Flow - Complete Architecture
 
-> **Purpose**: This document provides a comprehensive view of the entire stakeholder management system, including all tasks, services, data flows, and their relationships. It serves as the definitive reference for understanding how stakeholders are discovered, synchronized, analyzed, and enriched.
+> **Current task flow:** This document contains historical split email/calendar
+> matcher diagrams. For the verified manual stakeholder-add task graph, including
+> current hydration, research, attachments, and insight parallelism, use
+> [`stakeholder-add-task-level-flow.md`](stakeholder-add-task-level-flow.md).
+
+> **Historical scope**: This document preserves the earlier comprehensive
+> stakeholder architecture and task inventory for reference.
 
 ## System Overview
 

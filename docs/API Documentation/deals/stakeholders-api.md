@@ -517,23 +517,19 @@ Selected contact with a user-edited display name:
 
 ### Success Response (201) (Add Stakeholder)
 
-The stakeholder row is created synchronously. The response also returns three
-visible post-create processing jobs for related email rematch, calendar rematch,
-and stakeholder sync when the stakeholder has an email. Contact-backed
-stakeholders enqueue `contact_research` when cached contact research is missing;
-unlinked email/LinkedIn placeholders use the temporary `stakeholder_research`
-path until enrichment can resolve a contact. Name-only placeholders return no
-jobs.
+The stakeholder row is created synchronously. A newly created or reactivated
+stakeholder with an email returns one `stakeholder_sync` processing job. That
+same visible job continues through targeted communication hydration instead of
+creating separate email and calendar jobs. Contact-backed stakeholders may also
+return a separate `contact_research` job when current contact research is
+missing. Unlinked and name-only placeholders return no research job.
 
 Writes are participant-backed: durable person/profile fields are written to
 `crm_contacts` when a contact can be resolved or created, and deal-specific
 behavior is written to the active `CONTACT` row in `crm_deal_participants`.
 
-`research_job.job_type` is therefore one of:
-
-- `contact_research` when `stakeholder.contact_id` is present and fresh contact
-  research was not already copied.
-- `stakeholder_research` for unlinked email/LinkedIn placeholders.
+`research_job.job_type` is `contact_research`. It is present only when
+`stakeholder.contact_id` exists and the canonical contact needs research.
 
 ```json
 {
@@ -543,7 +539,7 @@ behavior is written to the active `CONTACT` row in `crm_deal_participants`.
     "stakeholder": {
       "participant_id": "8fa85f64-5717-4562-b3fc-2c963f66afa9",
       "deal_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-      "contact_id": null,
+      "contact_id": "4fa85f64-5717-4562-b3fc-2c963f66afa7",
       "email": "john.smith@prospect.com",
       "name": "John Smith",
       "job_title": "CTO",
@@ -567,7 +563,7 @@ behavior is written to the active `CONTACT` row in `crm_deal_participants`.
     ],
     "research_job": {
       "job_id": "8b1f9e8e-9500-4b2a-8d3a-6ac597a2c317",
-      "job_type": "stakeholder_research",
+      "job_type": "contact_research",
       "status": "pending"
     }
   }
@@ -654,12 +650,13 @@ curl -X POST "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders" \
 
 After a successful add, register every `processing_jobs[]` item in the global
 activity surface and subscribe to `GET /users/crm/deals/{deal_id}/jobs/{job_id}/stream`.
-Show these as deal-level processing. They run sequentially in this order: email
-rematch, calendar rematch, then stakeholder sync. `research_job` is separate from
-that processing chain. For contact-backed stakeholders it represents contact
-research; for unlinked email/LinkedIn placeholders it represents temporary
-stakeholder research. That returned research job is user-owned and can be
-subscribed to by the same authenticated user through the generic deal job stream.
+Show `processing_jobs[]` as deal-level processing. The `stakeholder_sync` job
+keeps the same job ID while it normalizes stakeholders and hydrates related
+communications. `research_job` is separate contact-scoped work. Subscribe to it
+through the authenticated user-job stream:
+
+`GET /users/crm/jobs/{job_id}/stream`
+
 If the rematch/sync chain discovers additional stakeholders, those services may
 dispatch research for the newly discovered stakeholders through the normal
 dedupe/cooldown path. Refresh deal detail, stakeholders, meetings, timeline, and
@@ -851,7 +848,7 @@ Returns `StakeholderFullDetail` with engagement history.
     "last_researched_at": "2026-04-29T10:20:00Z",
     "active_research_job": {
       "job_id": "a58573fd-a0f3-4b42-89ee-02d87a70a7c6",
-      "job_type": "stakeholder_research",
+      "job_type": "contact_research",
       "status": "in_progress"
     },
     "created_at": "2024-09-15T08:00:00Z",
@@ -860,7 +857,7 @@ Returns `StakeholderFullDetail` with engagement history.
 }
 ```
 
-`active_research_job` is `null` unless a `stakeholder_research` job is currently
+`active_research_job` is `null` unless a `contact_research` job is currently
 `pending` or `in_progress` for this stakeholder. Use it to
 recover an open research modal or row state after refresh/reconnect.
 
@@ -895,11 +892,9 @@ curl -X GET "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa85f6
 
 ## 5. Trigger Stakeholder Research
 
-Manually starts stakeholder research for a specific stakeholder. Stakeholder
-add/re-add may return `contact_research` for contact-backed rows or temporary
-`stakeholder_research` for unlinked email/LinkedIn placeholders. This endpoint
-is used when the user explicitly triggers participant-scoped stakeholder
-research later.
+Manually starts canonical contact research for a contact-backed stakeholder.
+Unlinked stakeholders must first resolve to a CRM contact. The endpoint is used
+when the user explicitly requests a refreshed contact profile later.
 
 ### Endpoint (Trigger Stakeholder Research)
 
@@ -922,7 +917,7 @@ POST /{deal_id}/stakeholders/{participant_id}/research
   "message": "Research job dispatched",
   "data": {
     "job_id": "a58573fd-a0f3-4b42-89ee-02d87a70a7c6",
-    "job_type": "stakeholder_research",
+    "job_type": "contact_research",
     "status": "pending"
   }
 }
@@ -931,10 +926,10 @@ POST /{deal_id}/stakeholders/{participant_id}/research
 If the server skips dispatch because recent research is already available, the
 same response shape is returned with `job_id: null` and `status: "completed"`.
 
-Subscribe to the generic deal job stream with the returned `job_id`:
+Subscribe to the user-owned job stream with the returned `job_id`:
 
 ```http
-GET /users/crm/deals/{deal_id}/jobs/{job_id}/stream
+GET /users/crm/jobs/{job_id}/stream
 ```
 
 The stream emits normal job frames: `ready`, `progress.update`, optional

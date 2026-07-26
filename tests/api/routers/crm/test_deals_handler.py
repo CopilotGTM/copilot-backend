@@ -2571,3 +2571,41 @@ def test_generic_deal_job_stream_rejects_job_from_different_deal(
 
     assert resp.status_code == 403
     assert checked_deal_ids == [deal_id]
+
+
+def test_user_job_stream_allows_owned_non_deal_job(
+    client: TestClient, deals_dependency_overrides, monkeypatch
+):
+    """Contact research can stream without pretending that it belongs to a deal."""
+    job_id = uuid4()
+    checked_deal_ids = []
+
+    class FakeDealJobSSEService:
+        """Capture owner-only authorization and return one terminal SSE event."""
+
+        def __init__(self, organisation_id, created_job_id, user_id):
+            self.job_id = created_job_id
+
+        async def ensure_user_access(self, deal_id=None):
+            """Owner-scoped streams must not impose a deal-id match."""
+            checked_deal_ids.append(deal_id)
+            return True
+
+        async def stream_events(self, *, resume_from_id=None):
+            """End immediately so the synchronous client can consume the response."""
+            yield {"event": "complete", "data": "{}"}
+
+        async def close(self):
+            """Match the production stream service cleanup contract."""
+            return None
+
+    monkeypatch.setattr(
+        "src.api.routers.crm.deals_handler.DealJobSSEService",
+        FakeDealJobSSEService,
+    )
+
+    resp = client.get(f"/users/crm/jobs/{job_id}/stream")
+
+    assert resp.status_code == 200
+    assert "text/event-stream" in resp.headers.get("content-type", "")
+    assert checked_deal_ids == [None]

@@ -9,8 +9,8 @@ from time import perf_counter
 from typing import Any
 
 from agno.agent import Agent as AgnoAgent
-from agno.models.azure.openai_chat import AzureOpenAI
 from agno.models.message import Message
+from agno.models.openai.responses import OpenAIResponses
 from agno.skills import LocalSkills, Skills
 from dotenv import load_dotenv
 from src.agents.attachment_grounding import ground_chat_attachments
@@ -28,7 +28,7 @@ from src.agents.utils import prepare_messages
 from src.agents.workflows.general.prompts.general_prompt import get_general_prompt
 from src.domain.models.organisation_tables import ChatMessage
 from src.infra.config.agent_config import agent_config
-from src.infra.config.configs import chat_file_upload_config
+from src.infra.config.configs import chat_file_upload_config, openai_config
 from src.infra.messaging.chat_stream_models import (
     AnswerDelta,
     Finalize,
@@ -123,16 +123,21 @@ class GeneralAgent(BaseAgent):
 
         # Get model config
         config = agent_config.get_config("general_agent")
+        endpoint = (openai_config.AZURE_OPENAI_ENDPOINT or "").rstrip("/")
+        api_key = openai_config.AZURE_OPENAI_API_KEY
+        if not endpoint or not api_key:
+            raise RuntimeError("Azure OpenAI Responses API is not configured")
 
         self.general_agent = AgnoAgent(
-            model=AzureOpenAI(
+            model=OpenAIResponses(
                 id=config.model,
-                api_version=config.api_version,
+                api_key=api_key,
+                base_url=f"{endpoint}/openai/v1/",
                 reasoning_effort="low",
                 retries=config.retries,
                 delay_between_retries=1,
                 exponential_backoff=True,
-                request_params={"parallel_tool_calls": True},
+                parallel_tool_calls=True,
             ),
             description=system_prompt,
             structured_outputs=False,
