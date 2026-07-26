@@ -182,6 +182,8 @@ deal-worker:
 
 dealCronJobs:
   jobs:
+    - name: deal-mapping
+      schedule: "3 */2 * * *"
     - name: meeting-bot-fallback
       schedule: "0 20 * * *"
     - name: sales-dashboard-snapshot
