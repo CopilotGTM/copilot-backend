@@ -83,6 +83,11 @@ class AzureOrganisationBlobStorage:
         self.container = get_org_container_name(organisation_id)
         self._credential = None
         self._blob_service: BlobServiceClient | None = None
+        self._container_ready = False
+        self._container_lock = asyncio.Lock()
+        self._delegation_key = None
+        self._delegation_key_expiry: datetime | None = None
+        self._delegation_key_lock = asyncio.Lock()
 
     async def _init_credential(self):
         if self._credential is None:
@@ -117,15 +122,53 @@ class AzureOrganisationBlobStorage:
         Concurrent starts can both attempt creation, so `ContainerAlreadyExists` is
         treated as a no-op for idempotency.
         """
-        bs = await self._get_blob_service_client()
-        container_client = bs.get_container_client(self.container)
-        try:
-            await container_client.create_container()
-            logger.info("Created container %s in account %s", self.container, self.account_name)
-        except Exception as e:
-            # Ignore if already exists; Azure error code check kept simple.
-            if "ContainerAlreadyExists" not in str(e):
-                logger.debug("Container create skipped/failed: %s", e)
+        if self._container_ready:
+            return
+        async with self._container_lock:
+            if self._container_ready:
+                return
+            bs = await self._get_blob_service_client()
+            container_client = bs.get_container_client(self.container)
+            try:
+                await container_client.create_container()
+                logger.info("Created container %s in account %s", self.container, self.account_name)
+                self._container_ready = True
+            except Exception as e:
+                # Ignore if already exists; Azure error code check kept simple.
+                if "ContainerAlreadyExists" in str(e):
+                    self._container_ready = True
+                else:
+                    logger.debug("Container create skipped/failed: %s", e)
+                    # copilotgtm: container bootstrap stays best-effort; retry on a
+                    # new storage instance instead of once per generated file URL.
+                    self._container_ready = True
+
+    async def _get_user_delegation_key(self, minutes: int):
+        """Reuse one delegation key while it safely covers the requested SAS lifetime."""
+        refresh_buffer = timedelta(minutes=5)
+        required_expiry = datetime.now(UTC) + timedelta(minutes=minutes) + refresh_buffer
+        if (
+            self._delegation_key is not None
+            and self._delegation_key_expiry is not None
+            and self._delegation_key_expiry >= required_expiry
+        ):
+            return self._delegation_key
+
+        async with self._delegation_key_lock:
+            required_expiry = datetime.now(UTC) + timedelta(minutes=minutes) + refresh_buffer
+            if (
+                self._delegation_key is not None
+                and self._delegation_key_expiry is not None
+                and self._delegation_key_expiry >= required_expiry
+            ):
+                return self._delegation_key
+
+            blob_service = await self._get_blob_service_client()
+            start = datetime.now(UTC) - timedelta(minutes=5)
+            key_expiry = datetime.now(UTC) + timedelta(minutes=max(60, minutes + 10))
+            self._delegation_key = await blob_service.get_user_delegation_key(start, key_expiry)
+            self._delegation_key_expiry = key_expiry
+            return self._delegation_key
 
     async def generate_read_sas(
         self,
@@ -142,11 +185,9 @@ class AzureOrganisationBlobStorage:
         content type without rewriting blob metadata.
         """
         await self._ensure_container()
-        blob_service = await self._get_blob_service_client()
         container = self.container
-        start = datetime.now(UTC) - timedelta(minutes=5)
         expiry = datetime.now(UTC) + timedelta(minutes=minutes)
-        delegation_key = await blob_service.get_user_delegation_key(start, expiry)
+        delegation_key = await self._get_user_delegation_key(minutes)
 
         content_disposition = None
         if download_filename:
@@ -170,11 +211,9 @@ class AzureOrganisationBlobStorage:
     async def generate_write_sas(self, blob_path: str, minutes: int = 15) -> str:
         """Generate a short-lived write SAS URL for direct uploads."""
         await self._ensure_container()
-        blob_service = await self._get_blob_service_client()
         container = self.container
-        start = datetime.now(UTC) - timedelta(minutes=5)
         expiry = datetime.now(UTC) + timedelta(minutes=minutes)
-        delegation_key = await blob_service.get_user_delegation_key(start, expiry)
+        delegation_key = await self._get_user_delegation_key(minutes)
         sas = generate_blob_sas(
             account_name=self.account_name,
             container_name=container,
@@ -359,6 +398,10 @@ class AzureOrganisationBlobStorage:
                     await maybe
             except Exception as e:  # pragma: no cover - defensive
                 logger.debug("Error closing credential: %s", e)
+        self._credential = None
+        self._container_ready = False
+        self._delegation_key = None
+        self._delegation_key_expiry = None
 
     async def __aenter__(self):
         """Enables use as an async context manager."""

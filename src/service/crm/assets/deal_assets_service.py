@@ -1,15 +1,16 @@
-"""Service for managing deal assets (files and links attached to deals)."""
+"""Service for managing files attached to deals."""
 
 from __future__ import annotations
 
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.organisation_tables.deal_asset_models import DealAsset, DealAssetStatus
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
+from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
 from src.service.crm.access.record_access_policy import CRMActor, DealAccessPolicy
 
@@ -29,7 +30,7 @@ class DealAssetsServiceError(Exception):
 
 
 class DealAssetsService:
-    """Service for managing deal assets (files and links) within a deal.
+    """Service for managing file assets within a deal.
 
     Called by API controllers to list, create, update, and delete assets.
     Each instance is scoped to a single organisation.
@@ -44,6 +45,7 @@ class DealAssetsService:
         self.org_session = org_session
         self.organisation_id = organisation_id
         self._access = DealAccessPolicy(org_session, organisation_id, access_actor)
+        self.storage = AzureOrganisationBlobStorage(organisation_id)
 
     async def close(self) -> None:
         """Dispose the underlying session when the service is released."""
@@ -51,6 +53,10 @@ class DealAssetsService:
             await self.org_session.close()
         except Exception:
             logger.debug("DealAssetsService close exception", exc_info=True)
+        try:
+            await self.storage.close()
+        except Exception:
+            logger.debug("DealAssetsService storage close exception", exc_info=True)
 
     @property
     def session(self) -> AsyncSession:
@@ -61,16 +67,30 @@ class DealAssetsService:
     # Public methods
     # ------------------------------------------------------------------
 
-    async def list_assets(self, deal_id: UUID) -> tuple[list[DealAsset], int]:
-        """Return all non-deleted, non-failed assets for a deal.
-
-        Assets per deal are bounded, so no pagination is needed.
-        """
+    async def list_assets(
+        self,
+        deal_id: UUID,
+        *,
+        limit: int,
+        cursor: str | None,
+    ) -> tuple[list[DealAsset], str | None, int]:
+        """Return one newest-first cursor page of file assets for a deal."""
         c = cast(Any, DealAsset).__table__.c
+        cursor_position: tuple[Any, UUID] | None = None
+        if cursor is not None:
+            try:
+                if not cursor:
+                    raise ValueError("Cursor cannot be empty")
+                cursor_position = decode_cursor(cursor)
+                if cursor_position[0].utcoffset() is None:
+                    raise ValueError("Cursor timestamp must include a timezone")
+            except Exception as exc:
+                raise DealAssetsServiceError("Invalid cursor", status_code=400) from exc
 
         base_where = and_(
             c.organisation_id == self.organisation_id,
             c.deal_id == deal_id,
+            c.storage_path.is_not(None),
             c.is_deleted.is_(False),
             c.status != DealAssetStatus.FAILED.value,
         )
@@ -79,11 +99,26 @@ class DealAssetsService:
         count_result = await self.org_session.execute(count_stmt)
         total = count_result.scalar() or 0
 
-        stmt = select(DealAsset).where(base_where).order_by(c.created_at.desc())
+        stmt = select(DealAsset).where(base_where)
+        if cursor_position:
+            cursor_time, cursor_id = cursor_position
+            stmt = stmt.where(
+                or_(
+                    c.created_at < cursor_time,
+                    and_(c.created_at == cursor_time, c.asset_id < cursor_id),
+                )
+            )
+        stmt = stmt.order_by(c.created_at.desc(), c.asset_id.desc()).limit(limit + 1)
         result = await self.org_session.execute(stmt)
-        assets: list[DealAsset] = list(result.scalars().all())
+        rows: list[DealAsset] = list(result.scalars().all())
+        assets = rows[:limit]
+        next_cursor = (
+            encode_cursor(assets[-1].created_at, assets[-1].asset_id)
+            if len(rows) > limit and assets
+            else None
+        )
 
-        return assets, total
+        return assets, next_cursor, total
 
     async def list_all_assets(
         self,
@@ -96,6 +131,7 @@ class DealAssetsService:
 
         base_where = and_(
             c.organisation_id == self.organisation_id,
+            c.storage_path.is_not(None),
             c.is_deleted.is_(False),
             c.status != DealAssetStatus.FAILED.value,
         )
@@ -148,6 +184,7 @@ class DealAssetsService:
             c.asset_id == asset_id,
             c.deal_id == deal_id,
             c.organisation_id == self.organisation_id,
+            c.storage_path.is_not(None),
             c.is_deleted.is_(False),
         )
         result = await self.org_session.execute(stmt)
@@ -197,8 +234,7 @@ class DealAssetsService:
         await self.org_session.flush()
         await self.org_session.refresh(asset)
 
-        blob_storage = AzureOrganisationBlobStorage(self.organisation_id)
-        upload_url = await blob_storage.generate_write_sas(storage_path, minutes=_WRITE_SAS_MINUTES)
+        upload_url = await self.storage.generate_write_sas(storage_path, minutes=_WRITE_SAS_MINUTES)
 
         expires_in = _WRITE_SAS_MINUTES * 60
 
@@ -241,59 +277,6 @@ class DealAssetsService:
         logger.info("Finalized upload for asset %s on deal %s", asset_id, deal_id)
         return asset
 
-    async def create_link(
-        self,
-        deal_id: UUID,
-        user_id: UUID,
-        name: str,
-        external_url: str,
-        external_source: str | None = None,
-        category: str | None = None,
-        direction: str = "internal",
-    ) -> DealAsset:
-        """Create an active link asset without upload orchestration."""
-        from src.domain.models.organisation_tables.deal_asset_models import DealAssetLinkStatus
-
-        asset = DealAsset(
-            asset_id=uuid4(),
-            organisation_id=self.organisation_id,
-            deal_id=deal_id,
-            added_by_user_id=user_id,
-            name=name,
-            category=category,
-            direction=direction,
-            status=DealAssetStatus.ACTIVE.value,
-            external_url=external_url,
-            external_source=external_source,
-            link_status=DealAssetLinkStatus.UNKNOWN.value,
-        )
-
-        self.org_session.add(asset)
-        await self.org_session.flush()
-        await self.org_session.refresh(asset)
-
-        logger.info(
-            "Created link asset %s on deal %s by user %s",
-            asset.asset_id,
-            deal_id,
-            user_id,
-        )
-        return asset
-
-    async def update_asset(
-        self, deal_id: UUID, asset_id: UUID, updates: dict[str, Any]
-    ) -> DealAsset:
-        """Apply partial updates on a validated, org-scoped asset."""
-        asset = await self.get_asset(deal_id, asset_id)
-
-        for key, value in updates.items():
-            setattr(asset, key, value)
-
-        await self.org_session.flush()
-        await self.org_session.refresh(asset)
-
-        return asset
-
     async def delete_asset(self, deal_id: UUID, asset_id: UUID) -> DealAsset:
         """Soft-delete an asset."""
         asset = await self.get_asset(deal_id, asset_id)
@@ -315,8 +298,7 @@ class DealAssetsService:
         if not asset.storage_path:
             return None
 
-        blob_storage = AzureOrganisationBlobStorage(self.organisation_id)
-        return await blob_storage.generate_read_sas(
+        return await self.storage.generate_read_sas(
             asset.storage_path,
             minutes=_READ_SAS_MINUTES,
             download_filename=asset.filename or asset.name,
@@ -324,17 +306,15 @@ class DealAssetsService:
 
     async def generate_thumbnail_urls(self, asset: DealAsset) -> tuple[str | None, str | None]:
         """Generate read SAS URLs for the asset's small and medium thumbnails."""
-        blob_storage = AzureOrganisationBlobStorage(self.organisation_id)
-
         small_url: str | None = None
         medium_url: str | None = None
 
         if asset.thumbnail_small_path:
-            small_url = await blob_storage.generate_read_sas(
+            small_url = await self.storage.generate_read_sas(
                 asset.thumbnail_small_path, minutes=_READ_SAS_MINUTES
             )
         if asset.thumbnail_medium_path:
-            medium_url = await blob_storage.generate_read_sas(
+            medium_url = await self.storage.generate_read_sas(
                 asset.thumbnail_medium_path, minutes=_READ_SAS_MINUTES
             )
 

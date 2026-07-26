@@ -1,6 +1,6 @@
 # Deal Assets API
 
-This API manages file and link assets associated with CRM deals. Assets can be uploaded files (stored in Azure Blob Storage) or external links (e.g. Google Drive, SharePoint). File uploads use a two-step presign/finalize flow where the client uploads directly to blob storage.
+This API manages files associated with CRM deals. Uploads use a two-step presign/finalize flow where the client uploads directly to Azure Blob Storage.
 
 **Base URL**: `/users/crm/deals`
 
@@ -10,10 +10,7 @@ This API manages file and link assets associated with CRM deals. Assets can be u
 
 ### What are Deal Assets?
 
-| Type | Description | Example |
-| --- | --- | --- |
-| **File upload** | Files uploaded via the presign/finalize flow | Proposal PDF, contract DOCX, demo recording |
-| **External link** | URLs pointing to resources hosted elsewhere | Google Drive folder, SharePoint document, Figma board |
+Deal assets are files uploaded via the presign/finalize flow, such as proposal PDFs, contract documents, and demo recordings.
 
 ### Asset Directions
 
@@ -32,7 +29,7 @@ Free-text field, but the following values are recommended: `rfp`, `proposal`, `c
 | Status | Description |
 | --- | --- |
 | `pending_upload` | Presign issued; waiting for client to upload and finalize |
-| `active` | Upload finalized or link created; asset is live |
+| `active` | Upload finalized; asset is live |
 | `failed` | Upload failed or was abandoned |
 
 ### Source Types
@@ -73,7 +70,7 @@ All endpoints return the shared `GenericResponse` envelope:
 | Operation | Limit |
 | --- | --- |
 | Read (`GET`) | ~60/min, 1000/hour per user |
-| Write (`POST`/`PATCH`/`DELETE`) | ~30/min, 500/hour per user |
+| Write (`POST`/`DELETE`) | ~30/min, 500/hour per user |
 
 On limit breach: `429 Too Many Requests` with `Retry-After` header.
 
@@ -92,8 +89,6 @@ export type AssetSourceType =
   | "meeting"
   | "crm"
   | "ai_extracted";
-export type LinkStatus = "ok" | "active" | "broken" | "unknown";
-
 export interface DealAssetItem {
   asset_id: UUID;
   deal_id: UUID;
@@ -104,13 +99,9 @@ export interface DealAssetItem {
   filename: string | null;
   mimetype: string | null;
   size_bytes: number | null;
-  download_url: string | null;         // time-limited SAS URL (files only)
+  download_url: string | null;         // time-limited SAS URL
   thumbnail_small_url: string | null;  // time-limited SAS URL for small thumbnail
   thumbnail_medium_url: string | null; // time-limited SAS URL for medium thumbnail
-  external_url: string | null;         // links only
-  external_source: string | null;      // e.g. "google_drive", "sharepoint"
-  link_status: LinkStatus | null;
-  link_checked_at: string | null;      // ISO8601
   kb_source_id: UUID | null;
   source_type: AssetSourceType;
   source_context: string | null;
@@ -123,6 +114,7 @@ export interface DealAssetItem {
 export interface DealAssetsPage {
   items: DealAssetItem[];
   total_count: number;
+  next_cursor: string | null;
 }
 
 export interface DealAssetPresignResponse {
@@ -147,22 +139,6 @@ export interface FinalizeRequest {
   checksum?: string | null;     // optional MD5/SHA-256, max 128 chars
 }
 
-export interface LinkCreateRequest {
-  name: string;                 // 1-500 chars
-  external_url: string;         // 1-2048 chars
-  external_source?: string | null; // max 100 chars
-  category?: string | null;     // max 100 chars
-  direction?: AssetDirection;   // default: "internal"
-}
-
-export interface AssetUpdateRequest {
-  name?: string | null;
-  category?: string | null;
-  direction?: AssetDirection | null;
-  external_url?: string | null;
-  external_source?: string | null;
-  link_status?: LinkStatus | null;
-}
 ```
 
 ---
@@ -201,7 +177,7 @@ Client                          API                       Azure Blob Storage
 
 ## 1. List Deal Assets
 
-Retrieves all active (non-deleted) assets for a deal, ordered by newest first. File assets include time-limited SAS download and thumbnail URLs.
+Retrieves one cursor page of active (non-deleted) files for a deal, ordered by newest first. Files include time-limited SAS download and thumbnail URLs.
 
 ### Endpoint (List Deal Assets)
 
@@ -214,6 +190,13 @@ GET /{deal_id}/assets
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `deal_id` | UUID | Yes | The unique identifier of the deal |
+
+### Query Parameters (List Deal Assets)
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `limit` | integer | No | Page size from 1 to 100; defaults to 50 |
+| `cursor` | string | No | Opaque `next_cursor` returned by the previous page |
 
 ### Success Response (200) (List Deal Assets)
 
@@ -236,10 +219,6 @@ GET /{deal_id}/assets
         "download_url": "https://storage.blob.core.windows.net/org-.../assets/...?sv=...&se=...",
         "thumbnail_small_url": "https://storage.blob.core.windows.net/org-.../thumbs/...?sv=...",
         "thumbnail_medium_url": "https://storage.blob.core.windows.net/org-.../thumbs/...?sv=...",
-        "external_url": null,
-        "external_source": null,
-        "link_status": null,
-        "link_checked_at": null,
         "kb_source_id": null,
         "source_type": "manual_upload",
         "source_context": null,
@@ -247,34 +226,10 @@ GET /{deal_id}/assets
         "added_by_user_id": "b1a7f9c0-1b2c-4f5a-9c1d-8b7c6a5d4e3f",
         "created_at": "2026-03-07T14:30:00Z",
         "updated_at": "2026-03-07T14:31:00Z"
-      },
-      {
-        "asset_id": "d2b3c4d5-e6f7-a8b9-c0d1-e2f3a4b5c6d7",
-        "deal_id": "a8a3b1db-4d9a-4f3c-a3f6-2a5c1d8b9e1f",
-        "name": "Technical Architecture Diagram",
-        "category": "presentation",
-        "direction": "internal",
-        "status": "active",
-        "filename": null,
-        "mimetype": null,
-        "size_bytes": null,
-        "download_url": null,
-        "thumbnail_small_url": null,
-        "thumbnail_medium_url": null,
-        "external_url": "https://docs.google.com/presentation/d/1abc.../edit",
-        "external_source": "google_drive",
-        "link_status": "ok",
-        "link_checked_at": "2026-03-07T12:00:00Z",
-        "kb_source_id": null,
-        "source_type": "manual_upload",
-        "source_context": null,
-        "deal_stage_when_added": "Discovery",
-        "added_by_user_id": "b1a7f9c0-1b2c-4f5a-9c1d-8b7c6a5d4e3f",
-        "created_at": "2026-03-05T09:15:00Z",
-        "updated_at": "2026-03-05T09:15:00Z"
       }
     ],
-    "total_count": 2
+    "total_count": 1,
+    "next_cursor": null
   }
 }
 ```
@@ -283,6 +238,7 @@ GET /{deal_id}/assets
 
 | Code | Description |
 |------|-------------|
+| `400` | Invalid or malformed cursor |
 | `422` | Invalid path parameter (e.g., malformed `deal_id`) |
 | `404` | Deal not found or not accessible in this organisation |
 | `429` | Rate limit exceeded |
@@ -293,11 +249,14 @@ GET /{deal_id}/assets
 ```ts
 const baseUrl = '/users/crm/deals';
 
-const response = await fetch(`${baseUrl}/${dealId}/assets`, {
+const params = new URLSearchParams({ limit: '50' });
+if (cursor) params.set('cursor', cursor);
+
+const response = await fetch(`${baseUrl}/${dealId}/assets?${params}`, {
   headers: { Authorization: `Bearer ${token}` }
 });
 const { data } = await response.json();
-// data.items: DealAssetItem[], data.total_count: number
+// Append data.items; pass data.next_cursor to load the next page.
 ```
 
 ---
@@ -338,10 +297,6 @@ GET /{deal_id}/assets/{asset_id}
     "download_url": "https://storage.blob.core.windows.net/org-.../assets/...?sv=...&se=...",
     "thumbnail_small_url": "https://storage.blob.core.windows.net/org-.../thumbs/...?sv=...",
     "thumbnail_medium_url": "https://storage.blob.core.windows.net/org-.../thumbs/...?sv=...",
-    "external_url": null,
-    "external_source": null,
-    "link_status": null,
-    "link_checked_at": null,
     "kb_source_id": null,
     "source_type": "manual_upload",
     "source_context": null,
@@ -526,10 +481,6 @@ POST /{deal_id}/assets/upload/finalize
     "download_url": "https://storage.blob.core.windows.net/org-.../assets/...?sv=...&se=...",
     "thumbnail_small_url": null,
     "thumbnail_medium_url": null,
-    "external_url": null,
-    "external_source": null,
-    "link_status": null,
-    "link_checked_at": null,
     "kb_source_id": null,
     "source_type": "manual_upload",
     "source_context": null,
@@ -553,199 +504,7 @@ POST /{deal_id}/assets/upload/finalize
 
 ---
 
-## 5. Add External Link
-
-Creates an external link asset for a deal. The link is immediately active (no upload flow required).
-
-### Endpoint (Add External Link)
-
-```http
-POST /{deal_id}/assets/links
-```
-
-### Path Parameters (Add External Link)
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `deal_id` | UUID | Yes | The unique identifier of the deal |
-
-### Request Body (Add External Link)
-
-| Field | Type | Required | Constraints | Description |
-|-------|------|----------|-------------|-------------|
-| `name` | string | Yes | 1-500 chars, non-empty | Display name for the linked asset |
-| `external_url` | string | Yes | 1-2048 chars, non-empty | URL of the external resource |
-| `external_source` | string | No | Max 100 chars | Source system (e.g. `google_drive`, `sharepoint`) |
-| `category` | string | No | Max 100 chars | Asset category |
-| `direction` | string | No | `received` \| `shared` \| `internal` | Default: `internal` |
-
-### Request Example (Add External Link)
-
-```json
-{
-  "name": "Technical Architecture Diagram",
-  "external_url": "https://docs.google.com/presentation/d/1abc.../edit",
-  "external_source": "google_drive",
-  "category": "presentation",
-  "direction": "internal"
-}
-```
-
-### Success Response (201) (Add External Link)
-
-```json
-{
-  "status": "SUCCESS",
-  "message": "Link asset created successfully",
-  "data": {
-    "asset_id": "d2b3c4d5-e6f7-a8b9-c0d1-e2f3a4b5c6d7",
-    "deal_id": "a8a3b1db-4d9a-4f3c-a3f6-2a5c1d8b9e1f",
-    "name": "Technical Architecture Diagram",
-    "category": "presentation",
-    "direction": "internal",
-    "status": "active",
-    "filename": null,
-    "mimetype": null,
-    "size_bytes": null,
-    "download_url": null,
-    "thumbnail_small_url": null,
-    "thumbnail_medium_url": null,
-    "external_url": "https://docs.google.com/presentation/d/1abc.../edit",
-    "external_source": "google_drive",
-    "link_status": "unknown",
-    "link_checked_at": null,
-    "kb_source_id": null,
-    "source_type": "manual_upload",
-    "source_context": null,
-    "deal_stage_when_added": "Discovery",
-    "added_by_user_id": "b1a7f9c0-1b2c-4f5a-9c1d-8b7c6a5d4e3f",
-    "created_at": "2026-03-07T15:00:00Z",
-    "updated_at": "2026-03-07T15:00:00Z"
-  }
-}
-```
-
-### Error Responses (Add External Link)
-
-| Code | Description |
-|------|-------------|
-| `422` | Validation error (empty name, empty URL, invalid direction) |
-| `404` | Deal not found or not accessible in this organisation |
-| `429` | Rate limit exceeded |
-| `500` | Internal server error |
-
-### Usage Example (Add External Link)
-
-```ts
-const baseUrl = '/users/crm/deals';
-
-const response = await fetch(`${baseUrl}/${dealId}/assets/links`, {
-  method: 'POST',
-  headers: {
-    'Authorization': `Bearer ${token}`,
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    name: 'Security Questionnaire',
-    external_url: 'https://company.sharepoint.com/docs/security-q.xlsx',
-    external_source: 'sharepoint',
-    category: 'security',
-    direction: 'received'
-  })
-});
-
-const { data: linkAsset } = await response.json();
-```
-
----
-
-## 6. Update Asset
-
-Partially updates an asset's metadata. Only the fields included in the request body are updated; omitted fields remain unchanged.
-
-### Endpoint (Update Asset)
-
-```http
-PATCH /{deal_id}/assets/{asset_id}
-```
-
-### Path Parameters (Update Asset)
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `deal_id` | UUID | Yes | The unique identifier of the deal |
-| `asset_id` | UUID | Yes | The unique identifier of the asset |
-
-### Request Body (Update Asset)
-
-All fields are optional. Only include fields you want to change.
-
-| Field | Type | Constraints | Description |
-|-------|------|-------------|-------------|
-| `name` | string | Max 500 chars | Display name |
-| `category` | string | Max 100 chars | Asset category |
-| `direction` | string | `received` \| `shared` \| `internal` | Direction |
-| `external_url` | string | Max 2048 chars | External URL (links only) |
-| `external_source` | string | Max 100 chars | Source system |
-| `link_status` | string | `ok` \| `active` \| `broken` \| `unknown` | Link health status |
-
-### Request Example (Update Asset)
-
-```json
-{
-  "name": "Enterprise Proposal v3 - Final",
-  "category": "contract",
-  "direction": "shared"
-}
-```
-
-### Success Response (200) (Update Asset)
-
-```json
-{
-  "status": "SUCCESS",
-  "message": "Asset updated successfully",
-  "data": {
-    "asset_id": "c1a2b3c4-d5e6-f7a8-b9c0-d1e2f3a4b5c6",
-    "deal_id": "a8a3b1db-4d9a-4f3c-a3f6-2a5c1d8b9e1f",
-    "name": "Enterprise Proposal v3 - Final",
-    "category": "contract",
-    "direction": "shared",
-    "status": "active",
-    "filename": "Enterprise_Proposal_v2.pdf",
-    "mimetype": "application/pdf",
-    "size_bytes": 2458900,
-    "download_url": "https://storage.blob.core.windows.net/org-.../assets/...?sv=...&se=...",
-    "thumbnail_small_url": null,
-    "thumbnail_medium_url": null,
-    "external_url": null,
-    "external_source": null,
-    "link_status": null,
-    "link_checked_at": null,
-    "kb_source_id": null,
-    "source_type": "manual_upload",
-    "source_context": null,
-    "deal_stage_when_added": "Negotiation",
-    "added_by_user_id": "b1a7f9c0-1b2c-4f5a-9c1d-8b7c6a5d4e3f",
-    "created_at": "2026-03-07T14:30:00Z",
-    "updated_at": "2026-03-07T16:00:00Z"
-  }
-}
-```
-
-### Error Responses (Update Asset)
-
-| Code | Description |
-|------|-------------|
-| `400` | No fields to update (empty request body) |
-| `422` | Validation error (invalid UUID, invalid direction/link_status) |
-| `404` | Asset or deal not found |
-| `429` | Rate limit exceeded |
-| `500` | Internal server error |
-
----
-
-## 7. Delete Asset
+## 5. Delete Asset
 
 Soft deletes an asset by setting the `is_deleted` flag. The asset will no longer appear in list responses.
 
@@ -781,10 +540,6 @@ DELETE /{deal_id}/assets/{asset_id}
     "download_url": null,
     "thumbnail_small_url": null,
     "thumbnail_medium_url": null,
-    "external_url": null,
-    "external_source": null,
-    "link_status": null,
-    "link_checked_at": null,
     "kb_source_id": null,
     "source_type": "manual_upload",
     "source_context": null,
