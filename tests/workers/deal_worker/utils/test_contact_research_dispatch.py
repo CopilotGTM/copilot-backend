@@ -309,6 +309,58 @@ async def test_force_refresh_does_not_reuse_a_non_refresh_job(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
+async def test_dispatch_does_not_return_another_users_active_job(monkeypatch) -> None:
+    """A visible job returned to one user must pass that user's stream authorization."""
+    import src.workers.deal_worker.utils.contact_research_dispatch as dispatch_module
+
+    organisation_id = uuid4()
+    contact_id = uuid4()
+    current_user_id = uuid4()
+    existing_job = SimpleNamespace(
+        job_id=uuid4(),
+        user_id=uuid4(),
+        job_metadata={
+            "contact_id": str(contact_id),
+            "normalized_email": "buyer@acme.com",
+            "linkedin_url": None,
+            "force_refresh": False,
+        },
+        status=JobStatus.IN_PROGRESS,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    contact = CRMContact(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        contact_id=contact_id,
+        email="buyer@acme.com",
+    )
+    session = _Session(contact, active_jobs=[existing_job])
+
+    async def fake_send(*_args, **_kwargs):
+        """Accept the current user's replacement without contacting the broker."""
+        return None
+
+    monkeypatch.setattr(
+        dispatch_module,
+        "acquire_org_async_session",
+        lambda _organisation_id: _SessionSource(session),
+    )
+    monkeypatch.setattr(dispatch_module, "send_deal_task_async", fake_send)
+    PROJECTIONS.clear()
+    monkeypatch.setattr(dispatch_module, "ActivityFeedProjectionService", _Projection)
+
+    job_id = await dispatch_module.dispatch_contact_research_async(
+        organisation_id=organisation_id,
+        contact_id=contact_id,
+        user_id=current_user_id,
+    )
+
+    assert job_id != str(existing_job.job_id)
+    assert session.added[0].user_id == current_user_id
+
+
+@pytest.mark.asyncio
 async def test_dispatch_replaces_an_abandoned_active_job(monkeypatch) -> None:
     """A stale pending row must not prevent recovery after queue publication was interrupted."""
     import src.workers.deal_worker.utils.contact_research_dispatch as dispatch_module

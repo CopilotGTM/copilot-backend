@@ -107,6 +107,26 @@ _CURRENCY_CODE_BY_SYMBOL = {
 }
 
 
+def _job_stream_response(sse_service: DealJobSSEService, request: Request) -> EventSourceResponse:
+    """Return one resumable SSE response and close its Redis resources on exit."""
+    last_event_id = request.headers.get("last-event-id") or request.headers.get("Last-Event-ID")
+    resume_from_id = last_event_id or None
+
+    async def event_generator():
+        """Stream frames from the SSE service and always close service resources."""
+        try:
+            async for event in sse_service.stream_events(resume_from_id=resume_from_id):
+                yield event
+        finally:
+            try:
+                await sse_service.close()
+            except Exception:
+                # A close failure cannot change an HTTP stream that has already ended.
+                logger.debug("DealJobSSE service close failed", exc_info=True)
+
+    return EventSourceResponse(event_generator())
+
+
 def _clean_string(value: str | None) -> str | None:
     if value is None:
         return None
@@ -1806,9 +1826,6 @@ async def deal_job_stream(
     if can_access is False:
         raise HTTPException(status_code=403, detail="Not authorized to access this job stream")
 
-    last_event_id = request.headers.get("last-event-id") or request.headers.get("Last-Event-ID")
-    resume_from_id = last_event_id or None
-
     logger.info(
         "Client connected to generic deal job SSE: org=%s deal=%s job=%s",
         user_ids.organisation_id,
@@ -1816,18 +1833,35 @@ async def deal_job_stream(
         job_id,
     )
 
-    async def event_generator():
-        """Stream frames from the SSE service and always close service resources."""
-        try:
-            async for ev in sse_service.stream_events(resume_from_id=resume_from_id):
-                yield ev
-        finally:
-            try:
-                await sse_service.close()
-            except Exception:
-                logger.debug("DealJobSSE service close failed", exc_info=True)
+    return _job_stream_response(sse_service, request)
 
-    return EventSourceResponse(event_generator())
+
+@deals_router.get(
+    "/jobs/{job_id}/stream",
+    tags=["crm", "jobs"],
+    summary="SSE stream for a user-owned CRM job",
+)
+async def user_job_stream(
+    job_id: UUID,
+    request: Request,
+    user_ids: UserIDs = Depends(get_current_user),
+):
+    """Stream a contact-scoped job after enforcing tenant and user ownership."""
+    sse_service = DealJobSSEService(user_ids.organisation_id, job_id, user_ids.user_id)
+    # Contact research has no deal_id. User ownership remains the authorization
+    # boundary, while the org-scoped session prevents cross-tenant job lookup.
+    can_access = await sse_service.ensure_user_access()
+    if can_access is None:
+        raise HTTPException(status_code=404, detail="Job stream not found")
+    if can_access is False:
+        raise HTTPException(status_code=403, detail="Not authorized to access this job stream")
+
+    logger.info(
+        "Client connected to user-owned CRM job SSE: org=%s job=%s",
+        user_ids.organisation_id,
+        job_id,
+    )
+    return _job_stream_response(sse_service, request)
 
 
 @deals_router.get(

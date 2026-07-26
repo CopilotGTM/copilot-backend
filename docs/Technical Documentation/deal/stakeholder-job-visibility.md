@@ -107,7 +107,10 @@ Deal detail exposes active stakeholder processing jobs through
 
 The stream uses the existing `DealJobSSEService` and supports
 `Last-Event-ID`. Stakeholder research remains visible on stakeholder detail,
-not in the deal-level processing list.
+not in the deal-level processing list. Because `contact_research` is owned by a
+contact rather than a deal, clients reconnect it through:
+
+`GET /users/crm/jobs/{job_id}/stream`
 
 ## Failure semantics
 
