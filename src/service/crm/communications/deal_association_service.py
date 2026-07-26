@@ -44,7 +44,7 @@ from src.service.crm.communications.participant_resolution_service import (
 )
 from src.service.crm.contacts.write_service import ContactWriteService
 from src.service.crm.utils.account import normalize_account_domain
-from src.service.crm.utils.identity import extract_email_domain
+from src.service.crm.utils.identity import extract_email_domain, normalize_email
 from src.service.integrations.email.mailbox_identity_resolver import (
     EMAIL_MATCHER_INTEGRATION_TYPES,
     get_active_integration_emails_grouped_by_user,
@@ -478,13 +478,11 @@ class CommunicationDealAssociationService:
         *,
         contact_identity_emails: frozenset[str] | None = None,
     ) -> CommunicationCandidate:
-        normalized_emails = {
-            email for raw in participant_emails if (email := self._normalize_email(raw))
-        }
+        normalized_emails = {email for raw in participant_emails if (email := normalize_email(raw))}
         eligible_contact_emails = (
             normalized_emails
             if contact_identity_emails is None
-            else {email for raw in contact_identity_emails if (email := self._normalize_email(raw))}
+            else {email for raw in contact_identity_emails if (email := normalize_email(raw))}
         )
         return CommunicationCandidate(
             contact_ids=frozenset(
@@ -510,11 +508,6 @@ class CommunicationDealAssociationService:
             result.ambiguous += 1
         else:
             result.unmatched += 1
-
-    @staticmethod
-    def _normalize_email(value: str | None) -> str | None:
-        normalized = str(value or "").strip().lower()
-        return normalized or None
 
     def _email_participant_emails(self, email: Email) -> set[str]:
         return {
@@ -646,7 +639,7 @@ class CommunicationDealAssociationService:
                         and not participant.is_deleted
                     ],
                 ]
-                if (email := self._normalize_email(raw_email))
+                if (email := normalize_email(raw_email))
             }
             internal_emails.update(
                 email
@@ -686,7 +679,7 @@ class CommunicationDealAssociationService:
         _ = contact_ids
         if not email.internet_message_id:
             return False
-        from_email = self._normalize_email(email.from_email)
+        from_email = normalize_email(email.from_email)
         association = DealEmailAssociation(
             organisation_id=self.organisation_id,
             deal_id=deal_id,

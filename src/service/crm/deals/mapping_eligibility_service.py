@@ -18,6 +18,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMParticipantType,
 )
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
+from src.service.crm.utils.identity import normalize_email
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -67,14 +68,6 @@ class DealMappingEligibilityService:
     def __init__(self, organisation_id: UUID) -> None:
         self.organisation_id = organisation_id
 
-    @staticmethod
-    def normalize_email(email: str | None) -> str | None:
-        """Normalize an email identity for app-user membership checks."""
-        if not email:
-            return None
-        normalized = str(email).strip().lower()
-        return normalized or None
-
     def evaluate_loaded_deal(
         self,
         deal: Any | None,
@@ -118,7 +111,7 @@ class DealMappingEligibilityService:
         normalized_public_emails = {
             normalized
             for email in public_user_emails
-            if (normalized := self.normalize_email(email)) is not None
+            if (normalized := normalize_email(email)) is not None
         }
         matching_public_user_emails = [
             email for email in internal_user_emails if email in normalized_public_emails
@@ -317,9 +310,7 @@ class DealMappingEligibilityService:
             return set()
 
         normalized_emails = {
-            normalized
-            for email in emails
-            if (normalized := self.normalize_email(email)) is not None
+            normalized for email in emails if (normalized := normalize_email(email)) is not None
         }
         if not normalized_emails:
             return set()
@@ -333,13 +324,13 @@ class DealMappingEligibilityService:
             return {
                 normalized
                 for (email,) in result.all()
-                if (normalized := self.normalize_email(str(email))) is not None
+                if (normalized := normalize_email(str(email))) is not None
             }
 
         return set()
 
     def _append_email(self, emails: list[str], seen: set[str], raw_email: str | None) -> None:
-        normalized = self.normalize_email(raw_email)
+        normalized = normalize_email(raw_email)
         if normalized is None or normalized in seen:
             return
         emails.append(normalized)
