@@ -208,6 +208,16 @@ def test_sales_dashboard_snapshot_cronjob_renders_in_dev() -> None:
     assert sales_dashboard_snapshot["spec"]["schedule"] == "15 1 * * *"
 
 
+def test_deal_mapping_cronjob_renders_every_two_hours_in_dev() -> None:
+    """Keep scheduled stakeholder backfill enabled when dev replaces the base job list."""
+    cronjobs = _render_worker_cronjobs()
+    deal_mapping = next(
+        doc for doc in cronjobs if doc["metadata"]["name"] == "copilot-backend-deal-mapping"
+    )
+
+    assert deal_mapping["spec"]["schedule"] == "3 */2 * * *"
+
+
 def test_stale_cleanup_cronjob_boundaries() -> None:
     """Dev disables stale cleanup CronJobs; prod keeps app-state cleanup jobs."""
     disabled_cleanup_cronjobs = {
