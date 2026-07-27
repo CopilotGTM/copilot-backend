@@ -6,9 +6,13 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.crm_record_access import (
+    access_actor_from_user,
+    require_crm_admin,
+)
 from src.api.dependencies.crm_write_guard import require_crm_write_scope
 from src.api.dependencies.master_dependencies import get_master_async_session
 from src.api.dependencies.organisation_dependencies import (
@@ -136,7 +140,7 @@ async def get_tasks_write_service(
 )
 async def list_tasks(
     response: FastAPIResponse,
-    scope: Literal["assigned_to_me", "assigned_by_me", "assigned_to_user"] = Query(
+    scope: Literal["assigned_to_me", "assigned_to_user"] = Query(
         "assigned_to_me",
         description="Required task scope. Normal users cannot request all organisation tasks.",
     ),
@@ -164,6 +168,11 @@ async def list_tasks(
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[TasksPage]:
     """Global task listing with rich filtering."""
+
+    if (
+        scope == "assigned_to_user" or assigned_to_key is not None or owner_user_id is not None
+    ) and not access_actor_from_user(user_ids).is_admin:
+        raise HTTPException(status_code=403, detail="Administrator access required")
 
     try:
         tasks, total_count = await service.list_tasks(
@@ -223,9 +232,12 @@ async def list_task_assignees(
     response: FastAPIResponse,
     q: str | None = Query(None, description="Search assignee name or email"),
     limit: int = Query(200, ge=1, le=500),
+    _admin: None = Depends(require_crm_admin),
     service: TaskReadService = Depends(get_tasks_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[TaskAssigneesResponse]:
+    """Return the assignee directory used by the admin-only global task filter."""
+
     try:
         rows = await service.list_task_assignees(q=q, limit=limit)
         options: list[TaskAssigneeOption] = []
@@ -269,6 +281,8 @@ async def get_current_user_task_assignees(
     service: TaskReadService = Depends(get_tasks_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[TaskAssigneesResponse]:
+    """Resolve task identities that represent the authenticated app user."""
+
     try:
         rows = await service.resolve_current_user_task_assignees(
             user_id=user_ids.user_id,
