@@ -244,11 +244,11 @@ def create_get_deal_change_history(
     """Factory to create get_deal_change_history tool bound to a context.
 
     SECURITY: organisation_id comes from context (immutable, not a tool parameter).
-    The agent can pass deal_id but NOT organisation_id.
+    deal_id can be passed explicitly or inherited from the current deal context.
     """
 
     async def get_deal_change_history_tool(
-        deal_id: str,
+        deal_id: str | None = None,
         limit: int = 50,
     ) -> dict[str, Any] | None:
         """Get the stage change history for a deal.
@@ -258,7 +258,7 @@ def create_get_deal_change_history(
         with timestamps and time spent in each stage.
 
         Args:
-            deal_id: The deal UUID (from search_deals or list_deals)
+            deal_id: Visible deal UUID. If omitted, uses the current deal context.
             limit: Maximum number of history records to return (default: 50)
 
         Returns:
@@ -273,11 +273,15 @@ def create_get_deal_change_history(
                 - source of the change (api, workflow, user)
             - summary: total_stage_changes, first_stage_at, last_stage_at
         """
-        logger.info("[TOOL CALLED] get_deal_change_history - deal_id='%s'", deal_id)
+        effective_deal_id = deal_id or (str(context.deal_id) if context.deal_id else None)
+        logger.info(
+            "[TOOL CALLED] get_deal_change_history - deal_id='%s'",
+            effective_deal_id,
+        )
 
-        if not context.organisation_id:
+        if not context.organisation_id or not effective_deal_id:
             logger.warning(
-                "get_deal_change_history unavailable: missing organisation_id in context"
+                "get_deal_change_history unavailable: missing organisation or deal context"
             )
             return None
 
@@ -286,7 +290,7 @@ def create_get_deal_change_history(
             tool_name="GetDealChangeHistory",
             tool_func=get_deal_change_history,
             parameters={
-                "deal_id": deal_id,
+                "deal_id": effective_deal_id,
                 "context": context,
                 "limit": limit,
             },

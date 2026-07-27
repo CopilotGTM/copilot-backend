@@ -19,7 +19,7 @@ RETURNS:
 SECURITY BOUNDARIES (immutable, from context):
 - organisation_id: Prevents cross-org data access
 
-This is an ORG-SCOPED tool. organisation_id comes from context.
+An optional deal_id selects one association after the shared access check.
 """
 
 from __future__ import annotations
@@ -32,10 +32,21 @@ from uuid import UUID
 from sqlalchemy import select
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import (
+    AgentCRMAccessError,
+    require_agent_deal_access,
+    resolve_agent_deal_id,
+)
 from src.domain.models.organisation_tables.sync.calendar import (
+    AssociationStatus,
     CalendarEvent,
     CalendarEventDealAssociation,
+    CalendarEventUserState,
     GenerationStatus,
+)
+from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
+from src.service.integrations.calendar.integration_types import (
+    PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPE_VALUES as CALENDAR_INTEGRATION_TYPES,
 )
 
 if TYPE_CHECKING:
@@ -49,6 +60,7 @@ async def get_meeting_summary(
     event_id: str,
     *,
     context: AgentContext,
+    deal_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Get the AI-generated summary for a meeting.
 
@@ -63,6 +75,10 @@ async def get_meeting_summary(
         Dictionary with status and summary data, or None if not found.
     """
     organisation_id = context.organisation_id
+    try:
+        effective_deal_id = resolve_agent_deal_id(context, deal_id)
+    except AgentCRMAccessError:
+        return None
 
     if not organisation_id:
         logger.warning("get_meeting_summary: missing organisation_id in context")
@@ -78,12 +94,37 @@ async def get_meeting_summary(
     assoc_c = cast(Any, CalendarEventDealAssociation).__table__.c
 
     # First get the event to verify it belongs to this org
-    event_stmt = select(CalendarEvent).where(
+    event_stmt = select(CalendarEvent)
+    if effective_deal_id is None:
+        if context.user_id is None:
+            return None
+        user_state_c = cast(Any, CalendarEventUserState).__table__.c
+        integration_c = cast(Any, KnowledgeIntegration).__table__.c
+        event_stmt = event_stmt.join(
+            CalendarEventUserState,
+            user_state_c.event_id == event_c.event_id,
+        ).join(
+            KnowledgeIntegration,
+            integration_c.integration_id == user_state_c.integration_id,
+        )
+        event_stmt = event_stmt.where(
+            user_state_c.is_deleted.is_(False),
+            integration_c.organisation_id == organisation_id,
+            integration_c.created_by_user_id == context.user_id,
+            integration_c.is_active.is_(True),
+            integration_c.integration_type.in_(CALENDAR_INTEGRATION_TYPES),
+        )
+    event_stmt = event_stmt.where(
         event_c.organisation_id == organisation_id,
         event_c.event_id == parsed_event_id,
-    )
+    ).limit(1)
 
     async with context.acquire_session() as session:
+        if effective_deal_id:
+            try:
+                await require_agent_deal_access(context, session, effective_deal_id)
+            except AgentCRMAccessError:
+                return None
         try:
             event_result = await session.execute(event_stmt)
             event = event_result.scalar_one_or_none()
@@ -95,15 +136,16 @@ async def get_meeting_summary(
             logger.info("get_meeting_summary: event not found: %s", event_id)
             return None
 
-        # Get the deal association which contains the summary.
-        # A meeting can be associated with multiple deals, so scope by
-        # deal_id when available; otherwise prefer the one with a completed summary.
+        # A meeting can be associated with multiple deals. Honor the selected
+        # deal when present; otherwise preserve the legacy completed-summary preference.
         assoc_stmt = select(CalendarEventDealAssociation).where(
+            assoc_c.organisation_id == organisation_id,
             assoc_c.event_id == parsed_event_id,
+            assoc_c.status == AssociationStatus.ACTIVE,
         )
 
-        if context.deal_id:
-            assoc_stmt = assoc_stmt.where(assoc_c.deal_id == context.deal_id)
+        if effective_deal_id:
+            assoc_stmt = assoc_stmt.where(assoc_c.deal_id == effective_deal_id)
 
         assoc_stmt = assoc_stmt.order_by(assoc_c.meeting_summary_status.asc()).limit(1)
 
@@ -160,11 +202,12 @@ def create_get_meeting_summary(
 ) -> Callable[..., Any]:
     """Factory to create get_meeting_summary tool bound to a context.
 
-    SECURITY: organisation_id comes from context (immutable).
+    SECURITY: organisation_id is immutable; explicit deals are access checked.
     """
 
     async def get_meeting_summary_tool(
         event_id: str,
+        deal_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Get the AI-generated summary for a meeting.
 
@@ -173,6 +216,7 @@ def create_get_meeting_summary(
 
         Args:
             event_id: The meeting/calendar event UUID
+            deal_id: Visible deal UUID. If omitted, uses current deal context.
 
         Returns:
         - status: COMPLETED, PENDING, IN_PROGRESS, NOT_STARTED, or FAILED
@@ -195,6 +239,7 @@ def create_get_meeting_summary(
             parameters={
                 "event_id": event_id,
                 "context": context,
+                "deal_id": deal_id,
             },
             description="Reviewing meeting summary",
             fallback_value=None,

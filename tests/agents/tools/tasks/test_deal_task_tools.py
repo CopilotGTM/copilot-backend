@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -302,6 +303,56 @@ async def test_list_deal_tasks_marks_crm_synced_tasks_read_only(
     assert result["status"] == "ok"
     assert result["deal_id"] == str(context.deal_id)
     assert [task["read_only"] for task in result["tasks"]] == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_list_deal_tasks_accepts_visible_explicit_deal_id(
+    context: AgentContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A human-facing agent may list a searched deal without page deal context."""
+    explicit_deal_id = uuid4()
+    context.deal_id = None
+    context.user_id = uuid4()
+    access_check = AsyncMock()
+    monkeypatch.setattr(
+        "src.agents.tools.tasks.list_deal_tasks.DealTaskAutomationService",
+        _FakeService,
+    )
+    monkeypatch.setattr(
+        "src.agents.tools.tasks.list_deal_tasks.require_agent_deal_access",
+        access_check,
+        raising=False,
+    )
+
+    result = await create_list_deal_tasks(context, lambda: None)(deal_id=str(explicit_deal_id))
+
+    assert result["status"] == "ok"
+    assert result["deal_id"] == str(explicit_deal_id)
+    assert _FakeService.instances[-1].listed_deal_id == explicit_deal_id
+    access_check.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_listing_another_deal_does_not_unlock_context_deal_writes(
+    context: AgentContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reading deal B cannot satisfy deal A's read-before-write guard."""
+    explicit_deal_id = uuid4()
+    context.user_id = uuid4()
+    monkeypatch.setattr(
+        "src.agents.tools.tasks.list_deal_tasks.DealTaskAutomationService",
+        _FakeService,
+    )
+    monkeypatch.setattr(
+        "src.agents.tools.tasks.list_deal_tasks.require_agent_deal_access",
+        AsyncMock(),
+    )
+
+    await create_list_deal_tasks(context, lambda: None)(deal_id=str(explicit_deal_id))
+    result = await create_create_deal_task(context, lambda: None)(title="Send proposal")
+
+    assert result["status"] == "error"
+    assert "ListDealTasks" in result["message"]
 
 
 @pytest.mark.asyncio

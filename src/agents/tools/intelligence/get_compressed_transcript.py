@@ -4,7 +4,8 @@ Fetches transcript segments from DB, then uses TranscriptCompressionAgent
 to condense them into speaker-attributed key points. The raw transcript
 never enters the parent agent's context — only the compressed output.
 
-SECURITY: organisation_id is taken from context (immutable).
+SECURITY: organisation_id is immutable. Optional deal scope must match an active
+event association before transcript content is loaded.
 """
 
 from __future__ import annotations
@@ -19,10 +20,24 @@ from sqlalchemy.orm import selectinload
 
 from src.agents.sub_agents.transcript_compression import TranscriptCompressionAgent
 from src.agents.tools.base import execute_with_capabilities
-from src.domain.models.organisation_tables.sync.calendar import CalendarEvent
+from src.agents.tools.crm.access import (
+    AgentCRMAccessError,
+    require_agent_deal_access,
+    resolve_agent_deal_id,
+)
+from src.domain.models.organisation_tables.sync.calendar import (
+    AssociationStatus,
+    CalendarEvent,
+    CalendarEventDealAssociation,
+    CalendarEventUserState,
+)
+from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     Meeting,
     MeetingStatus,
+)
+from src.service.integrations.calendar.integration_types import (
+    PROVIDER_PARENT_CALENDAR_INTEGRATION_TYPE_VALUES as CALENDAR_INTEGRATION_TYPES,
 )
 from src.service.integrations.transcripts import TranscriptService
 
@@ -66,6 +81,7 @@ async def get_compressed_transcript(
     event_id: str,
     *,
     context: AgentContext,
+    deal_id: str | None = None,
     org_name: str = "Our Organization",
 ) -> dict[str, Any] | None:
     """Fetch transcript segments, compress via sub-agent, return condensed output.
@@ -80,6 +96,10 @@ async def get_compressed_transcript(
     SECURITY: organisation_id comes from context, not parameters.
     """
     organisation_id = context.organisation_id
+    try:
+        effective_deal_id = resolve_agent_deal_id(context, deal_id)
+    except AgentCRMAccessError:
+        return None
     if not organisation_id:
         logger.warning("get_compressed_transcript: missing organisation_id in context")
         return None
@@ -88,6 +108,57 @@ async def get_compressed_transcript(
         parsed_event_id = UUID(event_id)
     except ValueError:
         logger.warning("get_compressed_transcript: invalid event_id: %s", event_id)
+        return None
+
+    if effective_deal_id:
+        async with context.acquire_session() as session:
+            try:
+                await require_agent_deal_access(context, session, effective_deal_id)
+            except AgentCRMAccessError:
+                return None
+            association_c = cast(Any, CalendarEventDealAssociation).__table__.c
+            # The event UUID is caller-supplied; require its active org/deal
+            # association before a provider fetch can expose transcript content.
+            association = await session.execute(
+                select(association_c.association_id).where(
+                    association_c.organisation_id == organisation_id,
+                    association_c.deal_id == effective_deal_id,
+                    association_c.event_id == parsed_event_id,
+                    association_c.status == AssociationStatus.ACTIVE,
+                )
+            )
+            if association.scalar_one_or_none() is None:
+                return None
+    elif context.user_id:
+        async with context.acquire_session() as session:
+            user_state_c = cast(Any, CalendarEventUserState).__table__.c
+            integration_c = cast(Any, KnowledgeIntegration).__table__.c
+            # Without deal scope, the caller's active calendar integration is
+            # the authorization boundary for this externally supplied event UUID.
+            owned_event = await session.execute(
+                select(CalendarEvent.event_id)
+                .join(
+                    CalendarEventUserState,
+                    user_state_c.event_id == CalendarEvent.event_id,
+                )
+                .join(
+                    KnowledgeIntegration,
+                    integration_c.integration_id == user_state_c.integration_id,
+                )
+                .where(
+                    CalendarEvent.organisation_id == organisation_id,
+                    CalendarEvent.event_id == parsed_event_id,
+                    user_state_c.is_deleted.is_(False),
+                    integration_c.organisation_id == organisation_id,
+                    integration_c.created_by_user_id == context.user_id,
+                    integration_c.is_active.is_(True),
+                    integration_c.integration_type.in_(CALENDAR_INTEGRATION_TYPES),
+                )
+                .limit(1)
+            )
+            if owned_event.scalar_one_or_none() is None:
+                return None
+    else:
         return None
 
     # Step 1: Ensure transcript exists
@@ -224,11 +295,13 @@ def create_get_compressed_transcript(
 ) -> Callable[..., Any]:
     """Factory to create get_compressed_transcript tool bound to a context.
 
-    SECURITY: The context contains the immutable organisation_id.
+    SECURITY: Context contains immutable organisation identity; optional deal
+    scope is authorized before transcript provider access.
     """
 
     async def get_compressed_transcript_tool(
         event_id: str,
+        deal_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Get a compressed, speaker-attributed summary of a meeting transcript.
 
@@ -241,6 +314,7 @@ def create_get_compressed_transcript(
 
         Args:
             event_id: The calendar event UUID (from list_deal_meetings)
+            deal_id: Visible deal UUID. If omitted, uses current deal context.
 
         Note: organisation_id is automatically set from context and cannot be overridden.
         """
@@ -260,6 +334,7 @@ def create_get_compressed_transcript(
             parameters={
                 "event_id": event_id,
                 "context": context,
+                "deal_id": deal_id,
                 "org_name": context.org_name,
             },
             description="Reading meeting transcript",

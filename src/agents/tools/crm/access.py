@@ -26,6 +26,23 @@ class AgentCRMAccessError(Exception):
     """Raised when an agent run lacks a human identity or deal permission."""
 
 
+def resolve_agent_deal_id(context: AgentContext, deal_id: str | UUID | None) -> UUID | None:
+    """Resolve an optional tool argument without letting a system run change deals.
+
+    Human chat agents may select another visible deal after a search. Userless
+    scheduled agents remain bound to the immutable deal placed in their context.
+    """
+    if deal_id is None:
+        return context.deal_id
+    try:
+        resolved = deal_id if isinstance(deal_id, UUID) else UUID(deal_id)
+    except ValueError as exc:
+        raise AgentCRMAccessError("Invalid deal_id") from exc
+    if context.user_id is None and context.deal_id is not None and resolved != context.deal_id:
+        raise AgentCRMAccessError("System workflow is bound to a different deal")
+    return resolved
+
+
 async def resolve_agent_access_actor(context: AgentContext) -> CRMActor:
     """Resolve the authenticated app user represented by an agent invocation."""
     if context.user_id is None:
