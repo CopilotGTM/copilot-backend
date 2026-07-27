@@ -14,8 +14,10 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from src.api.dependencies.organisation_dependencies import UserIDs, get_current_user
 from src.api.presenters.crm.task_presenter import present_task_detail
 from src.api.schemas.crm_task_models import CreateTaskRequest
+from src.domain.models.master_tables.user_models import UserAppRole
 
 from tests.api.routers.crm.conftest import create_task
 
@@ -38,19 +40,88 @@ def test_global_tasks_defaults_to_assigned_to_me(client: TestClient, tasks_depen
     assert call["assigned_to_key"] is None
 
 
-def test_global_tasks_rejects_user_scope_without_selected_assignee(
+def test_global_tasks_members_cannot_select_another_assignee(
     client: TestClient, tasks_dependency_overrides
 ):
-    resp = client.get("/users/crm/tasks", params={"scope": "assigned_to_user"})
+    """Members cannot switch the global list from their own tasks to another user."""
 
-    assert resp.status_code == 400, resp.text
-    assert "assigned_to_key is required" in resp.json()["message"]
+    resp = client.get(
+        "/users/crm/tasks",
+        params={
+            "scope": "assigned_to_user",
+            "assigned_to_key": "email:other@example.com",
+        },
+    )
+
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"] == "Administrator access required"
+
+
+def test_global_tasks_members_cannot_bypass_my_scope_with_assignee_key(
+    client: TestClient, tasks_dependency_overrides
+):
+    """An assignee key cannot bypass the member-only My Tasks boundary."""
+
+    resp = client.get(
+        "/users/crm/tasks",
+        params={"assigned_to_key": "email:other@example.com"},
+    )
+
+    assert resp.status_code == 403, resp.text
+
+
+def test_global_tasks_admin_can_select_another_assignee(
+    client: TestClient, tasks_dependency_overrides
+):
+    """Admins can deliberately query tasks assigned to another visible user."""
+
+    from src.infra.utils.app_state import fastapp
+
+    user_ids = tasks_dependency_overrides["user_ids"]
+    fastapp.dependency_overrides[get_current_user] = lambda: UserIDs(
+        user_id=user_ids["user_id"],
+        organisation_id=user_ids["organisation_id"],
+        user_name="Test Admin",
+        user_email="test@example.com",
+        user_role=UserAppRole.ADMIN,
+    )
+
+    resp = client.get(
+        "/users/crm/tasks",
+        params={
+            "scope": "assigned_to_user",
+            "assigned_to_key": "email:other@example.com",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    call = tasks_dependency_overrides["service"].list_tasks_calls[-1]
+    assert call["scope"] == "assigned_to_user"
+    assert call["assigned_to_key"] == "email:other@example.com"
+
+
+def test_global_tasks_assigned_by_me_scope_is_removed(
+    client: TestClient, tasks_dependency_overrides
+):
+    """The obsolete creator-oriented scope is no longer part of the public API."""
+
+    resp = client.get("/users/crm/tasks", params={"scope": "assigned_by_me"})
+
+    assert resp.status_code == 422, resp.text
 
 
 def test_global_tasks_all_scope_is_not_available(client: TestClient, tasks_dependency_overrides):
     resp = client.get("/users/crm/tasks", params={"scope": "all"})
 
     assert resp.status_code == 422, resp.text
+
+
+def test_task_assignee_directory_requires_admin(client: TestClient, tasks_dependency_overrides):
+    """The organisation assignee directory is available only to admins."""
+
+    resp = client.get("/users/crm/tasks/assignees")
+
+    assert resp.status_code == 403, resp.text
 
 
 def test_current_user_task_assignees(client: TestClient, tasks_dependency_overrides):

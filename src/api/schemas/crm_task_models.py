@@ -495,7 +495,7 @@ class GlobalTaskListParams(BaseModel):
 
     scope: str = Field(
         default="assigned_to_me",
-        description="Task scope: assigned_to_me, assigned_by_me, or assigned_to_user.",
+        description="Task scope: assigned_to_me or assigned_to_user.",
     )
     deal_id: UUID | None = Field(default=None, description="Filter by deal")
     statuses: list[str] | None = Field(default=None, description="Filter by statuses")
