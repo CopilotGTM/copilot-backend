@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID
@@ -142,6 +142,7 @@ class TaskReadService:
 
     @property
     def session(self) -> AsyncSession:
+        """Expose the caller-owned organisation session for compatibility facades."""
         return self.org_session
 
     async def list_tasks_by_deal(
@@ -207,6 +208,7 @@ class TaskReadService:
         created_by_user_id: UUID | None = None,
         due_from: datetime | None = None,
         due_to: datetime | None = None,
+        due_local_date: date | None = None,
         is_overdue: bool | None = None,
         has_due_date: bool | None = None,
         include_completed: bool = False,
@@ -279,11 +281,26 @@ class TaskReadService:
             stmt = stmt.where(c.created_by_user_id == created_by_user_id)
 
         due_expr = func.coalesce(c.due_at, sql_cast(c.due_date, DateTime(timezone=True)))
-        if due_from is not None:
-            stmt = stmt.where(due_expr >= due_from)
+        if due_local_date is not None:
+            # Timed tasks are UTC instants, while date-only tasks are already a
+            # local calendar date. Coalescing them would shift "today" by timezone.
+            timed_conditions = [c.due_at.isnot(None)]
+            if due_from is not None:
+                timed_conditions.append(c.due_at >= due_from)
+            if due_to is not None:
+                timed_conditions.append(c.due_at <= due_to)
+            stmt = stmt.where(
+                or_(
+                    and_(*timed_conditions),
+                    and_(c.due_at.is_(None), c.due_date == due_local_date),
+                )
+            )
+        else:
+            if due_from is not None:
+                stmt = stmt.where(due_expr >= due_from)
 
-        if due_to is not None:
-            stmt = stmt.where(due_expr <= due_to)
+            if due_to is not None:
+                stmt = stmt.where(due_expr <= due_to)
 
         if has_due_date is True:
             stmt = stmt.where(or_(c.due_at.isnot(None), c.due_date.isnot(None)))
@@ -405,6 +422,7 @@ class TaskReadService:
         user_id: UUID,
         user_email: str | None,
     ) -> list[dict[str, Any]]:
+        """Return stored assignee identities that represent one authenticated user."""
         c = cast(Any, CRMTask).__table__.c
         base_conditions = [
             c.organisation_id == self.organisation_id,
@@ -510,6 +528,7 @@ class TaskReadService:
         q: str | None = None,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
+        """List visible task assignees with merged identity keys and task counts."""
         c = cast(Any, CRMTask).__table__.c
         base_conditions = [
             c.organisation_id == self.organisation_id,

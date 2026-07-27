@@ -239,6 +239,20 @@ async def test_list_deal_tasks_scopes_query_to_org_deal_and_task_types() -> None
 
 
 @pytest.mark.asyncio
+async def test_list_deal_tasks_can_include_completed_for_human_chat() -> None:
+    """Human deal reads may include completed rows without changing automation defaults."""
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    session = _FakeSession()
+    service = DealTaskAutomationService(session, organisation_id)
+
+    await service.list_deal_tasks(deal_id, include_completed=True)
+
+    where_sql = str(session.executed_statements[0].whereclause)
+    assert "crm_tasks.status" not in where_sql
+
+
+@pytest.mark.asyncio
 async def test_create_ai_meeting_task_with_resolved_owner() -> None:
     """Create should persist a task with resolved assignee metadata when owner is known."""
     # Arrange: wire deterministic service outputs so only the create-task happy path is exercised.

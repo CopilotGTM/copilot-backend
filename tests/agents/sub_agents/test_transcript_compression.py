@@ -173,6 +173,7 @@ class TestToolRegistration:
         general_tools = AGENT_TOOLS["GeneralAgent"]
         assert ToolName.GET_COMPRESSED_TRANSCRIPT in general_tools
         assert ToolName.LIST_MEETINGS in general_tools
+        assert ToolName.LIST_MY_TASKS in general_tools
         assert ToolName.LIST_DEAL_TASKS in general_tools
         assert ToolName.LIST_CHAT_ATTACHMENTS in general_tools
 

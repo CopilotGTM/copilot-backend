@@ -163,6 +163,7 @@ class ToolName(str, Enum):
     # -------------------------------------------------------------------------
     CREATE_TASK = "create_task"
     UPDATE_TASK = "update_task"
+    LIST_MY_TASKS = "list_my_tasks"
     LIST_DEAL_TASKS = "list_deal_tasks"
     CREATE_DEAL_TASK = "create_deal_task"
     COMPLETE_DEAL_TASK = "complete_deal_task"
@@ -353,9 +354,10 @@ GENERAL_AGENT_TOOLS: set[ToolName] = {
     ToolName.UPDATE_DEAL_FIELDS,
     ToolName.UPDATE_DEAL_LIFECYCLE,
     ToolName.UPDATE_DEAL_ACCOUNT,
-    # Task tools (channel-only)
+    # Task tools
     ToolName.CREATE_TASK,
     ToolName.UPDATE_TASK,
+    ToolName.LIST_MY_TASKS,
     ToolName.LIST_DEAL_TASKS,
     # Reminder tools (channel-only)
     ToolName.CREATE_REMINDER,
@@ -660,6 +662,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.CREATE_LEAD: ToolCategory.CRM,
     ToolName.CREATE_DRAFT_LEAD_FORM: ToolCategory.CRM,
     ToolName.UPDATE_DRAFT_LEAD_FORM: ToolCategory.CRM,
+    ToolName.LIST_MY_TASKS: ToolCategory.CRM,
     ToolName.LIST_DEAL_TASKS: ToolCategory.CRM,
     ToolName.CREATE_DEAL_TASK: ToolCategory.CRM,
     ToolName.COMPLETE_DEAL_TASK: ToolCategory.CRM,
@@ -787,6 +790,7 @@ class ToolRegistry:
             create_create_deal_task,
             create_create_task,
             create_list_deal_tasks,
+            create_list_my_tasks,
             create_update_task,
         )
 
@@ -1001,6 +1005,9 @@ class ToolRegistry:
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.UPDATE_TASK] = lambda: create_update_task(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.LIST_MY_TASKS] = lambda: create_list_my_tasks(
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.LIST_DEAL_TASKS] = lambda: create_list_deal_tasks(

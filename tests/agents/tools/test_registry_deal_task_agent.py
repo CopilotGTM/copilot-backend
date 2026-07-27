@@ -22,3 +22,4 @@ def test_deal_task_agent_tools_are_registered() -> None:
     assert ToolName.GET_MEETING_SUMMARY in names
     assert ToolName.GET_COMPRESSED_TRANSCRIPT in names
     assert ToolName.CREATE_TASK not in names
+    assert ToolName.LIST_MY_TASKS not in names
