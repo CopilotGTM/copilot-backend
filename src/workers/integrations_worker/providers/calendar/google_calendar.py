@@ -13,6 +13,9 @@ from typing import Any
 import httpx
 
 from src.infra.utils.logger import get_logger
+from src.service.integrations.calendar_cursor_metadata import (
+    CalendarCursorMissingError,
+)
 from src.service.integrations.providers.token_resolution import (
     IntegrationTokenInfo,
     call_with_token_retry,
@@ -124,11 +127,12 @@ async def fetch_events_with_cursor(
             "timeMin": time_min.isoformat(),
             "timeMax": time_max.isoformat(),
             "singleEvents": True,
+            # Google omits nextSyncToken when orderBy is present, which would
+            # make every later webhook repeat this full bounded fetch.
             # showDeleted=True so downstream status mapping sees cancellations
             # instead of silently losing events that were cancelled externally.
             "showDeleted": True,
             "maxResults": 2500,
-            "orderBy": "startTime",
         }
 
     endpoint = "/calendar/v3/calendars/primary/events"
@@ -227,6 +231,12 @@ async def fetch_events_with_cursor(
         return FetchEventsResult(events=all_items, sync_token=next_sync_token)
 
     result: FetchEventsResult = await call_with_token_retry(token_info, _do_fetch)
+    if result.sync_token is None:
+        # A terminal page without a cursor cannot support the next webhook.
+        # Fail before persistence so it is visible and cannot become a full-sync loop.
+        raise CalendarCursorMissingError(
+            f"Google Calendar completed without nextSyncToken for connection={connection_id}"
+        )
     return result
 
 

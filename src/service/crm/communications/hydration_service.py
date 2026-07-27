@@ -36,6 +36,7 @@ from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEvent,
     CalendarEventDealAssociation,
 )
+from src.domain.models.organisation_tables.sync.crm.activities import CRMActivity
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
@@ -59,6 +60,7 @@ from src.service.crm.communications.participant_resolution_service import (
     event_participants,
     identity_contact_map,
 )
+from src.service.crm.deals.last_activity_service import DealLastActivityService
 from src.service.crm.guards.internal_user_guard import FREE_EMAIL_DOMAINS
 from src.service.crm.participants.stakeholder_write_service import StakeholderWriteService
 from src.service.crm.utils.identity import normalize_email
@@ -164,6 +166,7 @@ class ContactCommunicationHydrationService:
             identity_contacts=resolution.identity_contacts,
             integration_id=integration_id,
             replace_links=True,
+            target_deal_ids=None,
         )
         # --- Step 3: create qualifying deal links and collect discovery candidates ---
         # Deal association consumes the exact contacts resolved above. Running it after direct
@@ -330,6 +333,7 @@ class ContactCommunicationHydrationService:
                 identity_contacts=resolution.identity_contacts,
                 integration_id=integration_id,
                 replace_links=False,
+                target_deal_ids=target_deal_ids,
             )
             # Association follows direct projection in the same transaction. If it
             # rolls back, neither partial card ownership nor stakeholder writes commit.
@@ -519,6 +523,7 @@ class ContactCommunicationHydrationService:
         identity_contacts: dict[str, CRMContact],
         integration_id: UUID | None,
         replace_links: bool,
+        target_deal_ids: set[UUID] | None,
     ) -> int:
         """Project loaded communications onto resolved contacts and their companies.
 
@@ -528,11 +533,22 @@ class ContactCommunicationHydrationService:
         """
         email_associations = await self._load_email_associations(emails)
         event_associations = await self._load_event_associations(events)
+        association_ids = {
+            association.association_id
+            for associations in [*email_associations.values(), *event_associations.values()]
+            for association in associations
+        }
+        active_activity_ids = (
+            await self._load_active_activity_ids(association_ids)
+            if target_deal_ids is not None
+            else set()
+        )
         projection = ActivityFeedProjectionService(
             self.org_session,
             self.organisation_id,
         )
         projected = 0
+        projected_deal_ids: set[UUID] = set()
 
         # Existing association rows own deal-visible email cards; participant links
         # still include every eligible contact resolved from the source message.
@@ -547,7 +563,18 @@ class ContactCommunicationHydrationService:
             )
             if email_associations_for_record:
                 for email_association in email_associations_for_record:
-                    await projection.upsert_email_association(email_association, email)
+                    if (
+                        target_deal_ids is None
+                        or email_association.deal_id in target_deal_ids
+                        or email_association.association_id not in active_activity_ids
+                    ):
+                        await projection.upsert_email_association(
+                            email_association,
+                            email,
+                            refresh_deal_activity=False,
+                        )
+                        projected_deal_ids.add(email_association.deal_id)
+                        projected += 1
                     await projection.sync_communication_participant_links(
                         activity_id=email_association.association_id,
                         contact_ids=contact_ids,
@@ -560,7 +587,6 @@ class ContactCommunicationHydrationService:
                         ),
                         replace_existing=replace_links,
                     )
-                    projected += 1
             else:
                 if await projection.upsert_direct_email(
                     email,
@@ -583,11 +609,19 @@ class ContactCommunicationHydrationService:
             meeting_associations_for_event = event_associations.get(event.event_id, [])
             if meeting_associations_for_event:
                 for meeting_association in meeting_associations_for_event:
-                    await projection.upsert_meeting_association(
-                        meeting_association,
-                        event,
-                        integration_id=integration_id,
-                    )
+                    if (
+                        target_deal_ids is None
+                        or meeting_association.deal_id in target_deal_ids
+                        or meeting_association.association_id not in active_activity_ids
+                    ):
+                        await projection.upsert_meeting_association(
+                            meeting_association,
+                            event,
+                            integration_id=integration_id,
+                            refresh_deal_activity=False,
+                        )
+                        projected_deal_ids.add(meeting_association.deal_id)
+                        projected += 1
                     now = datetime.now(UTC)
                     await projection.sync_communication_participant_links(
                         activity_id=meeting_association.association_id,
@@ -601,7 +635,6 @@ class ContactCommunicationHydrationService:
                         or now,
                         replace_existing=replace_links,
                     )
-                    projected += 1
             else:
                 if await projection.upsert_direct_meeting(
                     event,
@@ -611,7 +644,23 @@ class ContactCommunicationHydrationService:
                     replace_links=replace_links,
                 ):
                     projected += 1
+        refresher = DealLastActivityService(self.org_session, self.organisation_id)
+        for deal_id in sorted(projected_deal_ids, key=str):
+            await refresher.refresh_deal(deal_id)
         return projected
+
+    async def _load_active_activity_ids(self, activity_ids: set[UUID]) -> set[UUID]:
+        """Return association-owned cards that participant links may safely reference."""
+        if not activity_ids:
+            return set()
+        result = await self.org_session.execute(
+            select(col(CRMActivity.activity_id)).where(
+                col(CRMActivity.organisation_id) == self.organisation_id,
+                col(CRMActivity.activity_id).in_(activity_ids),
+                col(CRMActivity.is_deleted).is_(False),
+            )
+        )
+        return set(result.scalars().all())
 
     async def _load_context(self) -> ContactCommunicationHydrationContext:
         """Load tenant-local people, domains, and integration mailboxes for eligibility checks."""
@@ -807,13 +856,12 @@ class ContactCommunicationHydrationService:
         message_ids = {email.internet_message_id for email in emails if email.internet_message_id}
         if not message_ids:
             return {}
-        result = await self.org_session.execute(
-            select(DealEmailAssociation).where(
-                col(DealEmailAssociation.organisation_id) == self.organisation_id,
-                col(DealEmailAssociation.internet_message_id).in_(message_ids),
-                col(DealEmailAssociation.status) == AssociationStatus.ACTIVE.value,
-            )
+        statement = select(DealEmailAssociation).where(
+            col(DealEmailAssociation.organisation_id) == self.organisation_id,
+            col(DealEmailAssociation.internet_message_id).in_(message_ids),
+            col(DealEmailAssociation.status) == AssociationStatus.ACTIVE.value,
         )
+        result = await self.org_session.execute(statement)
         grouped: dict[str, list[DealEmailAssociation]] = {}
         for association in result.scalars().all():
             grouped.setdefault(association.internet_message_id, []).append(association)
@@ -827,13 +875,12 @@ class ContactCommunicationHydrationService:
         event_ids = {event.event_id for event in events}
         if not event_ids:
             return {}
-        result = await self.org_session.execute(
-            select(CalendarEventDealAssociation).where(
-                col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
-                col(CalendarEventDealAssociation.event_id).in_(event_ids),
-                col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE.value,
-            )
+        statement = select(CalendarEventDealAssociation).where(
+            col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
+            col(CalendarEventDealAssociation.event_id).in_(event_ids),
+            col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE.value,
         )
+        result = await self.org_session.execute(statement)
         grouped: dict[UUID, list[CalendarEventDealAssociation]] = {}
         for association in result.scalars().all():
             grouped.setdefault(association.event_id, []).append(association)

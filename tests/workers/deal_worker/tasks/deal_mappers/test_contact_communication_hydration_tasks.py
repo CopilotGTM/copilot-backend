@@ -23,6 +23,12 @@ def test_hydration_task_is_owned_by_the_bounded_deal_queue() -> None:
     }
 
 
+def test_hydration_task_allows_twenty_minutes_before_soft_timeout() -> None:
+    """Long tenant batches get 20 minutes plus one minute to unwind before termination."""
+    assert hydrate_contact_communications_task.soft_time_limit == 1200
+    assert hydrate_contact_communications_task.time_limit == 1260
+
+
 def test_hydration_task_retries_org_lock_contention_without_using_a_worker_slot(
     monkeypatch,
 ) -> None:

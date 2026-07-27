@@ -51,6 +51,7 @@ from src.service.crm.communications.participant_resolution_service import (
     build_contact_communication_hydration_plan,
 )
 from src.service.crm.contacts.write_service import ContactWriteService
+from src.service.crm.deals.last_activity_service import DealLastActivityService
 from src.service.crm.utils.account import normalize_account_domain
 from src.service.crm.utils.identity import extract_email_domain, normalize_email
 from src.service.integrations.email.mailbox_identity_resolver import (
@@ -175,7 +176,11 @@ class CommunicationDealAssociationService:
         )
         # Existing links make retries idempotent, but the current participant
         # predicates below still decide whether each communication qualifies.
-        email_deals, event_deals = await self._load_existing_deal_ids(emails, events)
+        email_deals, event_deals = await self._load_existing_deal_ids(
+            emails,
+            events,
+            deal_ids=target_deal_ids,
+        )
         prepared_emails = [
             (
                 email,
@@ -215,13 +220,16 @@ class CommunicationDealAssociationService:
             for _, communication in [*prepared_emails, *prepared_events]
             for contact_id in communication.contact_ids
         }
-        # Resolve against every eligible deal before applying an optional replay target.
-        deals = await self._load_deal_candidates(contact_ids)
+        deals = await self._load_deal_candidates(
+            contact_ids,
+            deal_ids=target_deal_ids,
+        )
         deals_by_id = {deal.deal_id: deal for deal in deals}
         result = CommunicationDealAssociationResult(
             considered=len(emails) + len(events),
             associations_deactivated=cancelled_count,
         )
+        projected_deal_ids: set[UUID] = set()
         pending_discovery: dict[
             tuple[UUID, StakeholderSource],
             dict[UUID, set[str]],
@@ -281,6 +289,7 @@ class CommunicationDealAssociationService:
                     contact_emails=set(communication.contact_emails),
                 ):
                     result.associations_created += 1
+                    projected_deal_ids.add(deal_id)
                     if discover_participants:
                         remember_discovery(
                             deal_id,
@@ -325,6 +334,7 @@ class CommunicationDealAssociationService:
                     integration_id=integration_id,
                 ):
                     result.associations_created += 1
+                    projected_deal_ids.add(deal_id)
                     if discover_participants:
                         remember_discovery(
                             deal_id,
@@ -358,6 +368,9 @@ class CommunicationDealAssociationService:
                 )
             )
 
+        refresher = DealLastActivityService(self.session, self.organisation_id)
+        for deal_id in sorted(projected_deal_ids, key=str):
+            await refresher.refresh_deal(deal_id)
         return result
 
     async def reconcile_deal_associations(
@@ -388,7 +401,7 @@ class CommunicationDealAssociationService:
             self.organisation_id,
         ).find_contacts_by_email_batch(sorted(plan.activity_identities))
         contact_ids = {contact.contact_id for contact in identity_contacts.values()}
-        deals = await self._load_deal_candidates(contact_ids)
+        deals = await self._load_deal_candidates(contact_ids, deal_ids=set(deal_ids))
         deals_by_id = {deal.deal_id: deal for deal in deals}
         projection = ActivityFeedProjectionService(self.session, self.organisation_id)
         removed = 0
@@ -582,21 +595,28 @@ class CommunicationDealAssociationService:
         self,
         emails: list[Email],
         events: list[CalendarEvent],
+        *,
+        deal_ids: set[UUID] | None = None,
     ) -> tuple[dict[str, set[UUID]], dict[UUID, set[UUID]]]:
         """Load active associations as retry state, grouped by source identity."""
         email_deals: dict[str, set[UUID]] = {}
         event_deals: dict[UUID, set[UUID]] = {}
+        if deal_ids is not None and not deal_ids:
+            return email_deals, event_deals
         message_ids = {email.internet_message_id for email in emails if email.internet_message_id}
         if message_ids:
             # The org predicate is the tenant boundary; a provider message ID is not trusted
             # to be globally unique across connected customer mailboxes.
-            email_rows = await self.session.execute(
-                select(DealEmailAssociation).where(
-                    col(DealEmailAssociation.organisation_id) == self.organisation_id,
-                    col(DealEmailAssociation.internet_message_id).in_(message_ids),
-                    col(DealEmailAssociation.status) == AssociationStatus.ACTIVE.value,
-                )
+            email_statement = select(DealEmailAssociation).where(
+                col(DealEmailAssociation.organisation_id) == self.organisation_id,
+                col(DealEmailAssociation.internet_message_id).in_(message_ids),
+                col(DealEmailAssociation.status) == AssociationStatus.ACTIVE.value,
             )
+            if deal_ids is not None:
+                email_statement = email_statement.where(
+                    col(DealEmailAssociation.deal_id).in_(deal_ids)
+                )
+            email_rows = await self.session.execute(email_statement)
             for email_association in email_rows.scalars().all():
                 email_deals.setdefault(email_association.internet_message_id, set()).add(
                     email_association.deal_id
@@ -604,13 +624,16 @@ class CommunicationDealAssociationService:
 
         event_ids = {event.event_id for event in events}
         if event_ids:
-            event_rows = await self.session.execute(
-                select(CalendarEventDealAssociation).where(
-                    col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
-                    col(CalendarEventDealAssociation.event_id).in_(event_ids),
-                    col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE.value,
-                )
+            event_statement = select(CalendarEventDealAssociation).where(
+                col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
+                col(CalendarEventDealAssociation.event_id).in_(event_ids),
+                col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE.value,
             )
+            if deal_ids is not None:
+                event_statement = event_statement.where(
+                    col(CalendarEventDealAssociation.deal_id).in_(deal_ids)
+                )
+            event_rows = await self.session.execute(event_statement)
             for event_association in event_rows.scalars().all():
                 event_deals.setdefault(event_association.event_id, set()).add(
                     event_association.deal_id
@@ -620,6 +643,8 @@ class CommunicationDealAssociationService:
     async def _load_deal_candidates(
         self,
         contact_ids: set[UUID],
+        *,
+        deal_ids: set[UUID] | None = None,
     ) -> list[DealCandidate]:
         """Load open deals eligible through at least one approved resolved contact.
 
@@ -627,7 +652,7 @@ class CommunicationDealAssociationService:
         active user participants, or their connected mailboxes. Customer domains
         are carried only for post-match stakeholder discovery.
         """
-        if not contact_ids:
+        if not contact_ids or (deal_ids is not None and not deal_ids):
             return []
         participants_rel = cast(Any, CRMDeal.participants)
         # Start from approved contact links so a PENDING participant discovered by this flow
@@ -651,6 +676,8 @@ class CommunicationDealAssociationService:
             .options(selectinload(participants_rel))
             .distinct()
         )
+        if deal_ids is not None:
+            stmt = stmt.where(col(CRMDeal.deal_id).in_(deal_ids))
         rows = (await self.session.execute(stmt)).scalars().unique().all()
         user_ids_by_deal: dict[UUID, set[UUID]] = {}
         for deal in rows:
@@ -799,7 +826,11 @@ class CommunicationDealAssociationService:
         await ActivityFeedProjectionService(
             self.session,
             self.organisation_id,
-        ).upsert_email_association(association, email)
+        ).upsert_email_association(
+            association,
+            email,
+            refresh_deal_activity=False,
+        )
         await self._update_last_contact(
             deal_id=deal_id,
             contact_ids=contact_ids,
@@ -871,6 +902,7 @@ class CommunicationDealAssociationService:
             association,
             event,
             integration_id=integration_id,
+            refresh_deal_activity=False,
         )
         contact_time = self._completed_event_time(event)
         await self._update_last_contact(

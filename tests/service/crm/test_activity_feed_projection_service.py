@@ -599,6 +599,53 @@ async def test_email_association_projection_uses_the_same_canonical_email_row_fo
 
 
 @pytest.mark.asyncio
+async def test_email_association_projection_can_defer_deal_activity_refresh(
+    monkeypatch,
+) -> None:
+    """Hydration batches should refresh deal freshness once after projecting all cards."""
+    organisation_id = uuid4()
+    association = DealEmailAssociation(
+        association_id=uuid4(),
+        organisation_id=organisation_id,
+        deal_id=uuid4(),
+        internet_message_id="<message-1@example.com>",
+        status=AssociationStatus.ACTIVE,
+    )
+    email = Email(
+        organisation_id=organisation_id,
+        integration_id=uuid4(),
+        folder_id=uuid4(),
+        external_message_id="provider-message-1",
+        internet_message_id=association.internet_message_id,
+        from_email="buyer@example.com",
+    )
+    refreshed: list[object] = []
+
+    class FakeLastActivityService:
+        def __init__(self, _session, _organisation_id):  # noqa: ANN001
+            pass
+
+        async def refresh_deal(self, deal_id):  # noqa: ANN001
+            refreshed.append(deal_id)
+
+    monkeypatch.setattr(
+        "src.service.crm.activity_feed_projection_service.DealLastActivityService",
+        FakeLastActivityService,
+    )
+
+    await ActivityFeedProjectionService(
+        _FakeSession(),
+        organisation_id,
+    ).upsert_email_association(
+        association,
+        email,
+        refresh_deal_activity=False,
+    )
+
+    assert refreshed == []
+
+
+@pytest.mark.asyncio
 async def test_meeting_association_projection_writes_meeting_activity_and_attendee_links() -> None:
     """Meeting associations create one card with attendee contact links and deal company links."""
     organisation_id = uuid4()

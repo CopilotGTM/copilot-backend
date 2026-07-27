@@ -348,19 +348,22 @@ async def test_stale_email_association_does_not_trigger_deal_followups() -> None
 
 
 @pytest.mark.asyncio
-async def test_changed_email_associates_every_matching_deal() -> None:
-    """One email may be valid activity for multiple deals sharing its participants."""
+async def test_changed_email_associates_every_matching_deal(monkeypatch) -> None:
+    """New cards refresh each matching deal once after the whole batch."""
     contact_id = uuid4()
     deal_ids = {uuid4(), uuid4()}
-    email = SimpleNamespace(
-        email_id=uuid4(),
-        internet_message_id="message-1",
-        from_email="owner@acme.test",
-        to_emails=["buyer@customer.test"],
-        cc_emails=[],
-        bcc_emails=[],
-        has_attachments=True,
-    )
+    emails = [
+        SimpleNamespace(
+            email_id=uuid4(),
+            internet_message_id=f"message-{index}",
+            from_email="owner@acme.test",
+            to_emails=["buyer@customer.test"],
+            cc_emails=[],
+            bcc_emails=[],
+            has_attachments=True,
+        )
+        for index in range(2)
+    ]
     service = CommunicationDealAssociationService(MagicMock(), uuid4())
     service._load_existing_deal_ids = AsyncMock(return_value=({}, {}))  # type: ignore[method-assign]
     service._load_deal_candidates = AsyncMock(  # type: ignore[method-assign]
@@ -375,27 +378,37 @@ async def test_changed_email_associates_every_matching_deal() -> None:
     )
     service._associate_email = AsyncMock(return_value=True)  # type: ignore[method-assign]
     service._associate_event = AsyncMock()  # type: ignore[method-assign]
+    refresher = MagicMock()
+    refresher.refresh_deal = AsyncMock()
+    monkeypatch.setattr(
+        association_module,
+        "DealLastActivityService",
+        lambda *_args: refresher,
+        raising=False,
+    )
 
     result = await service.associate_changed_communications(
-        emails=[email],
+        emails=emails,
         events=[],
         identity_contacts={
             "buyer@customer.test": SimpleNamespace(contact_id=contact_id),
         },
         integration_id=None,
-        attachment_scope_email_ids={email.email_id},
+        attachment_scope_email_ids={email.email_id for email in emails},
     )
 
-    assert result.associations_created == 2
+    assert result.associations_created == 4
     assert result.ambiguous == 0
     assert result.email_deal_ids == deal_ids
     assert result.attachment_email_ids_by_deal == {
-        deal_id: {email.email_id} for deal_id in deal_ids
+        deal_id: {email.email_id for email in emails} for deal_id in deal_ids
     }
     assert {
         call.kwargs["deal_id"]
         for call in service._associate_email.await_args_list  # type: ignore[attr-defined]
     } == deal_ids
+    assert refresher.refresh_deal.await_count == 2
+    assert {call.args[0] for call in refresher.refresh_deal.await_args_list} == deal_ids
 
 
 @pytest.mark.asyncio
@@ -854,7 +867,10 @@ async def test_deal_candidates_use_only_open_approved_contacts_and_current_team(
     candidates = await CommunicationDealAssociationService(
         session,
         uuid4(),
-    )._load_deal_candidates({approved_contact_id, pending_contact_id})  # noqa: SLF001
+    )._load_deal_candidates(  # noqa: SLF001
+        {approved_contact_id, pending_contact_id},
+        deal_ids={deal_id},
+    )
 
     assert candidates == [
         DealCandidate(
@@ -866,6 +882,7 @@ async def test_deal_candidates_use_only_open_approved_contacts_and_current_team(
         )
     ]
     aliases_by_user.assert_awaited_once()
+    assert "crm_deals.deal_id IN" in str(session.execute.await_args.args[0])
 
 
 @pytest.mark.asyncio
@@ -991,11 +1008,14 @@ async def test_existing_associations_are_loaded_for_only_changed_sources() -> No
     )._load_existing_deal_ids(  # noqa: SLF001
         [SimpleNamespace(internet_message_id="message-1")],
         [SimpleNamespace(event_id=event_id)],
+        deal_ids={email_deal_id, event_deal_id},
     )
 
     assert email_deals == {"message-1": {email_deal_id}}
     assert event_deals == {event_id: {event_deal_id}}
     assert session.execute.await_count == 2
+    statements = [str(execute_call.args[0]) for execute_call in session.execute.await_args_list]
+    assert all("deal_id IN" in statement for statement in statements)
 
 
 @pytest.mark.asyncio
@@ -1040,7 +1060,11 @@ async def test_email_association_is_idempotent_and_projects_first_insert(monkeyp
     projected_association = projection.upsert_email_association.await_args.args[0]
     assert projected_association.internet_message_id == "message-1"
     assert projected_association.matched_stakeholder_emails == ["buyer@customer.test"]
-    projection.upsert_email_association.assert_awaited_once_with(projected_association, email)
+    projection.upsert_email_association.assert_awaited_once_with(
+        projected_association,
+        email,
+        refresh_deal_activity=False,
+    )
     update_last_contact.assert_awaited_once_with(
         deal_id=deal_id,
         contact_ids=contact_ids,
@@ -1177,6 +1201,7 @@ async def test_meeting_association_is_idempotent_and_projects_first_insert(monke
         association,
         event,
         integration_id=integration_id,
+        refresh_deal_activity=False,
     )
     update_last_contact.assert_awaited_once_with(
         deal_id=deal_id,
@@ -1434,7 +1459,10 @@ async def test_deal_replay_removes_meeting_anchored_only_by_declined_attendee(
     assert removed == 1
     assert association.status == association_module.AssociationStatus.REMOVED
     contact_writer.find_contacts_by_email_batch.assert_awaited_once_with([])
-    service._load_deal_candidates.assert_awaited_once_with(set())  # type: ignore[attr-defined]
+    service._load_deal_candidates.assert_awaited_once_with(  # type: ignore[attr-defined]
+        set(),
+        deal_ids={deal_id},
+    )
 
 
 @pytest.mark.asyncio
