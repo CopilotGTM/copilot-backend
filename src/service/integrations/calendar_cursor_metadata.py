@@ -34,6 +34,10 @@ CALENDAR_PARTIAL_RETRY_LIMIT = 3
 CALENDAR_FAILED_ID_LIMIT = 20
 
 
+class CalendarCursorMissingError(RuntimeError):
+    """Provider completed a Calendar sync without a reusable next cursor."""
+
+
 @dataclass(frozen=True)
 class CalendarSyncPersistenceOutcome:
     """Result of applying one persisted calendar page to cursor and health state."""
@@ -108,6 +112,14 @@ def apply_calendar_sync_outcome(
     preserving their existing storage contract during rollout.
     """
     status = str(sync_result.get("status") or "failed")
+    valid_next_cursor = (
+        next_cursor if isinstance(next_cursor, str) and next_cursor.strip() else None
+    )
+    if status == "success" and valid_next_cursor is None:
+        # last_synced_at and its cursor are one checkpoint. Advancing only the
+        # timestamp converts every later webhook into another full provider read.
+        raise CalendarCursorMissingError("Calendar sync succeeded without a next cursor")
+
     failed_record_ids = [
         str(value)[:200] for value in sync_result.get("failed_record_ids", []) if value is not None
     ][:CALENDAR_FAILED_ID_LIMIT]
@@ -118,7 +130,7 @@ def apply_calendar_sync_outcome(
 
     quarantined = False
     partial_attempts = 0
-    cursor_advanced = status == "success" and next_cursor is not None
+    cursor_advanced = status == "success" and valid_next_cursor is not None
 
     if status == "partial":
         fingerprint = _partial_fingerprint(input_cursor, failed_record_ids)
@@ -131,7 +143,9 @@ def apply_calendar_sync_outcome(
             else 0
         )
         partial_attempts = previous_attempts + 1
-        quarantined = partial_attempts >= CALENDAR_PARTIAL_RETRY_LIMIT and next_cursor is not None
+        quarantined = (
+            partial_attempts >= CALENDAR_PARTIAL_RETRY_LIMIT and valid_next_cursor is not None
+        )
         cursor_advanced = quarantined
 
         diagnostic = {
@@ -151,7 +165,7 @@ def apply_calendar_sync_outcome(
             cursor_metadata = set_calendar_delta_link(
                 cursor_metadata,
                 integration_type,
-                next_cursor,
+                valid_next_cursor,
             )
         state.cursor_metadata = cursor_metadata
         state.sync_metadata = health_metadata
@@ -171,7 +185,7 @@ def apply_calendar_sync_outcome(
             health_metadata = set_calendar_delta_link(
                 health_metadata,
                 integration_type,
-                next_cursor,
+                valid_next_cursor,
             )
         integration.connection_metadata = health_metadata
         integration.last_sync_status = status

@@ -4,6 +4,7 @@ import inspect
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from src.domain.models.organisation_tables.sync import IntegrationType
 from src.service.integrations.calendar_cursor_metadata import (
     CALENDAR_LAST_QUARANTINE_KEY,
@@ -131,6 +132,25 @@ def test_success_clears_retry_and_advances_cursor() -> None:
     assert CALENDAR_PARTIAL_RETRY_KEY not in state.sync_metadata
     assert state.last_sync_status == "success"
     assert state.last_sync_error is None
+
+
+@pytest.mark.parametrize("next_cursor", [None, "", "   "])
+def test_success_without_cursor_is_rejected(next_cursor: str | None) -> None:
+    """Successful writes cannot mark a capability synced without its next cursor."""
+    state = _state()
+
+    with pytest.raises(RuntimeError, match="without a next cursor"):
+        apply_calendar_sync_outcome(
+            integration=_integration(),
+            state=state,
+            integration_type=IntegrationType.GOOGLE_CALENDAR,
+            sync_result={"status": "success", "records_failed": 0},
+            input_cursor=None,
+            next_cursor=next_cursor,
+        )
+
+    assert state.last_synced_at is None
+    assert state.cursor_metadata == {"calendar_delta_link": "old-cursor"}
 
 
 def test_manual_and_scheduled_workers_use_shared_cursor_policy() -> None:

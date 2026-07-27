@@ -15,7 +15,11 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMParticipantType,
 )
 from src.domain.models.organisation_tables.sync.crm.stakeholders import StakeholderSource
-from src.domain.models.organisation_tables.sync.email_models import Email, EmailDirection
+from src.domain.models.organisation_tables.sync.email_models import (
+    DealEmailAssociation,
+    Email,
+    EmailDirection,
+)
 from src.service.crm.communications.deal_association_service import (
     AdditionalStakeholderCandidates,
     CommunicationDealAssociationResult,
@@ -133,6 +137,7 @@ def _email(**kwargs) -> Email:
         folder_id=uuid4(),
         email_id=kwargs.get("email_id", uuid4()),
         external_message_id=kwargs.get("external_message_id", "message-1"),
+        internet_message_id=kwargs.get("internet_message_id"),
         thread_id=kwargs.get("thread_id"),
         from_email=kwargs.get("from_email", "buyer@example.com"),
         from_name=kwargs.get("from_name", "Buyer Person"),
@@ -178,6 +183,152 @@ def _event(**kwargs) -> CalendarEvent:
         ],
     )
     return event
+
+
+@pytest.mark.asyncio
+async def test_targeted_projection_scopes_associations_and_refreshes_each_deal_once(
+    monkeypatch,
+) -> None:
+    """A one-deal replay must not rebuild other deals or refresh one deal per activity."""
+    deal_id = uuid4()
+    unrelated_deal_id = uuid4()
+    email = _email(internet_message_id="<message-1@example.com>")
+    associations = [
+        DealEmailAssociation(
+            association_id=uuid4(),
+            organisation_id=ORG_ID,
+            deal_id=association_deal_id,
+            internet_message_id=email.internet_message_id,
+        )
+        for association_deal_id in (deal_id, unrelated_deal_id)
+    ]
+    contact = CRMContact(
+        organisation_id=ORG_ID,
+        contact_id=uuid4(),
+        email=email.from_email,
+        is_deleted=False,
+    )
+    service = ContactCommunicationHydrationService(MagicMock(), MagicMock(), ORG_ID)
+    service._load_email_associations = AsyncMock(  # type: ignore[method-assign]
+        return_value={email.internet_message_id: associations}
+    )
+    service._load_event_associations = AsyncMock(return_value={})  # type: ignore[method-assign]
+    service._load_active_activity_ids = AsyncMock(  # type: ignore[method-assign]
+        return_value={association.association_id for association in associations}
+    )
+    projection = MagicMock()
+    projection.upsert_email_association = AsyncMock()
+    projection.sync_communication_participant_links = AsyncMock()
+    refresher = MagicMock()
+    refresher.refresh_deal = AsyncMock()
+    monkeypatch.setattr(
+        hydration_module,
+        "ActivityFeedProjectionService",
+        lambda *_args: projection,
+    )
+    monkeypatch.setattr(
+        hydration_module,
+        "DealLastActivityService",
+        lambda *_args: refresher,
+        raising=False,
+    )
+
+    projected = await service._project(  # noqa: SLF001
+        emails=[email],
+        events=[],
+        identity_contacts={email.from_email: contact},
+        integration_id=None,
+        replace_links=False,
+        target_deal_ids={deal_id},
+    )
+
+    service._load_email_associations.assert_awaited_once_with([email])  # type: ignore[attr-defined]
+    service._load_event_associations.assert_awaited_once_with([])  # type: ignore[attr-defined]
+    projection.upsert_email_association.assert_awaited_once_with(
+        associations[0],
+        email,
+        refresh_deal_activity=False,
+    )
+    assert all(
+        projection_call.kwargs["refresh_deal_activity"] is False
+        for projection_call in projection.upsert_email_association.await_args_list
+    )
+    assert projection.sync_communication_participant_links.await_count == 2
+    refresher.refresh_deal.assert_awaited_once_with(deal_id)
+    assert projected == 1
+
+
+@pytest.mark.asyncio
+async def test_targeted_projection_repairs_missing_unrelated_activity_before_linking(
+    monkeypatch,
+) -> None:
+    """A damaged unrelated association must regain its card before participant links."""
+    deal_id = uuid4()
+    unrelated_deal_id = uuid4()
+    email = _email(internet_message_id="<message-1@example.com>")
+    target_association = DealEmailAssociation(
+        association_id=uuid4(),
+        organisation_id=ORG_ID,
+        deal_id=deal_id,
+        internet_message_id=email.internet_message_id,
+    )
+    missing_card_association = DealEmailAssociation(
+        association_id=uuid4(),
+        organisation_id=ORG_ID,
+        deal_id=unrelated_deal_id,
+        internet_message_id=email.internet_message_id,
+    )
+    contact = CRMContact(
+        organisation_id=ORG_ID,
+        contact_id=uuid4(),
+        email=email.from_email,
+        is_deleted=False,
+    )
+    service = ContactCommunicationHydrationService(MagicMock(), MagicMock(), ORG_ID)
+    service._load_email_associations = AsyncMock(  # type: ignore[method-assign]
+        return_value={email.internet_message_id: [target_association, missing_card_association]}
+    )
+    service._load_event_associations = AsyncMock(return_value={})  # type: ignore[method-assign]
+    service._load_active_activity_ids = AsyncMock(  # type: ignore[method-assign]
+        return_value={target_association.association_id}
+    )
+    projection = MagicMock()
+    projection.upsert_email_association = AsyncMock()
+    projection.sync_communication_participant_links = AsyncMock()
+    refresher = MagicMock()
+    refresher.refresh_deal = AsyncMock()
+    monkeypatch.setattr(
+        hydration_module,
+        "ActivityFeedProjectionService",
+        lambda *_args: projection,
+    )
+    monkeypatch.setattr(
+        hydration_module,
+        "DealLastActivityService",
+        lambda *_args: refresher,
+        raising=False,
+    )
+
+    projected = await service._project(  # noqa: SLF001
+        emails=[email],
+        events=[],
+        identity_contacts={email.from_email: contact},
+        integration_id=None,
+        replace_links=False,
+        target_deal_ids={deal_id},
+    )
+
+    assert projection.upsert_email_association.await_count == 2
+    assert {
+        call.args[0].association_id for call in projection.upsert_email_association.await_args_list
+    } == {target_association.association_id, missing_card_association.association_id}
+    assert projection.sync_communication_participant_links.await_count == 2
+    assert refresher.refresh_deal.await_count == 2
+    assert {call.args[0] for call in refresher.refresh_deal.await_args_list} == {
+        deal_id,
+        unrelated_deal_id,
+    }
+    assert projected == 2
 
 
 def test_plan_deduplicates_people_across_email_and_calendar() -> None:
@@ -989,7 +1140,12 @@ async def test_deal_backfill_adds_historical_co_participant_through_domain_write
     ):
         result = await service.backfill_deals([deal_id])
 
-    assert load_deal_candidates.await_args_list == [call({buyer.contact_id, champion.contact_id})]
+    assert load_deal_candidates.await_args_list == [
+        call(
+            {buyer.contact_id, champion.contact_id},
+            deal_ids={deal_id},
+        )
+    ]
     assert associate_email.await_count == 1
     added_participants = [
         add_call.args[0]

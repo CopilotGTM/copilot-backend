@@ -241,6 +241,8 @@ class ActivityFeedProjectionService:
         self,
         association: DealEmailAssociation,
         email: Email,
+        *,
+        refresh_deal_activity: bool = True,
     ) -> None:
         """Project one deal-email association into one email activity card.
 
@@ -298,6 +300,7 @@ class ActivityFeedProjectionService:
             activity_id=association.association_id,
             deal_id=association.deal_id,
             occurred_at=occurred_at,
+            refresh_deal_activity=refresh_deal_activity,
         )
         await self._sync_object_links(
             activity_id=association.association_id,
@@ -393,6 +396,7 @@ class ActivityFeedProjectionService:
         event: CalendarEvent,
         *,
         integration_id: UUID | None = None,
+        refresh_deal_activity: bool = True,
     ) -> None:
         """Project one calendar-event deal association into one meeting activity card.
 
@@ -450,6 +454,7 @@ class ActivityFeedProjectionService:
             activity_id=association.association_id,
             deal_id=association.deal_id,
             occurred_at=occurred_at,
+            refresh_deal_activity=refresh_deal_activity,
         )
         await self._sync_object_links(
             activity_id=association.association_id,
@@ -1519,6 +1524,7 @@ class ActivityFeedProjectionService:
         activity_id: UUID,
         deal_id: UUID | None,
         occurred_at: datetime,
+        refresh_deal_activity: bool = True,
     ) -> None:
         link_c = cast(Any, CRMActivityLink).__table__.c
         base_where = (
@@ -1548,7 +1554,8 @@ class ActivityFeedProjectionService:
             set_={"occurred_at": occurred_at},
         )
         await self.session.execute(stmt)
-        await DealLastActivityService(self.session, self.organisation_id).refresh_deal(deal_id)
+        if refresh_deal_activity:
+            await DealLastActivityService(self.session, self.organisation_id).refresh_deal(deal_id)
 
     async def _upsert_contact_lifecycle_event(
         self,

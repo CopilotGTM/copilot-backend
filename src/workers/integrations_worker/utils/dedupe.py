@@ -6,10 +6,17 @@ from src.infra.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def acquire_sync_lock(integration_id: str, data_type: str, ttl_seconds: int = 120) -> bool:
+def acquire_sync_lock(
+    integration_id: str,
+    data_type: str,
+    ttl_seconds: int = 120,
+    *,
+    fail_open: bool = True,
+) -> bool:
     """Acquire a short-lived Redis lock to dedupe bursty webhooks.
 
-    Returns True if lock acquired, False otherwise.
+    Callers that protect expensive provider reads can fail closed when Redis
+    is unavailable; existing best-effort callers retain fail-open behavior.
     """
     try:
         redis = get_redis_client()
@@ -17,11 +24,15 @@ def acquire_sync_lock(integration_id: str, data_type: str, ttl_seconds: int = 12
         return bool(redis.set(key, "1", nx=True, ex=ttl_seconds))
     except Exception as e:
         logger.warning(
-            "Redis lock unavailable, failing open",
-            extra={"integration_id": integration_id, "data_type": data_type, "error": str(e)},
+            "Redis sync lock unavailable",
+            extra={
+                "integration_id": integration_id,
+                "data_type": data_type,
+                "fail_open": fail_open,
+                "error": str(e),
+            },
         )
-        # Fail-open to keep sync running
-        return True
+        return fail_open
 
 
 def release_sync_lock(integration_id: str, data_type: str) -> None:

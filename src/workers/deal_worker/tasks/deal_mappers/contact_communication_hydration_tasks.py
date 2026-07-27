@@ -41,16 +41,16 @@ HYDRATION_BUSY_MAX_RETRIES = 5
 
 
 # Two delayed retries cover transient database failures without looping indefinitely. The hard
-# limit gives a worker 60 seconds after the ten-minute soft limit to unwind the batch cleanly.
-# Batches are bounded by the dispatcher, so healthy work should finish inside this window.
+# limit gives a worker 60 seconds after the twenty-minute soft limit to unwind the batch cleanly.
+# Batches remain bounded; the wider window accommodates measured large-tenant projection time.
 @app.task(
     bind=True,
     name="deal.hydrate_contact_communications",
     acks_late=True,
     max_retries=2,
     default_retry_delay=60,
-    soft_time_limit=600,
-    time_limit=660,
+    soft_time_limit=1200,
+    time_limit=1260,
 )
 def hydrate_contact_communications_task(
     self: Task,

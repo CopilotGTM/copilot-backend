@@ -42,6 +42,7 @@ from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.integrations.calendar_cursor_metadata import (
+    CalendarCursorMissingError,
     apply_calendar_sync_outcome,
     get_calendar_delta_link,
 )
@@ -60,6 +61,7 @@ from src.workers.deal_worker.utils.contact_communication_hydration_dispatch impo
     dispatch_contact_communication_hydration_async,
 )
 from src.workers.integrations_worker.celery_app import app
+from src.workers.integrations_worker.client import send_integrations_task
 from src.workers.integrations_worker.config import TASK_LIMITS
 from src.workers.integrations_worker.providers.calendar.google_calendar import (
     FetchEventsResult as GoogleFetchEventsResult,
@@ -72,6 +74,10 @@ from src.workers.integrations_worker.providers.calendar.outlook_calendar import 
 )
 from src.workers.integrations_worker.providers.calendar.outlook_calendar import (
     fetch_events as outlook_fetch_events,
+)
+from src.workers.integrations_worker.utils.dedupe import (
+    acquire_sync_lock,
+    release_sync_lock,
 )
 
 logger = get_logger(__name__)
@@ -113,6 +119,10 @@ _CALENDAR_CAPABILITY_FOR_PARENT: dict[IntegrationType, IntegrationType] = {
 
 _TASK_NAME = "integrations.sync_calendar_integration"
 _L = TASK_LIMITS[_TASK_NAME]
+# One active cursor owner per integration prevents webhook/recovery races from
+# issuing concurrent full reads. The lock outlives the Celery hard limit.
+_SYNC_LOCK_TTL_SECONDS = _L["hard"] + 60
+_SYNC_LOCK_RETRY_SECONDS = 30
 
 
 @app.task(
@@ -130,6 +140,7 @@ def sync_calendar_integration_task(
     integration_id: str,
     trigger_source: str = "manual_sync",
     webhook_sync_id: str | None = None,
+    lock_wait_count: int = 0,
 ) -> dict[str, Any]:
     """
     Tier 3: Sync specific calendar integration.
@@ -182,6 +193,42 @@ def sync_calendar_integration_task(
                 completed=completed,
             )
         )
+
+    # A later task is retained rather than skipped: a provider change can land
+    # after the active task's snapshot and still needs one trailing delta read.
+    if not acquire_sync_lock(
+        integration_id,
+        "calendar",
+        ttl_seconds=_SYNC_LOCK_TTL_SECONDS,
+        fail_open=False,
+    ):
+        deferred_task_id = send_integrations_task(
+            task_name=_TASK_NAME,
+            kwargs={
+                "organisation_id": organisation_id,
+                "integration_id": integration_id,
+                "trigger_source": trigger_source,
+                "webhook_sync_id": webhook_sync_id,
+                "lock_wait_count": lock_wait_count + 1,
+            },
+            queue="integrations_priority",
+            routing_key="integrations_priority",
+            countdown=_SYNC_LOCK_RETRY_SECONDS,
+        )
+        _record_receipt(
+            SyncStatus.IN_PROGRESS,
+            metadata={
+                "lock_wait_count": lock_wait_count + 1,
+                "task_id": deferred_task_id,
+            },
+        )
+        return {
+            "status": "deferred",
+            "organisation_id": organisation_id,
+            "integration_id": integration_id,
+            "task_id": deferred_task_id,
+            "retry_in_seconds": _SYNC_LOCK_RETRY_SECONDS,
+        }
 
     # Calendar writes are keyed by provider identities and advance the cursor
     # only after persistence, so broker/task redelivery is intentionally safe.
@@ -599,12 +646,15 @@ def sync_calendar_integration_task(
 
         failure_type = classify_sync_error(e)
         terminal = is_action_required_failure(failure_type)
+        cursor_contract_failed = isinstance(e, CalendarCursorMissingError)
 
         # Provider/manual sync failures are retry-safe: the next attempt reuses
         # persisted cursors and writes idempotently through the sync services.
         # Permission and authentication failures require user action, so retrying
         # them only delays the reconnect signal and cannot heal the integration.
-        if not terminal and self.request.retries < self.max_retries:
+        # A missing terminal cursor is also closed immediately because retrying
+        # it would multiply the same full provider read.
+        if not terminal and not cursor_contract_failed and self.request.retries < self.max_retries:
             _record_receipt(
                 SyncStatus.IN_PROGRESS,
                 metadata={"retry_scheduled": self.request.retries + 1},
@@ -639,12 +689,12 @@ def sync_calendar_integration_task(
         _record_receipt(
             SyncStatus.FAILED,
             metadata={
-                "failure_stage": "dead_letter",
+                "failure_stage": ("cursor_contract" if cursor_contract_failed else "dead_letter"),
                 "failure_type": failure_type.value,
-                "terminal": terminal,
+                "terminal": terminal or cursor_contract_failed,
             },
             error=str(e),
-            completed=terminal,
+            completed=terminal or cursor_contract_failed,
         )
         return {
             "status": "failed",
@@ -655,6 +705,8 @@ def sync_calendar_integration_task(
             "error": str(e),
             "error_type": type(e).__name__,
         }
+    finally:
+        release_sync_lock(integration_id, "calendar")
 
 
 # Convenience alias

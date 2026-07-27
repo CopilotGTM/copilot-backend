@@ -22,6 +22,7 @@ from typing import Any
 import httpx
 
 from src.infra.utils.logger import get_logger
+from src.service.integrations.calendar_cursor_metadata import CalendarCursorMissingError
 from src.service.integrations.providers.token_resolution import (
     IntegrationTokenInfo,
     call_with_token_retry,
@@ -330,6 +331,13 @@ async def fetch_events(
             is_initial=False,
             last_synced_at=last_synced_at,
             delta_link=None,
+        )
+
+    if new_delta_link is None:
+        # Graph marks a completed delta round with @odata.deltaLink. Persisting
+        # without it would make every later webhook repeat the full calendar view.
+        raise CalendarCursorMissingError(
+            f"Outlook Calendar completed without @odata.deltaLink for connection={connection_id}"
         )
 
     if not is_initial and all_items:
