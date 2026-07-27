@@ -27,6 +27,7 @@ from src.service.crm.communications.hydration_service import (
     ContactCommunicationHydrationService,
 )
 from src.service.crm.communications.participant_resolution_service import (
+    CommunicationParticipantResolutionService,
     ContactCommunicationHydrationContext,
     SkipReason,
     build_contact_communication_hydration_plan,
@@ -53,6 +54,33 @@ def _context() -> ContactCommunicationHydrationContext:
         internal_emails={"seller@ourco.com", "calendar@ourco.com"},
         internal_domains={"ourco.com"},
     )
+
+
+@pytest.mark.asyncio
+async def test_participant_resolution_retries_instead_of_waiting_for_org_lock() -> None:
+    """A concurrent org hydration must release its worker slot for other organisations."""
+    lock_result = MagicMock()
+    lock_result.scalar_one.return_value = False
+    org_session = MagicMock()
+    org_session.execute = AsyncMock(return_value=lock_result)
+    service = CommunicationParticipantResolutionService(
+        org_session,
+        MagicMock(),
+        ORG_ID,
+    )
+
+    with pytest.raises(RuntimeError, match="already in progress"):
+        await service.resolve(
+            emails=[
+                _email(
+                    from_email="seller@ourco.com",
+                    to_emails=["buyer@example.com"],
+                )
+            ],
+            events=[],
+            context=_context(),
+            seed_contacts=[],
+        )
 
 
 @pytest.mark.asyncio
@@ -628,8 +656,10 @@ async def test_contact_backfill_reuses_same_deal_association_service() -> None:
     )
     email = _email()
     event = _event()
+    lock_result = MagicMock()
+    lock_result.scalar_one.return_value = True
     org_session = MagicMock()
-    org_session.execute = AsyncMock()
+    org_session.execute = AsyncMock(return_value=lock_result)
     service = ContactCommunicationHydrationService(org_session, MagicMock(), ORG_ID)
     service._load_contacts = AsyncMock(return_value=[contact])  # type: ignore[method-assign]
     service._load_emails_for_identities = AsyncMock(return_value=[email])  # type: ignore[method-assign]
@@ -782,8 +812,10 @@ async def test_deal_backfill_resolves_historical_co_participant_before_associati
         to_emails=["buyer@example.com"],
         cc_emails=["champion@example.com"],
     )
+    lock_result = MagicMock()
+    lock_result.scalar_one.return_value = True
     org_session = MagicMock()
-    org_session.execute = AsyncMock()
+    org_session.execute = AsyncMock(return_value=lock_result)
     service = ContactCommunicationHydrationService(org_session, MagicMock(), ORG_ID)
     service._load_deal_contact_ids = AsyncMock(  # type: ignore[method-assign]
         return_value=[buyer.contact_id]

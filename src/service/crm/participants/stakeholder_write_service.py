@@ -142,6 +142,16 @@ class StakeholderWriteService:
             for participant in existing
             if participant.related_local_id is not None
         }
+        active_by_email = {
+            email: participant
+            for participant in existing
+            if not participant.is_deleted and (email := normalize_email(participant.related_email))
+        }
+        candidate_emails = {
+            email
+            for candidate_email in contact_emails_by_id.values()
+            if (email := normalize_email(candidate_email))
+        }
         discovery_sources = {
             StakeholderSource.EMAIL_DISCOVERY.value,
             StakeholderSource.CALENDAR_DISCOVERY.value,
@@ -154,7 +164,10 @@ class StakeholderWriteService:
             participant.related_local_id
             for participant in existing
             if participant.related_local_id is not None
-            and participant.related_local_id in contact_emails_by_id
+            and (
+                participant.related_local_id in contact_emails_by_id
+                or normalize_email(participant.related_email) in candidate_emails
+            )
             and participant.participant_source in discovery_sources
             and participant.approval_status == ApprovalStatus.APPROVED.value
             and not participant.is_deleted
@@ -162,7 +175,10 @@ class StakeholderWriteService:
         projection_participants = [
             participant
             for participant in existing
-            if participant.related_local_id in contact_emails_by_id
+            if (
+                participant.related_local_id in contact_emails_by_id
+                or normalize_email(participant.related_email) in candidate_emails
+            )
             and participant.participant_source in discovery_sources
             and participant.approval_status == ApprovalStatus.APPROVED.value
             and not participant.is_deleted
@@ -173,7 +189,12 @@ class StakeholderWriteService:
         pending_added = 0
         skipped_domain = 0
         for contact_id in sorted(contact_emails_by_id.keys() - existing_contact_ids, key=str):
-            email = contact_emails_by_id[contact_id]
+            email = normalize_email(contact_emails_by_id[contact_id])
+            # Contact resolution can temporarily produce two contact IDs for one
+            # address. The participant uniqueness contract is email-based, so the
+            # active row (or the first row in this batch) remains canonical.
+            if not email or email in active_by_email:
+                continue
             if extract_email_domain(email) not in customer_domains:
                 skipped_domain += 1
                 continue
@@ -196,6 +217,7 @@ class StakeholderWriteService:
                 synced_at=now,
             )
             self.session.add(participant)
+            active_by_email[email] = participant
             created = True
             discovered_count += 1
             if approval_status == ApprovalStatus.APPROVED.value:

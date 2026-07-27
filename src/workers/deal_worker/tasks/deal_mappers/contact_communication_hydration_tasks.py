@@ -9,15 +9,17 @@ from celery import Task
 
 from src.domain.models.organisation_tables.job_models import DealJobType
 from src.infra.database.sessions import master_async_session_scope, org_async_session_scope
-from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.crm.communications.hydration_service import (
     ContactCommunicationHydrationService,
 )
+from src.service.crm.communications.participant_resolution_service import (
+    CommunicationHydrationBusyError,
+)
 from src.workers.deal_worker.celery_app import app
 from src.workers.deal_worker.tasks.deal_asset_email_attachment_tasks import (
-    extract_email_attachments_deal_task,
+    dispatch_email_attachment_extraction_async,
 )
 from src.workers.deal_worker.tasks.deal_mappers.visible_job_tracking import (
     VisibleDealJobTracker,
@@ -32,16 +34,10 @@ from src.workers.deal_worker.utils.pipeline_dispatch import (
 
 logger = get_logger(__name__)
 
-# Broker retries cover the short outage window without delaying the committed hydration task.
-ATTACHMENT_PUBLISH_RETRY_POLICY = {
-    "max_retries": 3,
-    "interval_start": 0,
-    "interval_step": 1,
-    "interval_max": 2,
-}
 # copilotgtm: keep attachment payloads aligned with hydration's 100-source batch;
 # add a continuation coordinator only if measured replay volume outgrows this bound.
 ATTACHMENT_EMAIL_CHUNK_SIZE = 100
+HYDRATION_BUSY_MAX_RETRIES = 5
 
 
 # Two delayed retries cover transient database failures without looping indefinitely. The hard
@@ -176,6 +172,27 @@ def hydrate_contact_communications_task(
 
     try:
         return run_async(_run())
+    except CommunicationHydrationBusyError as exc:
+        # Lock contention is expected when two triggers target one organisation.
+        # Retry with backoff so this worker can immediately process another org.
+        if self.request.retries < HYDRATION_BUSY_MAX_RETRIES:
+            countdown = min(60 * (2**self.request.retries), 300)
+            logger.info(
+                "Contact communication hydration deferred behind active organisation batch",
+                extra={
+                    "organisation_id": organisation_id,
+                    "trigger": trigger,
+                    "retry_countdown": countdown,
+                },
+            )
+            raise self.retry(
+                exc=exc,
+                countdown=countdown,
+                max_retries=HYDRATION_BUSY_MAX_RETRIES,
+            ) from exc
+        if tracker:
+            run_async(tracker.fail(str(exc)))
+        raise
     except Exception as exc:
         logger.exception(
             "Contact communication hydration failed",
@@ -217,7 +234,6 @@ async def _dispatch_association_followups(
                 exc_info=True,
             )
 
-    attachment_publish_error: Exception | None = None
     for deal_id, memory_job_id in sorted(email_deal_jobs.items(), key=lambda item: str(item[0])):
         attachment_email_ids = sorted(
             attachment_email_ids_by_deal.get(deal_id, set()),
@@ -225,23 +241,13 @@ async def _dispatch_association_followups(
         )
         for offset in range(0, len(attachment_email_ids), ATTACHMENT_EMAIL_CHUNK_SIZE):
             try:
-                extract_email_attachments_deal_task.apply_async(
-                    kwargs={
-                        "organisation_id": str(organisation_id),
-                        "deal_id": str(deal_id),
-                        "email_ids": [
-                            str(email_id)
-                            for email_id in attachment_email_ids[
-                                offset : offset + ATTACHMENT_EMAIL_CHUNK_SIZE
-                            ]
-                        ],
-                    },
-                    headers=correlation_headers(),
-                    retry=True,
-                    retry_policy=ATTACHMENT_PUBLISH_RETRY_POLICY,
+                await dispatch_email_attachment_extraction_async(
+                    organisation_id=organisation_id,
+                    deal_id=deal_id,
+                    email_ids=attachment_email_ids[offset : offset + ATTACHMENT_EMAIL_CHUNK_SIZE],
+                    trigger="communication_association",
                 )
-            except Exception as exc:
-                attachment_publish_error = attachment_publish_error or exc
+            except Exception:
                 logger.warning(
                     "Failed to dispatch email attachment extraction after association",
                     extra={
@@ -265,8 +271,6 @@ async def _dispatch_association_followups(
                 },
                 exc_info=True,
             )
-    if attachment_publish_error is not None:
-        raise attachment_publish_error
 
 
 def _parse_uuids(values: list[str] | None) -> list[UUID]:

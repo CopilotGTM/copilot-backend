@@ -75,6 +75,7 @@ async def test_communication_discovery_replay_projects_existing_stakeholder_acti
         participant_id=uuid4(),
         deal_id=deal_id,
         related_local_id=contact_id,
+        related_email="buyer@customer.test",
         participant_source=StakeholderSource.EMAIL_DISCOVERY.value,
         approval_status=ApprovalStatus.APPROVED.value,
         is_deleted=False,
@@ -84,6 +85,7 @@ async def test_communication_discovery_replay_projects_existing_stakeholder_acti
         participant_id=uuid4(),
         deal_id=deal_id,
         related_local_id=pending_contact_id,
+        related_email="pending@customer.test",
         participant_source=StakeholderSource.EMAIL_DISCOVERY.value,
         approval_status=ApprovalStatus.PENDING.value,
         is_deleted=False,
@@ -223,6 +225,7 @@ async def test_communication_discovery_retry_returns_existing_approved_contact(m
     contact_id = uuid4()
     existing = SimpleNamespace(
         related_local_id=contact_id,
+        related_email="buyer@customer.test",
         participant_source=StakeholderSource.EMAIL_DISCOVERY.value,
         approval_status=ApprovalStatus.APPROVED.value,
         is_deleted=False,
@@ -250,5 +253,47 @@ async def test_communication_discovery_retry_returns_existing_approved_contact(m
     )
 
     assert result.approved_contact_ids == {contact_id}
+    assert result.approved_added == 0
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_communication_discovery_deduplicates_existing_normalized_email(
+    monkeypatch,
+) -> None:
+    """A duplicate contact ID must not create a second stakeholder for the same email."""
+    existing_contact_id = uuid4()
+    duplicate_contact_id = uuid4()
+    existing = SimpleNamespace(
+        related_local_id=existing_contact_id,
+        related_email=" Buyer@Customer.Test ",
+        participant_source=StakeholderSource.EMAIL_DISCOVERY.value,
+        approval_status=ApprovalStatus.APPROVED.value,
+        is_deleted=False,
+    )
+    existing_result = MagicMock()
+    existing_result.scalars.return_value.all.return_value = [existing]
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=[MagicMock(), existing_result])
+    session.flush = AsyncMock()
+    service = StakeholderWriteService(session, uuid4())
+    service._get_participant_contact = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    projection = MagicMock()
+    projection.upsert_stakeholder_added = AsyncMock()
+    monkeypatch.setattr(
+        stakeholder_write_module,
+        "ActivityFeedProjectionService",
+        lambda *_args: projection,
+    )
+
+    result = await service.add_communication_discovered_contacts(
+        deal_id=uuid4(),
+        integration_id=uuid4(),
+        customer_domains=frozenset({"customer.test"}),
+        contact_emails_by_id={duplicate_contact_id: "buyer@customer.test"},
+        source=StakeholderSource.EMAIL_DISCOVERY,
+    )
+
+    assert result.approved_contact_ids == {existing_contact_id}
     assert result.approved_added == 0
     session.add.assert_not_called()

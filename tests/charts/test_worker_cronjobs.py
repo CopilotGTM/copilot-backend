@@ -307,6 +307,12 @@ def test_prod_integrations_and_deal_workers_render_measured_limits() -> None:
         if doc.get("kind") == "Deployment"
         and doc["metadata"]["name"] == "copilot-backend-deal-worker"
     )
+    insights_deployment = next(
+        doc
+        for doc in manifests
+        if doc.get("kind") == "Deployment"
+        and doc["metadata"]["name"] == "copilot-backend-deal-insights-worker"
+    )
     commands = {
         doc["metadata"]["name"]: doc["spec"]["template"]["spec"]["containers"][0]["command"]
         for doc in manifests
@@ -316,13 +322,109 @@ def test_prod_integrations_and_deal_workers_render_measured_limits() -> None:
     }
 
     integrations_command = commands["copilot-backend-integrations-worker"]
+    integrations_deployment = next(
+        doc
+        for doc in manifests
+        if doc.get("kind") == "Deployment"
+        and doc["metadata"]["name"] == "copilot-backend-integrations-worker"
+    )
     assert "--concurrency=2" in integrations_command
     assert "--max-tasks-per-child=50" in integrations_command
+    assert integrations_deployment["spec"]["template"]["spec"]["containers"][0]["resources"] == {
+        "requests": {"cpu": "500m", "memory": "1Gi"},
+        "limits": {"cpu": "1000m", "memory": "2Gi"},
+    }
     assert "--concurrency=1" in commands["copilot-backend-deal-worker"]
     assert deal_deployment["spec"]["template"]["spec"]["containers"][0]["resources"] == {
         "requests": {"cpu": "500m", "memory": "1Gi"},
-        "limits": {"cpu": "1500m", "memory": "3Gi"},
+        "limits": {"cpu": "1500m", "memory": "2Gi"},
     }
+    assert insights_deployment["spec"]["template"]["spec"]["containers"][0]["resources"] == {
+        "requests": {"cpu": "500m", "memory": "1Gi"},
+        "limits": {"cpu": "1500m", "memory": "2Gi"},
+    }
+
+
+def test_dev_deal_workers_render_measured_memory_requests() -> None:
+    """Both dev queues fit their observed workload without reserving a full GiB each."""
+    manifests = _render_all_manifests("charts/application/values-dev.yaml")
+    resources = {
+        doc["metadata"]["name"]: doc["spec"]["template"]["spec"]["containers"][0]["resources"]
+        for doc in manifests
+        if doc.get("kind") == "Deployment"
+        and doc["metadata"]["name"]
+        in {
+            "copilot-backend-deal-worker",
+            "copilot-backend-deal-insights-worker",
+        }
+    }
+
+    assert resources["copilot-backend-deal-worker"]["requests"] == {
+        "cpu": "25m",
+        "memory": "700Mi",
+    }
+    assert resources["copilot-backend-deal-insights-worker"]["requests"] == {
+        "cpu": "25m",
+        "memory": "700Mi",
+    }
+
+
+def test_dev_integrations_worker_renders_measured_resources() -> None:
+    """Dev scheduling reflects observed CPU while retaining memory burst headroom."""
+    manifests = _render_all_manifests("charts/application/values-dev.yaml")
+    deployment = next(
+        doc
+        for doc in manifests
+        if doc.get("kind") == "Deployment"
+        and doc["metadata"]["name"] == "copilot-backend-integrations-worker"
+    )
+
+    assert deployment["spec"]["template"]["spec"]["containers"][0]["resources"] == {
+        "requests": {"cpu": "250m", "memory": "1Gi"},
+        "limits": {"cpu": "2000m", "memory": "2Gi"},
+    }
+
+
+def test_prod_keeps_two_interactive_deal_workers_warm() -> None:
+    """Interactive deal hydration gets two isolated slots without pod-local concurrency."""
+    manifests = _render_all_manifests("charts/application/values-prod.yaml")
+    scaler = next(
+        doc
+        for doc in manifests
+        if doc.get("kind") == "ScaledObject"
+        and doc["metadata"]["name"] == "copilot-backend-deal-worker-scaler"
+    )
+    deployment = next(
+        doc
+        for doc in manifests
+        if doc.get("kind") == "Deployment"
+        and doc["metadata"]["name"] == "copilot-backend-deal-worker"
+    )
+
+    assert scaler["spec"]["minReplicaCount"] == 2
+    assert scaler["spec"]["maxReplicaCount"] == 2
+    assert "--concurrency=1" in deployment["spec"]["template"]["spec"]["containers"][0]["command"]
+
+
+def test_deal_and_insight_queues_have_separate_workers() -> None:
+    """Slow LLM jobs must not block stakeholder and communication hydration."""
+    for values_file in (
+        "charts/application/values-dev.yaml",
+        "charts/application/values-prod.yaml",
+    ):
+        manifests = _render_all_manifests(values_file)
+        commands = {
+            doc["metadata"]["name"]: doc["spec"]["template"]["spec"]["containers"][0]["command"]
+            for doc in manifests
+            if doc.get("kind") == "Deployment"
+            and doc["metadata"]["name"].startswith("copilot-backend-deal")
+        }
+
+        assert commands["copilot-backend-deal-worker"][-2:] == ["-Q", "deal"]
+        assert commands["copilot-backend-deal-insights-worker"][-2:] == [
+            "-Q",
+            "deal_jobs",
+        ]
 
 
 def test_worker_deployments_render_celery_events_and_health_probes() -> None:
@@ -338,6 +440,7 @@ def test_worker_deployments_render_celery_events_and_health_probes() -> None:
 
     assert {doc["metadata"]["name"] for doc in deployments} == {
         "copilot-backend-chat-worker",
+        "copilot-backend-deal-insights-worker",
         "copilot-backend-deal-worker",
         "copilot-backend-integrations-worker",
         "copilot-backend-knowledge-extract-worker",

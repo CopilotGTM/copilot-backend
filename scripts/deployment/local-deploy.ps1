@@ -638,6 +638,7 @@ function Deploy-WithHelm {
             "--set", "chat-beat.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
             "--set", "integrations-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
             "--set", "deal-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
+            "--set", "deal-insights-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
             "--set", "integrations-beat.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
             "--set", "knowledge-extract-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
             "--set", "knowledge-upload-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
@@ -646,6 +647,7 @@ function Deploy-WithHelm {
             "--set", "chat-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
             "--set", "integrations-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
             "--set", "deal-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
+            "--set", "deal-insights-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
             "--set", "integrations-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
         )
     }
@@ -659,6 +661,8 @@ function Deploy-WithHelm {
         "--set", "organization-worker.autoscaling.enabled=true",
         "--set", "integrations-worker.autoscaling.enabled=true",
         "--set", "deal-worker.autoscaling.enabled=true",
+        "--set", "deal-insights-worker.enabled=true",
+        "--set", "deal-insights-worker.autoscaling.enabled=true",
         "--set", "chat-worker.autoscaling.enabled=true"
     )
     $helmArgs += $devSafetyOverrides
@@ -678,6 +682,8 @@ function Deploy-WithHelm {
         "--set", "integrations-worker.image.tag=$IMAGE_TAG",
         "--set", "deal-worker.image.repository=$lightRepo",
         "--set", "deal-worker.image.tag=$IMAGE_TAG",
+        "--set", "deal-insights-worker.image.repository=$lightRepo",
+        "--set", "deal-insights-worker.image.tag=$IMAGE_TAG",
         "--set", "integrations-beat.image.repository=$integrationsRepo",
         "--set", "integrations-beat.image.tag=$IMAGE_TAG"
     )
@@ -731,7 +737,8 @@ function Deploy-WithHelm {
         "copilot-backend-chat-beat",
         "copilot-backend-organization-worker",
         "copilot-backend-integrations-worker",
-        "copilot-backend-deal-worker"
+        "copilot-backend-deal-worker",
+        "copilot-backend-deal-insights-worker"
     )
 
     Write-Host "Waiting for API and worker deployments updated by Helm..."

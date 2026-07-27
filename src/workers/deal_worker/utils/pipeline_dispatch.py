@@ -478,7 +478,9 @@ def _detach_pipeline_result_backends(result) -> None:
             continue
         seen.add(id(current))
 
-        if hasattr(current, "backend"):
+        # AsyncResult owns a mutable backend field; GroupResult only exposes a
+        # read-only aggregate property. Its child results are still traversed below.
+        if "backend" in getattr(current, "__dict__", {}):
             current.backend = None
         parent = getattr(current, "parent", None)
         if parent is not None:

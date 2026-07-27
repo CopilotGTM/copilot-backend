@@ -65,6 +65,10 @@ _ROLE_MAILBOX_LOCAL_PARTS = {
 }
 
 
+class CommunicationHydrationBusyError(RuntimeError):
+    """Signal that another transaction currently owns this organisation's hydration."""
+
+
 class SkipReason(StrEnum):
     """Explain why a communication participant was not eligible for CRM creation."""
 
@@ -232,10 +236,17 @@ class CommunicationParticipantResolutionService:
         if plan.candidates:
             # copilotgtm: serialize contact identity creation per org until a
             # unique normalized-email constraint can replace this global lock.
-            await self.org_session.execute(
-                text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+            # Do not occupy a worker while another hydration owns the transaction;
+            # the Celery boundary retries this bounded batch.
+            lock_result = await self.org_session.execute(
+                text("SELECT pg_try_advisory_xact_lock(hashtext(:lock_key))"),
                 {"lock_key": f"contact-communication-hydration:{self.organisation_id}"},
             )
+            if not lock_result.scalar_one():
+                raise CommunicationHydrationBusyError(
+                    f"Contact communication hydration already in progress for "
+                    f"organisation {self.organisation_id}"
+                )
         writer = ContactWriteService(
             self.org_session,
             self.organisation_id,

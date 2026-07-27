@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
+import httpx
 import pytest
 import src.service.crm.assets.email_attachment_service as attachment_service
 from sqlalchemy.dialects import postgresql
@@ -27,6 +28,7 @@ from src.service.crm.assets.email_attachment_service import (
     _email_has_attachments_filter,
     _EmailWithAttachments,
     _is_gmail,
+    _is_missing_provider_message,
     _is_supported_attachment_mimetype,
     _map_email_direction_to_asset_direction,
     _normalize_mimetype,
@@ -264,6 +266,30 @@ class TestEmailAttachmentQueryFilters:
         assert "ORDER BY emails.internet_message_id, emails.integration_id, emails.email_id" in stmt
 
 
+def test_missing_provider_message_excludes_attachment_download_404() -> None:
+    """Only a missing message should suppress future mailbox-copy fetches."""
+    message_request = httpx.Request("GET", "https://gmail.test/messages/message-id")
+    attachment_request = httpx.Request(
+        "GET",
+        "https://gmail.test/messages/message-id/attachments/attachment-id",
+    )
+
+    assert _is_missing_provider_message(
+        httpx.HTTPStatusError(
+            "missing",
+            request=message_request,
+            response=httpx.Response(404, request=message_request),
+        )
+    )
+    assert not _is_missing_provider_message(
+        httpx.HTTPStatusError(
+            "missing",
+            request=attachment_request,
+            response=httpx.Response(404, request=attachment_request),
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_process_deal_forwards_exact_email_scope() -> None:
     """Automatic extraction must not widen one hydration batch to the whole deal."""
@@ -287,13 +313,15 @@ async def test_process_organisation_returns_committed_and_bounded_followup_work(
     deal_id = UUID(int=2)
     asset_id = UUID(int=3)
     email_id = UUID(int=4)
+    retryable_email_id = UUID(int=5)
     service._find_deals_with_unprocessed_attachments = AsyncMock(  # type: ignore[method-assign]
         return_value=[deal_id]
     )
     service._process_deal_internal = AsyncMock(  # type: ignore[method-assign]
         return_value={
             "assets_created": 1,
-            "errors": 0,
+            "errors": 2,
+            "retryable_email_ids": [str(retryable_email_id)],
             "post_upload_asset_ids": [str(asset_id)],
             "limit_reached": True,
             "remaining_email_ids": [str(email_id)],
@@ -305,6 +333,13 @@ async def test_process_organisation_returns_committed_and_bounded_followup_work(
 
     assert result["post_upload_asset_ids"] == [str(asset_id)]
     assert result["continuations"] == [{"deal_id": str(deal_id), "email_ids": [str(email_id)]}]
+    assert result["retry_continuations"] == [
+        {
+            "deal_id": str(deal_id),
+            "email_ids": [str(retryable_email_id)],
+        }
+    ]
+    assert result["unscoped_errors"] == 1
 
 
 @pytest.mark.asyncio
@@ -345,6 +380,119 @@ async def test_canonical_message_falls_back_to_second_mailbox_copy() -> None:
     assert result["errors"] == 0
     assert result["post_upload_asset_ids"] == [str(asset_id)]
     assert service._process_single_email.await_count == 2  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_gmail_404_is_a_terminal_mailbox_skip_not_a_retryable_error() -> None:
+    """A missing provider message must not retry the whole deal attachment batch."""
+    organisation_id = UUID(int=1)
+    deal_id = UUID(int=2)
+    email = _EmailWithAttachments(
+        email_id=UUID(int=3),
+        external_message_id="missing-provider-message",
+        internet_message_id="<message@example.com>",
+        subject="Proposal",
+        integration_id=UUID(int=4),
+        integration_type=IntegrationType.GOOGLE,
+        token_info=IntegrationTokenInfo(),
+        direction=DealEmailDirection.INBOUND.value,
+        deal_id=deal_id,
+    )
+    request = httpx.Request(
+        "GET",
+        f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{email.external_message_id}",
+    )
+    response = httpx.Response(404, request=request)
+    service = DealAssetEmailAttachmentService(organisation_id)
+    service._find_emails_needing_extraction = AsyncMock(return_value=[email])  # type: ignore[method-assign]
+    service._process_single_email = AsyncMock(  # type: ignore[method-assign]
+        side_effect=httpx.HTTPStatusError("missing", request=request, response=response)
+    )
+    service._record_email_attachment_fetch_status = AsyncMock()  # type: ignore[method-assign]
+
+    result = await service._process_deal_internal(  # noqa: SLF001
+        deal_id,
+        email_ids=[email.email_id],
+    )
+
+    assert result["errors"] == 0
+    assert result["permanent_skips"] == 1
+    assert result["retryable_email_ids"] == []
+    assert result["terminal_email_failures"] == [
+        {"email_id": str(email.email_id), "reason": "not_found"}
+    ]
+    service._record_email_attachment_fetch_status.assert_awaited_once_with(  # type: ignore[attr-defined]
+        email.email_id,
+        status="not_found",
+    )
+
+
+@pytest.mark.asyncio
+async def test_transient_mailbox_failure_retries_only_that_canonical_email() -> None:
+    """Network failures remain retryable without replaying unrelated successful messages."""
+    deal_id = UUID(int=2)
+    email = _EmailWithAttachments(
+        email_id=UUID(int=3),
+        external_message_id="provider-message",
+        internet_message_id="<message@example.com>",
+        subject="Proposal",
+        integration_id=UUID(int=4),
+        integration_type=IntegrationType.GOOGLE,
+        token_info=IntegrationTokenInfo(),
+        direction=DealEmailDirection.INBOUND.value,
+        deal_id=deal_id,
+    )
+    service = DealAssetEmailAttachmentService(UUID(int=1))
+    service._find_emails_needing_extraction = AsyncMock(return_value=[email])  # type: ignore[method-assign]
+    service._process_single_email = AsyncMock(  # type: ignore[method-assign]
+        side_effect=httpx.ReadTimeout("temporary timeout")
+    )
+
+    result = await service._process_deal_internal(  # noqa: SLF001
+        deal_id,
+        email_ids=[email.email_id],
+    )
+
+    assert result["errors"] == 1
+    assert result["permanent_skips"] == 0
+    assert result["retryable_email_ids"] == [str(email.email_id)]
+
+
+@pytest.mark.asyncio
+async def test_invalid_provider_payload_is_terminal_not_retryable() -> None:
+    """Deterministic provider data errors should not consume all Celery retries."""
+    deal_id = UUID(int=2)
+    email = _EmailWithAttachments(
+        email_id=UUID(int=3),
+        external_message_id="provider-message",
+        internet_message_id="<message@example.com>",
+        subject="Proposal",
+        integration_id=UUID(int=4),
+        integration_type=IntegrationType.GOOGLE,
+        token_info=IntegrationTokenInfo(),
+        direction=DealEmailDirection.INBOUND.value,
+        deal_id=deal_id,
+    )
+    service = DealAssetEmailAttachmentService(UUID(int=1))
+    service._find_emails_needing_extraction = AsyncMock(return_value=[email])  # type: ignore[method-assign]
+    service._process_single_email = AsyncMock(  # type: ignore[method-assign]
+        side_effect=ValueError("invalid Gmail attachment encoding")
+    )
+
+    result = await service._process_deal_internal(  # noqa: SLF001
+        deal_id,
+        email_ids=[email.email_id],
+    )
+
+    assert result["errors"] == 0
+    assert result["permanent_skips"] == 1
+    assert result["retryable_email_ids"] == []
+    assert result["terminal_email_failures"] == [
+        {
+            "email_id": str(email.email_id),
+            "reason": "invalid_provider_payload",
+        }
+    ]
 
 
 @pytest.mark.asyncio
