@@ -991,23 +991,24 @@ class DealReadService:
             if selected_owner_ids:
                 stmt = stmt.where(c.owner_id.not_in(selected_owner_ids))
 
-            stmt = stmt.order_by(
-                func.max(c.owner_name).asc().nulls_last(),
-                c.owner_id.asc(),
-            ).limit(limit)
+            if limit:
+                stmt = stmt.order_by(
+                    func.max(c.owner_name).asc().nulls_last(),
+                    c.owner_id.asc(),
+                ).limit(limit)
 
-            result = await self.org_session.execute(stmt)
-            rows = result.all()
+                result = await self.org_session.execute(stmt)
+                rows = result.all()
 
-            for row in rows:
-                owners_by_id.setdefault(
-                    cast(UUID, row.owner_id),
-                    {
-                        "owner_id": cast(UUID, row.owner_id),
-                        "name": cast(str | None, row.name),
-                        "email": cast(str | None, row.email),
-                    },
-                )
+                for row in rows:
+                    owners_by_id.setdefault(
+                        cast(UUID, row.owner_id),
+                        {
+                            "owner_id": cast(UUID, row.owner_id),
+                            "name": cast(str | None, row.name),
+                            "email": cast(str | None, row.email),
+                        },
+                    )
             return list(owners_by_id.values())
         except Exception as exc:
             logger.error("Failed to list deal owners: %s", exc, exc_info=True)

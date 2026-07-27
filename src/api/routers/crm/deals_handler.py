@@ -803,7 +803,12 @@ async def search_deals(
 )
 async def list_deal_owners(
     response: FastAPIResponse,
-    limit: int = Query(200, ge=1, le=1000, description="Maximum owners to return"),
+    limit: int = Query(
+        200,
+        ge=0,
+        le=1000,
+        description="Maximum searched owners to return; use 0 for selected-owner hydration only",
+    ),
     q: str | None = Query(None, description="Search by owner name, email, or owner UUID"),
     owner_ids: list[UUID] | None = Query(
         None,
@@ -856,8 +861,9 @@ async def list_deal_owners(
     description="""
     Resolve the authenticated app user to one or more CRM deal owner IDs.
 
-    Frontend can call this once on Deals page load and preselect the returned
-    `owner_id` values in `/users/crm/deals?owner_ids=...`.
+    Admin deal lists use these IDs for the default "My deals" view. Members use
+    them only for the optional personal-owner avatar; their default visibility
+    remains scoped by ownership, creation, and participation.
     """,
 )
 async def get_current_user_deal_owners(
@@ -866,7 +872,7 @@ async def get_current_user_deal_owners(
     service: DealReadService = Depends(get_deals_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[DealOwnerFilters]:
-    """Resolve current app user to CRM owner filter options."""
+    """Resolve the current app user to personal CRM owner filters."""
     try:
         owners = await service.resolve_current_user_deal_owners(
             user_id=user_ids.user_id,

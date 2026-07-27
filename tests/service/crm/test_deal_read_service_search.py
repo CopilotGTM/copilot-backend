@@ -359,6 +359,68 @@ async def test_list_deal_owners_ignores_blank_search_query() -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_deal_owners_keeps_search_limit_separate_from_selected_owners() -> None:
+    """Selected hydration must not consume the admin's search-result budget."""
+    organisation_id = uuid4()
+    selected_owner_id = uuid4()
+    session = _FakeSession(
+        [
+            [
+                SimpleNamespace(
+                    owner_id=selected_owner_id,
+                    name="Selected Owner",
+                    email="selected@example.com",
+                )
+            ],
+            [
+                SimpleNamespace(
+                    owner_id=uuid4(),
+                    name="Unrelated Owner",
+                    email="unrelated@example.com",
+                )
+            ],
+        ]
+    )
+
+    owners = await DealReadService(  # type: ignore[arg-type]
+        session,
+        organisation_id,
+    ).list_deal_owners(q="unrelated", limit=1, owner_ids=[selected_owner_id])
+
+    assert [owner["name"] for owner in owners] == [
+        "Selected Owner",
+        "Unrelated Owner",
+    ]
+    assert len(session.statements) == 2
+
+
+@pytest.mark.asyncio
+async def test_list_deal_owners_limit_zero_only_attempts_selected_hydration() -> None:
+    """Missing selected owners must not fall back to an arbitrary directory row."""
+    organisation_id = uuid4()
+    session = _FakeSession(
+        [
+            [],
+            [
+                SimpleNamespace(
+                    owner_id=uuid4(),
+                    name="Unrelated Owner",
+                    email="unrelated@example.com",
+                )
+            ],
+        ]
+    )
+
+    owners = await DealReadService(  # type: ignore[arg-type]
+        session,
+        organisation_id,
+    ).list_deal_owners(limit=0, owner_ids=[uuid4()])
+
+    assert owners == []
+    assert len(session.statements) == 1
+
+
+@pytest.mark.asyncio
 async def test_search_deals_for_agent_preserves_identifying_words() -> None:
     """Tool-provided deal text must reach ILIKE without semantic word removal."""
     organisation_id = uuid4()

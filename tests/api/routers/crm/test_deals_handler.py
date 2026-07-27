@@ -14,6 +14,7 @@ from src.api.routers.crm import deals_handler as deals_handler_module
 from src.api.schemas.crm_deal_write_models import DealCreateRequest, DealUpdateRequest
 from src.api.schemas.crm_models import DealsListParams
 from src.api.schemas.crm_schema_models import CRMEntitySchemaResponse, CRMFieldSchemaItem
+from src.domain.models.master_tables.user_models import UserAppRole
 from src.domain.models.organisation_tables.sync.crm.custom_fields import CRMCustomFieldEntity
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
 
@@ -1178,6 +1179,7 @@ async def test_get_current_user_deal_owners_resolves_preselect_owner_ids(
             user_id=current_user_id,
             organisation_id=org_id,
             user_email="test@example.com",
+            user_role=UserAppRole.ADMIN,
         ),
         service=fake_deals_service,
         _rl_read=None,
@@ -1186,6 +1188,42 @@ async def test_get_current_user_deal_owners_resolves_preselect_owner_ids(
     assert result.status == "SUCCESS"
     owner_ids = {owner.owner_id for owner in result.data.items}
     assert owner_ids == {id_owner_id, email_owner_id}
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_deal_owners_resolves_member_for_self_filter(test_user_ids):
+    """Members need their own owner identity without loading the owner directory."""
+    owner_id = uuid4()
+    service = SimpleNamespace(
+        resolve_current_user_deal_owners=AsyncMock(
+            return_value=[
+                {
+                    "owner_id": owner_id,
+                    "name": "Member Owner",
+                    "email": "member@example.com",
+                }
+            ]
+        )
+    )
+
+    result = await deals_handler_module.get_current_user_deal_owners(
+        response=FastAPIResponse(),
+        user_ids=SimpleNamespace(
+            user_id=test_user_ids["user_id"],
+            organisation_id=test_user_ids["organisation_id"],
+            user_email="member@example.com",
+            user_role=UserAppRole.MEMBER,
+        ),
+        service=service,
+        _rl_read=None,
+    )
+
+    assert result.status == "SUCCESS"
+    assert [owner.owner_id for owner in result.data.items] == [owner_id]
+    service.resolve_current_user_deal_owners.assert_awaited_once_with(
+        user_id=test_user_ids["user_id"],
+        user_email="member@example.com",
+    )
 
 
 @pytest.mark.asyncio
@@ -1210,6 +1248,7 @@ async def test_get_current_user_deal_owners_trims_user_email(fake_deals_service,
             user_id=current_user_id,
             organisation_id=org_id,
             user_email=" Test@Example.com ",
+            user_role=UserAppRole.ADMIN,
         ),
         service=fake_deals_service,
         _rl_read=None,
