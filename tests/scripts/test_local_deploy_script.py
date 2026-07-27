@@ -49,6 +49,9 @@ def test_full_local_deploy_keeps_bootstrap_install_values() -> None:
     )
     assert "chat-beat.image.repository=$lightRepo" in full_deploy_args
     assert "chat-beat.image.tag=$IMAGE_TAG" in full_deploy_args
+    assert "deal-insights-worker.image.repository=$lightRepo" in full_deploy_args
+    assert "deal-insights-worker.image.tag=$IMAGE_TAG" in full_deploy_args
+    assert "deal-insights-worker.enabled=true" in full_deploy_args
 
 
 def test_full_local_deploy_skips_startup_hooks_by_default_with_opt_in_flag() -> None:
@@ -76,3 +79,4 @@ def test_full_local_deploy_does_not_force_second_worker_restart() -> None:
     assert "Waiting for API and worker deployments updated by Helm" in script_text
     assert '"copilot-backend",' in script_text
     assert '"copilot-backend-chat-beat",' in script_text
+    assert '"copilot-backend-deal-insights-worker"' in script_text

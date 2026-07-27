@@ -8,6 +8,8 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects.postgresql import insert
+from src.domain.models.organisation_tables.sync.email_models import Email
 from src.service.integrations.email.writer import EmailSyncWriter
 
 
@@ -27,6 +29,23 @@ class _FakeExecuteResult:
     def scalars(self):
         """Return a stubbed SQLAlchemy scalar result for tests."""
         return _FakeScalarResult(self._rows)
+
+
+def test_message_upsert_preserves_internal_email_metadata() -> None:
+    """Provider refreshes must not erase attachment extraction state."""
+    writer = EmailSyncWriter(AsyncMock(), uuid4())
+    values = {
+        "organisation_id": uuid4(),
+        "integration_id": uuid4(),
+        "external_message_id": "message-1",
+        "email_metadata": {"history_id": "provider-version"},
+    }
+    statement = insert(Email).values(**values)
+
+    update_expression = writer.message_upsert_update_dict(statement, values)["email_metadata"]
+    sql = str(update_expression.compile(dialect=postgresql.dialect()))
+
+    assert "emails.email_metadata || excluded.email_metadata" in sql
 
 
 @pytest.mark.asyncio

@@ -35,5 +35,8 @@ dependencies:
 - name: worker
   repository: file://./charts/worker
   version: 0.1.0
-digest: sha256:14468c851826b8655dc0640a54839326678642ba00def6a178ec58ea5aa18a00
-generated: "2026-03-10T00:31:46.8789977+05:30"
+- name: worker
+  repository: file://./charts/worker
+  version: 0.1.0
+digest: sha256:36ef1ca56038e569099e6fa7eb1bb1afa94e6114034daf7bd620752f0960fb5c
+generated: "2026-07-27T05:50:56.3442893+05:30"

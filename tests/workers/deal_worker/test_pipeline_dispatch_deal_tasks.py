@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from celery.result import AsyncResult, GroupResult
 from src.domain.models.organisation_tables.job_models import DealJobType, JobStatus
 from src.workers.deal_worker.utils import pipeline_dispatch
 
@@ -102,6 +103,16 @@ def test_dispatch_does_not_run_redis_result_cleanup(monkeypatch) -> None:
     )
 
     assert cleanup_calls == []
+
+
+def test_result_detachment_handles_read_only_group_backend() -> None:
+    """Celery GroupResult exposes backend as read-only but its children still detach."""
+    child = AsyncResult("child")
+    result = GroupResult("group", [child])
+
+    pipeline_dispatch._detach_pipeline_result_backends(result)
+
+    assert child.backend is None
 
 
 @pytest.mark.asyncio

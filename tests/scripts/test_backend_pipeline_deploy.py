@@ -37,6 +37,18 @@ def test_backend_pipeline_rollback_uses_release_namespace() -> None:
         assert "KUBECONFIG_FILE" not in pipeline_text, pipeline_path
 
 
+def test_backend_pipelines_deploy_and_wait_for_deal_insights_worker() -> None:
+    for pipeline_path in PIPELINE_PATHS:
+        pipeline_text = pipeline_path.read_text(encoding="utf-8")
+
+        assert "--set deal-insights-worker.image.repository=" in pipeline_text, pipeline_path
+        assert "--set deal-insights-worker.image.tag=" in pipeline_text, pipeline_path
+        assert "--set deal-insights-worker.enabled=true" in pipeline_text, pipeline_path
+        assert "wait_if_present copilot-backend-deal-insights-worker" in pipeline_text, (
+            pipeline_path
+        )
+
+
 def test_startup_migration_hook_runs_before_upgrade_rollout() -> None:
     values_text = CHART_VALUES_PATH.read_text(encoding="utf-8")
 

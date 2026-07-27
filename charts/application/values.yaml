@@ -471,10 +471,39 @@ deal-worker:
     pullPolicy: IfNotPresent
   config:
     queueName: "deal"
-    additionalQueues: ["deal_jobs"]
     concurrency: 4
     gracefulTimeout: 540  # 9 minutes for long-running deal processing
   # Use shared ServiceAccount (created by knowledge-extract-worker)
+  serviceAccount:
+    create: false
+    name: "copilot-workers"
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "768Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1.5Gi"
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 5
+    queueLength: 3
+    scaleDownDelay: 300
+    scaleUpDelay: 10
+
+# Deal Insights Worker (isolates slower AI/LLM jobs from interactive deal hydration)
+deal-insights-worker:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  config:
+    queueName: "deal_jobs"
+    concurrency: 1
+    gracefulTimeout: 540
   serviceAccount:
     create: false
     name: "copilot-workers"

@@ -143,7 +143,7 @@ chat-beat:
       memory: "512Mi"
 
 integrations-worker:
-  # Actual usage: 3m CPU, 1081Mi memory
+  # 2026-07-27 live usage: 393m CPU and 530Mi memory; retain burst headroom.
   config:
     concurrency: 1
   autoscaling:
@@ -151,8 +151,11 @@ integrations-worker:
     maxReplicas: 1
   resources:
     requests:
-      cpu: "25m"
-      memory: "1536Mi"
+      cpu: "250m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
 
 integrationsCronJobs:
   jobs:
@@ -169,7 +172,7 @@ knowledgeCronJobs:
   jobs: []
 
 deal-worker:
-  # Actual usage: 3m CPU, 744Mi memory
+  # 2026-07-27 live usage: 501Mi; keep headroom without reserving a full GiB.
   config:
     concurrency: 1
   autoscaling:
@@ -178,7 +181,18 @@ deal-worker:
   resources:
     requests:
       cpu: "25m"
-      memory: "1Gi"
+      memory: "700Mi"
+
+deal-insights-worker:
+  config:
+    concurrency: 1
+  autoscaling:
+    minReplicas: 1
+    maxReplicas: 1
+  resources:
+    requests:
+      cpu: "25m"
+      memory: "700Mi"
 
 dealCronJobs:
   jobs:

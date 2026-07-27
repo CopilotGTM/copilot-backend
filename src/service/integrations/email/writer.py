@@ -198,7 +198,7 @@ class EmailSyncWriter:
     @staticmethod
     def message_upsert_update_dict(stmt: Any, values: dict[str, Any]) -> dict[str, Any]:
         """Define mutable fields for message conflict resolution."""
-        return {
+        updates = {
             key: getattr(stmt.excluded, key)
             for key in values
             if key
@@ -210,6 +210,11 @@ class EmailSyncWriter:
                 "created_at",
             )
         }
+        if "email_metadata" in updates:
+            # copilotgtm: JSONB merge retains internal keys and old provider-only keys;
+            # split provider and pipeline metadata if stale provider keys become material.
+            updates["email_metadata"] = Email.email_metadata.op("||")(stmt.excluded.email_metadata)
+        return updates
 
     async def batch_upsert_messages(
         self,

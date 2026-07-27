@@ -163,10 +163,10 @@ integrations-worker:
   resources:
     requests:
       cpu: "500m"
-      memory: "3Gi"
+      memory: "1Gi"
     limits:
-      cpu: "2000m"
-      memory: "6Gi"
+      cpu: "1000m"
+      memory: "2Gi"
 
 integrationsCronJobs:
   jobs:
@@ -187,6 +187,23 @@ deal-worker:
       enabled: true
       minDeltaMb: 0
   autoscaling:
+    minReplicas: 2
+    maxReplicas: 2
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1500m"
+      memory: "2Gi"
+
+deal-insights-worker:
+  config:
+    concurrency: 1
+    memoryLogging:
+      enabled: true
+      minDeltaMb: 0
+  autoscaling:
     minReplicas: 1
     maxReplicas: 2
   resources:
@@ -195,7 +212,7 @@ deal-worker:
       memory: "1Gi"
     limits:
       cpu: "1500m"
-      memory: "3Gi"
+      memory: "2Gi"
 
 knowledgeCronJobs:
   jobs:

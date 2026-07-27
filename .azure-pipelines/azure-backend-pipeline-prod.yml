@@ -688,6 +688,10 @@ stages:
                       --set deal-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
                       --set deal-worker.image.tag="$BUILD_BUILDID" \
                       --set deal-worker.autoscaling.enabled=true \
+                      --set deal-insights-worker.enabled=true \
+                      --set deal-insights-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
+                      --set deal-insights-worker.image.tag="$BUILD_BUILDID" \
+                      --set deal-insights-worker.autoscaling.enabled=true \
                       --set integrations-beat.image.repository="$ACR_LOGIN_SERVER/$(INTEGRATIONS_IMAGE_REPOSITORY)" \
                       --set integrations-beat.image.tag="$BUILD_BUILDID" \
                       --set api.secrets.DATABASE_HOST="$(DATABASE_HOST)" \
@@ -721,6 +725,7 @@ stages:
                       --set chat-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set integrations-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set deal-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set deal-insights-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set integrations-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set knowledge-extract-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set knowledge-upload-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
@@ -729,6 +734,7 @@ stages:
                       --set chat-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set integrations-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set deal-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set deal-insights-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set integrations-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
                   displayName: Helm Upgrade/Install (Prod)
                   env:
@@ -794,6 +800,7 @@ stages:
                     wait_if_present copilot-backend-organization-worker
                     wait_if_present copilot-backend-integrations-worker
                     wait_if_present copilot-backend-deal-worker
+                    wait_if_present copilot-backend-deal-insights-worker
                   displayName: Wait for API and worker rollouts
 
                 - task: Bash@3

@@ -23,6 +23,33 @@ def test_hydration_task_is_owned_by_the_bounded_deal_queue() -> None:
     }
 
 
+def test_hydration_task_retries_org_lock_contention_without_using_a_worker_slot(
+    monkeypatch,
+) -> None:
+    """A long hydration gets enough retry runway without blocking unrelated deals."""
+    busy_error = hydration_tasks.CommunicationHydrationBusyError("already in progress")
+    retry = Mock(side_effect=RuntimeError("retry scheduled"))
+
+    def raise_busy(coroutine):
+        coroutine.close()
+        raise busy_error
+
+    monkeypatch.setattr(hydration_tasks, "run_async", raise_busy)
+    monkeypatch.setattr(hydrate_contact_communications_task, "retry", retry)
+
+    with pytest.raises(RuntimeError, match="retry scheduled"):
+        hydrate_contact_communications_task.run(
+            organisation_id=str(uuid4()),
+            deal_ids=[str(uuid4())],
+        )
+
+    retry.assert_called_once_with(
+        exc=busy_error,
+        countdown=60,
+        max_retries=5,
+    )
+
+
 def test_hydration_task_rejects_mixed_contact_and_source_payloads() -> None:
     with pytest.raises(ValueError, match="cannot be mixed"):
         hydrate_contact_communications_task.run(
@@ -267,7 +294,10 @@ async def test_hydration_followups_research_contacts_and_process_email_deals() -
         ) as research,
         patch(
             "src.workers.deal_worker.tasks.deal_mappers."
-            "contact_communication_hydration_tasks.extract_email_attachments_deal_task"
+            "contact_communication_hydration_tasks."
+            "dispatch_email_attachment_extraction_async",
+            new=AsyncMock(),
+            create=True,
         ) as attachments,
         patch(
             "src.workers.deal_worker.tasks.deal_mappers."
@@ -286,10 +316,12 @@ async def test_hydration_followups_research_contacts_and_process_email_deals() -
         contact_id=contact_id,
         trigger="communication_participant_discovery",
     )
-    attachments.apply_async.assert_called_once()
-    assert attachments.apply_async.call_args.kwargs["kwargs"]["email_ids"] == [str(email_id)]
-    assert attachments.apply_async.call_args.kwargs["retry"] is True
-    assert attachments.apply_async.call_args.kwargs["retry_policy"]["max_retries"] == 3
+    attachments.assert_awaited_once_with(
+        organisation_id=organisation_id,
+        deal_id=deal_id,
+        email_ids=[email_id],
+        trigger="communication_association",
+    )
     insights.assert_called_once_with(
         str(organisation_id),
         str(deal_id),
@@ -307,7 +339,10 @@ async def test_hydration_followups_chunk_exact_attachment_email_ids() -> None:
     with (
         patch(
             "src.workers.deal_worker.tasks.deal_mappers."
-            "contact_communication_hydration_tasks.extract_email_attachments_deal_task"
+            "contact_communication_hydration_tasks."
+            "dispatch_email_attachment_extraction_async",
+            new=AsyncMock(),
+            create=True,
         ) as attachments,
         patch(
             "src.workers.deal_worker.tasks.deal_mappers."
@@ -321,14 +356,10 @@ async def test_hydration_followups_chunk_exact_attachment_email_ids() -> None:
             attachment_email_ids_by_deal={deal_id: email_ids},
         )
 
-    assert attachments.apply_async.call_count == 2
-    payloads = [
-        call.kwargs["kwargs"]["email_ids"] for call in attachments.apply_async.call_args_list
-    ]
+    assert attachments.await_count == 2
+    payloads = [call.kwargs["email_ids"] for call in attachments.await_args_list]
     assert [len(payload) for payload in payloads] == [100, 1]
-    assert {value for payload in payloads for value in payload} == {
-        str(email_id) for email_id in email_ids
-    }
+    assert {value for payload in payloads for value in payload} == email_ids
 
 
 @pytest.mark.asyncio
@@ -340,7 +371,10 @@ async def test_hydration_followups_skip_attachments_without_signal_but_keep_insi
     with (
         patch(
             "src.workers.deal_worker.tasks.deal_mappers."
-            "contact_communication_hydration_tasks.extract_email_attachments_deal_task"
+            "contact_communication_hydration_tasks."
+            "dispatch_email_attachment_extraction_async",
+            new=AsyncMock(),
+            create=True,
         ) as attachments,
         patch(
             "src.workers.deal_worker.tasks.deal_mappers."
@@ -354,7 +388,7 @@ async def test_hydration_followups_skip_attachments_without_signal_but_keep_insi
             attachment_email_ids_by_deal={},
         )
 
-    attachments.apply_async.assert_not_called()
+    attachments.assert_not_awaited()
     insights.assert_called_once_with(
         str(organisation_id),
         str(deal_id),
@@ -371,22 +405,24 @@ async def test_hydration_followups_keep_insights_when_attachment_publish_fails()
     with (
         patch(
             "src.workers.deal_worker.tasks.deal_mappers."
-            "contact_communication_hydration_tasks.extract_email_attachments_deal_task"
+            "contact_communication_hydration_tasks."
+            "dispatch_email_attachment_extraction_async",
+            new=AsyncMock(side_effect=RuntimeError("broker unavailable")),
+            create=True,
         ) as attachments,
         patch(
             "src.workers.deal_worker.tasks.deal_mappers."
             "contact_communication_hydration_tasks.dispatch_deal_insight_pipeline"
         ) as insights,
     ):
-        attachments.apply_async.side_effect = RuntimeError("broker unavailable")
-        with pytest.raises(RuntimeError, match="broker unavailable"):
-            await _dispatch_association_followups(
-                organisation_id=organisation_id,
-                discovered_contact_ids=set(),
-                email_deal_jobs={deal_id: memory_job_id},
-                attachment_email_ids_by_deal={deal_id: {uuid4()}},
-            )
+        await _dispatch_association_followups(
+            organisation_id=organisation_id,
+            discovered_contact_ids=set(),
+            email_deal_jobs={deal_id: memory_job_id},
+            attachment_email_ids_by_deal={deal_id: {uuid4()}},
+        )
 
+    assert attachments.await_count == 1
     insights.assert_called_once_with(
         str(organisation_id),
         str(deal_id),

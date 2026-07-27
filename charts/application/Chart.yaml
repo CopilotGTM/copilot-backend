@@ -58,6 +58,11 @@ dependencies:
 - name: worker
   version: "0.1.0"
   repository: "file://./charts/worker"
+  alias: deal-insights-worker
+  condition: deal-insights-worker.enabled
+- name: worker
+  version: "0.1.0"
+  repository: "file://./charts/worker"
   alias: deal-beat
   condition: deal-beat.enabled
 - name: worker

@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from itertools import groupby
 from typing import Any
 from uuid import UUID
@@ -165,6 +166,12 @@ def _email_has_attachments_filter() -> ColumnElement[bool]:
     return col(Email.has_attachments) == "true"
 
 
+def _is_missing_provider_message(exc: httpx.HTTPStatusError) -> bool:
+    """Distinguish a missing message from one missing attachment within that message."""
+    path_parts = exc.request.url.path.rstrip("/").split("/")
+    return "attachments" not in path_parts or path_parts[-1] == "attachments"
+
+
 class DealAssetEmailAttachmentService:
     """Extract email attachments for a deal and create DealAsset records.
 
@@ -202,8 +209,10 @@ class DealAssetEmailAttachmentService:
             "deals_processed": 0,
             "total_assets_created": 0,
             "total_errors": 0,
+            "unscoped_errors": 0,
             "post_upload_asset_ids": [],
             "continuations": [],
+            "retry_continuations": [],
         }
 
         try:
@@ -220,6 +229,18 @@ class DealAssetEmailAttachmentService:
                 stats["total_assets_created"] += deal_stats["assets_created"]
                 stats["total_errors"] += deal_stats["errors"]
                 stats["post_upload_asset_ids"].extend(deal_stats.get("post_upload_asset_ids", []))
+                retryable_email_ids = deal_stats.get("retryable_email_ids", [])
+                if retryable_email_ids:
+                    stats["retry_continuations"].append(
+                        {
+                            "deal_id": str(deal_id),
+                            "email_ids": list(retryable_email_ids),
+                        }
+                    )
+                stats["unscoped_errors"] += max(
+                    deal_stats["errors"] - len(retryable_email_ids),
+                    0,
+                )
                 remaining_email_ids = deal_stats.get("remaining_email_ids", [])
                 if deal_stats.get("limit_reached") and remaining_email_ids:
                     stats["continuations"].append(
@@ -239,6 +260,7 @@ class DealAssetEmailAttachmentService:
                 exc_info=True,
             )
             stats["total_errors"] += 1
+            stats["unscoped_errors"] += 1
             return stats
 
         finally:
@@ -257,6 +279,9 @@ class DealAssetEmailAttachmentService:
             "assets_created": 0,
             "assets_skipped_dedup": 0,
             "errors": 0,
+            "permanent_skips": 0,
+            "retryable_email_ids": [],
+            "terminal_email_failures": [],
             "limit_reached": False,
             "remaining_email_ids": [],
             "post_upload_asset_ids": [],
@@ -306,6 +331,7 @@ class DealAssetEmailAttachmentService:
                     break
 
                 message_succeeded = False
+                message_had_retryable_failure = False
                 # copilotgtm: connected copies are normally single digits; try each one
                 # before adding health ranking or a cap based on measured mailbox volume.
                 for email_rec in copies:
@@ -319,7 +345,54 @@ class DealAssetEmailAttachmentService:
                             email_rec,
                             remaining=MAX_ATTACHMENTS_PER_DEAL - total_created,
                         )
+                    except httpx.HTTPStatusError as exc:
+                        status_code = exc.response.status_code
+                        is_retryable = status_code in {408, 429} or status_code >= 500
+                        if is_retryable:
+                            message_had_retryable_failure = True
+                        else:
+                            reason = "not_found" if status_code == 404 else f"http_{status_code}"
+                            stats["terminal_email_failures"].append(
+                                {
+                                    "email_id": str(email_rec.email_id),
+                                    "reason": reason,
+                                }
+                            )
+                            if status_code == 404 and _is_missing_provider_message(exc):
+                                await self._record_email_attachment_fetch_status(
+                                    email_rec.email_id,
+                                    status="not_found",
+                                )
+                        logger.warning(
+                            "Mailbox copy failed for canonical message %s with HTTP %d",
+                            email_rec.internet_message_id,
+                            status_code,
+                            exc_info=True,
+                        )
+                        continue
+                    except (httpx.TimeoutException, httpx.NetworkError):
+                        message_had_retryable_failure = True
+                        logger.warning(
+                            "Mailbox copy temporarily failed for canonical message %s",
+                            email_rec.internet_message_id,
+                            exc_info=True,
+                        )
+                        continue
+                    except (KeyError, TypeError, ValueError):
+                        stats["terminal_email_failures"].append(
+                            {
+                                "email_id": str(email_rec.email_id),
+                                "reason": "invalid_provider_payload",
+                            }
+                        )
+                        logger.warning(
+                            "Mailbox copy has invalid attachment data for canonical message %s",
+                            email_rec.internet_message_id,
+                            exc_info=True,
+                        )
+                        continue
                     except Exception:
+                        message_had_retryable_failure = True
                         logger.warning(
                             "Mailbox copy failed for canonical message %s",
                             email_rec.internet_message_id,
@@ -338,7 +411,15 @@ class DealAssetEmailAttachmentService:
                         stats["remaining_email_ids"] = remaining_ids(message_index)
                     break
                 if not message_succeeded:
-                    stats["errors"] += 1
+                    if message_had_retryable_failure:
+                        retry_email_id = next(
+                            (copy.email_id for copy in copies if copy.email_id in scoped_email_ids),
+                            copies[0].email_id,
+                        )
+                        stats["errors"] += 1
+                        stats["retryable_email_ids"].append(str(retry_email_id))
+                    else:
+                        stats["permanent_skips"] += 1
                 if stats["limit_reached"]:
                     break
 
@@ -414,6 +495,7 @@ class DealAssetEmailAttachmentService:
                     col(KnowledgeIntegration.integration_type),
                     col(DealEmailAssociation.direction),
                     col(DealEmailAssociation.deal_id),
+                    col(Email.email_metadata),
                 )
                 .join(
                     DealEmailAssociation,
@@ -450,6 +532,9 @@ class DealAssetEmailAttachmentService:
 
             emails: list[_EmailWithAttachments] = []
             for row in rows:
+                attachment_fetch = (row[9] or {}).get("attachment_fetch", {})
+                if attachment_fetch.get("status") == "not_found":
+                    continue
                 integration = row[5]
                 integration_type = IntegrationType(row[6])
                 emails.append(
@@ -471,6 +556,33 @@ class DealAssetEmailAttachmentService:
             return emails
 
         return []
+
+    async def _record_email_attachment_fetch_status(
+        self,
+        email_id: UUID,
+        *,
+        status: str,
+    ) -> None:
+        """Persist terminal mailbox-copy outcomes so later jobs skip the same provider ID."""
+        async for session in acquire_org_async_session(self.organisation_id):
+            result = await session.execute(
+                select(Email).where(
+                    col(Email.organisation_id) == self.organisation_id,
+                    col(Email.email_id) == email_id,
+                )
+            )
+            email = result.scalar_one_or_none()
+            if email is None:
+                return
+            metadata = dict(email.email_metadata or {})
+            metadata["attachment_fetch"] = {
+                "status": status,
+                "checked_at": datetime.now(UTC).isoformat(),
+            }
+            email.email_metadata = metadata
+            session.add(email)
+            await session.commit()
+            return
 
     # ── Phase 2: Download + Upload (no DB session held) ─────────────
 
