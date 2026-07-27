@@ -44,6 +44,20 @@ class _CaptureSession:
         return _ScalarResult(self.responses.pop(0))
 
 
+class _CalendarOwnershipOnlySession:
+    """Expose an event through user ownership but not through a deal association."""
+
+    def __init__(self, event: Any) -> None:
+        self.event = event
+
+    async def execute(self, stmt: Any) -> _ScalarResult:
+        """Return the event only when the query uses the user's calendar boundary."""
+        sql = str(stmt)
+        if "calendar_event_user_states" in sql:
+            return _ScalarResult(self.event)
+        return _ScalarResult(None)
+
+
 def _calendar_event(event_id: UUID) -> Any:
     return SimpleNamespace(
         event_id=event_id,
@@ -134,6 +148,11 @@ async def test_get_meeting_details_preserves_userless_deal_scoped_briefing(
         deal_id=deal_id,
     )
     context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))  # type: ignore[method-assign]
+    require_access = AsyncMock()
+    monkeypatch.setattr(
+        "src.agents.tools.intelligence.get_meeting_details.require_agent_deal_access",
+        require_access,
+    )
     monkeypatch.setattr(
         "src.agents.tools.intelligence.get_meeting_details.get_internal_domains",
         AsyncMock(return_value={"our-company.example"}),
@@ -146,6 +165,37 @@ async def test_get_meeting_details_preserves_userless_deal_scoped_briefing(
     assert "calendar_event_deal_associations" in event_sql
     assert "calendar_event_deal_associations.deal_id" in event_sql
     assert "calendar_event_user_states" not in event_sql
+    require_access.assert_awaited_once_with(context, session, deal_id)
+
+
+@pytest.mark.asyncio
+async def test_get_meeting_details_context_deal_rejects_owned_unassociated_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Omitting deal_id must still enforce the human context deal association."""
+    event_id = uuid4()
+    deal_id = uuid4()
+    session = _CalendarOwnershipOnlySession(_calendar_event(event_id))
+    context = AgentContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        deal_id=deal_id,
+    )
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))  # type: ignore[method-assign]
+    require_access = AsyncMock()
+    monkeypatch.setattr(
+        "src.agents.tools.intelligence.get_meeting_details.require_agent_deal_access",
+        require_access,
+    )
+    monkeypatch.setattr(
+        "src.agents.tools.intelligence.get_meeting_details.get_internal_domains",
+        AsyncMock(return_value={"our-company.example"}),
+    )
+
+    result = await get_meeting_details(str(event_id), context=context)
+
+    assert result is None
+    require_access.assert_awaited_once_with(context, session, deal_id)
 
 
 @pytest.mark.asyncio

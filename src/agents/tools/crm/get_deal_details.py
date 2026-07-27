@@ -313,11 +313,12 @@ def create_get_deal_details(
 ) -> Callable[..., Any]:
     """Factory to create get_deal_details tool bound to a context.
 
-    SECURITY: organisation_id comes from context (immutable).
+    SECURITY: organisation_id comes from context; deal_id falls back to the
+    immutable deal scope and is still checked by the shared access policy.
     """
 
     async def get_deal_details_tool(
-        deal_id: str,
+        deal_id: str | None = None,
         include_stakeholders: bool = True,
         include_risks: bool = True,
     ) -> dict[str, Any] | None:
@@ -326,7 +327,7 @@ def create_get_deal_details(
         Use this tool after search_deals to get full deal information.
 
         Args:
-            deal_id: The deal UUID (from search_deals or list_deals)
+            deal_id: Visible deal UUID. If omitted, uses the current deal context.
             include_stakeholders: Include stakeholder summary (default: True)
             include_risks: Include active risks/blockers (default: True)
 
@@ -338,10 +339,11 @@ def create_get_deal_details(
         - Stakeholders (if include_stakeholders=True)
         - Risks/blockers (if include_risks=True)
         """
-        logger.info("[TOOL CALLED] get_deal_details - deal_id='%s'", deal_id)
+        effective_deal_id = deal_id or (str(context.deal_id) if context.deal_id else None)
+        logger.info("[TOOL CALLED] get_deal_details - deal_id='%s'", effective_deal_id)
 
-        if not context.organisation_id:
-            logger.warning("get_deal_details unavailable: missing organisation_id in context")
+        if not context.organisation_id or not effective_deal_id:
+            logger.warning("get_deal_details unavailable: missing organisation or deal context")
             return None
 
         result = await execute_with_capabilities(
@@ -349,7 +351,7 @@ def create_get_deal_details(
             tool_name="GetDealDetails",
             tool_func=get_deal_details,
             parameters={
-                "deal_id": deal_id,
+                "deal_id": effective_deal_id,
                 "context": context,
                 "include_stakeholders": include_stakeholders,
                 "include_risks": include_risks,

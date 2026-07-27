@@ -136,11 +136,12 @@ def create_get_deal_summary(
 ) -> Callable[..., Any]:
     """Factory to create get_deal_summary tool bound to a context.
 
-    SECURITY: organisation_id comes from context (immutable).
+    SECURITY: organisation_id comes from context; deal_id falls back to the
+    immutable deal scope and is still checked by the shared access policy.
     """
 
     async def get_deal_summary_tool(
-        deal_id: str,
+        deal_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Get the AI-generated summary for a deal.
 
@@ -148,7 +149,7 @@ def create_get_deal_summary(
         key stakeholders, recent activity, and recommended next steps.
 
         Args:
-            deal_id: The deal UUID (from search_deals or list_deals)
+            deal_id: Visible deal UUID. If omitted, uses the current deal context.
 
         Returns deal info plus summary containing:
         - executive_summary: Brief deal overview
@@ -158,10 +159,11 @@ def create_get_deal_summary(
         - risks_and_blockers: Identified risks
         - next_steps: Recommended actions
         """
-        logger.info("[TOOL CALLED] get_deal_summary - deal_id='%s'", deal_id)
+        effective_deal_id = deal_id or (str(context.deal_id) if context.deal_id else None)
+        logger.info("[TOOL CALLED] get_deal_summary - deal_id='%s'", effective_deal_id)
 
-        if not context.organisation_id:
-            logger.warning("get_deal_summary unavailable: missing organisation_id")
+        if not context.organisation_id or not effective_deal_id:
+            logger.warning("get_deal_summary unavailable: missing organisation or deal context")
             return None
 
         result = await execute_with_capabilities(
@@ -169,7 +171,7 @@ def create_get_deal_summary(
             tool_name="GetDealSummary",
             tool_func=get_deal_summary,
             parameters={
-                "deal_id": deal_id,
+                "deal_id": effective_deal_id,
                 "context": context,
             },
             description="Analyzing deal summary",

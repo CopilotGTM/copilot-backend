@@ -3,8 +3,8 @@
 Tool for retrieving detailed information about a specific meeting,
 including attendees, transcript status, and AI-generated insights.
 
-SECURITY: organisation_id plus user_id or deal_id are taken from context
-(immutable). This tool does NOT accept those boundaries as parameters.
+SECURITY: organisation_id and user_id come from immutable context. An optional
+deal_id is authorized through the shared CRM deal policy.
 """
 
 from __future__ import annotations
@@ -18,6 +18,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import (
+    AgentCRMAccessError,
+    require_agent_deal_access,
+    resolve_agent_deal_id,
+)
 from src.domain.models.organisation_tables.sync.calendar import (
     AssociationStatus,
     CalendarEvent,
@@ -48,6 +53,7 @@ async def get_meeting_details(
     event_id: str,
     *,
     context: AgentContext,
+    deal_id: str | None = None,
     include_transcript: bool = False,
     include_summary: bool = True,
     include_prep: bool = False,
@@ -65,6 +71,7 @@ async def get_meeting_details(
     Args:
         event_id: The calendar event UUID as a string
         context: AgentContext containing organisation metadata
+        deal_id: Optional visible deal UUID; defaults to context deal
         include_transcript: Include full transcript text (default: False, can be large)
         include_summary: Include AI-generated meeting summary (default: True)
         include_prep: Include meeting prep notes (default: False)
@@ -75,11 +82,15 @@ async def get_meeting_details(
     """
     organisation_id = context.organisation_id
     user_id = context.user_id
+    try:
+        effective_deal_id = resolve_agent_deal_id(context, deal_id)
+    except AgentCRMAccessError:
+        return None
 
     if not organisation_id:
         logger.warning("get_meeting_details: missing organisation_id in context")
         return None
-    if not user_id and not context.deal_id:
+    if not user_id and not effective_deal_id:
         logger.warning("get_meeting_details: missing user or deal access boundary")
         return None
 
@@ -102,9 +113,14 @@ async def get_meeting_details(
     internal_domains = await get_internal_domains(organisation_id)
 
     async with context.acquire_session() as session:
+        if effective_deal_id is not None:
+            try:
+                await require_agent_deal_access(context, session, effective_deal_id)
+            except AgentCRMAccessError:
+                return None
         event_stmt = select(CalendarEvent).options(selectinload(cast(Any, CalendarEvent).attendees))
         event_access_filters: tuple[Any, ...]
-        if user_id:
+        if user_id and effective_deal_id is None:
             # The provider event ID is externally supplied, so current-user
             # calendar ownership is the interactive-read authorization boundary.
             event_stmt = event_stmt.join(
@@ -121,15 +137,15 @@ async def get_meeting_details(
                 integration_c.integration_type.in_(CALENDAR_INTEGRATION_TYPES),
             )
         else:
-            # Automated meeting prep has no interactive user but is immutable-deal
-            # scoped. Keep that existing worker path behind an active association.
+            # Any deal-scoped read must follow an active association. This keeps
+            # context fallback equivalent to passing the same deal explicitly.
             event_stmt = event_stmt.join(
                 CalendarEventDealAssociation,
                 assoc_c.event_id == event_c.event_id,
             )
             event_access_filters = (
                 assoc_c.organisation_id == organisation_id,
-                assoc_c.deal_id == context.deal_id,
+                assoc_c.deal_id == effective_deal_id,
                 assoc_c.status == AssociationStatus.ACTIVE,
             )
         event_stmt = event_stmt.where(
@@ -155,8 +171,8 @@ async def get_meeting_details(
             assoc_c.event_id == parsed_event_id,
             assoc_c.status == AssociationStatus.ACTIVE,
         )
-        if context.deal_id:
-            assoc_stmt = assoc_stmt.where(assoc_c.deal_id == context.deal_id)
+        if effective_deal_id:
+            assoc_stmt = assoc_stmt.where(assoc_c.deal_id == effective_deal_id)
 
         try:
             assoc_result = await session.execute(assoc_stmt)
@@ -300,8 +316,8 @@ def create_get_meeting_details(
 ) -> Callable[..., Any]:
     """Factory to create get_meeting_details tool bound to a context.
 
-    SECURITY: The context contains immutable organisation plus user or deal
-    boundaries. The tool does not accept those boundaries as parameters.
+    SECURITY: Context supplies immutable organisation/user boundaries; an
+    optional deal selection is checked by the shared CRM access policy.
 
     Args:
         context: AgentContext with organisation metadata
@@ -313,6 +329,7 @@ def create_get_meeting_details(
 
     async def get_meeting_details_tool(
         event_id: str,
+        deal_id: str | None = None,
         include_transcript: bool = False,
         include_summary: bool = True,
         include_prep: bool = False,
@@ -329,6 +346,7 @@ def create_get_meeting_details(
 
         Args:
             event_id: The calendar event UUID (from list_deal_meetings)
+            deal_id: Visible deal UUID. If omitted, uses current deal context.
             include_transcript: Include full transcript text (default: False, can be large)
             include_summary: Include AI meeting summary (default: True)
             include_prep: Include meeting prep notes (default: False)
@@ -343,7 +361,7 @@ def create_get_meeting_details(
             f"include_transcript={include_transcript}, include_summary={include_summary}"
         )
 
-        if not context.organisation_id or not (context.user_id or context.deal_id):
+        if not context.organisation_id or not (context.user_id or context.deal_id or deal_id):
             logger.warning("get_meeting_details unavailable: missing event access context")
             return None
 
@@ -355,6 +373,7 @@ def create_get_meeting_details(
             parameters={
                 "event_id": event_id,
                 "context": context,
+                "deal_id": deal_id,
                 "include_transcript": include_transcript,
                 "include_summary": include_summary,
                 "include_prep": include_prep,

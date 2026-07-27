@@ -1,6 +1,6 @@
 """Get Deal Memory Tool - Retrieve persistent deal memory document.
 
-This tool fetches the accumulated deal memory for the current deal context.
+This tool fetches accumulated deal memory for a selected or current deal.
 The memory is a markdown document built by the DealMemoryAgent containing
 synthesised knowledge from meetings, emails, and notes.
 
@@ -19,9 +19,9 @@ If no memory exists yet, returns a NOT_AVAILABLE status.
 
 SECURITY BOUNDARIES (immutable, from context):
 - organisation_id: Prevents cross-org data access
-- deal_id: Scoped to the current deal context
+- user_id: Authorizes an explicitly selected deal
 
-This is a DEAL-SCOPED tool. Both organisation_id and deal_id come from context.
+The optional deal_id falls back to context for scheduled deal-scoped agents.
 """
 
 from __future__ import annotations
@@ -33,7 +33,11 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy import select
 
 from src.agents.tools.base import execute_with_capabilities
-from src.agents.tools.crm.access import AgentCRMAccessError, require_agent_deal_access
+from src.agents.tools.crm.access import (
+    AgentCRMAccessError,
+    require_agent_deal_access,
+    resolve_agent_deal_id,
+)
 from src.domain.models.organisation_tables.sync.deal_memory_models import DealMemory
 
 if TYPE_CHECKING:
@@ -46,12 +50,13 @@ logger = logging.getLogger(__name__)
 async def get_deal_memory(
     *,
     context: AgentContext,
+    deal_id: str | None = None,
 ) -> dict[str, Any]:
-    """Get the persistent deal memory for the current deal.
+    """Get persistent memory for an explicit or context-scoped deal.
 
-    SECURITY BOUNDARIES (from context, immutable):
+    SECURITY BOUNDARIES:
     - organisation_id: Prevents cross-org data access
-    - deal_id: Scoped to current deal
+    - deal_id: Explicit selection or immutable context fallback
 
     Args:
         context: AgentContext containing organisation and deal metadata
@@ -61,22 +66,25 @@ async def get_deal_memory(
         or a NOT_AVAILABLE status if no memory exists.
     """
     organisation_id = context.organisation_id
-    deal_id = context.deal_id
+    try:
+        effective_deal_id = resolve_agent_deal_id(context, deal_id)
+    except AgentCRMAccessError:
+        return {"status": "NOT_AVAILABLE", "message": "Deal memory is not available"}
 
-    if not organisation_id or not deal_id:
-        logger.warning("get_deal_memory: missing organisation_id or deal_id in context")
+    if not organisation_id or not effective_deal_id:
+        logger.warning("get_deal_memory: missing organisation_id or effective deal_id")
         return {"status": "NOT_AVAILABLE", "message": "Missing organisation or deal context"}
 
     c = cast(Any, DealMemory).__table__.c
 
     stmt = select(DealMemory).where(
         c.organisation_id == organisation_id,
-        c.deal_id == deal_id,
+        c.deal_id == effective_deal_id,
     )
 
     async with context.acquire_session() as session:
         try:
-            await require_agent_deal_access(context, session, deal_id)
+            await require_agent_deal_access(context, session, effective_deal_id)
             result = await session.execute(stmt)
             memory = result.scalar_one_or_none()
         except AgentCRMAccessError:
@@ -87,7 +95,7 @@ async def get_deal_memory(
             return {"status": "NOT_AVAILABLE", "message": "Error reading deal memory"}
 
         if not memory:
-            logger.info("get_deal_memory: no memory for deal %s", deal_id)
+            logger.info("get_deal_memory: no memory for deal %s", effective_deal_id)
             return {
                 "status": "NOT_AVAILABLE",
                 "message": "Deal memory has not been generated yet",
@@ -102,7 +110,7 @@ async def get_deal_memory(
 
     logger.info(
         "get_deal_memory: found memory for deal %s (version=%d, tokens=%s)",
-        deal_id,
+        effective_deal_id,
         memory.version,
         memory.token_count,
     )
@@ -115,18 +123,19 @@ def create_get_deal_memory(
 ) -> Callable[..., Any]:
     """Factory to create get_deal_memory tool bound to a context.
 
-    SECURITY: organisation_id and deal_id come from context (immutable).
+    SECURITY: organisation_id is immutable; selected deals pass the shared access policy.
     """
 
-    async def get_deal_memory_tool() -> dict[str, Any]:
-        """Get the persistent deal memory for the current deal.
+    async def get_deal_memory_tool(deal_id: str | None = None) -> dict[str, Any]:
+        """Get persistent deal memory for a selected or current deal.
 
         Use this tool FIRST to get accumulated context about a deal before
         gathering additional data. The deal memory contains a synthesised
         overview of all meetings, emails, stakeholders, risks, and business
         narrative — built by prior analysis runs.
 
-        No parameters needed — uses the current deal context.
+        Args:
+            deal_id: Visible deal UUID. If omitted, uses the current deal context.
 
         Returns a markdown document with:
         - Deal snapshot (stage, amount, dates, data density)
@@ -139,9 +148,10 @@ def create_get_deal_memory(
 
         Returns NOT_AVAILABLE if no memory has been generated yet.
         """
-        logger.info("[TOOL CALLED] get_deal_memory - deal_id='%s'", context.deal_id)
+        effective_deal_id = deal_id or (str(context.deal_id) if context.deal_id else None)
+        logger.info("[TOOL CALLED] get_deal_memory - deal_id='%s'", effective_deal_id)
 
-        if not context.organisation_id or not context.deal_id:
+        if not context.organisation_id or not effective_deal_id:
             logger.warning("get_deal_memory unavailable: missing context")
             return {"status": "NOT_AVAILABLE", "message": "Missing deal context"}
 
@@ -149,7 +159,7 @@ def create_get_deal_memory(
             capabilities_getter(),
             tool_name="GetDealMemory",
             tool_func=get_deal_memory,
-            parameters={"context": context},
+            parameters={"context": context, "deal_id": deal_id},
             description="Recalling deal context",
             fallback_value={"status": "NOT_AVAILABLE", "message": "Tool execution failed"},
         )
