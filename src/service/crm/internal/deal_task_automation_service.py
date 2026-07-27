@@ -80,9 +80,13 @@ class DealTaskAutomationService:
         self._projection = ActivityFeedProjectionService(session, organisation_id)
         self._reminders = TaskReminderService(session, organisation_id, actor_user_id=None)
 
-    async def list_deal_tasks(self, deal_id: UUID) -> list[CRMTask]:
+    async def list_deal_tasks(
+        self, deal_id: UUID, *, include_completed: bool = False
+    ) -> list[CRMTask]:
         """List non-deleted task-style rows for one deal in the current org.
 
+        Scheduled reconciliation keeps the default open-task view. Human chat
+        callers opt into completed rows so "tasks for this deal" matches the UI.
         This is read-heavy and intentionally filters by `organisation_id` before
         `deal_id`, so one tenant's query can never match another tenant's
         rows even when IDs collide across organisations.
@@ -90,22 +94,22 @@ class DealTaskAutomationService:
         # Read path filters first by org and then by deal; this preserves tenant
         # isolation even if the caller sends a guessed UUID from another org.
         c = cast(Any, CRMTask).__table__.c
-        stmt = (
-            select(CRMTask)
-            .where(
-                c.organisation_id == self.organisation_id,
-                c.deal_id == deal_id,
-                c.task_metadata["task_type"].as_string().in_(list(_TASK_ACTIVITY_TYPES)),
+        conditions = [
+            c.organisation_id == self.organisation_id,
+            c.deal_id == deal_id,
+            c.task_metadata["task_type"].as_string().in_(list(_TASK_ACTIVITY_TYPES)),
+            or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
+        ]
+        if not include_completed:
+            conditions.append(
                 c.status.in_(
                     [
                         CRMActivityStatus.NOT_STARTED.value,
                         CRMActivityStatus.IN_PROGRESS.value,
                     ]
-                ),
-                or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
+                )
             )
-            .order_by(c.created_at.desc(), c.task_id.desc())
-        )
+        stmt = select(CRMTask).where(*conditions).order_by(c.created_at.desc(), c.task_id.desc())
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 

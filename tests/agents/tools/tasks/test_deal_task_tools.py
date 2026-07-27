@@ -33,6 +33,9 @@ class _FakeTask:
     due_date: datetime | None = None
     owner_name: str | None = "Ravi Kumar"
     owner_email: str | None = "ravi@example.com"
+    assigned_to_user_id: UUID | None = None
+    assigned_to_email: str | None = None
+    task_metadata: dict = field(default_factory=dict)
     source: str | None = "AI_MEETING"
     integration_id: UUID | None = None
 
@@ -44,6 +47,7 @@ class _FakeService:
     assignee_public_user_id: UUID | None = None
     reminder_at: datetime | None = None
     listed_task_count = 2
+    listed_tasks: list[_FakeTask] | None = None
 
     def __init__(self, session: object, organisation_id: UUID):
         self.session = session
@@ -52,9 +56,14 @@ class _FakeService:
         self.completed_calls: list[dict] = []
         _FakeService.instances.append(self)
 
-    async def list_deal_tasks(self, deal_id: UUID) -> list[_FakeTask]:
+    async def list_deal_tasks(
+        self, deal_id: UUID, *, include_completed: bool = False
+    ) -> list[_FakeTask]:
         """Return two sample tasks for read-only contract assertions."""
         self.listed_deal_id = deal_id
+        self.include_completed = include_completed
+        if self.listed_tasks is not None:
+            return self.listed_tasks
         return [
             _FakeTask(
                 subject=f"Task {index}",
@@ -93,6 +102,7 @@ def reset_fake_service() -> None:
     _FakeService.assignee_public_user_id = None
     _FakeService.reminder_at = None
     _FakeService.listed_task_count = 2
+    _FakeService.listed_tasks = None
 
 
 @pytest.fixture
@@ -329,6 +339,71 @@ async def test_list_deal_tasks_accepts_visible_explicit_deal_id(
     assert result["status"] == "ok"
     assert result["deal_id"] == str(explicit_deal_id)
     assert _FakeService.instances[-1].listed_deal_id == explicit_deal_id
+    access_check.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_human_chat_lists_every_deal_task_without_assignee_filtering(
+    context: AgentContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deal-wide chat reads include every assignee through the dedicated deal tool."""
+    context.user_id = uuid4()
+    context.user_email = "admin@example.com"
+    mine = _FakeTask(
+        subject="My task",
+        assigned_to_user_id=context.user_id,
+        assigned_to_email=context.user_email,
+    )
+    another_users = _FakeTask(
+        subject="Mayank's task",
+        assigned_to_user_id=uuid4(),
+        assigned_to_email="mayank@example.com",
+    )
+    _FakeService.listed_tasks = [mine, another_users]
+    access_check = AsyncMock()
+    monkeypatch.setattr(
+        "src.agents.tools.tasks.list_deal_tasks.DealTaskAutomationService",
+        _FakeService,
+    )
+    monkeypatch.setattr(
+        "src.agents.tools.tasks.list_deal_tasks.require_agent_deal_access",
+        access_check,
+    )
+
+    tool = create_list_deal_tasks(context, lambda: None)
+    result = await tool()
+
+    assert [task["subject"] for task in result["tasks"]] == [
+        "My task",
+        "Mayank's task",
+    ]
+    assert _FakeService.instances[0].include_completed is True
+    assert context.metadata["deal_task_list_checked"] is True
+    access_check.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_human_chat_returns_all_deal_tasks_beyond_reconciliation_cap(
+    context: AgentContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Human deal reads return the full authorized deal instead of automation's cap."""
+    context.user_id = uuid4()
+    _FakeService.listed_task_count = 201
+    access_check = AsyncMock()
+    monkeypatch.setattr(
+        "src.agents.tools.tasks.list_deal_tasks.DealTaskAutomationService",
+        _FakeService,
+    )
+    monkeypatch.setattr(
+        "src.agents.tools.tasks.list_deal_tasks.require_agent_deal_access",
+        access_check,
+    )
+
+    result = await create_list_deal_tasks(context, lambda: None)()
+
+    assert result["task_count"] == 201
+    assert result["truncated"] is False
+    assert len(result["tasks"]) == 201
     access_check.assert_awaited_once()
 
 
