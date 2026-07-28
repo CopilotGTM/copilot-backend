@@ -67,13 +67,16 @@ async def test_list_my_tasks_uses_authenticated_identity_and_local_today(
             self.calls.append(kwargs)
             return [record], 1
 
-    actor = object()
-    monkeypatch.setattr(module, "resolve_agent_access_actor", AsyncMock(return_value=actor))
+    role_resolver = AsyncMock(
+        side_effect=AssertionError("ListMyTasks must use immutable context identity directly")
+    )
+    monkeypatch.setattr(module, "resolve_agent_access_actor", role_resolver, raising=False)
     monkeypatch.setattr(module, "TaskReadService", FakeTaskReadService)
 
     result = await module.list_my_tasks(context=context, due_today=True)
 
-    call = FakeTaskReadService.instances[0].calls[0]
+    service = FakeTaskReadService.instances[0]
+    call = service.calls[0]
     assert call["scope"] == "assigned_to_me"
     assert call["current_user_id"] == context.user_id
     assert call["current_user_email"] == context.user_email
@@ -83,3 +86,7 @@ async def test_list_my_tasks_uses_authenticated_identity_and_local_today(
     assert result["task_count"] == 1
     assert result["tasks"][0]["deal_name"] == "Renewal"
     assert result["tasks"][0]["due_date"] == "2026-07-28T09:30:00+00:00"
+    assert service.access_actor.user_id == context.user_id
+    assert service.access_actor.normalized_email == context.user_email
+    assert service.access_actor.is_admin is False
+    role_resolver.assert_not_awaited()

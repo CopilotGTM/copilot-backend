@@ -9,12 +9,19 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from src.agents.tools.base import execute_with_capabilities
 from src.agents.tools.crm.access import (
     AgentCRMAccessError,
     require_agent_deal_access,
+    resolve_agent_access_actor,
     resolve_agent_deal_id,
+)
+from src.service.crm.access.record_access_policy import (
+    CRMAccessActor,
+    CRMRecordAccessError,
+    DealAccessPolicy,
 )
 from src.service.crm.internal.deal_task_automation_service import DealTaskAutomationService
 
@@ -26,6 +33,39 @@ if TYPE_CHECKING:
 # Scheduled reconciliation is capped to keep one automation run bounded. Human
 # deal reads are not capped because the tool contract promises the full deal.
 MAX_TASKS_FOR_RECONCILIATION = 200
+
+
+async def _require_human_deal_task_access(
+    context: AgentContext,
+    session: Any,
+    deal_id: UUID,
+) -> CRMAccessActor:
+    """Allow admins, or require the context user to have a deal relationship.
+
+    The immutable organisation and user IDs remain the trust boundary. The
+    server-resolved role grants organisation admins access to every deal, while
+    members must be the owner or an active internal participant.
+    """
+    if context.user_id is None:
+        raise AgentCRMAccessError("Deal task access requires an authenticated user")
+
+    actor = await resolve_agent_access_actor(context)
+    if not isinstance(actor, CRMAccessActor):
+        raise AgentCRMAccessError("Deal task access requires an authenticated user")
+    try:
+        _, decision = await DealAccessPolicy(
+            session,
+            context.organisation_id,
+            actor,
+        ).require_deal(deal_id, "view")
+    except CRMRecordAccessError as exc:
+        raise AgentCRMAccessError(exc.message) from exc
+
+    # The shared member policy also preserves creator visibility. Task reads are
+    # narrower: creation alone must not reveal every assignee's work on a deal.
+    if not (actor.is_admin or decision.is_owner or decision.is_participant):
+        raise AgentCRMAccessError("Deal not found")
+    return actor
 
 
 def _format_task(task: CRMTask, *, deal_name: str | None = None) -> dict[str, Any]:
@@ -72,7 +112,12 @@ async def list_deal_tasks(
     # Keep listing inside the caller-owned session boundary; this is read-only
     # so there is no additional transactional mutation risk in the tool layer.
     async with context.acquire_session() as session:
-        if context.user_id is not None or deal_id is not None:
+        if context.user_id is not None:
+            try:
+                await _require_human_deal_task_access(context, session, effective_deal_id)
+            except AgentCRMAccessError as exc:
+                return {"status": "error", "message": str(exc)}
+        elif deal_id is not None:
             try:
                 await require_agent_deal_access(context, session, effective_deal_id)
             except AgentCRMAccessError as exc:
