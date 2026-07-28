@@ -7,7 +7,9 @@ from typing import Any, cast
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from src.service.crm.tasks.read_service import _merge_assignee_rows
+import pytest
+from sqlalchemy.dialects import postgresql
+from src.service.crm.tasks.read_service import TaskReadService, _merge_assignee_rows
 from src.service.crm.tasks.write_service import TaskWriteService
 
 
@@ -196,6 +198,25 @@ def test_task_assignee_options_merge_by_emitted_filter_key() -> None:
     )
     assert email_option["task_count"] == 5
     assert external_option["task_count"] == 4
+
+
+@pytest.mark.asyncio
+async def test_task_assignee_query_reuses_assignee_kind_expression() -> None:
+    """Keep SELECT and GROUP BY bound to one PostgreSQL JSON-key parameter."""
+    session = SimpleNamespace()
+
+    async def execute(statement: Any) -> Any:
+        """Capture the generated query without requiring a database connection."""
+        session.statement = statement
+        return SimpleNamespace(all=lambda: [])
+
+    session.execute = execute
+    service = TaskReadService(cast(Any, session), uuid4())
+
+    await service.list_task_assignees()
+
+    compiled = session.statement.compile(dialect=postgresql.dialect())
+    assert list(compiled.params.values()).count("assignee_kind") == 1
 
 
 def test_task_write_service_rejects_external_assignment() -> None:
