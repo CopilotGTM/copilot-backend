@@ -6,6 +6,8 @@ from datetime import UTC, date, datetime
 from uuid import uuid4
 
 import pytest
+from src.domain.models.master_tables.user_models import UserAppRole
+from src.service.crm.access.record_access_policy import CRMAccessActor
 from src.service.crm.tasks.read_service import TaskReadService
 
 
@@ -33,6 +35,18 @@ class _FakeSession:
         """Capture the row query and return no rows."""
         self.executed_statements.append(statement)
         return _EmptyResult()
+
+
+def test_personal_assignment_visibility_does_not_require_deal_relationship() -> None:
+    """An assigned task remains visible even when its deal is outside the user's relationship set."""
+    actor = CRMAccessActor(uuid4(), UserAppRole.MEMBER, "seller@example.com")
+    service = TaskReadService(_FakeSession(), uuid4(), access_actor=actor)
+
+    visibility_sql = str(service._visible_task_condition())
+
+    # Assignment is its own read grant inside the organisation. Restricting the
+    # personal branch to standalone tasks would silently omit legitimate work.
+    assert "crm_tasks.deal_id IS NULL" not in visibility_sql
 
 
 @pytest.mark.asyncio

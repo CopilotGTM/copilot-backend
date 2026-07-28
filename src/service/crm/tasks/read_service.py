@@ -587,7 +587,7 @@ class TaskReadService:
             raise TaskReadServiceError("Failed to retrieve task") from exc
 
     def _visible_task_condition(self):
-        """Limit deal tasks to accessible deals and standalone tasks to their user."""
+        """Allow accessible-deal tasks plus records directly owned by the actor."""
         task = cast(Any, CRMTask).__table__.c
         actor = self.access_actor
         if actor is None or actor.is_admin:
@@ -606,10 +606,10 @@ class TaskReadService:
         ]
         if actor.normalized_email:
             personal.append(func.lower(task.assigned_to_email) == actor.normalized_email)
-        return or_(
-            task.deal_id.in_(accessible_deals),
-            and_(task.deal_id.is_(None), or_(*personal)),
-        )
+        # Assignment and creation are direct task grants even when the parent
+        # deal is otherwise hidden. The outer query still enforces organisation
+        # isolation, so this cannot expose another tenant's task.
+        return or_(task.deal_id.in_(accessible_deals), *personal)
 
     def _select_tasks_with_deal_name(self):
         deal_c = cast(Any, CRMDeal).__table__.c

@@ -13,9 +13,10 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from src.agents.tools.base import execute_with_capabilities
-from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
 from src.agents.tools.tasks.list_deal_tasks import _format_task
+from src.domain.models.master_tables.user_models import UserAppRole
 from src.infra.utils.timezone import get_context_anchor_utc, get_context_timezone_name
+from src.service.crm.access.record_access_policy import CRMAccessActor
 from src.service.crm.tasks.read_service import TaskReadService, TaskReadServiceError
 
 if TYPE_CHECKING:
@@ -55,7 +56,13 @@ async def list_my_tasks(
         due_to = (start_local + timedelta(days=1)).astimezone(UTC) - timedelta(microseconds=1)
 
     try:
-        actor = await resolve_agent_access_actor(context)
+        # Task identity is already immutable runtime context. Treat every human
+        # caller identically so an admin role cannot widen this personal tool.
+        actor = CRMAccessActor(
+            context.user_id,
+            UserAppRole.MEMBER,
+            context.user_email,
+        )
         async with context.acquire_session() as session:
             service = TaskReadService(session, context.organisation_id, actor)
             records, total_count = await service.list_tasks(
@@ -68,7 +75,7 @@ async def list_my_tasks(
                 include_completed=include_completed,
                 limit=MAX_PERSONAL_TASKS,
             )
-    except (AgentCRMAccessError, TaskReadServiceError) as exc:
+    except TaskReadServiceError as exc:
         # Authorization and read-service failures are safe tool errors; callers
         # receive no partial task data from a failed access check.
         return {"status": "error", "message": str(exc)}
