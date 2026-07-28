@@ -530,6 +530,7 @@ class TaskReadService:
     ) -> list[dict[str, Any]]:
         """List visible task assignees with merged identity keys and task counts."""
         c = cast(Any, CRMTask).__table__.c
+        assignee_kind = c.task_metadata["assignee_kind"].as_string()
         base_conditions = [
             c.organisation_id == self.organisation_id,
             self._visible_task_condition(),
@@ -547,7 +548,7 @@ class TaskReadService:
                 c.assigned_to_user_id,
                 c.assigned_to_name,
                 c.assigned_to_email,
-                c.task_metadata["assignee_kind"].as_string().label("assignee_kind"),
+                assignee_kind.label("assignee_kind"),
                 func.count().label("task_count"),
             )
             .where(*base_conditions)
@@ -555,7 +556,7 @@ class TaskReadService:
                 c.assigned_to_user_id,
                 c.assigned_to_name,
                 c.assigned_to_email,
-                c.task_metadata["assignee_kind"].as_string(),
+                assignee_kind,
             )
             .order_by(c.assigned_to_name.asc().nulls_last(), c.assigned_to_email.asc())
         )
