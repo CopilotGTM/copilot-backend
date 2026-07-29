@@ -382,6 +382,7 @@ class ContactSearchItem(BaseModel):
     email: str | None
     job_title: str | None
     company: ContactListCompany | None
+    deal_count: int
     match_type: str
 
 

@@ -471,6 +471,23 @@ class ContactReadService:
         company_key = func.lower(func.coalesce(c.company_name, ""))
         additional_emails_text = c.additional_emails.cast(String)
         additional_emails_key = func.lower(additional_emails_text)
+        contact_participant_match = or_(
+            col(CRMDealParticipant.related_local_id) == c.contact_id,
+            func.lower(func.trim(col(CRMDealParticipant.related_email)))
+            == func.lower(func.trim(c.email)),
+        )
+        deal_count_sub = (
+            select(func.count(col(CRMDealParticipant.participant_id)))
+            .where(
+                contact_participant_match,
+                col(CRMDealParticipant.organisation_id) == self.organisation_id,
+                col(CRMDealParticipant.participant_type) == CRMParticipantType.CONTACT.value,
+                col(CRMDealParticipant.is_deleted).is_(False),
+                col(CRMDealParticipant.approval_status) == ApprovalStatus.APPROVED.value,
+            )
+            .correlate(CRMContact)
+            .scalar_subquery()
+        )
 
         filters = [
             c.organisation_id == self.organisation_id,
@@ -524,17 +541,18 @@ class ContactReadService:
             )
 
         stmt = (
-            select(CRMContact)
+            select(CRMContact, deal_count_sub.label("deal_count"))
             .options(defer(cast(Any, CRMContact).profile_enrichment))
             .where(*filters)
             .order_by(rank_expr.asc(), name_key.asc(), c.contact_id.asc())
             .limit(limit + 1)
         )
         res = await self.org_session.execute(stmt)
-        rows = list(res.scalars().all())
+        rows = list(res.all())
 
         has_more = len(rows) > limit
-        contacts = rows[:limit]
+        contact_rows = rows[:limit]
+        contacts = [row[0] for row in contact_rows]
         next_cursor = None
         if has_more and contacts:
             last = contacts[-1]
@@ -556,9 +574,10 @@ class ContactReadService:
                     company=companies.get(contact.company_id) if contact.company_id else None,
                     email_domain=self._extract_domain(contact.email) if contact.email else None,
                 ),
+                "deal_count": contact_deal_count or 0,
                 "match_type": self._contact_match_type(contact, query, include_company_name),
             }
-            for contact in contacts
+            for contact, contact_deal_count in contact_rows
         ], next_cursor
 
     async def _load_companies_for_contacts(
