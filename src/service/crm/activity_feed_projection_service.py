@@ -38,6 +38,10 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 )
 from src.domain.models.organisation_tables.sync.email_models import DealEmailAssociation, Email
 from src.domain.models.organisation_tables.sync.risk_blocker_models import DealRiskBlocker
+from src.service.crm.contacts.last_activity_service import (
+    ACTIVITY_SOURCE_TYPES,
+    ContactLastActivityService,
+)
 from src.service.crm.deals.last_activity_service import DealLastActivityService
 from src.service.crm.participants.stakeholder_adapter import (
     participant_to_stakeholder_detail_dict,
@@ -229,6 +233,7 @@ class ActivityFeedProjectionService:
             object_type=CRMActivityObjectType.CONTACT.value,
             object_id=_uuid_from_metadata(metadata, "contact_id"),
             occurred_at=occurred_at,
+            refresh_contact_activity=True,
         )
         await self._sync_related_object_link(
             activity_id=note.note_id,
@@ -308,6 +313,7 @@ class ActivityFeedProjectionService:
             object_ids={contact.contact_id for contact in contacts},
             link_role="RELATED",
             occurred_at=occurred_at,
+            refresh_contact_activity=True,
         )
         await self._sync_object_links(
             activity_id=association.association_id,
@@ -379,6 +385,7 @@ class ActivityFeedProjectionService:
             link_role="RELATED",
             occurred_at=occurred_at,
             replace_existing=replace_links,
+            refresh_contact_activity=True,
         )
         await self._sync_object_links(
             activity_id=activity_id,
@@ -462,6 +469,7 @@ class ActivityFeedProjectionService:
             object_ids={contact.contact_id for contact in contacts},
             link_role="ATTENDEE",
             occurred_at=occurred_at,
+            refresh_contact_activity=True,
         )
         await self._sync_object_links(
             activity_id=association.association_id,
@@ -529,6 +537,7 @@ class ActivityFeedProjectionService:
             link_role="ATTENDEE",
             occurred_at=occurred_at,
             replace_existing=replace_links,
+            refresh_contact_activity=True,
         )
         await self._sync_object_links(
             activity_id=activity_id,
@@ -561,6 +570,7 @@ class ActivityFeedProjectionService:
                 link_role="PARTICIPANT",
                 occurred_at=occurred_at,
                 replace_existing=replace_existing,
+                refresh_contact_activity=(object_type == CRMActivityObjectType.CONTACT.value),
             )
 
     async def upsert_deal_created(self, deal: CRMDeal) -> None:
@@ -1119,14 +1129,26 @@ class ActivityFeedProjectionService:
             link_c.object_type == CRMActivityObjectType.DEAL.value,
         )
         deal_ids = list((await self.session.execute(deal_ids_stmt)).scalars().all())
-        await self.session.execute(
+        updated_activity = await self.session.execute(
             update(CRMActivity)
             .where(
                 activity_c.organisation_id == self.organisation_id,
                 activity_c.activity_id == activity_id,
             )
             .values(is_deleted=True, updated_at=_now_utc())
+            .returning(activity_c.source_type)
         )
+        source_type = updated_activity.scalar_one_or_none()
+        contact_ids: set[UUID] = set()
+        # Only communication and note projections contribute to Contact freshness.
+        # Skip even the link lookup for other activity types used by bulk imports.
+        if source_type in ACTIVITY_SOURCE_TYPES:
+            contact_ids_stmt = select(col(CRMActivityLink.object_id)).where(
+                link_c.organisation_id == self.organisation_id,
+                link_c.activity_id == activity_id,
+                link_c.object_type == CRMActivityObjectType.CONTACT.value,
+            )
+            contact_ids = set((await self.session.execute(contact_ids_stmt)).scalars().all())
         await self.session.execute(
             delete(CRMActivityLink).where(
                 link_c.organisation_id == self.organisation_id,
@@ -1136,6 +1158,8 @@ class ActivityFeedProjectionService:
         refresher = DealLastActivityService(self.session, self.organisation_id)
         for deal_id in deal_ids:
             await refresher.refresh_deal(deal_id)
+        if source_type in ACTIVITY_SOURCE_TYPES:
+            await self._refresh_contact_activity(contact_ids)
 
     async def _lock_communication(self, source_kind: str, source_id: object) -> None:
         """Serialize direct and association projections for one communication source."""
@@ -1451,6 +1475,7 @@ class ActivityFeedProjectionService:
         link_role: str,
         occurred_at: datetime,
         replace_existing: bool = True,
+        refresh_contact_activity: bool = False,
     ) -> None:
         link_c = cast(Any, CRMActivityLink).__table__.c
         base_where = (
@@ -1459,8 +1484,27 @@ class ActivityFeedProjectionService:
             link_c.object_type == object_type,
             link_c.link_role == link_role,
         )
+        previous_contact_ids: set[UUID] = set()
+        if (
+            refresh_contact_activity
+            and object_type == CRMActivityObjectType.CONTACT.value
+            and replace_existing
+        ):
+            # Replayed projections can move an activity between Contacts. Refresh
+            # both sides so the old Contact can fall back to its next latest event.
+            previous_contact_ids = set(
+                (
+                    await self.session.execute(
+                        select(col(CRMActivityLink.object_id)).where(*base_where)
+                    )
+                )
+                .scalars()
+                .all()
+            )
         if not object_ids and replace_existing:
             await self.session.execute(delete(CRMActivityLink).where(*base_where))
+            if refresh_contact_activity:
+                await self._refresh_contact_activity(previous_contact_ids)
             return
 
         # Sync the full set for this role so replayed projections remove links
@@ -1486,6 +1530,16 @@ class ActivityFeedProjectionService:
                 set_={"occurred_at": occurred_at},
             )
             await self.session.execute(stmt)
+        if refresh_contact_activity and object_type == CRMActivityObjectType.CONTACT.value:
+            await self._refresh_contact_activity(previous_contact_ids | object_ids)
+
+    async def _refresh_contact_activity(self, contact_ids: set[UUID]) -> None:
+        """Refresh Contact timestamps after timeline membership changes."""
+        refresher = ContactLastActivityService(self.session, self.organisation_id)
+        # copilotgtm: refresh per Contact while communication batches stay small;
+        # switch to grouped aggregation if large meeting fanout becomes measurable.
+        for contact_id in sorted(contact_ids, key=str):
+            await refresher.refresh_contact(contact_id)
 
     async def _sync_related_object_link(
         self,
@@ -1494,6 +1548,7 @@ class ActivityFeedProjectionService:
         object_type: str,
         object_id: UUID | None,
         occurred_at: datetime,
+        refresh_contact_activity: bool = False,
     ) -> None:
         await self._sync_object_links(
             activity_id=activity_id,
@@ -1501,6 +1556,7 @@ class ActivityFeedProjectionService:
             object_ids={object_id} if object_id else set(),
             link_role="RELATED",
             occurred_at=occurred_at,
+            refresh_contact_activity=refresh_contact_activity,
         )
 
     async def _sync_owner_user_link(

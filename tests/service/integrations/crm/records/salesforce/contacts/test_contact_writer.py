@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -266,3 +268,36 @@ async def test_load_existing_rows_chunks_local_id_lookup(monkeypatch: pytest.Mon
 
     assert session.execute.await_count == 2
     assert rows == {f"003{index}": contact for index, contact in enumerate(contacts)}
+
+
+def test_apply_updates_keeps_newer_projected_activity() -> None:
+    """A provider replay cannot roll a Contact back behind Copilot activity."""
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    projected_at = datetime(2026, 7, 3, tzinfo=UTC)
+    provider_at = datetime(2026, 7, 1, tzinfo=UTC)
+    existing = CRMContact(
+        contact_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        last_contacted_at=projected_at,
+        last_activity_at=projected_at,
+    )
+    incoming = replace(
+        _normalized_contact(
+            external_id="003A",
+            company_external_id=None,
+            owner_external_id=None,
+        ),
+        last_contacted_at=provider_at,
+        last_activity_at=provider_at,
+    )
+
+    SalesforceContactWriter(
+        session=AsyncMock(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )._apply_updates(existing, incoming, None, None, now=projected_at)
+
+    assert existing.last_contacted_at == projected_at
+    assert existing.last_activity_at == projected_at

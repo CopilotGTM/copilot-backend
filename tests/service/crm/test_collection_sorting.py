@@ -79,6 +79,7 @@ async def test_deal_sorting_is_applied_before_pagination(
         ("owner", "crm_companies.owner_name"),
         ("annual_revenue", "crm_companies.annual_revenue"),
         ("number_of_employees", "crm_companies.number_of_employees"),
+        ("created_at", "crm_companies.created_at"),
     ],
 )
 @pytest.mark.parametrize("sort_order", ["asc", "desc"])

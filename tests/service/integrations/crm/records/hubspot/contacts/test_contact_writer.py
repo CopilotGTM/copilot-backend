@@ -152,3 +152,32 @@ async def test_apply_reactivates_soft_deleted_contact_even_when_timestamp_matche
     assert result.contacts_skipped_stale == 0
     assert existing.is_deleted is False
     assert existing.email == "restored@example.com"
+
+
+def test_apply_updates_keeps_newer_projected_activity() -> None:
+    """A provider replay cannot roll a Contact back behind Copilot activity."""
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    projected_at = datetime(2026, 7, 3, tzinfo=UTC)
+    provider_at = datetime(2026, 7, 1, tzinfo=UTC)
+    existing = CRMContact(
+        contact_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        last_contacted_at=projected_at,
+        last_activity_at=projected_at,
+    )
+    incoming = replace(
+        _normalized_contact(external_id="123"),
+        last_contacted_at=provider_at,
+        last_activity_at=provider_at,
+    )
+
+    HubSpotContactWriter(
+        session=AsyncMock(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )._apply_updates(existing, incoming, None, None, now=projected_at)
+
+    assert existing.last_contacted_at == projected_at
+    assert existing.last_activity_at == projected_at

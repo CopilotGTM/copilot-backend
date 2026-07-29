@@ -260,13 +260,30 @@ class HubSpotContactWriter:
         row.postal_code = contact.postal_code
         row.country = contact.country
         row.timezone = contact.timezone
-        row.last_contacted_at = contact.last_contacted_at
-        row.last_activity_at = contact.last_activity_at
+        # Provider sync must not roll back newer communication projected by
+        # CopilotGTM; link deletion explicitly recomputes both values later.
+        row.last_contacted_at = _newest_timestamp(
+            row.last_contacted_at,
+            contact.last_contacted_at,
+        )
+        row.last_activity_at = _newest_timestamp(
+            row.last_activity_at,
+            contact.last_activity_at,
+        )
         row.source_created_at = contact.source_created_at
         row.source_modified_at = contact.source_modified_at
         row.synced_at = now
         row.last_seen_at = now
         row.properties = contact.properties
+
+
+def _newest_timestamp(left: datetime | None, right: datetime | None) -> datetime | None:
+    candidates = [_as_utc(value) for value in (left, right) if value is not None]
+    return max(candidates) if candidates else None
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def _has_same_or_newer_source_modified(

@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from src.service.integrations.crm.records.salesforce.contacts.contact_normalizer import (
     normalize_contacts,
 )
@@ -25,6 +27,7 @@ def test_normalize_contacts_maps_canonical_fields_and_lowercases_email() -> None
                 "MailingCountry": "India",
                 "CreatedDate": "2026-04-23T12:00:00.000+0000",
                 "LastModifiedDate": "2026-04-23T12:30:00.000+0000",
+                "LastActivityDate": "2026-04-22",
                 "Custom_Status__c": "VIP",
             }
         ]
@@ -41,6 +44,7 @@ def test_normalize_contacts_maps_canonical_fields_and_lowercases_email() -> None
     assert contact.company_external_id == "001A"
     assert contact.owner_external_id == "005A"
     assert contact.city == "Pune"
+    assert contact.last_activity_at == datetime(2026, 4, 22, tzinfo=UTC)
     assert contact.properties["salesforce_object"] == "Contact"
     assert contact.properties["salesforce_department"] == "Sales"
     assert contact.properties["raw_fields"]["Custom_Status__c"] == "VIP"
