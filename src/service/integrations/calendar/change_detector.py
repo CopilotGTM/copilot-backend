@@ -109,11 +109,7 @@ def has_meaningful_event_changes(
         return True
 
     incoming_end = fields.get("end_at")
-    if (
-        incoming_end
-        and existing.end_at
-        and _as_utc(incoming_end) != _as_utc(existing.end_at)
-    ):
+    if incoming_end and existing.end_at and _as_utc(incoming_end) != _as_utc(existing.end_at):
         return True
 
     # Attendee count change is the cheap proxy for "roster moved." A full
