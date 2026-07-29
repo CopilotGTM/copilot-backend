@@ -125,6 +125,8 @@ class ContactReadService:
         limit: int = 25,
         q: str | None = None,
         company_id: UUID | None = None,
+        sort_by: str | None = None,
+        sort_order: str = "desc",
     ) -> tuple[list[dict], int]:
         """Paginated contacts with deal_count, source, company, and owner annotations."""
         if page < 1:
@@ -184,12 +186,34 @@ class ContactReadService:
         count_res = await self.org_session.execute(count_stmt)
         total_count = count_res.scalar() or 0
 
+        c = cast(Any, CRMContact).__table__.c
+        normalized_sort_order = sort_order.lower()
+        if normalized_sort_order not in {"asc", "desc"}:
+            raise ContactReadServiceError("sort_order must be asc or desc", status_code=400)
+
+        sort_columns = {
+            "full_name": func.lower(func.coalesce(c.full_name, c.email)),
+            "owner": func.lower(func.coalesce(c.owner_name, c.owner_email)),
+            "last_contacted_at": c.last_contacted_at,
+            "last_activity_at": c.last_activity_at,
+        }
+        if sort_by is not None and sort_by not in sort_columns:
+            raise ContactReadServiceError("Unsupported sort field", status_code=400)
+
+        if sort_by is None:
+            order_by = [c.created_at.desc(), c.contact_id.desc()]
+        else:
+            sort_column = sort_columns[sort_by]
+            primary_order = (
+                sort_column.asc().nullslast()
+                if normalized_sort_order == "asc"
+                else sort_column.desc().nullslast()
+            )
+            order_by = [primary_order, c.contact_id.asc()]
+
         stmt = (
             base.options(defer(cast(Any, CRMContact).profile_enrichment))
-            .order_by(
-                col(CRMContact.created_at).desc(),
-                col(CRMContact.contact_id).desc(),
-            )
+            .order_by(*order_by)
             .offset((page - 1) * limit)
             .limit(limit)
         )

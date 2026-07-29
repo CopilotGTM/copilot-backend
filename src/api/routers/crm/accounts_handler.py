@@ -130,13 +130,26 @@ async def list_accounts(
     limit: int = Query(25, ge=1, le=100, description="Maximum accounts per page"),
     q: str | None = Query(None, description="Case-insensitive search on name or domain"),
     industry: str | None = Query(None, description="Filter by industry (partial match)"),
+    sort_by: str | None = Query(
+        None,
+        description=(
+            "Sort field: name, lifecycle_stage, owner, annual_revenue, "
+            "or number_of_employees."
+        ),
+    ),
+    sort_order: str = Query("asc", pattern="^(asc|desc)$", description="Sort direction"),
     service: AccountReadService = Depends(get_account_read_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[AccountsPage]:
     """List CRM accounts with UI summary metrics for the authenticated org."""
     try:
         items_raw, total_count = await service.list_accounts(
-            page=page, limit=limit, q=q, industry=industry
+            page=page,
+            limit=limit,
+            q=q,
+            industry=industry,
+            sort_by=sort_by,
+            sort_order=sort_order,
         )
 
         items = [AccountListItem(**row) for row in items_raw]

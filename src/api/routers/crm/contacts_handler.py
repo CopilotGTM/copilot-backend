@@ -240,6 +240,11 @@ async def list_contacts(
     limit: int = Query(25, ge=1, le=100, description="Maximum contacts per page"),
     q: str | None = Query(None, description="Case-insensitive search on name, email, or company"),
     company_id: UUID | None = Query(None, description="Filter contacts by company UUID"),
+    sort_by: str | None = Query(
+        None,
+        description="Sort field: full_name, owner, last_contacted_at, or last_activity_at.",
+    ),
+    sort_order: str = Query("desc", pattern="^(asc|desc)$", description="Sort direction"),
     service: ContactReadService = Depends(get_contact_read_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[ContactsPage]:
@@ -250,6 +255,8 @@ async def list_contacts(
             limit=limit,
             q=q,
             company_id=company_id,
+            sort_by=sort_by,
+            sort_order=sort_order,
         )
 
         # The read service returns domain rows plus presentation helpers; this route flattens

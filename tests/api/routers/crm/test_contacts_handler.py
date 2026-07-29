@@ -941,6 +941,8 @@ async def test_list_contacts_returns_new_list_only_contract() -> None:
         limit=25,
         q=None,
         company_id=None,
+        sort_by="last_activity_at",
+        sort_order="desc",
         service=service,  # type: ignore[arg-type]
         _rl_read=None,
     )

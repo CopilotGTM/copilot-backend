@@ -186,7 +186,13 @@ def get_deals_list_params(
         None, description="Maximum expected close date"
     ),
     q: str | None = Query(None, description="Case-insensitive search on deal or company name"),
-    sort_by: str | None = Query(None, description="Sort field. Supports last_activity_at."),
+    sort_by: str | None = Query(
+        None,
+        description=(
+            "Sort field: name, stage, amount, expected_close_date, owner, "
+            "or last_activity_at."
+        ),
+    ),
     sort_order: str | None = Query("desc", pattern="^(asc|desc)$", description="Sort direction"),
 ) -> DealsListParams:
     """Dependency that parses and returns deals list query parameters."""

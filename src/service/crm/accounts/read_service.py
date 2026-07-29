@@ -157,6 +157,8 @@ class AccountReadService:
         limit: int = 25,
         q: str | None = None,
         industry: str | None = None,
+        sort_by: str | None = None,
+        sort_order: str = "asc",
     ) -> tuple[list[dict], int]:
         """Return a paginated account list enriched for the accounts table UI."""
         if page < 1:
@@ -228,6 +230,31 @@ class AccountReadService:
         count_res = await self.org_session.execute(count_stmt)
         total_count: int = count_res.scalar() or 0
 
+        normalized_sort_order = sort_order.lower()
+        if normalized_sort_order not in {"asc", "desc"}:
+            raise AccountReadServiceError("sort_order must be asc or desc", status_code=400)
+
+        sort_columns = {
+            "name": func.lower(c.name),
+            "lifecycle_stage": func.lower(c.lifecycle_stage),
+            "owner": func.lower(func.coalesce(c.owner_name, c.owner_email)),
+            "annual_revenue": c.annual_revenue,
+            "number_of_employees": c.number_of_employees,
+        }
+        if sort_by is not None and sort_by not in sort_columns:
+            raise AccountReadServiceError("Unsupported sort field", status_code=400)
+
+        if sort_by is None:
+            order_by = [c.name.asc().nullslast(), c.company_id.asc()]
+        else:
+            sort_column = sort_columns[sort_by]
+            primary_order = (
+                sort_column.asc().nullslast()
+                if normalized_sort_order == "asc"
+                else sort_column.desc().nullslast()
+            )
+            order_by = [primary_order, c.company_id.asc()]
+
         stmt = (
             select(
                 CRMCompany,
@@ -236,7 +263,7 @@ class AccountReadService:
                 pipeline_value_sub.label("pipeline_value"),
             )
             .where(base_where)
-            .order_by(c.name.asc(), c.company_id.asc())
+            .order_by(*order_by)
             .offset((page - 1) * limit)
             .limit(limit)
         )

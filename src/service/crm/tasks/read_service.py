@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import DateTime, and_, func, or_, select
+from sqlalchemy import DateTime, and_, case, func, or_, select
 from sqlalchemy import cast as sql_cast
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
@@ -212,6 +212,7 @@ class TaskReadService:
         is_overdue: bool | None = None,
         has_due_date: bool | None = None,
         include_completed: bool = False,
+        q: str | None = None,
         sort_by: str = "due_date",
         sort_order: str = "asc",
         page: int = 1,
@@ -220,6 +221,18 @@ class TaskReadService:
         """Global task listing with rich filtering for the Tasks page."""
         if page < 1:
             raise TaskReadServiceError("Page must be >= 1", status_code=400)
+
+        search_query = q.strip() if q else ""
+        if search_query and len(search_query) < 2:
+            raise TaskReadServiceError(
+                "Search query must contain at least 2 characters",
+                status_code=400,
+            )
+        if len(search_query) > 100:
+            raise TaskReadServiceError(
+                "Search query must contain at most 100 characters",
+                status_code=400,
+            )
 
         c = cast(Any, CRMTask).__table__.c
         stmt = self._select_tasks_with_deal_name().where(
@@ -313,24 +326,61 @@ class TaskReadService:
         elif is_overdue is False:
             stmt = stmt.where(or_(due_expr.is_(None), due_expr >= now))
 
+        if search_query:
+            like_expr = f"%{search_query}%"
+            deal_c = cast(Any, CRMDeal).__table__.c
+            stmt = stmt.where(
+                or_(
+                    c.title.ilike(like_expr),
+                    c.description.ilike(like_expr),
+                    deal_c.name.ilike(like_expr),
+                    c.assigned_to_name.ilike(like_expr),
+                    c.assigned_to_email.ilike(like_expr),
+                    c.owner_email.ilike(like_expr),
+                    c.task_metadata["source"].as_string().ilike(like_expr),
+                    c.priority.ilike(like_expr),
+                    c.status.ilike(like_expr),
+                )
+            )
+
         count_stmt = select(func.count()).select_from(stmt.subquery())
         total_count = await self.org_session.scalar(count_stmt) or 0
 
+        priority_order = case(
+            (c.priority == "NONE", 0),
+            (c.priority == "LOW", 1),
+            (c.priority == "MEDIUM", 2),
+            (c.priority == "HIGH", 3),
+            (c.priority == "URGENT", 4),
+            else_=5,
+        )
+        status_order = case(
+            (c.status == "NOT_STARTED", 0),
+            (c.status == "IN_PROGRESS", 1),
+            (c.status == "COMPLETED", 2),
+            (c.status == "CANCELLED", 3),
+            else_=4,
+        )
         sort_col_map = {
             "due_date": due_expr,
             "created_at": c.created_at,
-            "updated_at": c.updated_at,
-            "priority": c.priority,
-            "status": c.status,
-            "subject": c.title,
+            "priority": priority_order,
+            "status": status_order,
+            "subject": func.lower(c.title),
+            "assignee": func.lower(func.coalesce(c.assigned_to_name, c.assigned_to_email)),
         }
-        sort_col = sort_col_map.get(sort_by, due_expr)
-        if sort_by == "due_date" and sort_order == "asc":
-            stmt = stmt.order_by(sort_col.asc().nullslast(), c.created_at.desc())
-        elif sort_order == "desc":
-            stmt = stmt.order_by(sort_col.desc().nullsfirst(), c.created_at.desc())
-        else:
-            stmt = stmt.order_by(sort_col.asc(), c.created_at.desc())
+        if sort_by not in sort_col_map:
+            raise TaskReadServiceError("Unsupported sort field", status_code=400)
+        if sort_order not in {"asc", "desc"}:
+            raise TaskReadServiceError("sort_order must be asc or desc", status_code=400)
+
+        sort_col = sort_col_map[sort_by]
+        primary_order = (
+            sort_col.asc().nullslast()
+            if sort_order == "asc"
+            else sort_col.desc().nullslast()
+        )
+        stmt = stmt.order_by(primary_order, c.task_id.asc())
 
         offset = (page - 1) * limit
         stmt = stmt.offset(offset).limit(limit)
