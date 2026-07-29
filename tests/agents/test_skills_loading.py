@@ -733,15 +733,18 @@ def test_email_meeting_workflow_skill_defaults_meeting_title_from_attendee() -> 
     )
 
 
-def test_email_meeting_workflow_skill_requires_final_confirmation_after_details() -> None:
-    """Providing missing details is not the same as approving the invite send."""
+def test_email_meeting_workflow_skill_distinguishes_detail_only_from_send_intent() -> None:
+    """Only current-turn send intent should skip the final invite preview."""
     loader = LocalSkills(str(SKILLS_DIR))
     skills = loader.load()
     skill = next(s for s in skills if s.name == "email-meeting-workflow")
     instructions = skill.instructions
-    assert "final approval" in instructions
-    assert "confirmed=False" in instructions
-    assert "confirmation_payload" in instructions
+    assert "without send intent" in instructions
+    assert "same turn also explicitly asks to send" in instructions
+    assert "confirmed=True" in instructions
+    assert "otherwise call it with `confirmed=False`" in instructions
+    assert "across languages and phrasings" in instructions
+    assert "do not hard-code specific confirmation phrases" in instructions
 
 
 def test_email_meeting_workflow_skill_allows_explicit_edit_and_send() -> None:
