@@ -193,6 +193,7 @@ async def list_tasks(
             created_by_user_id=created_by_user_id,
             due_from=due_from,
             due_to=due_to,
+            user_timezone=user_ids.user_timezone,
             is_overdue=is_overdue,
             has_due_date=has_due_date,
             include_completed=include_completed,
@@ -203,7 +204,7 @@ async def list_tasks(
             limit=limit,
         )
 
-        items = [present_task_list_item(task) for task in tasks]
+        items = [present_task_list_item(task, user_ids.user_timezone) for task in tasks]
 
         total_pages = (total_count + limit - 1) // limit if limit else 0
         payload = TasksPage(

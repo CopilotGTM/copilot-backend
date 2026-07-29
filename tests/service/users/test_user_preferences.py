@@ -1,6 +1,7 @@
 """Tests for normalized defaults stored in the shared user preferences document."""
 
 from src.service.users.user_preferences import (
+    merge_crm_list_sorting,
     merge_preferred_calendar_sender,
     normalize_user_preferences,
     preferred_calendar_sender,
@@ -195,6 +196,69 @@ def test_normalize_user_preferences_preserves_user_task_list_columns() -> None:
         "due_date",
         "status",
     ]
+
+
+def test_normalize_user_preferences_preserves_valid_crm_list_sorting() -> None:
+    """Valid saved sorting should survive login preference normalization."""
+    preferences = {
+        "crm": {
+            "contacts": {
+                "list": {
+                    "columns": ["full_name"],
+                    "sort_by": "last_activity_at",
+                    "sort_order": "desc",
+                }
+            }
+        }
+    }
+
+    normalized = normalize_user_preferences(preferences)
+
+    assert normalized["crm"]["contacts"]["list"] == {
+        "columns": ["full_name"],
+        "sort_by": "last_activity_at",
+        "sort_order": "desc",
+    }
+
+
+def test_normalize_user_preferences_removes_invalid_crm_list_sorting() -> None:
+    """Malformed stored sorting should fall back to the frontend's existing defaults."""
+    preferences = {
+        "crm": {
+            "tasks": {
+                "list": {
+                    "columns": ["subject"],
+                    "sort_by": "unsupported",
+                    "sort_order": "sideways",
+                }
+            }
+        }
+    }
+
+    normalized = normalize_user_preferences(preferences)
+
+    assert normalized["crm"]["tasks"]["list"] == {"columns": ["subject"]}
+
+
+def test_merge_crm_list_sorting_preserves_columns_and_sibling_preferences() -> None:
+    """Saving Accounts sorting must not replace columns or another collection's state."""
+    preferences = {
+        "notifications": {"email": True},
+        "crm": {
+            "accounts": {"list": {"columns": ["name", "owner.name"]}},
+            "deals": {"preferred_currency": "INR"},
+        },
+    }
+
+    updated = merge_crm_list_sorting(preferences, "accounts", "created_at", "desc")
+
+    assert updated["crm"]["accounts"]["list"] == {
+        "columns": ["name", "owner.name"],
+        "sort_by": "created_at",
+        "sort_order": "desc",
+    }
+    assert updated["crm"]["deals"]["preferred_currency"] == "INR"
+    assert updated["notifications"] == {"email": True}
 
 
 def test_calendar_sender_preference_normalizes_and_preserves_other_settings() -> None:

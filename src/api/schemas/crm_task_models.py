@@ -145,7 +145,10 @@ class TaskListItem(BaseModel):
     # Computed
     is_overdue: bool = Field(
         default=False,
-        description="Computed flag: due_date < now and status != COMPLETED",
+        description=(
+            "Computed flag: the timed due instant or local all-day date has passed "
+            "and the task is not completed or cancelled."
+        ),
     )
     has_reminder: bool = Field(default=False, description="Whether a reminder is linked.")
     is_read_only: bool = Field(

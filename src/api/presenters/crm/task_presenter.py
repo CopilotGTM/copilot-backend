@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -14,18 +14,41 @@ from src.service.crm.tasks.contracts import TaskReadRecord, TaskReminderSummary
 _TASK_ACTIVITY_TYPES = {"TASK", "TODO"}
 
 
-def compute_task_is_overdue(due_date: datetime | None, status: str | None) -> bool:
-    """Return True when a task is past due and not in a terminal state."""
+def compute_task_is_overdue(
+    due_date: datetime | None,
+    status: str | None,
+    *,
+    is_all_day: bool = False,
+    due_local_date: str | None = None,
+    timezone_name: str | None = None,
+    reference: datetime | None = None,
+) -> bool:
+    """Return whether a timed instant or local all-day date has passed."""
 
     if not due_date or status in ("COMPLETED", "CANCELLED"):
         return False
 
-    reference = datetime.now(UTC)
+    reference = reference or datetime.now(UTC)
+    reference = reference if reference.tzinfo else reference.replace(tzinfo=UTC)
+    if is_all_day:
+        try:
+            local_due_date = (
+                date.fromisoformat(due_local_date) if due_local_date else due_date.date()
+            )
+        except ValueError:
+            local_due_date = due_date.date()
+        try:
+            timezone = ZoneInfo(timezone_name or "UTC")
+        except ZoneInfoNotFoundError:
+            timezone = ZoneInfo("UTC")
+        return local_due_date < reference.astimezone(timezone).date()
+
     due = due_date if due_date.tzinfo else due_date.replace(tzinfo=UTC)
     return due < reference
 
 
 def normalize_task_email(value: str | None) -> str | None:
+    """Canonicalize stored assignee email values for response identity fields."""
     if value is None:
         return None
     normalized = value.strip().lower()
@@ -33,6 +56,7 @@ def normalize_task_email(value: str | None) -> str | None:
 
 
 def parse_task_uuid(value: str | UUID | None) -> UUID | None:
+    """Return a UUID only when legacy metadata contains a valid identifier."""
     if isinstance(value, UUID):
         return value
     if not value:
@@ -44,6 +68,7 @@ def parse_task_uuid(value: str | UUID | None) -> UUID | None:
 
 
 def task_due_datetime(task: CRMTask) -> datetime | None:
+    """Expose timed and date-only task storage through the legacy datetime contract."""
     if task.due_at:
         return task.due_at
     if task.due_date:
@@ -52,6 +77,7 @@ def task_due_datetime(task: CRMTask) -> datetime | None:
 
 
 def task_source(task: CRMTask) -> str | None:
+    """Read the optional product source label from extensible task metadata."""
     value = (task.task_metadata or {}).get("source")
     return value if isinstance(value, str) else None
 
@@ -103,6 +129,7 @@ def present_task_assignee(task: Any) -> TaskAssignee | None:
 
 
 def build_task_due_metadata(task: CRMTask) -> dict[str, str | bool | None]:
+    """Present the local calendar metadata needed to render all-day tasks safely."""
     metadata = task.task_metadata or {}
     is_all_day = bool(task.is_all_day)
     timezone_name = metadata.get("due_timezone")
@@ -127,7 +154,10 @@ def build_task_due_metadata(task: CRMTask) -> dict[str, str | bool | None]:
     }
 
 
-def present_task_list_item(record: TaskReadRecord | CRMTask) -> TaskListItem:
+def present_task_list_item(
+    record: TaskReadRecord | CRMTask,
+    user_timezone: str | None = None,
+) -> TaskListItem:
     """Build a TaskListItem from a CRMTask source row or enriched read record."""
 
     task = record.task if isinstance(record, TaskReadRecord) else record
@@ -166,7 +196,14 @@ def present_task_list_item(record: TaskReadRecord | CRMTask) -> TaskListItem:
         deal=TaskDealRef(deal_id=task.deal_id, name=deal_name) if task.deal_id else None,
         source=task_source(task),
         created_by_user_id=task.created_by_user_id,
-        is_overdue=compute_task_is_overdue(due_date, task.status),
+        is_overdue=compute_task_is_overdue(
+            due_date,
+            task.status,
+            is_all_day=bool(is_all_day),
+            due_local_date=due_local_date if isinstance(due_local_date, str) else None,
+            timezone_name=user_timezone
+            or (due_timezone if isinstance(due_timezone, str) else None),
+        ),
         has_reminder=has_reminder,
         is_read_only=task.integration_id is not None,
         created_at=task.created_at,
@@ -175,10 +212,13 @@ def present_task_list_item(record: TaskReadRecord | CRMTask) -> TaskListItem:
     )
 
 
-def present_task_detail(record: TaskReadRecord | CRMTask) -> TaskDetail:
+def present_task_detail(
+    record: TaskReadRecord | CRMTask,
+    user_timezone: str | None = None,
+) -> TaskDetail:
     """Build a TaskDetail with computed fields."""
 
-    item = present_task_list_item(record)
+    item = present_task_list_item(record, user_timezone)
     task = record.task if isinstance(record, TaskReadRecord) else record
     reminder = record.reminder if isinstance(record, TaskReadRecord) else None
 

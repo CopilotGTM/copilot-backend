@@ -23,10 +23,12 @@ class TasksAccessService:
         self._service = TaskReadService(org_session, organisation_id)
 
     async def close(self) -> None:
+        """Release the canonical read service's caller-owned session."""
         await self._service.close()
 
     @property
     def session(self) -> AsyncSession:
+        """Expose the underlying session for legacy callers during migration."""
         return self._service.session
 
     async def list_tasks_by_deal(
@@ -38,6 +40,7 @@ class TasksAccessService:
         priorities: Iterable[str] | None = None,
         task_types: Iterable[str] | None = None,
     ) -> tuple[list[TaskReadRecord], int]:
+        """Forward deal-scoped reads to the canonical task service."""
         return await self._service.list_tasks_by_deal(
             deal_id=deal_id,
             limit=limit,
@@ -62,6 +65,7 @@ class TasksAccessService:
         created_by_user_id: UUID | None = None,
         due_from: datetime | None = None,
         due_to: datetime | None = None,
+        user_timezone: str | None = None,
         is_overdue: bool | None = None,
         has_due_date: bool | None = None,
         include_completed: bool = False,
@@ -70,6 +74,7 @@ class TasksAccessService:
         page: int = 1,
         limit: int = 50,
     ) -> tuple[list[TaskReadRecord], int]:
+        """Forward global list filtering, sorting, and pagination unchanged."""
         return await self._service.list_tasks(
             scope=scope,
             current_user_id=current_user_id,
@@ -83,6 +88,7 @@ class TasksAccessService:
             created_by_user_id=created_by_user_id,
             due_from=due_from,
             due_to=due_to,
+            user_timezone=user_timezone,
             is_overdue=is_overdue,
             has_due_date=has_due_date,
             include_completed=include_completed,
@@ -98,6 +104,7 @@ class TasksAccessService:
         user_id: UUID,
         user_email: str | None,
     ) -> list[dict[str, Any]]:
+        """Resolve the stored identities that represent one application user."""
         return await self._service.resolve_current_user_task_assignees(
             user_id=user_id,
             user_email=user_email,
@@ -109,7 +116,9 @@ class TasksAccessService:
         q: str | None = None,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
+        """Return canonical assignee filter options from the task read service."""
         return await self._service.list_task_assignees(q=q, limit=limit)
 
     async def get_task_by_id(self, task_id: UUID) -> TaskReadRecord | None:
+        """Return one visible task through the canonical access policy."""
         return await self._service.get_task_by_id(task_id)
