@@ -171,10 +171,7 @@ async def test_send_calendar_invite_sends_for_direct_whatsapp_user(monkeypatch) 
         "• *To:* buyer@example.com",
         "• *Optional:* legal@example.com",
         "• *From:* seller@contoso.com",
-        (
-            "• *Location:* Microsoft Teams — "
-            "https://teams.microsoft.com/l/meetup-join/abc"
-        ),
+        ("• *Location:* Microsoft Teams — https://teams.microsoft.com/l/meetup-join/abc"),
     ]
     assert result["_bot_channel_payload"]["force_override"] is True
     assert created_requests[0].timezone == "Asia/Kolkata"
@@ -844,8 +841,7 @@ async def test_send_calendar_invite_restores_parser_date_for_bare_time(monkeypat
     assert result["status"] == "confirmation_required"
     assert result["confirmation_payload"]["title"] == "Meeting with Bhawesh"
     assert (
-        result["review_text"].splitlines()[1]
-        == "**When:** 25 July, 3:30–4:00 PM IST, 30 minutes"
+        result["review_text"].splitlines()[1] == "**When:** 25 July, 3:30–4:00 PM IST, 30 minutes"
     )
     service.assert_not_called()
 
@@ -939,8 +935,7 @@ async def test_send_calendar_invite_accepts_unambiguous_24_hour_clock(monkeypatc
     assert result["status"] == "confirmation_required"
     assert result["confirmation_payload"]["timezone"] == "Asia/Kolkata"
     assert (
-        result["review_text"].splitlines()[1]
-        == "**When:** 25 July, 3:30–4:00 PM IST, 30 minutes"
+        result["review_text"].splitlines()[1] == "**When:** 25 July, 3:30–4:00 PM IST, 30 minutes"
     )
     service.assert_not_called()
 
