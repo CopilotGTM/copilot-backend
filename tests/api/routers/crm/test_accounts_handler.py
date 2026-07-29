@@ -359,11 +359,20 @@ async def test_list_accounts_returns_nested_owner_without_source() -> None:
         limit=25,
         q=None,
         industry=None,
+        sort_by="owner",
+        sort_order="desc",
         service=service,
         _rl_read=None,
     )
 
-    service.list_accounts.assert_awaited_once_with(page=1, limit=25, q=None, industry=None)
+    service.list_accounts.assert_awaited_once_with(
+        page=1,
+        limit=25,
+        q=None,
+        industry=None,
+        sort_by="owner",
+        sort_order="desc",
+    )
     assert response.status == "SUCCESS"
     assert response.data is not None
     item = response.data.items[0]

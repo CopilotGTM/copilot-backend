@@ -153,7 +153,7 @@ class DealReadService:
             min_expected_close_date: Optional minimum forecast close date
             max_expected_close_date: Optional maximum forecast close date
             q: Optional search query for deal name (case-insensitive)
-            sort_by: Optional sort field. Currently supports last_activity_at.
+            sort_by: Optional supported sort field.
             sort_order: Optional sort direction (asc or desc)
 
         Returns:
@@ -258,16 +258,27 @@ class DealReadService:
         if normalized_sort_order not in {"asc", "desc"}:
             raise DealReadServiceError("sort_order must be asc or desc", status_code=400)
 
-        if sort_by is not None and sort_by != "last_activity_at":
+        sort_columns = {
+            "name": func.lower(c.name),
+            "stage": func.lower(func.coalesce(c.stage_label, c.stage_name)),
+            "amount": c.amount,
+            "expected_close_date": c.expected_close_date,
+            "owner": func.lower(func.coalesce(c.owner_name, c.owner_email)),
+            "last_activity_at": c.last_activity_at,
+        }
+        if sort_by is not None and sort_by not in sort_columns:
             raise DealReadServiceError("Unsupported sort field", status_code=400)
 
-        order_by = (
-            [c.last_activity_at.asc().nullslast(), c.deal_id.asc()]
-            if sort_by == "last_activity_at" and normalized_sort_order == "asc"
-            else [c.last_activity_at.desc().nullslast(), c.deal_id.desc()]
-            if sort_by == "last_activity_at"
-            else [c.created_at.desc(), c.deal_id.desc()]
-        )
+        if sort_by is None:
+            order_by = [c.created_at.desc(), c.deal_id.desc()]
+        else:
+            sort_column = sort_columns[sort_by]
+            primary_order = (
+                sort_column.asc().nullslast()
+                if normalized_sort_order == "asc"
+                else sort_column.desc().nullslast()
+            )
+            order_by = [primary_order, c.deal_id.asc()]
 
         stmt = stmt.order_by(*order_by).offset(offset).limit(limit)
 
