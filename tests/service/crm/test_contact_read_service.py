@@ -219,7 +219,7 @@ async def test_search_contacts_returns_lightweight_cursor_page_and_searches_extr
         name="OpenAI",
         domain="openai.com",
     )
-    session = _FakeSession([[first, second], [company]])
+    session = _FakeSession([[(first, 1), (second, 0)], [company]])
 
     rows, next_cursor = await ContactReadService(  # type: ignore[arg-type]
         session, org_id
@@ -236,11 +236,16 @@ async def test_search_contacts_returns_lightweight_cursor_page_and_searches_extr
                 "name": "OpenAI",
                 "domain": "openai.com",
             },
+            "deal_count": 1,
             "match_type": "additional_email",
         }
     ]
     assert next_cursor is not None
     assert "additional_emails" in str(session.statements[0])
+    search_sql = str(session.statements[0])
+    assert "crm_deal_participants" in search_sql
+    assert "crm_deal_participants.is_deleted IS false" in search_sql
+    assert "crm_deal_participants.approval_status" in search_sql
 
 
 @pytest.mark.asyncio

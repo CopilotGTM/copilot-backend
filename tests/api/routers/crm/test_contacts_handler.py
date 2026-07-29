@@ -1000,6 +1000,7 @@ async def test_search_contacts_returns_cursor_page() -> None:
                     "name": "OpenAI",
                     "domain": "openai.com",
                 },
+                "deal_count": 1,
                 "match_type": "exact_email",
             }
         ],
@@ -1023,6 +1024,7 @@ async def test_search_contacts_returns_cursor_page() -> None:
         "company_id": None,
     }
     assert result.status == "SUCCESS"
+    assert result.data.items[0].deal_count == 1
     assert result.data is not None
     assert result.data.items[0].contact_id == contact_id
     assert result.data.items[0].match_type == "exact_email"
