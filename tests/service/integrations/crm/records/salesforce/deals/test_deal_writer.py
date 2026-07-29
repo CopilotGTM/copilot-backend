@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -78,6 +79,7 @@ def _normalized_deal(
 
 @pytest.mark.asyncio
 async def test_writer_uses_lost_stage_only_for_otherwise_open_deals() -> None:
+    """Resolved stage state must not override Salesforce's explicit won status."""
     organisation_id = uuid4()
     integration_id = uuid4()
     existing_open = CRMDeal(
@@ -340,3 +342,52 @@ async def test_load_existing_rows_chunks_local_id_lookup(
 
     assert existing == {f"006{index}": row for index, row in enumerate(rows)}
     assert session.execute.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_provider_sync_does_not_regress_newer_copilot_activity() -> None:
+    """A Salesforce snapshot cannot replace a newer linked email timestamp."""
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    copilot_at = datetime(2026, 7, 24, tzinfo=UTC)
+    existing = CRMDeal(
+        deal_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_id="006DEAL",
+        name="Credgenics",
+        last_activity_at=copilot_at,
+        properties={
+            "last_activity_source": "customer-defined",
+            "_copilotgtm_last_activity_source": "copilot",
+        },
+    )
+    provider_at = datetime(2026, 7, 3, tzinfo=UTC)
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    writer = SalesforceDealWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer._load_existing_rows = AsyncMock(  # type: ignore[method-assign]
+        return_value={"006DEAL": existing}
+    )
+    writer.source_mappings = MagicMock()
+    writer.source_mappings.bulk_upsert_integration_mappings = AsyncMock(return_value=1)
+
+    await writer.apply(
+        normalized=[
+            replace(
+                _normalized_deal(external_id="006DEAL", company_external_id=None),
+                last_activity_at=provider_at,
+                properties={"last_activity_source": "customer-defined"},
+            )
+        ],
+        maps=DealResolutionMaps(),
+    )
+
+    assert existing.last_activity_at == copilot_at
+    assert existing.properties["_copilotgtm_last_activity_source"] == "copilot"
+    assert existing.properties["last_activity_source"] == "customer-defined"

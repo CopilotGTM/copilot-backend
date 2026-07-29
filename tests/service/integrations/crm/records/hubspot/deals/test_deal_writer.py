@@ -290,3 +290,49 @@ async def test_writer_reactivates_soft_deleted_deal_even_when_timestamp_matches(
     assert existing.is_deleted is False
     assert existing.name == "Restored deal"
     session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_provider_sync_does_not_regress_newer_copilot_activity() -> None:
+    """A HubSpot snapshot cannot replace a newer linked meeting timestamp."""
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    copilot_at = datetime(2026, 7, 24, tzinfo=UTC)
+    existing = CRMDeal(
+        deal_id=uuid4(),
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        external_id="123",
+        name="Credgenics",
+        last_activity_at=copilot_at,
+        properties={
+            "last_activity_source": "customer-defined",
+            "_copilotgtm_last_activity_source": "copilot",
+        },
+    )
+    provider_at = datetime(2026, 7, 3, tzinfo=UTC)
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    writer = HubSpotDealWriter(
+        session=session,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+    writer._load_existing_rows = AsyncMock(return_value={"123": existing})  # type: ignore[method-assign]
+    _mock_source_mappings(writer)
+
+    await writer.apply(
+        normalized=[
+            replace(
+                _normalized_deal(external_id="123"),
+                last_activity_at=provider_at,
+                properties={"last_activity_source": "customer-defined"},
+            )
+        ],
+        maps=_empty_maps(),
+    )
+
+    assert existing.last_activity_at == copilot_at
+    assert existing.properties["_copilotgtm_last_activity_source"] == "copilot"
+    assert existing.properties["last_activity_source"] == "customer-defined"

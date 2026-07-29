@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -222,6 +222,10 @@ class DealDetail(BaseModel):
     closed_won_at: datetime | None = None
     closed_lost_at: datetime | None = None
     last_activity_at: datetime | None
+    last_activity_source: Literal["copilot", "salesforce", "hubspot"] | None = Field(
+        None,
+        description="System supplying last_activity_at: copilot, salesforce, or hubspot.",
+    )
     stage_entered_at: datetime | None = None
     stage_updated_at: datetime | None = None
     deal_age_days: int | None = Field(None, description="Days since deal was created")
