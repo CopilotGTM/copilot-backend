@@ -153,19 +153,21 @@ def _title_needs_clarification(
 
 
 def _normalize_invite_title(title: str) -> str:
+    """Return a safe display title without rewriting intentional user casing."""
     cleaned = str(title or "").strip()
     if not cleaned:
         return "Meeting"
 
-    if not _EMAIL_PATTERN.search(cleaned):
-        return cleaned
+    if _EMAIL_PATTERN.search(cleaned):
+        lowered = cleaned.lower()
+        if any(lowered.startswith(prefix) for prefix in _GENERIC_EMAIL_TITLE_PREFIXES):
+            return "Meeting"
 
-    lowered = cleaned.lower()
-    if any(lowered.startswith(prefix) for prefix in _GENERIC_EMAIL_TITLE_PREFIXES):
-        return "Meeting"
+        cleaned = _EMAIL_PATTERN.sub("the attendee", cleaned).strip() or "Meeting"
 
-    without_email = _EMAIL_PATTERN.sub("the attendee", cleaned).strip()
-    return without_email or "Meeting"
+    # Uppercase only the leading character; str.capitalize/title would damage
+    # intentional casing in names and acronyms such as eBay, QBR, or API.
+    return f"{cleaned[:1].upper()}{cleaned[1:]}"
 
 
 def _resolve_invite_timezone(

@@ -12,6 +12,7 @@ from uuid import UUID
 import pytest
 from src.agents.tools.calendar.send_calendar_invite import (
     _meeting_location,
+    _normalize_invite_title,
     send_calendar_invite,
 )
 from src.service.calendar_invites.attendee_resolver import (
@@ -144,7 +145,7 @@ async def test_send_calendar_invite_sends_for_direct_whatsapp_user(monkeypatch) 
 
     result = await _send_confirmed(
         context=context,
-        title="Discovery call",
+        title="discussion",
         start_time="2026-05-12T20:00:00+05:30",
         end_time="2026-05-12T20:30:00+05:30",
         attendees=[
@@ -166,7 +167,7 @@ async def test_send_calendar_invite_sends_for_direct_whatsapp_user(monkeypatch) 
     assert result["receipt_text"].splitlines() == [
         "Meeting invite sent.",
         "",
-        "• *Title:* Discovery call",
+        "• *Title:* Discussion",
         "• *When:* 12 May, 8:00–8:30 PM IST, 30 minutes",
         "• *To:* buyer@example.com",
         "• *Optional:* legal@example.com",
@@ -178,6 +179,20 @@ async def test_send_calendar_invite_sends_for_direct_whatsapp_user(monkeypatch) 
     assert created_requests[0].attendees[0].email == "buyer@example.com"
     assert created_requests[0].attendees[1].optional is True
     assert created_requests[0].sender_email == "seller@contoso.com"
+    assert created_requests[0].title == "Discussion"
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("discussion", "Discussion"),
+        ("qBR with Acme", "QBR with Acme"),
+        ("API Review", "API Review"),
+    ],
+)
+def test_normalize_invite_title_preserves_intentional_casing(title: str, expected: str) -> None:
+    """Title normalization should fix the leading letter without damaging user casing."""
+    assert _normalize_invite_title(title) == expected
 
 
 def test_meeting_location_labels_provider_links_and_plain_locations() -> None:
