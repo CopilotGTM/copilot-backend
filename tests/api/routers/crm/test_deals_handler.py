@@ -1433,6 +1433,7 @@ def test_get_deal_success(client: TestClient, deals_dependency_overrides):
     org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
 
     deal = create_deal(org_id, name="Test Deal")
+    deal.properties = {"last_activity_source": "salesforce"}
     deals_service.add_deal(deal)
 
     resp = client.get(f"/users/crm/deals/{deal.deal_id}")
@@ -1445,6 +1446,7 @@ def test_get_deal_success(client: TestClient, deals_dependency_overrides):
     assert data["deal_status"] == "open"
     assert data["currency"] == "USD"
     assert data["currency_symbol"] == "$"
+    assert data["last_activity_source"] == "salesforce"
 
 
 @pytest.mark.asyncio

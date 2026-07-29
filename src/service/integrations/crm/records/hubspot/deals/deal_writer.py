@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -317,7 +318,10 @@ class HubSpotDealWriter:
             source_modified_at=deal.source_modified_at,
             last_seen_at=now,
             description=deal.description,
-            properties=deal.properties,
+            properties=_properties_with_activity_source(
+                deal.properties,
+                "hubspot" if deal.last_activity_at is not None else None,
+            ),
             metrics=deal.metrics,
             associated_contact_count=deal.associated_contact_count,
             associated_company_count=deal.associated_company_count,
@@ -335,6 +339,12 @@ class HubSpotDealWriter:
         # deal_id PK is referenced by stage history / participants / associations
         # rows — never rewrite. AI-generated `deal_summary_data` is owned by
         # downstream agents; we don't touch it here either.
+        previous_activity_at = row.last_activity_at
+        previous_activity_source = (row.properties or {}).get("last_activity_source")
+        provider_is_newer = deal.last_activity_at is not None and (
+            previous_activity_at is None
+            or _as_utc(deal.last_activity_at) > _as_utc(previous_activity_at)
+        )
         row.is_deleted = False
         row.name = deal.name
         row.amount = _decimal_to_float(deal.amount)
@@ -371,7 +381,10 @@ class HubSpotDealWriter:
         row.primary_contact_name = resolved.primary_contact_name
         row.primary_contact_email = resolved.primary_contact_email
         row.source_created_at = deal.source_created_at
-        row.last_activity_at = deal.last_activity_at
+        # Provider sync must not roll back a newer email or meeting projected
+        # by CopilotGTM. Explicit refreshes can still lower the value after an
+        # activity is deleted because they recompute from both source systems.
+        row.last_activity_at = _newest_timestamp(row.last_activity_at, deal.last_activity_at)
         row.days_to_close = deal.days_to_close
         row.stage_entered_at = deal.stage_entered_at
         row.stage_updated_at = deal.stage_updated_at
@@ -379,7 +392,15 @@ class HubSpotDealWriter:
         row.source_modified_at = deal.source_modified_at
         row.last_seen_at = now
         row.description = deal.description
-        row.properties = deal.properties
+        activity_source = "hubspot" if provider_is_newer else previous_activity_source
+        if (
+            activity_source is None
+            and deal.last_activity_at is not None
+            and row.last_activity_at is not None
+            and _as_utc(deal.last_activity_at) == _as_utc(row.last_activity_at)
+        ):
+            activity_source = "hubspot"
+        row.properties = _properties_with_activity_source(deal.properties, activity_source)
         row.metrics = deal.metrics
         row.associated_contact_count = deal.associated_contact_count
         row.associated_company_count = deal.associated_company_count
@@ -390,6 +411,20 @@ def _lookup(external_id: str | None, table: dict[str, DimensionHit]) -> Dimensio
     if not external_id:
         return None
     return table.get(external_id)
+
+
+def _newest_timestamp(left: datetime | None, right: datetime | None) -> datetime | None:
+    """Keep the newer of a persisted CopilotGTM value and a provider value."""
+    candidates = [_as_utc(value) for value in (left, right) if value is not None]
+    return max(candidates) if candidates else None
+
+
+def _properties_with_activity_source(properties: dict[str, Any], source: object) -> dict[str, Any]:
+    """Carry last-activity provenance through provider-owned property refreshes."""
+    merged = dict(properties)
+    if isinstance(source, str) and source:
+        merged["last_activity_source"] = source
+    return merged
 
 
 def _has_same_or_newer_source_modified(

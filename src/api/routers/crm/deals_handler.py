@@ -95,6 +95,7 @@ _INTERNAL_DEAL_RESERVED_PROPERTIES = {
     "deleted_via",
     "deal_external_ref",
     "import_source_ref",
+    "last_activity_source",
 }
 _CURRENCY_SYMBOL_BY_CODE = {
     "USD": "$",
@@ -1237,6 +1238,7 @@ async def get_deal(
             closed_won_at=deal.closed_won_at,
             closed_lost_at=deal.closed_lost_at,
             last_activity_at=deal.last_activity_at,
+            last_activity_source=(deal.properties or {}).get("last_activity_source"),
             stage_entered_at=deal.stage_entered_at,
             stage_updated_at=deal.stage_updated_at,
             deal_age_days=deal_age_days,

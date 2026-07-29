@@ -1,4 +1,4 @@
-"""Backfill `crm_deals.last_activity_at` for internal CRM deals in one org."""
+"""Backfill effective `crm_deals.last_activity_at` values for one organisation."""
 
 from __future__ import annotations
 
@@ -14,8 +14,9 @@ from scripts.org_admin_session import acquire_org_admin_async_session
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the dry-run-by-default CLI contract for one organisation."""
     parser = argparse.ArgumentParser(
-        description="Backfill internal CRM deal last_activity_at values for one organisation."
+        description="Backfill deal last_activity_at values for one organisation."
     )
     parser.add_argument("--organisation-id", required=True, type=UUID)
     parser.add_argument("--limit", type=int, default=None)
@@ -24,13 +25,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def backfill_org(organisation_id: UUID, *, apply: bool, limit: int | None) -> int:
+    """Recompute selected deal rows and commit only when explicitly requested."""
     async with acquire_org_admin_async_session(organisation_id) as session:
         stmt = (
             select(col(CRMDeal.deal_id))
             .where(
                 col(CRMDeal.organisation_id) == organisation_id,
                 col(CRMDeal.is_deleted).is_(False),
-                col(CRMDeal.properties)["is_internal_crm"].as_boolean().is_(True),
             )
             .order_by(col(CRMDeal.created_at).asc())
         )
@@ -38,6 +39,8 @@ async def backfill_org(organisation_id: UUID, *, apply: bool, limit: int | None)
             stmt = stmt.limit(limit)
         deal_ids = list((await session.execute(stmt)).scalars().all())
         service = DealLastActivityService(session, organisation_id)
+        # copilotgtm: this reuses the safe per-deal policy queries; replace it
+        # with grouped aggregation if all-org backfills become an operational bottleneck.
         for deal_id in deal_ids:
             await service.refresh_deal(deal_id)
         if apply:
@@ -48,9 +51,10 @@ async def backfill_org(organisation_id: UUID, *, apply: bool, limit: int | None)
 
 
 async def run(args: argparse.Namespace) -> int:
+    """Execute the requested mode and report how many rows were selected."""
     count = await backfill_org(args.organisation_id, apply=args.apply, limit=args.limit)
     mode = "updated" if args.apply else "would update"
-    print(f"{mode} {count} internal deal last-activity rows")
+    print(f"{mode} {count} deal last-activity rows")
     return 0
 
 
