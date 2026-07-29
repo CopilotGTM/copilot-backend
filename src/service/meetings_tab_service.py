@@ -163,12 +163,29 @@ class MeetingsTabService:
             raise MeetingsTabServiceError("page must be >= 1", 400)
         if limit < 1 or limit > 100:
             raise MeetingsTabServiceError("limit must be between 1 and 100", 400)
+        if any(
+            value is not None and (value.tzinfo is None or value.utcoffset() is None)
+            for value in (start_at, end_at)
+        ):
+            raise MeetingsTabServiceError("Meeting date filters must include a timezone", 400)
 
         window_start, window_end = self._resolve_window(view, start_at, end_at)
-        stmt = self._meeting_rows_stmt().where(
+        window_filter = and_(
             col(CalendarEvent.start_at) >= window_start,
             col(CalendarEvent.start_at) < window_end,
         )
+        all_day_window = self._resolve_all_day_window(view, window_start, window_end)
+        if all_day_window:
+            all_day_start, all_day_end = all_day_window
+            window_filter = or_(
+                and_(col(CalendarEvent.is_all_day).is_(False), window_filter),
+                and_(
+                    col(CalendarEvent.is_all_day).is_(True),
+                    col(CalendarEvent.start_at) >= all_day_start,
+                    col(CalendarEvent.start_at) < all_day_end,
+                ),
+            )
+        stmt = self._meeting_rows_stmt().where(window_filter)
         if view == MeetingsView.RECORDINGS:
             stmt = stmt.where(col(MeetingRecordingSession.session_id).is_not(None))
         if q:
@@ -733,13 +750,7 @@ class MeetingsTabService:
         if start_at and end_at:
             return self._as_utc(start_at), self._as_utc(end_at)
         now = datetime.now(UTC)
-        try:
-            tz = ZoneInfo(self.user_timezone)
-        except ZoneInfoNotFoundError:
-            tz = ZoneInfo("UTC")
-        local_today = now.astimezone(tz).date()
-        today_start = datetime.combine(local_today, time.min, tzinfo=tz).astimezone(UTC)
-        today_end = today_start + timedelta(days=1)
+        today_start, today_end = self._local_day_window(now, self.user_timezone)
         if view == MeetingsView.TODAY:
             return today_start, today_end
         if view == MeetingsView.UPCOMING:
@@ -755,6 +766,40 @@ class MeetingsTabService:
                 self._as_utc(end_at) if end_at else now + timedelta(days=90),
             )
         return today_start, today_end
+
+    @staticmethod
+    def _local_day_window(now: datetime, timezone_name: str) -> tuple[datetime, datetime]:
+        """Return UTC instants for consecutive local midnights, including DST days."""
+        try:
+            tz = ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError:
+            tz = ZoneInfo("UTC")
+        local_today = now.astimezone(tz).date()
+        today_start = datetime.combine(local_today, time.min, tzinfo=tz).astimezone(UTC)
+        today_end = datetime.combine(
+            local_today + timedelta(days=1),
+            time.min,
+            tzinfo=tz,
+        ).astimezone(UTC)
+        return today_start, today_end
+
+    def _resolve_all_day_window(
+        self,
+        view: MeetingsView,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> tuple[datetime, datetime] | None:
+        """Map an instant range to the UTC-midnight dates used by all-day events."""
+        if view == MeetingsView.RECORDINGS:
+            return None
+        try:
+            tz = ZoneInfo(self.user_timezone)
+        except ZoneInfoNotFoundError:
+            tz = ZoneInfo("UTC")
+        return (
+            datetime.combine(window_start.astimezone(tz).date(), time.min, tzinfo=UTC),
+            datetime.combine(window_end.astimezone(tz).date(), time.min, tzinfo=UTC),
+        )
 
     @staticmethod
     def _as_utc(value: datetime) -> datetime:
@@ -835,6 +880,7 @@ class MeetingsTabService:
             title=event.title,
             start_at=event.start_at,
             end_at=event.end_at,
+            is_all_day=bool(getattr(event, "is_all_day", False)),
             duration_minutes=int((event.end_at - event.start_at).total_seconds() / 60)
             if event.start_at and event.end_at
             else None,

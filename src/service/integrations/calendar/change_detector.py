@@ -18,16 +18,22 @@ The comparison philosophy:
     change when the incoming value is non-None — a sparse provider payload
     should never force a rewrite just because it stopped sending an optional
     field this cycle.
-  - Datetime comparisons strip tzinfo because providers and our DB columns mix
-    naive/aware representations and we only care about wall-clock equality here.
+  - Datetime comparisons normalize DB-naive UTC and provider-aware values to
+    UTC so equality always means the same real instant.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from src.domain.models.organisation_tables.sync.calendar import CalendarEvent
 from src.service.integrations.calendar.types import NormalizedCalendarEvent
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Normalize DB-naive UTC and provider-aware values before comparison."""
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def has_meaningful_event_changes(
@@ -54,7 +60,7 @@ def has_meaningful_event_changes(
     if (
         incoming_modified
         and existing.source_modified_at
-        and incoming_modified > existing.source_modified_at
+        and _as_utc(incoming_modified) > _as_utc(existing.source_modified_at)
     ):
         return True
 
@@ -92,15 +98,13 @@ def has_meaningful_event_changes(
         if existing_val != incoming_val:
             return True
 
-    # Strip tzinfo before comparing — providers send aware ISO timestamps but
-    # the DB column may round-trip as naive depending on the driver. Wall-clock
-    # equality is what callers care about; offset jitter would cause spurious
-    # rewrites on every sync.
+    # Compare real instants. Stripping tzinfo can hide a genuine schedule
+    # change when the provider keeps the wall clock but changes its offset.
     incoming_start = fields.get("start_at")
     if (
         incoming_start
         and existing.start_at
-        and incoming_start.replace(tzinfo=None) != existing.start_at.replace(tzinfo=None)
+        and _as_utc(incoming_start) != _as_utc(existing.start_at)
     ):
         return True
 
@@ -108,7 +112,7 @@ def has_meaningful_event_changes(
     if (
         incoming_end
         and existing.end_at
-        and incoming_end.replace(tzinfo=None) != existing.end_at.replace(tzinfo=None)
+        and _as_utc(incoming_end) != _as_utc(existing.end_at)
     ):
         return True
 

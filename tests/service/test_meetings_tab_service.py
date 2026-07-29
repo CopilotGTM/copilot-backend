@@ -604,6 +604,36 @@ def test_recordings_window_includes_today_by_default() -> None:
     assert end > after
 
 
+def test_local_day_window_handles_dst_boundaries() -> None:
+    """Local midnights can be 23 or 25 hours apart when a user travels."""
+    spring_start, spring_end = MeetingsTabService._local_day_window(  # noqa: SLF001
+        datetime(2026, 3, 8, 12, tzinfo=UTC),
+        "America/New_York",
+    )
+    fall_start, fall_end = MeetingsTabService._local_day_window(  # noqa: SLF001
+        datetime(2026, 11, 1, 12, tzinfo=UTC),
+        "America/New_York",
+    )
+
+    assert spring_end - spring_start == timedelta(hours=23)
+    assert fall_end - fall_start == timedelta(hours=25)
+
+
+def test_all_day_window_uses_local_calendar_dates() -> None:
+    """All-day UTC sentinels must not shift when the browser timezone changes."""
+    service = _service()
+    service.user_timezone = "Asia/Kolkata"
+
+    start, end = service._resolve_all_day_window(  # noqa: SLF001
+        MeetingsView.TODAY,
+        datetime(2026, 7, 28, 18, 30, tzinfo=UTC),
+        datetime(2026, 7, 29, 18, 30, tzinfo=UTC),
+    )
+
+    assert start == datetime(2026, 7, 29, tzinfo=UTC)
+    assert end == datetime(2026, 7, 30, tzinfo=UTC)
+
+
 @pytest.mark.asyncio
 async def test_deal_recording_detail_returns_deal_summary(monkeypatch) -> None:
     """Recording detail should use deal-scoped summary data when the meeting is linked."""

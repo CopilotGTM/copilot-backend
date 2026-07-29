@@ -13,6 +13,7 @@ silently relies on:
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import pytest
 from src.service.integrations.calendar.change_detector import has_meaningful_event_changes
 from src.service.integrations.calendar.normalizer import CalendarEventNormalizer
 
@@ -96,6 +97,75 @@ def test_microsoft_normalizer_treats_offsetless_india_time_as_local_wall_clock()
 
     assert normalized.fields["start_at"] == datetime(2026, 7, 20, 10, 30, tzinfo=UTC)
     assert normalized.fields["end_at"] == datetime(2026, 7, 20, 11, 0, tzinfo=UTC)
+
+
+def test_google_normalizer_treats_offsetless_india_time_as_local_wall_clock() -> None:
+    """Google's optional timeZone must resolve an offset-less wall clock."""
+    normalized = CalendarEventNormalizer().normalize(
+        {
+            "id": "google-india-event",
+            "iCalUID": "shared-google-india",
+            "summary": "India customer call",
+            "status": "confirmed",
+            "start": {"dateTime": "2026-07-20T09:00:00", "timeZone": "Asia/Kolkata"},
+            "end": {"dateTime": "2026-07-20T09:30:00", "timeZone": "Asia/Kolkata"},
+        },
+        "google",
+    )
+
+    assert normalized.fields["start_at"] == datetime(2026, 7, 20, 3, 30, tzinfo=UTC)
+    assert normalized.fields["end_at"] == datetime(2026, 7, 20, 4, 0, tzinfo=UTC)
+
+
+def test_google_normalizer_rejects_ambiguous_offsetless_datetime() -> None:
+    """An offset-less Google time without a named zone is not a safe instant."""
+    with pytest.raises(ValueError, match="missing both offset and timeZone"):
+        CalendarEventNormalizer().normalize(
+            {
+                "id": "google-ambiguous-event",
+                "iCalUID": "shared-google-ambiguous",
+                "summary": "Ambiguous call",
+                "status": "confirmed",
+                "start": {"dateTime": "2026-07-20T16:00:00"},
+                "end": {"dateTime": "2026-07-20T16:30:00"},
+            },
+            "google",
+        )
+
+
+def test_change_detector_compares_instants_not_wall_clocks() -> None:
+    """Changing only the offset changes the instant and must rewrite the row."""
+    existing = SimpleNamespace(
+        title="Customer call",
+        description=None,
+        location=None,
+        status="confirmed",
+        conference_link=None,
+        organiser_email=None,
+        organiser_name=None,
+        online_meeting_provider=None,
+        online_meeting_id=None,
+        calendar_external_id=None,
+        timezone="UTC",
+        start_at=datetime(2026, 7, 20, 9, 0, tzinfo=UTC),
+        end_at=datetime(2026, 7, 20, 10, 0, tzinfo=UTC),
+        attendee_count=0,
+        is_all_day=False,
+        source_modified_at=None,
+    )
+    normalized = CalendarEventNormalizer().normalize(
+        {
+            "id": "google-offset-change",
+            "iCalUID": "shared-offset-change",
+            "summary": "Customer call",
+            "status": "confirmed",
+            "start": {"dateTime": "2026-07-20T09:00:00+05:30", "timeZone": "Asia/Kolkata"},
+            "end": {"dateTime": "2026-07-20T10:00:00+05:30", "timeZone": "Asia/Kolkata"},
+        },
+        "google",
+    )
+
+    assert has_meaningful_event_changes(existing, normalized) is True
 
 
 def test_normalizer_extracts_provider_series_external_id() -> None:

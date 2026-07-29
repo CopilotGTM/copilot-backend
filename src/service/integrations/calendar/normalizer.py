@@ -32,6 +32,7 @@ import urllib.parse
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from src.infra.utils.logger import get_logger
 from src.service.calendar_invites.timezones import parse_outlook_datetime
@@ -235,7 +236,10 @@ class CalendarEventNormalizer:
             original_start = event_data.get("originalStartTime")
             if isinstance(original_start, dict):
                 if isinstance(original_start.get("dateTime"), str):
-                    parsed = cls.parse_iso_datetime(original_start["dateTime"])
+                    parsed = cls.parse_google_datetime(
+                        original_start["dateTime"],
+                        original_start.get("timeZone"),
+                    )
                     return cls.format_occurrence_anchor(parsed), parsed
                 if isinstance(original_start.get("date"), str):
                     parsed = cls.parse_iso_date(original_start["date"])
@@ -439,7 +443,10 @@ class CalendarEventNormalizer:
         # (`date`). Picking the right key also tells us `is_all_day`, which
         # change detection compares as a separate column.
         if "dateTime" in start:
-            fields["start_at"] = cls.parse_iso_datetime(start["dateTime"])
+            fields["start_at"] = cls.parse_google_datetime(
+                start["dateTime"],
+                start.get("timeZone"),
+            )
             fields["is_all_day"] = False
         elif "date" in start:
             fields["start_at"] = cls.parse_iso_date(start["date"])
@@ -448,7 +455,10 @@ class CalendarEventNormalizer:
     @classmethod
     def _set_google_end(cls, fields: dict[str, Any], end: dict[str, Any]) -> None:
         if "dateTime" in end:
-            fields["end_at"] = cls.parse_iso_datetime(end["dateTime"])
+            fields["end_at"] = cls.parse_google_datetime(
+                end["dateTime"],
+                end.get("timeZone"),
+            )
         elif "date" in end:
             fields["end_at"] = cls.parse_iso_date(end["date"])
 
@@ -812,7 +822,20 @@ class CalendarEventNormalizer:
     @staticmethod
     def parse_iso_datetime(value: str) -> datetime:
         """Parse provider ISO datetimes, accepting the UTC `Z` suffix both APIs emit."""
-        return datetime.fromisoformat(value.replace("Z", ISO_UTC_SUFFIX))
+        parsed = datetime.fromisoformat(value.replace("Z", ISO_UTC_SUFFIX))
+        if parsed.tzinfo is None:
+            raise ValueError("Provider datetime is missing an offset")
+        return parsed.astimezone(UTC)
+
+    @staticmethod
+    def parse_google_datetime(value: str, timezone_name: str | None) -> datetime:
+        """Resolve Google's RFC3339-or-timeZone pair into one UTC instant."""
+        parsed = datetime.fromisoformat(value.replace("Z", ISO_UTC_SUFFIX))
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(UTC)
+        if not timezone_name:
+            raise ValueError("Google dateTime is missing both offset and timeZone")
+        return parsed.replace(tzinfo=ZoneInfo(timezone_name)).astimezone(UTC)
 
     @staticmethod
     def parse_iso_date(value: str) -> datetime:

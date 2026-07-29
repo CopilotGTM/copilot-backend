@@ -63,6 +63,7 @@ class MeetingListItem(BaseModel):
     title: str | None
     start_at: datetime
     end_at: datetime
+    is_all_day: bool = False
     duration_minutes: int | None = None
     platform: str | None = None
     platform_label: str = "Not available"
