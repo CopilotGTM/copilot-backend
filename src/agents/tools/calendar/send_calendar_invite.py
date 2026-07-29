@@ -360,7 +360,10 @@ async def send_calendar_invite(
     The authenticated user and organization come only from AgentContext. Names,
     sender defaults, and scheduling shortcuts are resolved before confirmation;
     the service receives only the exact reviewed email addresses and timestamps.
+    Caller idempotency keys remain accepted for compatibility but do not authorize
+    the send or replace the canonical request hash.
     """
+    _ = idempotency_key
     user_id = context.user_id
     if not user_id:
         return {"status": "error", "message": "Cannot send invite: user not identified."}
@@ -374,6 +377,9 @@ async def send_calendar_invite(
         }
 
     metadata = context.metadata or {}
+    whatsapp_send_authorized = (context.channel or "").lower() != "whatsapp" or metadata.get(
+        "whatsapp_action_authority"
+    ) in {"direct_current_turn", "pending_action"}
     metadata_timezone = metadata.get("user_timezone")
     context_timezone = resolve_timezone_name(
         metadata_timezone if isinstance(metadata_timezone, str) else None,
@@ -549,18 +555,16 @@ async def send_calendar_invite(
             integration_id=sender_resolution.integration.integration_id,
         )
         review_payload["confirmation_token"] = confirmation_token
-        if not confirmed or idempotency_key != confirmation_token:
+        # Forwarded WhatsApp content is quoted evidence, so a model-supplied
+        # confirmation cannot turn it into permission for an external write.
+        if not confirmed or not whatsapp_send_authorized:
             review_text, channel_payload = _build_review_channel_payload(
                 context,
                 review_payload,
             )
             confirmation_result: dict[str, Any] = {
                 "status": "confirmation_required",
-                "code": (
-                    "calendar_invite_confirmation_required"
-                    if not confirmed
-                    else "calendar_invite_confirmation_stale"
-                ),
+                "code": "calendar_invite_confirmation_required",
                 "message": "Review the meeting details, then confirm this exact invite.",
                 "resolved_attendees": resolved_attendees,
                 "confirmation_payload": review_payload,
@@ -572,8 +576,8 @@ async def send_calendar_invite(
                 confirmation_result["ui_card"] = channel_payload["content"]["card"]
             return confirmation_result
 
-        # The reviewed token doubles as the provider idempotency key. Recomputing
-        # it above prevents a confirmation from authorizing changed invite fields.
+        # The final request hash remains the provider retry boundary even though
+        # user authorization is now represented by the current turn's intent.
         request = request.model_copy(update={"idempotency_key": confirmation_token})
         service = CalendarInviteService(
             session,
@@ -633,14 +637,14 @@ def create_send_calendar_invite(
         first. The tool searches deal stakeholders, CRM contacts, CRM users when
         synced, and active approved internal users; it will return
         confirmation_required or needs_clarification instead of sending if there
-        is any identity doubt. If the user confirms a confirmation_payload, call
-        again with those resolved attendee emails and confirmed=True.
+        is any identity doubt. Set confirmed=True only when the current user
+        message explicitly asks to send the fully resolved invite.
 
         Omit title to derive "Meeting with <name>". Omit end_time to use the
         30-minute default. Date and start time remain required; the tool returns
-        every unresolved field together. Sender selection is automatic. When
-        confirming, pass the resolved emails, sender_email, and confirmation_token
-        from confirmation_payload as idempotency_key.
+        every unresolved field together. Sender selection is automatic. A
+        clarification that only selects a person or supplies a detail is not
+        confirmation; the same clarification paired with send intent is.
         """
         result = await execute_with_capabilities(
             capabilities_getter(),

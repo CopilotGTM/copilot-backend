@@ -42,7 +42,7 @@ exist, ask a grounded choice question rather than a blank-slate question.
 | Send a saved mailbox draft | Preview its current provider content, then use `send_email_draft` after confirmation |
 | Save a reply in an existing email thread | Read the exact source thread, then call `save_email_draft` with its `reply_to_internet_message_id`; the draft preserves that message's external `To` and `CC` |
 | Create MOM or meeting minutes | Load `references/meeting-minutes-writing.md`, produce MOM in the current channel, and do not assume it should be emailed |
-| Schedule or send a meeting invite | Resolve title, date, time, timezone, organizer, attendees, and context; show the final preview; then wait for confirmation |
+| Schedule or send a meeting invite | Resolve title, date, time, timezone, organizer, attendees, and context; send immediately when the current turn explicitly requests sending and the payload is complete, otherwise show the final preview and wait |
 | Update or reschedule an existing calendar event | Use `update_calendar_meeting` only for a single event organized by the user's connected calendar |
 | Cancel an existing calendar event | Use `cancel_calendar_meeting` only after an exact cancellation preview |
 | "Send meeting/email to all stakeholders" | Resolve the deal and stakeholders, expand and deduplicate recipients, then show the final recipient list |
@@ -64,7 +64,8 @@ exist, ask a grounded choice question rather than a blank-slate question.
 4. Any material payload change invalidates the previous confirmation and requires a new
    preview, unless the same user turn explicitly approves the revised payload with
    send intent such as "apply this change and send".
-5. Missing-detail replies are not confirmation.
+5. A reply that only supplies a missing detail is not confirmation. If the same turn
+   also explicitly asks to send, it authorizes the fully resolved payload.
 6. Do not retry an action whose result is unknown until current state has been checked.
 7. Check for likely duplicates before creating or sending when the necessary read-only
    tools are available.
@@ -205,9 +206,9 @@ deal stakeholders, CRM contacts, CRM users, and active approved internal users i
 the organization.
 
 If the tool accepts raw attendee text and `deal_id`, prefer passing the user's phrase
-plus the resolved deal rather than forcing manual expansion. However, do not send until
-the tool has returned a resolved attendee preview and the user has confirmed that exact
-list.
+plus the resolved deal rather than forcing manual expansion. Send a resolved attendee
+list only when the current user turn explicitly asks to send it; otherwise show the
+resolved list in the preview.
 
 ### "All stakeholders"
 
@@ -608,7 +609,8 @@ For explicit email addresses:
 
 - use them as attendees only;
 - label them as external when appropriate;
-- do not use them to invent a title or identity.
+- do not use them to invent a title or identity;
+- never produce an email-based title such as `Meeting with nikhilsinghal005@gmail.com`.
 
 For "all stakeholders":
 
@@ -631,6 +633,7 @@ If the user provides all missing meeting details but the organizer remains unres
 ask for the organizer together with any other remaining blocker.
 
 Do not treat "yes" as an organizer identity.
+A reply such as "yes" does not answer a question asking which sender mailbox to use.
 
 ### 7. Add useful context
 
@@ -694,14 +697,17 @@ For example:
 Do not ask sequentially for title, then date, then attendee, then sender when the
 missing fields are already known.
 
-If the user supplies missing fields, continue to the final preview. Do not treat those
-details as final approval.
+If the user supplies missing fields without send intent, continue to the final preview.
+If the same turn also explicitly asks to send and no blocker remains, send the resolved
+payload without another confirmation turn.
 
 ### 10. Build the final preview
 
-Once all required fields are resolved, call `send_calendar_invite` with
-`confirmed=False` when the tool uses that parameter to generate or validate the
-preview.
+Once all required fields are resolved:
+
+- call `send_calendar_invite` with `confirmed=True` when the current user turn
+  explicitly asks to send;
+- otherwise call it with `confirmed=False` to generate or validate the preview.
 
 The preview must reflect the exact payload that will be sent.
 
@@ -748,6 +754,12 @@ A reply such as "yes", "confirm", "send it", or "do it" authorizes the action on
 
 Suggested follow-up questions do not create approval context.
 
+Explicit send intent in the current turn can also authorize a complete initial request
+or a payload completed by that same turn's final clarification. Interpret the user's
+meaning across languages and phrasings; do not hard-code specific confirmation phrases.
+A clarification that only chooses a candidate or supplies a field still requires a
+preview.
+
 If the user changes any payload field, clear or invalidate the earlier confirmation.
 If the same user turn explicitly says to apply this change and send, execute the
 revised payload without another confirmation after applying only that requested edit
@@ -759,11 +771,14 @@ calendar state, show a refreshed preview rather than using the old confirmation.
 
 ### 12. Send exactly once
 
-After explicit confirmation, call `send_calendar_invite` with:
+After explicit send intent or confirmation, call `send_calendar_invite` with:
 
 - the exact resolved payload;
 - resolved attendees;
 - `confirmed=True`.
+
+Do not pass or replay a confirmation token as authorization. The tool derives its
+provider idempotency key from the canonical invite payload.
 
 Do not re-resolve or expand attendees after confirmation unless the tool requires it.
 If resolution changes, show the changed list and request confirmation again.

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
@@ -91,27 +91,25 @@ def _stub_calendar_sender_context(monkeypatch) -> None:
     )
 
 
-async def _preview_then_confirm(**kwargs):
-    """Confirm with the exact token returned by the immediately preceding preview."""
-    preview = await send_calendar_invite(**kwargs)
-    assert preview["status"] == "confirmation_required"
-    return await send_calendar_invite(
-        **kwargs,
-        confirmed=True,
-        idempotency_key=preview["confirmation_payload"]["confirmation_token"],
-    )
+async def _send_confirmed(**kwargs):
+    """Send a fully resolved invite after the current user turn authorizes it."""
+    return await send_calendar_invite(**kwargs, confirmed=True)
 
 
 @pytest.mark.asyncio
-async def test_send_calendar_invite_creates_invite_for_current_user(monkeypatch) -> None:
-    """Happy-path tool call should call service with normalized request values."""
+async def test_send_calendar_invite_sends_for_direct_whatsapp_user(monkeypatch) -> None:
+    """Direct WhatsApp authority should preserve the minimum-turn send path."""
     # Contract: when context has a user, tool should call service with localized
     # timezone and normalized attendee payload.
     session = MagicMock()
     context = _FakeContext(
         organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
         user_id=UUID("22222222-2222-2222-2222-222222222222"),
-        metadata={"user_timezone": "Asia/Kolkata"},
+        channel="whatsapp",
+        metadata={
+            "user_timezone": "Asia/Kolkata",
+            "whatsapp_action_authority": "direct_current_turn",
+        },
     )
     context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))
     created_requests = []
@@ -141,7 +139,7 @@ async def test_send_calendar_invite_creates_invite_for_current_user(monkeypatch)
         FakeService,
     )
 
-    result = await _preview_then_confirm(
+    result = await _send_confirmed(
         context=context,
         title="Discovery call",
         start_time="2026-05-12T20:00:00+05:30",
@@ -165,10 +163,43 @@ async def test_send_calendar_invite_creates_invite_for_current_user(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_send_calendar_invite_requires_final_confirmation_before_sending(
+async def test_send_calendar_invite_previews_forwarded_whatsapp_content(
     monkeypatch,
 ) -> None:
-    """Complete invite details should still render a final confirmation before sending."""
+    """Forwarded WhatsApp content cannot authorize an external calendar write."""
+    context = _FakeContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        channel="whatsapp",
+        metadata={
+            "user_timezone": "Asia/Kolkata",
+            "whatsapp_action_authority": "none",
+        },
+    )
+    service = MagicMock()
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.send_calendar_invite.CalendarInviteService",
+        service,
+    )
+
+    result = await send_calendar_invite(
+        context=context,
+        title="Discussion",
+        start_time="2026-07-30 3:30 PM",
+        attendees=["buyer@example.com"],
+        confirmed=True,
+    )
+
+    assert result["status"] == "confirmation_required"
+    assert result["code"] == "calendar_invite_confirmation_required"
+    service.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_calendar_invite_previews_complete_payload_without_send_intent(
+    monkeypatch,
+) -> None:
+    """A complete invite without current send intent should remain a preview."""
     session = MagicMock()
     context = _FakeContext(
         organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
@@ -366,7 +397,7 @@ async def test_send_calendar_invite_resolves_weekday_time_from_user_timezone_anc
         FakeService,
     )
 
-    result = await _preview_then_confirm(
+    result = await _send_confirmed(
         context=context,
         title="Discovery call",
         start_time="Saturday 10 AM",
@@ -458,7 +489,7 @@ async def test_send_calendar_invite_uses_explicit_timezone_after_conflict_confir
         FakeService,
     )
 
-    result = await _preview_then_confirm(
+    result = await _send_confirmed(
         context=context,
         title="Discovery call",
         start_time="Saturday 8 PM",
@@ -492,10 +523,10 @@ async def test_send_calendar_invite_requires_current_user() -> None:
 
 
 @pytest.mark.asyncio
-async def test_send_calendar_invite_requires_confirmation_for_resolved_name(
+async def test_send_calendar_invite_uses_current_send_intent_for_resolved_name(
     monkeypatch,
 ) -> None:
-    """Name-derived attendees must be confirmed before Graph is called."""
+    """A resolved name previews without send intent and sends with it."""
     session = MagicMock()
     context = _FakeContext(
         organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
@@ -528,6 +559,14 @@ async def test_send_calendar_invite_requires_confirmation_for_resolved_name(
             )
 
     service = MagicMock()
+    service.return_value.create_invite = AsyncMock(
+        return_value=CalendarInviteCreateResult(
+            request_id=UUID("33333333-3333-3333-3333-333333333333"),
+            event_id=UUID("44444444-4444-4444-4444-444444444444"),
+            provider_event_id="provider-event-1",
+            subject="Discovery call",
+        )
+    )
     monkeypatch.setattr(
         "src.agents.tools.calendar.send_calendar_invite.CalendarInviteService",
         service,
@@ -559,6 +598,22 @@ async def test_send_calendar_invite_requires_confirmation_for_resolved_name(
         }
     ]
     service.assert_not_called()
+
+    # The same resolved attendee is sent immediately when the user's current
+    # clarification also carries explicit send intent.
+    sent_result = await send_calendar_invite(
+        context=context,
+        title="Discovery call",
+        start_time="2026-05-12T20:00:00+05:30",
+        end_time="2026-05-12T20:30:00+05:30",
+        attendees=["Saksham Bhutani"],
+        sender_email="seller@contoso.com",
+        confirmed=True,
+    )
+
+    assert sent_result["status"] == "sent"
+    sent_request = service.return_value.create_invite.await_args.args[0]
+    assert sent_request.attendees[0].email == "saksham@example.com"
 
 
 @pytest.mark.asyncio
@@ -904,14 +959,25 @@ async def test_send_calendar_invite_asks_again_for_invalid_explicit_timezone(
 
 
 @pytest.mark.asyncio
-async def test_send_calendar_invite_rejects_stale_confirmation_token(monkeypatch) -> None:
-    """Changed review fields must not inherit approval from an older invite payload."""
+async def test_send_calendar_invite_uses_canonical_idempotency_after_send_intent(
+    monkeypatch,
+) -> None:
+    """Caller tokens do not authorize sends or replace canonical duplicate protection."""
     context = _FakeContext(
         organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
         user_id=UUID("22222222-2222-2222-2222-222222222222"),
         metadata={"user_timezone": "Asia/Kolkata"},
     )
     service = MagicMock()
+    service.return_value.create_invite = AsyncMock(
+        return_value=CalendarInviteCreateResult(
+            request_id=UUID("33333333-3333-3333-3333-333333333333"),
+            event_id=UUID("44444444-4444-4444-4444-444444444444"),
+            provider_event_id="provider-event-1",
+            subject="Discussion",
+        )
+    )
+
     monkeypatch.setattr(
         "src.agents.tools.calendar.send_calendar_invite.CalendarInviteService",
         service,
@@ -926,10 +992,23 @@ async def test_send_calendar_invite_rejects_stale_confirmation_token(monkeypatch
         idempotency_key="stale-review",
     )
 
-    assert result["status"] == "confirmation_required"
-    assert result["code"] == "calendar_invite_confirmation_stale"
-    assert result["confirmation_payload"]["confirmation_token"] != "stale-review"
-    service.assert_not_called()
+    assert result["status"] == "sent"
+    sent_request = service.return_value.create_invite.await_args.args[0]
+    assert sent_request.idempotency_key != "stale-review"
+    assert sent_request.idempotency_key
+
+    repeated_result = await send_calendar_invite(
+        context=context,
+        attendees=["bhawesh@example.com"],
+        title="Discussion",
+        start_time="2026-07-25 3:30 PM",
+        confirmed=True,
+        idempotency_key="another-caller-token",
+    )
+
+    assert repeated_result["status"] == "sent"
+    repeated_request = service.return_value.create_invite.await_args_list[1].args[0]
+    assert repeated_request.idempotency_key == sent_request.idempotency_key
 
 
 @pytest.mark.asyncio
