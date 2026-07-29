@@ -1,3 +1,5 @@
+"""Regression coverage for communication cards and their Contact/Company links."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -13,25 +15,33 @@ from src.service.crm.activity_feed_projection_service import (
 
 
 class _ExecuteResult:
+    """Expose the result methods used by communication projection queries."""
+
     def __init__(self, scalar: object | None = None) -> None:
         self.scalar = scalar
 
     def scalars(self):
+        """Return this result as its scalar view."""
         return self
 
     def all(self) -> list[object]:
+        """Return no existing link rows unless a test configures a scalar."""
         return []
 
     def scalar_one_or_none(self) -> object | None:
+        """Return the configured association lookup result."""
         return self.scalar
 
 
 class _Session:
+    """Capture projection SQL and optionally expose an existing association."""
+
     def __init__(self, *, active_association_id: object | None = None) -> None:
         self.statements: list[object] = []
         self.active_association_id = active_association_id
 
     async def execute(self, statement, _parameters=None):
+        """Record SQL while answering the association-existence query."""
         self.statements.append(statement)
         if "deal_email_associations" in str(statement):
             return _ExecuteResult(self.active_association_id)
@@ -44,6 +54,7 @@ def _values(statement: object) -> dict[str, object]:
 
 @pytest.mark.asyncio
 async def test_direct_email_is_one_card_with_all_contact_links() -> None:
+    """One provider email produces one card linked to every resolved participant."""
     organisation_id = uuid4()
     email = Email(
         organisation_id=organisation_id,
@@ -89,9 +100,11 @@ async def test_direct_email_is_one_card_with_all_contact_links() -> None:
     )
     assert activity["source_record_id"] == str(email.email_id)
     link_values = [
-        _values(statement)
+        values
         for statement in session.statements
-        if "crm_activity_links" in str(statement) and not isinstance(statement, Delete)
+        if "crm_activity_links" in str(statement)
+        and not isinstance(statement, Delete)
+        and "object_type" in (values := _values(statement))
     ]
     assert {
         (value["object_type"], value["object_id"], value["link_role"]) for value in link_values
@@ -104,6 +117,7 @@ async def test_direct_email_is_one_card_with_all_contact_links() -> None:
 
 @pytest.mark.asyncio
 async def test_direct_email_is_not_created_after_a_deal_association_exists() -> None:
+    """An association-owned card prevents a duplicate direct communication card."""
     organisation_id = uuid4()
     email = Email(
         organisation_id=organisation_id,
@@ -131,6 +145,7 @@ async def test_direct_email_is_not_created_after_a_deal_association_exists() -> 
 
 @pytest.mark.asyncio
 async def test_association_participant_links_use_an_independent_role() -> None:
+    """Hydration adds participant links without replacing association-owned links."""
     organisation_id = uuid4()
     contact_id = uuid4()
     company_id = uuid4()

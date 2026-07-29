@@ -240,6 +240,7 @@ class AccountReadService:
             "owner": func.lower(func.coalesce(c.owner_name, c.owner_email)),
             "annual_revenue": c.annual_revenue,
             "number_of_employees": c.number_of_employees,
+            "created_at": c.created_at,
         }
         if sort_by is not None and sort_by not in sort_columns:
             raise AccountReadServiceError("Unsupported sort field", status_code=400)

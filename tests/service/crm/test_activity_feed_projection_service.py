@@ -96,6 +96,7 @@ class _FakeSession:
         return _FakeExecuteResult()
 
     def add(self, obj: object) -> None:
+        """Capture ORM additions made by the projection service."""
         self.added.append(obj)
 
 
@@ -622,10 +623,13 @@ async def test_email_association_projection_can_defer_deal_activity_refresh(
     refreshed: list[object] = []
 
     class FakeLastActivityService:
+        """Capture Deal refreshes while isolating the deferred-refresh contract."""
+
         def __init__(self, _session, _organisation_id):  # noqa: ANN001
             pass
 
         async def refresh_deal(self, deal_id):  # noqa: ANN001
+            """Record the Deal selected for freshness recomputation."""
             refreshed.append(deal_id)
 
     monkeypatch.setattr(
@@ -770,32 +774,70 @@ async def test_future_meeting_projection_uses_association_time_not_future_start(
 
 
 @pytest.mark.asyncio
-async def test_soft_delete_activity_projection_refreshes_linked_deals(monkeypatch) -> None:
-    """Removing a projected latest activity should recompute cached deal freshness."""
+@pytest.mark.parametrize(
+    ("source_type", "should_refresh_contact"),
+    [("EMAIL", True), ("TASK", False)],
+)
+async def test_soft_delete_activity_projection_refreshes_eligible_links(
+    monkeypatch,
+    source_type: str,
+    should_refresh_contact: bool,
+) -> None:
+    """Deletion recomputes Contact freshness only for contributing activity types."""
     organisation_id = uuid4()
     deal_id = uuid4()
+    contact_id = uuid4()
     activity_id = uuid4()
 
     class Session(_FakeSession):
+        """Return the linked Deal and Contact IDs before accepting mutations."""
+
         async def execute(self, statement):  # noqa: ANN001
+            """Resolve link lookups and accept the subsequent update statements."""
             self.statements.append(statement)
-            if "SELECT crm_activity_links.object_id" in str(statement):
+            statement_text = str(statement)
+            if "SELECT crm_activity_links.object_id" in statement_text and "DEAL" in str(
+                statement.compile().params
+            ):
                 return _FakeExecuteResult([deal_id])
+            if "SELECT crm_activity_links.object_id" in statement_text:
+                return _FakeExecuteResult([contact_id])
+            if "UPDATE crm_activities" in statement_text:
+                return _FakeExecuteResult([source_type])
             return _FakeExecuteResult()
 
-    refreshed: list[object] = []
+    refreshed_deals: list[object] = []
+    refreshed_contacts: list[object] = []
 
     class FakeLastActivityService:
+        """Capture Deal refreshes without running another database query."""
+
         def __init__(self, session, organisation_id):  # noqa: ANN001
             self.session = session
             self.organisation_id = organisation_id
 
         async def refresh_deal(self, deal_id):  # noqa: ANN001
-            refreshed.append(deal_id)
+            """Record the linked Deal selected for recomputation."""
+            refreshed_deals.append(deal_id)
+
+    class FakeContactActivityService:
+        """Capture Contact refreshes without running another database query."""
+
+        def __init__(self, session, organisation_id):  # noqa: ANN001
+            self.session = session
+            self.organisation_id = organisation_id
+
+        async def refresh_contact(self, contact_id):  # noqa: ANN001
+            """Record the linked Contact selected for recomputation."""
+            refreshed_contacts.append(contact_id)
 
     monkeypatch.setattr(
         "src.service.crm.activity_feed_projection_service.DealLastActivityService",
         FakeLastActivityService,
+    )
+    monkeypatch.setattr(
+        "src.service.crm.activity_feed_projection_service.ContactLastActivityService",
+        FakeContactActivityService,
     )
     session = Session()
 
@@ -803,7 +845,61 @@ async def test_soft_delete_activity_projection_refreshes_linked_deals(monkeypatc
         activity_id
     )
 
-    assert refreshed == [deal_id]
+    assert refreshed_deals == [deal_id]
+    assert refreshed_contacts == ([contact_id] if should_refresh_contact else [])
+    contact_link_lookups = [
+        statement
+        for statement in session.statements
+        if "SELECT crm_activity_links.object_id" in str(statement)
+        and "CONTACT" in str(statement.compile().params)
+    ]
+    assert bool(contact_link_lookups) is should_refresh_contact
+
+
+@pytest.mark.asyncio
+async def test_contact_link_refresh_requires_explicit_opt_in(monkeypatch) -> None:
+    """Non-contributing projections keep Contact links without recalculating freshness."""
+    organisation_id = uuid4()
+    contact_id = uuid4()
+    refreshed_contacts: list[object] = []
+
+    class FakeContactActivityService:
+        """Capture the opt-in refresh without running its aggregate queries."""
+
+        def __init__(self, session, organisation_id):  # noqa: ANN001
+            self.session = session
+            self.organisation_id = organisation_id
+
+        async def refresh_contact(self, contact_id):  # noqa: ANN001
+            """Record the Contact selected by a contributing projection."""
+            refreshed_contacts.append(contact_id)
+
+    monkeypatch.setattr(
+        "src.service.crm.activity_feed_projection_service.ContactLastActivityService",
+        FakeContactActivityService,
+    )
+    service = ActivityFeedProjectionService(_FakeSession(), organisation_id)
+
+    await service._sync_object_links(
+        activity_id=uuid4(),
+        object_type="CONTACT",
+        object_ids={contact_id},
+        link_role="RELATED",
+        occurred_at=datetime(2026, 7, 1, tzinfo=UTC),
+        replace_existing=False,
+    )
+    assert refreshed_contacts == []
+
+    await service._sync_object_links(
+        activity_id=uuid4(),
+        object_type="CONTACT",
+        object_ids={contact_id},
+        link_role="RELATED",
+        occurred_at=datetime(2026, 7, 1, tzinfo=UTC),
+        replace_existing=False,
+        refresh_contact_activity=True,
+    )
+    assert refreshed_contacts == [contact_id]
 
 
 @pytest.mark.asyncio

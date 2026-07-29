@@ -21,6 +21,7 @@ from src.service.crm.access.record_access_policy import (
 )
 from src.service.crm.accounts import write_service as account_write_module
 from src.service.crm.contacts import write_service as contact_write_module
+from src.service.crm.contacts.last_activity_service import ContactLastActivityService
 from src.service.crm.deals import write_service as deal_write_module
 from src.service.crm.deals.last_activity_service import DealLastActivityService
 
@@ -107,6 +108,23 @@ def explicit_admin_for_legacy_service_tests(
             DealLastActivityService,
             "refresh_deal",
             skip_last_activity_projection,
+        )
+
+    if not request.module.__name__.endswith("test_contact_last_activity_service"):
+
+        async def skip_contact_last_activity_projection(
+            _service: Any,
+            _contact_id: Any,
+        ) -> None:
+            """Avoid unrelated Contact projection queries in isolated service tests."""
+            return None
+
+        # Contact last-activity calculation has a focused suite; unrelated
+        # tests stop at this projection boundary instead of extending DB queues.
+        monkeypatch.setattr(
+            ContactLastActivityService,
+            "refresh_contact",
+            skip_contact_last_activity_projection,
         )
 
     module = request.module

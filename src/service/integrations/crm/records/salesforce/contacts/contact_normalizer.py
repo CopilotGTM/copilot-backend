@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from src.infra.utils.logger import get_logger
@@ -70,7 +70,9 @@ def _normalize_one(raw: object) -> NormalizedSalesforceContact | None:
         country=_coerce_str(raw.get("MailingCountry")),
         timezone=None,
         last_contacted_at=None,
-        last_activity_at=None,
+        # Salesforce exposes Contact freshness as a date-only value. Preserve it
+        # so the writer can compare provider and CopilotGTM activity consistently.
+        last_activity_at=_parse_salesforce_timestamp(raw.get("LastActivityDate")),
         source_created_at=_parse_salesforce_timestamp(raw.get("CreatedDate")),
         source_modified_at=_parse_salesforce_timestamp(raw.get("LastModifiedDate")),
         properties={
@@ -122,6 +124,7 @@ def _parse_salesforce_timestamp(value: Any) -> datetime | None:
     if len(cleaned) >= 5 and cleaned[-5] in {"+", "-"} and cleaned[-3] != ":":
         cleaned = f"{cleaned[:-2]}:{cleaned[-2:]}"
     try:
-        return datetime.fromisoformat(cleaned)
+        parsed = datetime.fromisoformat(cleaned)
     except ValueError:
         return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)

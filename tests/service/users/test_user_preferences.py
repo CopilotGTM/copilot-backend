@@ -39,6 +39,7 @@ def test_normalize_user_preferences_adds_default_account_list_columns() -> None:
         "annual_revenue",
         "country",
         "linkedin_url",
+        "created_at",
     ]
 
 

@@ -30,6 +30,7 @@ DEFAULT_ACCOUNT_LIST_COLUMNS = [
     "annual_revenue",
     "country",
     "linkedin_url",
+    "created_at",
 ]
 
 DEFAULT_DEAL_LIST_COLUMNS = [
