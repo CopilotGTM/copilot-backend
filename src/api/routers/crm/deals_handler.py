@@ -189,8 +189,7 @@ def get_deals_list_params(
     sort_by: str | None = Query(
         None,
         description=(
-            "Sort field: name, stage, amount, expected_close_date, owner, "
-            "or last_activity_at."
+            "Sort field: name, stage, amount, expected_close_date, owner, or last_activity_at."
         ),
     ),
     sort_order: str | None = Query("desc", pattern="^(asc|desc)$", description="Sort direction"),

@@ -376,9 +376,7 @@ class TaskReadService:
 
         sort_col = sort_col_map[sort_by]
         primary_order = (
-            sort_col.asc().nullslast()
-            if sort_order == "asc"
-            else sort_col.desc().nullslast()
+            sort_col.asc().nullslast() if sort_order == "asc" else sort_col.desc().nullslast()
         )
         stmt = stmt.order_by(primary_order, c.task_id.asc())
 

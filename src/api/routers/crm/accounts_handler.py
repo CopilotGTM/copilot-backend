@@ -133,8 +133,7 @@ async def list_accounts(
     sort_by: str | None = Query(
         None,
         description=(
-            "Sort field: name, lifecycle_stage, owner, annual_revenue, "
-            "or number_of_employees."
+            "Sort field: name, lifecycle_stage, owner, annual_revenue, or number_of_employees."
         ),
     ),
     sort_order: str = Query("asc", pattern="^(asc|desc)$", description="Sort direction"),
