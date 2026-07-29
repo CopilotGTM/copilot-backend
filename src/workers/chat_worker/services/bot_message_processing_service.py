@@ -290,6 +290,12 @@ class BotMessageProcessingService:
                 assistant_text = response.text
 
             if provider == "whatsapp" and job_id:
+                if not result.error_message:
+                    payload, assistant_text = self._select_whatsapp_durable_payload(
+                        payload,
+                        payload_override,
+                        assistant_text,
+                    )
                 outbound_text = payload.content.get("text") or payload.text_fallback or ""
                 self._persist_whatsapp_response(
                     job_id,
@@ -2372,6 +2378,21 @@ class BotMessageProcessingService:
             )
 
         return None
+
+    @staticmethod
+    def _select_whatsapp_durable_payload(
+        rendered_payload: ChannelPayload,
+        override_payload: ChannelPayload | None,
+        assistant_text: str | None,
+    ) -> tuple[ChannelPayload, str | None]:
+        """Select exact tool text for both durable delivery and conversation history."""
+        if not override_payload or not override_payload.force_override:
+            return rendered_payload, assistant_text
+
+        canonical_text = (
+            override_payload.content.get("text") or override_payload.text_fallback or ""
+        )
+        return override_payload, str(canonical_text)
 
     async def _send_payload_with_optional_override(
         self,

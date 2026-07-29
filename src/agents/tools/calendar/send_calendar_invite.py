@@ -6,6 +6,7 @@ import re
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from src.agents.tools.base import execute_with_capabilities
@@ -52,6 +53,8 @@ _TIME_ONLY_PATTERN = re.compile(
 # and 13–23 hour inputs are treated as deliberate 24-hour notation.
 _AMBIGUOUS_CLOCK_PATTERN = re.compile(r"(?<![\d:])(?:[1-9]|1[0-2]):[0-5]\d(?![\d:])")
 _BOT_CHANNEL_PAYLOAD_KEY = "_bot_channel_payload"
+# Keep the conversational lead-in shorter than the canonical review it introduces.
+_RESPONSE_NOTE_MAX_LENGTH = 500
 
 
 def _parse_datetime(
@@ -259,7 +262,7 @@ def _review_clock(value: datetime) -> tuple[str, str]:
 
 
 def _review_time_line(review_payload: dict[str, Any]) -> str:
-    """Format the exact reviewed interval in the selected local timezone."""
+    """Format the exact reviewed interval and duration in the selected local timezone."""
     reviewed_timezone = ZoneInfo(str(review_payload["timezone"]))
     start_at = datetime.fromisoformat(str(review_payload["start_time"])).astimezone(
         reviewed_timezone
@@ -268,6 +271,8 @@ def _review_time_line(review_payload: dict[str, Any]) -> str:
     start_clock, start_meridiem = _review_clock(start_at)
     end_clock, end_meridiem = _review_clock(end_at)
     timezone_label = start_at.tzname() or str(review_payload["timezone"])
+    duration_minutes = int((end_at - start_at).total_seconds() // 60)
+    duration = f"{duration_minutes} minutes"
 
     start_date = f"{start_at.day} {start_at.strftime('%B')}"
     if start_at.date() == end_at.date():
@@ -276,12 +281,12 @@ def _review_time_line(review_payload: dict[str, Any]) -> str:
             if start_meridiem == end_meridiem
             else f"{start_clock} {start_meridiem}–{end_clock} {end_meridiem}"
         )
-        return f"{start_date}, {clocks} {timezone_label}"
+        return f"{start_date}, {clocks} {timezone_label}, {duration}"
 
     end_date = f"{end_at.day} {end_at.strftime('%B')}"
     return (
         f"{start_date}, {start_clock} {start_meridiem}–"
-        f"{end_date}, {end_clock} {end_meridiem} {timezone_label}"
+        f"{end_date}, {end_clock} {end_meridiem} {timezone_label}, {duration}"
     )
 
 
@@ -290,22 +295,48 @@ def _review_attendee_emails(attendees: list[dict[str, Any]]) -> str:
     return ", ".join(str(attendee["email"]) for attendee in attendees)
 
 
+def _channel_label(context: AgentContext, label: str) -> str:
+    """Bold a field label with the markup understood by the active channel."""
+    channel = (context.channel or "").lower()
+    if channel in {"whatsapp", "slack", "google_chat"}:
+        return f"*{label}:*"
+    if channel in {"teams", "web"}:
+        return f"**{label}:**"
+    return f"{label}:"
+
+
+def _response_note_text(response_note: str | None) -> str:
+    """Keep a model-supplied query answer on one bounded line before the fixed review."""
+    return " ".join((response_note or "").split())[:_RESPONSE_NOTE_MAX_LENGTH].strip()
+
+
 def _build_review_channel_payload(
     context: AgentContext,
     review_payload: dict[str, Any],
+    response_note: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Build one canonical meeting review for every supported conversation channel."""
     lines = [
-        str(review_payload["title"]),
-        _review_time_line(review_payload),
+        f"{_channel_label(context, 'Title')} {review_payload['title']}",
+        f"{_channel_label(context, 'When')} {_review_time_line(review_payload)}",
     ]
     if review_payload["show_sender"]:
-        lines.append(f"From: {review_payload['sender_email']}")
-    lines.append(f"To: {_review_attendee_emails(review_payload['required_attendees'])}")
+        lines.append(f"{_channel_label(context, 'From')} {review_payload['sender_email']}")
+    lines.append(
+        f"{_channel_label(context, 'To')} "
+        f"{_review_attendee_emails(review_payload['required_attendees'])}"
+    )
     if review_payload["optional_attendees"]:
-        lines.append(f"Optional: {_review_attendee_emails(review_payload['optional_attendees'])}")
-    lines.append("Reply send to confirm.")
+        lines.append(
+            f"{_channel_label(context, 'Optional')} "
+            f"{_review_attendee_emails(review_payload['optional_attendees'])}"
+        )
+    send_word = _channel_label(context, "send").replace(":", "")
+    lines.extend(["", f"Reply {send_word} to confirm."])
     review_text = "\n".join(lines)
+    note = _response_note_text(response_note)
+    if note:
+        review_text = f"{note}\n\n{review_text}"
 
     channel = (context.channel or "").lower()
     channel_payload: dict[str, Any]
@@ -340,6 +371,59 @@ def _build_review_channel_payload(
     return review_text, channel_payload
 
 
+def _meeting_location(location: str | None, conference_link: str | None) -> str:
+    """Return a provider-labelled, copyable meeting location without inventing a link."""
+    if not conference_link:
+        return str(location or "Not specified")
+
+    hostname = (urlparse(conference_link).hostname or "").lower()
+    if hostname in {"teams.microsoft.com", "teams.live.com"}:
+        provider = "Microsoft Teams"
+    elif hostname == "meet.google.com":
+        provider = "Google Meet"
+    else:
+        provider = "Online meeting"
+    return f"{provider} — {conference_link}"
+
+
+def _build_receipt_channel_payload(
+    context: AgentContext,
+    receipt_payload: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    """Build the canonical receipt from the invite that the provider accepted."""
+    lines = [
+        "Meeting invite sent.",
+        "",
+        f"• {_channel_label(context, 'Title')} {receipt_payload['title']}",
+        f"• {_channel_label(context, 'When')} {_review_time_line(receipt_payload)}",
+        (
+            f"• {_channel_label(context, 'To')} "
+            f"{_review_attendee_emails(receipt_payload['required_attendees'])}"
+        ),
+    ]
+    if receipt_payload["optional_attendees"]:
+        lines.append(
+            f"• {_channel_label(context, 'Optional')} "
+            f"{_review_attendee_emails(receipt_payload['optional_attendees'])}"
+        )
+    lines.extend(
+        [
+            f"• {_channel_label(context, 'From')} {receipt_payload['sender_email']}",
+            f"• {_channel_label(context, 'Location')} {receipt_payload['display_location']}",
+        ]
+    )
+    receipt_text = "\n".join(lines)
+    channel_payload = {
+        "type": "message",
+        "content": {"text": receipt_text},
+        "text_fallback": receipt_text,
+        "attachments": None,
+        "source_text": receipt_text,
+        "force_override": True,
+    }
+    return receipt_text, channel_payload
+
+
 async def send_calendar_invite(
     *,
     context: AgentContext,
@@ -354,6 +438,7 @@ async def send_calendar_invite(
     sender_email: str | None = None,
     idempotency_key: str | None = None,
     confirmed: bool = False,
+    response_note: str | None = None,
 ) -> dict[str, Any]:
     """Resolve and preview one tenant-scoped invite before its provider write.
 
@@ -561,6 +646,7 @@ async def send_calendar_invite(
             review_text, channel_payload = _build_review_channel_payload(
                 context,
                 review_payload,
+                response_note,
             )
             confirmation_result: dict[str, Any] = {
                 "status": "confirmation_required",
@@ -589,6 +675,19 @@ async def send_calendar_invite(
         except CalendarInviteError as exc:
             return {"status": "error", "message": exc.message, "code": exc.code}
 
+    receipt_payload = {
+        "title": invite_result.subject or effective_title,
+        "start_time": review_payload["start_time"],
+        "end_time": review_payload["end_time"],
+        "timezone": review_payload["timezone"],
+        "required_attendees": review_payload["required_attendees"],
+        "optional_attendees": review_payload["optional_attendees"],
+        "sender_email": resolved_sender,
+        "location": location,
+        "display_location": _meeting_location(location, invite_result.conference_link),
+        "conference_link": invite_result.conference_link,
+    }
+    receipt_text, channel_payload = _build_receipt_channel_payload(context, receipt_payload)
     return {
         "status": "sent",
         "message": "Calendar invite sent.",
@@ -603,6 +702,9 @@ async def send_calendar_invite(
         "provider_event_id": invite_result.provider_event_id,
         "event_id": str(invite_result.event_id) if invite_result.event_id else None,
         "conference_link": invite_result.conference_link,
+        "receipt_payload": receipt_payload,
+        "receipt_text": receipt_text,
+        _BOT_CHANNEL_PAYLOAD_KEY: channel_payload,
     }
 
 
@@ -624,6 +726,7 @@ def create_send_calendar_invite(
         sender_email: str | None = None,
         idempotency_key: str | None = None,
         confirmed: bool = False,
+        response_note: str | None = None,
     ) -> dict[str, Any]:
         """Send a calendar invite with a meeting link.
 
@@ -645,6 +748,8 @@ def create_send_calendar_invite(
         every unresolved field together. Sender selection is automatic. A
         clarification that only selects a person or supplies a detail is not
         confirmation; the same clarification paired with send intent is.
+        Pass response_note only when the user's current question needs one short
+        answer before a confirmation preview; do not repeat meeting fields in it.
         """
         result = await execute_with_capabilities(
             capabilities_getter(),
@@ -663,6 +768,7 @@ def create_send_calendar_invite(
                 "sender_email": sender_email,
                 "idempotency_key": idempotency_key,
                 "confirmed": confirmed,
+                "response_note": response_note,
             },
             description="Sending calendar invite",
             fallback_value={"status": "error", "message": "Failed to send calendar invite."},

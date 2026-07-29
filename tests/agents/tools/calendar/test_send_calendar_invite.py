@@ -10,7 +10,10 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
-from src.agents.tools.calendar.send_calendar_invite import send_calendar_invite
+from src.agents.tools.calendar.send_calendar_invite import (
+    _meeting_location,
+    send_calendar_invite,
+)
 from src.service.calendar_invites.attendee_resolver import (
     AttendeeCandidate,
     AttendeeResolutionResult,
@@ -144,7 +147,10 @@ async def test_send_calendar_invite_sends_for_direct_whatsapp_user(monkeypatch) 
         title="Discovery call",
         start_time="2026-05-12T20:00:00+05:30",
         end_time="2026-05-12T20:30:00+05:30",
-        attendees=["buyer@example.com"],
+        attendees=[
+            "buyer@example.com",
+            {"email": "legal@example.com", "optional": True},
+        ],
         sender_email="seller@contoso.com",
     )
 
@@ -157,9 +163,34 @@ async def test_send_calendar_invite_sends_for_direct_whatsapp_user(monkeypatch) 
     assert result["provider_resource_id"] == "provider-event-1"
     assert result["provider_event_id"] == "provider-event-1"
     assert result["event_id"] == "44444444-4444-4444-4444-444444444444"
+    assert result["receipt_text"].splitlines() == [
+        "Meeting invite sent.",
+        "",
+        "• *Title:* Discovery call",
+        "• *When:* 12 May, 8:00–8:30 PM IST, 30 minutes",
+        "• *To:* buyer@example.com",
+        "• *Optional:* legal@example.com",
+        "• *From:* seller@contoso.com",
+        (
+            "• *Location:* Microsoft Teams — "
+            "https://teams.microsoft.com/l/meetup-join/abc"
+        ),
+    ]
+    assert result["_bot_channel_payload"]["force_override"] is True
     assert created_requests[0].timezone == "Asia/Kolkata"
     assert created_requests[0].attendees[0].email == "buyer@example.com"
+    assert created_requests[0].attendees[1].optional is True
     assert created_requests[0].sender_email == "seller@contoso.com"
+
+
+def test_meeting_location_labels_provider_links_and_plain_locations() -> None:
+    """Receipts should expose a copyable provider link or the exact physical location."""
+    assert (
+        _meeting_location(None, "https://meet.google.com/abc-defg-hij")
+        == "Google Meet — https://meet.google.com/abc-defg-hij"
+    )
+    assert _meeting_location("Board room", None) == "Board room"
+    assert _meeting_location(None, None) == "Not specified"
 
 
 @pytest.mark.asyncio
@@ -760,6 +791,7 @@ async def test_send_calendar_invite_derives_title_duration_and_optional_review(
             {"email": "legal@example.com", "name": "Legal", "optional": True},
         ],
         start_time="2026-07-25 3:30 PM",
+        response_note="I found only one Bhawesh,\nso this preview is unchanged.",
     )
 
     payload = result["confirmation_payload"]
@@ -773,11 +805,14 @@ async def test_send_calendar_invite_derives_title_duration_and_optional_review(
     assert payload["optional_attendees"][0]["email"] == "legal@example.com"
     assert {"title", "duration_30_minutes", "timezone"} <= set(payload["inferred_fields"])
     assert result["review_text"].splitlines() == [
-        "Meeting with Bhawesh and 1 others",
-        "25 July, 3:30–4:00 PM IST",
-        "To: bhawesh@example.com",
-        "Optional: legal@example.com",
-        "Reply send to confirm.",
+        "I found only one Bhawesh, so this preview is unchanged.",
+        "",
+        "**Title:** Meeting with Bhawesh and 1 others",
+        "**When:** 25 July, 3:30–4:00 PM IST, 30 minutes",
+        "**To:** bhawesh@example.com",
+        "**Optional:** legal@example.com",
+        "",
+        "Reply **send** to confirm.",
     ]
     assert result["_bot_channel_payload"]["force_override"] is True
     service.assert_not_called()
@@ -808,7 +843,10 @@ async def test_send_calendar_invite_restores_parser_date_for_bare_time(monkeypat
 
     assert result["status"] == "confirmation_required"
     assert result["confirmation_payload"]["title"] == "Meeting with Bhawesh"
-    assert result["review_text"].splitlines()[1] == "25 July, 3:30–4:00 PM IST"
+    assert (
+        result["review_text"].splitlines()[1]
+        == "**When:** 25 July, 3:30–4:00 PM IST, 30 minutes"
+    )
     service.assert_not_called()
 
 
@@ -900,7 +938,10 @@ async def test_send_calendar_invite_accepts_unambiguous_24_hour_clock(monkeypatc
 
     assert result["status"] == "confirmation_required"
     assert result["confirmation_payload"]["timezone"] == "Asia/Kolkata"
-    assert result["review_text"].splitlines()[1] == "25 July, 3:30–4:00 PM IST"
+    assert (
+        result["review_text"].splitlines()[1]
+        == "**When:** 25 July, 3:30–4:00 PM IST, 30 minutes"
+    )
     service.assert_not_called()
 
 
@@ -1055,4 +1096,4 @@ async def test_send_calendar_invite_shows_automatically_selected_sender_for_mult
     assert result["status"] == "confirmation_required"
     assert result["confirmation_payload"]["sender_email"] == "seller@contoso.com"
     assert result["confirmation_payload"]["show_sender"] is True
-    assert "From: seller@contoso.com" in result["review_text"].splitlines()
+    assert "**From:** seller@contoso.com" in result["review_text"].splitlines()

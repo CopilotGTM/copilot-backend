@@ -714,18 +714,23 @@ The preview must reflect the exact payload that will be sent.
 Show:
 
 ```markdown
-**Meeting invite ready for confirmation**
+**Title:** Acme pricing review
+**When:** 25 July, 3:30–4:00 PM IST, 30 minutes
+**To:** required attendees
+**Optional:** optional attendees
 
-<Meeting title>
-25 July, 3:30–4:00 PM IST
-From: sender@example.com
-To: required attendees
-Optional: optional attendees
+Reply **send** to confirm.
 ```
 
 Keep the meeting review crisp. Omit `From` when `show_sender` is false, and omit
 `Optional` when there are no optional attendees. Agenda, location, deal context,
 inferred fields, or warnings may follow only when they materially affect confirmation.
+
+If the current user turn asks a question or requests a change whose outcome needs
+explanation, answer it in one short `response_note` passed to `send_calendar_invite`.
+The tool places that answer before the canonical preview. Do not put meeting fields in
+the note or silently imply that an unresolved requested change was applied.
+
 When the tool supplies `review_text` or a `calendar_invite_review` card, use that
 canonical rendering instead of reconstructing or reordering its fields.
 
@@ -807,7 +812,8 @@ After a successful send, inspect the complete tool result.
 If the tool returns only a success flag or event ID, retrieve the fresh event when a
 read-only event-detail tool is available.
 
-Use the persisted calendar event as the source of truth for:
+Use the tool's canonical `receipt_text` after a successful send. It is built from the
+resolved request and provider result, and is the source of truth for:
 
 - title;
 - date and time;
@@ -820,32 +826,21 @@ Use the persisted calendar event as the source of truth for:
 
 Do not respond only with "Meeting created" or "Invite sent."
 
-Use a concise receipt:
+The concise receipt is:
 
 ```markdown
-**Meeting invite sent: Acme pricing review**
+Meeting invite sent.
 
-- **When:** 26 June 2026, 4:00–4:30 PM IST
-- **Organizer:** priya@company.com
-- **Attendees:** Sarah Lee, Daniel Kim
-- **Location:** Google Meet
-- **Related deal:** Acme Expansion
-- **Status:** Sent
+• **Title:** Acme pricing review
+• **When:** 26 June 2026, 4:00–4:30 PM IST, 30 minutes
+• **To:** sarah@example.com, daniel@example.com
+• **Optional:** legal@example.com
+• **From:** priya@company.com
+• **Location:** Google Meet — https://meet.google.com/...
 ```
 
-For "all stakeholders", include a compact summary:
-
-```markdown
-**Meeting invite sent to 5 stakeholders**
-
-- **When:** 26 June 2026, 4:00–4:30 PM IST
-- **Organizer:** priya@company.com
-- **Included:** 5
-- **Excluded:** 1 stakeholder without a confirmed email address
-- **Status:** Sent
-```
-
-Include an event link when the tool returns a safe user-facing URL.
+Include every required attendee under `To` and include `Optional` only when present.
+Keep the raw conferencing URL visible so WhatsApp users can copy and share it.
 
 Do not expose raw event IDs unless requested.
 

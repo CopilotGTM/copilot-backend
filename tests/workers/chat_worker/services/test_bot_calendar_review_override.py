@@ -32,6 +32,25 @@ def test_calendar_review_override_preserves_force_flag() -> None:
     assert override.force_override is True
 
 
+def test_calendar_override_replaces_whatsapp_durable_text_and_history() -> None:
+    """Durable WhatsApp must persist the same canonical text that it delivers."""
+    rendered = ChannelPayload(type="message", content={"text": "llm paraphrase"})
+    canonical = ChannelPayload(
+        type="message",
+        content={"text": "*Title:* Discussion"},
+        force_override=True,
+    )
+
+    payload, assistant_text = BotMessageProcessingService._select_whatsapp_durable_payload(
+        rendered,
+        canonical,
+        "llm paraphrase",
+    )
+
+    assert payload is canonical
+    assert assistant_text == "*Title:* Discussion"
+
+
 @pytest.mark.asyncio
 async def test_calendar_review_override_replaces_whatsapp_model_prose(
     monkeypatch: pytest.MonkeyPatch,
