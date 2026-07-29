@@ -553,6 +553,10 @@ Use the following order:
 5. If the attendee is only an email address and no topic or business context exists,
    use the neutral title `Meeting`.
 
+Use natural display casing for the chosen title. At minimum, capitalize its leading
+letter while preserving intentional casing in names and acronyms; do not blindly apply
+Title Case or lowercase the rest of a user-provided title.
+
 Never:
 
 - put an email address in the title;
