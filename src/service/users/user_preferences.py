@@ -79,6 +79,27 @@ SETTINGS_ITEMS = {
     "password",
 }
 
+CRM_LIST_SORT_FIELDS = {
+    "contacts": {"full_name", "owner", "last_contacted_at", "last_activity_at"},
+    "accounts": {
+        "name",
+        "lifecycle_stage",
+        "owner",
+        "number_of_employees",
+        "annual_revenue",
+        "created_at",
+    },
+    "deals": {
+        "name",
+        "stage",
+        "amount",
+        "expected_close_date",
+        "owner",
+        "last_activity_at",
+    },
+    "tasks": {"subject", "due_date", "priority", "status", "assignee", "created_at"},
+}
+
 
 def _normalize_preferred_deal_currency(currency: Any) -> str | None:
     if not isinstance(currency, str):
@@ -141,6 +162,35 @@ def merge_navigation_preferences(
     return root
 
 
+def normalize_crm_list_sorting(preferences: dict[str, Any], entity: str) -> None:
+    """Remove malformed saved sorting from one CRM list preference branch."""
+    allowed_fields = CRM_LIST_SORT_FIELDS[entity]
+    sort_by = preferences.get("sort_by")
+    sort_order = preferences.get("sort_order")
+    if sort_by in allowed_fields and sort_order in {"asc", "desc"}:
+        return
+    preferences.pop("sort_by", None)
+    preferences.pop("sort_order", None)
+
+
+def merge_crm_list_sorting(
+    preferences: dict[str, Any] | None,
+    entity: str,
+    sort_by: str,
+    sort_order: str,
+) -> dict[str, Any]:
+    """Save one CRM list's sorting without replacing sibling user preferences."""
+    root = dict(preferences or {})
+    crm = dict(root.get("crm") or {})
+    entity_preferences = dict(crm.get(entity) or {})
+    list_preferences = dict(entity_preferences.get("list") or {})
+    list_preferences.update(sort_by=sort_by, sort_order=sort_order)
+    entity_preferences["list"] = list_preferences
+    crm[entity] = entity_preferences
+    root["crm"] = crm
+    return root
+
+
 def preferred_calendar_sender(preferences: dict[str, Any] | None) -> str | None:
     """Return the normalized preferred calendar address from user preferences."""
     root = preferences if isinstance(preferences, dict) else {}
@@ -183,6 +233,7 @@ def normalize_user_preferences(preferences: dict[str, Any] | None) -> dict[str, 
 
     if not isinstance(columns, list) or not all(isinstance(column, str) for column in columns):
         contact_list["columns"] = list(DEFAULT_CONTACT_LIST_COLUMNS)
+    normalize_crm_list_sorting(contact_list, "contacts")
 
     contacts["list"] = contact_list
     crm["contacts"] = contacts
@@ -195,6 +246,7 @@ def normalize_user_preferences(preferences: dict[str, Any] | None) -> dict[str, 
         isinstance(column, str) for column in account_columns
     ):
         account_list["columns"] = list(DEFAULT_ACCOUNT_LIST_COLUMNS)
+    normalize_crm_list_sorting(account_list, "accounts")
 
     accounts["list"] = account_list
     crm["accounts"] = accounts
@@ -207,6 +259,7 @@ def normalize_user_preferences(preferences: dict[str, Any] | None) -> dict[str, 
         isinstance(column, str) for column in deal_columns
     ):
         deal_list["columns"] = list(DEFAULT_DEAL_LIST_COLUMNS)
+    normalize_crm_list_sorting(deal_list, "deals")
 
     preferred_currency = _normalize_preferred_deal_currency(deals.get("preferred_currency"))
     if preferred_currency:
@@ -225,6 +278,7 @@ def normalize_user_preferences(preferences: dict[str, Any] | None) -> dict[str, 
         isinstance(column, str) for column in task_columns
     ):
         task_list["columns"] = list(DEFAULT_TASK_LIST_COLUMNS)
+    normalize_crm_list_sorting(task_list, "tasks")
 
     tasks["list"] = task_list
     crm["tasks"] = tasks

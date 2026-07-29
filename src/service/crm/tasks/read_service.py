@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import DateTime, and_, case, func, or_, select
 from sqlalchemy import cast as sql_cast
@@ -209,6 +210,7 @@ class TaskReadService:
         due_from: datetime | None = None,
         due_to: datetime | None = None,
         due_local_date: date | None = None,
+        user_timezone: str | None = None,
         is_overdue: bool | None = None,
         has_due_date: bool | None = None,
         include_completed: bool = False,
@@ -321,10 +323,24 @@ class TaskReadService:
             stmt = stmt.where(c.due_at.is_(None), c.due_date.is_(None))
 
         now = datetime.now(UTC)
+        try:
+            local_today = now.astimezone(ZoneInfo(user_timezone or "UTC")).date()
+        except ZoneInfoNotFoundError:
+            local_today = now.date()
+        timed_overdue = and_(c.due_at.isnot(None), c.due_at < now)
+        all_day_overdue = and_(
+            c.due_at.is_(None),
+            c.due_date.isnot(None),
+            c.due_date < local_today,
+        )
+        overdue_condition = and_(
+            c.status.notin_(list(_TERMINAL_STATUSES)),
+            or_(timed_overdue, all_day_overdue),
+        )
         if is_overdue is True:
-            stmt = stmt.where(due_expr < now, c.status != "COMPLETED")
+            stmt = stmt.where(overdue_condition)
         elif is_overdue is False:
-            stmt = stmt.where(or_(due_expr.is_(None), due_expr >= now))
+            stmt = stmt.where(~overdue_condition)
 
         if search_query:
             like_expr = f"%{search_query}%"

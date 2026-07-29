@@ -69,3 +69,24 @@ async def test_today_filter_keeps_timed_and_local_date_semantics_separate() -> N
     assert "crm_tasks.due_at <=" in statement_sql
     assert "crm_tasks.due_at IS NULL" in statement_sql
     assert "crm_tasks.due_date =" in statement_sql
+
+
+@pytest.mark.asyncio
+async def test_overdue_filter_keeps_due_today_all_day_tasks_current() -> None:
+    """The overdue query must compare date-only tasks after, not during, their due date."""
+    session = _FakeSession()
+    service = TaskReadService(session, uuid4())
+
+    await service.list_tasks(
+        scope="assigned_to_me",
+        current_user_id=uuid4(),
+        is_overdue=True,
+        user_timezone="Asia/Kolkata",
+    )
+
+    statement_sql = str(session.executed_statements[0])
+    assert "crm_tasks.due_at IS NOT NULL" in statement_sql
+    assert "crm_tasks.due_at <" in statement_sql
+    assert "crm_tasks.due_at IS NULL" in statement_sql
+    assert "crm_tasks.due_date <" in statement_sql
+    assert "crm_tasks.status NOT IN" in statement_sql

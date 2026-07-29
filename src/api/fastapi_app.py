@@ -40,6 +40,7 @@ from src.api.routers.app_preferences.agent_actions_handler import agent_action_a
 from src.api.routers.app_preferences.calendar_sender_handler import (
     calendar_sender_preferences_router,
 )
+from src.api.routers.app_preferences.crm_list_handler import crm_list_preferences_router
 from src.api.routers.app_preferences.kai_training_handler import kai_training_router
 from src.api.routers.app_preferences.meeting_recording_policy_handler import (
     meeting_recording_policy_router,
@@ -269,6 +270,11 @@ def create_fastapi_app():
     )
     fastapp.include_router(
         navigation_preferences_router,
+        prefix="/users/preference",
+        tags=["user-preferences"],
+    )
+    fastapp.include_router(
+        crm_list_preferences_router,
         prefix="/users/preference",
         tags=["user-preferences"],
     )
