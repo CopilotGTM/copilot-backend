@@ -69,6 +69,7 @@ from src.service.crm.activity_feed_read_service import (
     ActivityFeedReadServiceError,
 )
 from src.service.crm.deals.contracts import DealReadServiceError, DealWriteServiceError
+from src.service.crm.deals.last_activity_service import LAST_ACTIVITY_SOURCE_PROPERTY
 from src.service.crm.deals.read_service import (
     DealReadService,
     extract_deal_health,
@@ -95,7 +96,7 @@ _INTERNAL_DEAL_RESERVED_PROPERTIES = {
     "deleted_via",
     "deal_external_ref",
     "import_source_ref",
-    "last_activity_source",
+    LAST_ACTIVITY_SOURCE_PROPERTY,
 }
 _CURRENCY_SYMBOL_BY_CODE = {
     "USD": "$",
@@ -1238,7 +1239,7 @@ async def get_deal(
             closed_won_at=deal.closed_won_at,
             closed_lost_at=deal.closed_lost_at,
             last_activity_at=deal.last_activity_at,
-            last_activity_source=(deal.properties or {}).get("last_activity_source"),
+            last_activity_source=(deal.properties or {}).get(LAST_ACTIVITY_SOURCE_PROPERTY),
             stage_entered_at=deal.stage_entered_at,
             stage_updated_at=deal.stage_updated_at,
             deal_age_days=deal_age_days,

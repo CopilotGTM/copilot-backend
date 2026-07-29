@@ -36,6 +36,7 @@ from src.domain.models.organisation_tables.sync.crm.source_mappings import (
 )
 from src.infra.utils.logger import get_logger
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
+from src.service.crm.deals.last_activity_service import LAST_ACTIVITY_SOURCE_PROPERTY
 from src.service.integrations.crm.records.common.source_mapping import CRMSourceMappingHelper
 from src.service.integrations.crm.records.hubspot.deals.deal_types import (
     DealResolutionMaps,
@@ -340,7 +341,7 @@ class HubSpotDealWriter:
         # rows — never rewrite. AI-generated `deal_summary_data` is owned by
         # downstream agents; we don't touch it here either.
         previous_activity_at = row.last_activity_at
-        previous_activity_source = (row.properties or {}).get("last_activity_source")
+        previous_activity_source = (row.properties or {}).get(LAST_ACTIVITY_SOURCE_PROPERTY)
         provider_is_newer = deal.last_activity_at is not None and (
             previous_activity_at is None
             or _as_utc(deal.last_activity_at) > _as_utc(previous_activity_at)
@@ -423,7 +424,7 @@ def _properties_with_activity_source(properties: dict[str, Any], source: object)
     """Carry last-activity provenance through provider-owned property refreshes."""
     merged = dict(properties)
     if isinstance(source, str) and source:
-        merged["last_activity_source"] = source
+        merged[LAST_ACTIVITY_SOURCE_PROPERTY] = source
     return merged
 
 

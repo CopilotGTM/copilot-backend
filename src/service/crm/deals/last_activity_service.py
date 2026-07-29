@@ -25,6 +25,8 @@ from src.domain.models.organisation_tables.sync.crm import (
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealMutationEvent
 
+LAST_ACTIVITY_SOURCE_PROPERTY = "_copilotgtm_last_activity_source"
+
 ALLOWED_ACTIVITY_SOURCE_TYPES = frozenset(
     {
         "DEAL_CREATED",
@@ -72,9 +74,9 @@ class DealLastActivityService:
         deal.last_activity_at = result.occurred_at
         properties = dict(deal.properties or {})
         if result.source is None:
-            properties.pop("last_activity_source", None)
+            properties.pop(LAST_ACTIVITY_SOURCE_PROPERTY, None)
         else:
-            properties["last_activity_source"] = result.source
+            properties[LAST_ACTIVITY_SOURCE_PROPERTY] = result.source
         deal.properties = properties
         self.session.add(deal)
         return result.occurred_at

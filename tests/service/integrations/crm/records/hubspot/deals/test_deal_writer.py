@@ -305,7 +305,10 @@ async def test_provider_sync_does_not_regress_newer_copilot_activity() -> None:
         external_id="123",
         name="Credgenics",
         last_activity_at=copilot_at,
-        properties={"last_activity_source": "copilot"},
+        properties={
+            "last_activity_source": "customer-defined",
+            "_copilotgtm_last_activity_source": "copilot",
+        },
     )
     provider_at = datetime(2026, 7, 3, tzinfo=UTC)
     session = AsyncMock()
@@ -324,10 +327,12 @@ async def test_provider_sync_does_not_regress_newer_copilot_activity() -> None:
             replace(
                 _normalized_deal(external_id="123"),
                 last_activity_at=provider_at,
+                properties={"last_activity_source": "customer-defined"},
             )
         ],
         maps=_empty_maps(),
     )
 
     assert existing.last_activity_at == copilot_at
-    assert existing.properties["last_activity_source"] == "copilot"
+    assert existing.properties["_copilotgtm_last_activity_source"] == "copilot"
+    assert existing.properties["last_activity_source"] == "customer-defined"

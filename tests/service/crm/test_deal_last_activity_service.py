@@ -53,7 +53,7 @@ async def test_refresh_deal_uses_latest_allowed_activity_or_mutation() -> None:
 
     assert result == mutation_at
     assert deal.last_activity_at == mutation_at
-    assert deal.properties["last_activity_source"] == "copilot"
+    assert deal.properties["_copilotgtm_last_activity_source"] == "copilot"
     assert session.added == [deal]
     activity_sql = str(session.statements[1])
     assert "crm_activity_links.occurred_at <= now()" in activity_sql
@@ -74,7 +74,7 @@ async def test_refresh_deal_accepts_external_deal_and_prefers_newer_email() -> N
     result = await DealLastActivityService(session, organisation_id).refresh_deal(uuid4())
 
     assert result == email_at
-    assert deal.properties["last_activity_source"] == "copilot"
+    assert deal.properties["_copilotgtm_last_activity_source"] == "copilot"
     lookup_sql = str(session.statements[0])
     assert "knowledge_integrations" not in lookup_sql
     assert "crm_deals.is_deleted IS false" in lookup_sql
@@ -96,7 +96,7 @@ async def test_refresh_deal_uses_provider_when_copilot_activity_is_older() -> No
     result = await DealLastActivityService(session, organisation_id).refresh_deal(uuid4())
 
     assert result == provider_at
-    assert deal.properties["last_activity_source"] == "salesforce"
+    assert deal.properties["_copilotgtm_last_activity_source"] == "salesforce"
 
 
 @pytest.mark.asyncio
@@ -114,7 +114,7 @@ async def test_refresh_deal_prefers_copilot_on_equal_timestamp() -> None:
     await DealLastActivityService(session, organisation_id).refresh_deal(uuid4())
 
     assert deal.last_activity_at == occurred_at
-    assert deal.properties["last_activity_source"] == "copilot"
+    assert deal.properties["_copilotgtm_last_activity_source"] == "copilot"
 
 
 @pytest.mark.asyncio
@@ -122,7 +122,10 @@ async def test_refresh_deal_ignores_malformed_provider_timestamp() -> None:
     """A bad provider field cannot break refresh or preserve stale provenance."""
     organisation_id = uuid4()
     deal = SimpleNamespace(
-        properties={"last_activity_source": "salesforce"},
+        properties={
+            "last_activity_source": "customer-defined",
+            "_copilotgtm_last_activity_source": "salesforce",
+        },
         last_activity_at=datetime(2026, 7, 3, tzinfo=UTC),
     )
     mapping = SimpleNamespace(
@@ -134,7 +137,8 @@ async def test_refresh_deal_ignores_malformed_provider_timestamp() -> None:
     result = await DealLastActivityService(session, organisation_id).refresh_deal(uuid4())
 
     assert result is None
-    assert "last_activity_source" not in deal.properties
+    assert "_copilotgtm_last_activity_source" not in deal.properties
+    assert deal.properties["last_activity_source"] == "customer-defined"
 
 
 @pytest.mark.asyncio
