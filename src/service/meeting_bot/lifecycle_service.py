@@ -597,7 +597,7 @@ class MeetingRecordingLifecycleService:
         sent_record = await self._session_service.mark_sent(
             session_record.session_id,
             provider_session_id=provider_session_id,
-            provider_status=bot_payload.get("status"),
+            provider_status=self._provider_bot_status_code(bot_payload),
             provider_payload=bot_payload,
         )
         if sent_record is None:
@@ -951,7 +951,7 @@ class MeetingRecordingLifecycleService:
             meeting_url=meeting_url,
             join_at=join_at,
             provider_session_id=str(updated_id),
-            provider_status=bot_payload.get("status"),
+            provider_status=self._provider_bot_status_code(bot_payload),
             provider_payload=bot_payload,
             status_message="Provider session updated after calendar reschedule",
         )
@@ -1170,7 +1170,7 @@ class MeetingRecordingLifecycleService:
             meeting_url=meeting_url,
             join_at=join_at,
             provider_session_id=str(provider_session_id),
-            provider_status=bot_payload.get("status"),
+            provider_status=provider_status_code,
             provider_payload=bot_payload,
             status_message="Provider session adopted during reconciliation",
             **kwargs,
@@ -1588,13 +1588,23 @@ class MeetingRecordingLifecycleService:
 
     @staticmethod
     def _provider_bot_status_code(bot_payload: dict[str, Any]) -> str | None:
-        """Extract Recall bot status from common payload shapes."""
+        """Extract the latest Recall bot status across supported response shapes."""
         status = bot_payload.get("status")
         if isinstance(status, str):
             return status
         if isinstance(status, dict):
             code = status.get("code")
-            return code if isinstance(code, str) else None
+            if isinstance(code, str):
+                return code
+
+        # Recall's Retrieve Bot response omits a top-level status. Its chronological
+        # status_changes history is the authoritative lifecycle source for fetched bots.
+        status_changes = bot_payload.get("status_changes")
+        if isinstance(status_changes, list):
+            for change in reversed(status_changes):
+                code = change.get("code") if isinstance(change, dict) else None
+                if isinstance(code, str):
+                    return code
         return None
 
     @classmethod
