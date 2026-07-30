@@ -116,11 +116,12 @@ class TestRecallMeetingRecordingProvider:
         assert "join_at" not in mock_client.post.call_args.kwargs["json"]
 
     async def test_get_session_retrieves_bot(self) -> None:
+        """Retrieve Bot preserves Recall's status_changes lifecycle shape."""
         provider = RecallMeetingRecordingProvider(api_key="test-key", region="us-east-1")
         response = _json_response(
             "GET",
             "https://us-east-1.recall.ai/api/v1/bot/bot_123/",
-            {"id": "bot_123", "status": "done"},
+            {"id": "bot_123", "status_changes": [{"code": "done"}]},
         )
 
         with patch("httpx.AsyncClient") as mock_client_cls:
@@ -132,7 +133,7 @@ class TestRecallMeetingRecordingProvider:
 
             result = await provider.fetch_session("bot_123")
 
-        assert result["status"] == "done"
+        assert result["status_changes"][-1]["code"] == "done"
 
     async def test_cancel_session_deletes_scheduled_bot(self) -> None:
         provider = RecallMeetingRecordingProvider(api_key="test-key", region="us-east-1")

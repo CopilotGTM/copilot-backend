@@ -499,7 +499,6 @@ async def test_manual_invite_reopens_terminal_bot_that_never_entered_call(monkey
     queued.__dict__["_send_claimed"] = True
     provider_bot = {
         "id": "bot_old",
-        "status": "done",
         "metadata": {
             "organisation_id": str(organisation_id),
             "calendar_event_id": str(event_id),
@@ -510,6 +509,7 @@ async def test_manual_invite_reopens_terminal_bot_that_never_entered_call(monkey
             {"code": "joining_call"},
             {"code": "in_waiting_room"},
             {"code": "call_ended", "sub_code": "bot_kicked_from_waiting_room"},
+            {"code": "done"},
         ],
         "recordings": [],
     }
@@ -597,7 +597,6 @@ async def test_manual_invite_does_not_reopen_bot_that_entered_call(monkeypatch) 
         fetch_session=AsyncMock(
             return_value={
                 "id": "bot_old",
-                "status": "done",
                 "metadata": {
                     "organisation_id": str(organisation_id),
                     "calendar_event_id": str(event_id),
@@ -608,6 +607,7 @@ async def test_manual_invite_does_not_reopen_bot_that_entered_call(monkeypatch) 
                     {"code": "in_waiting_room"},
                     {"code": "in_call_not_recording"},
                     {"code": "call_ended"},
+                    {"code": "done"},
                 ],
                 "recordings": [],
             }
