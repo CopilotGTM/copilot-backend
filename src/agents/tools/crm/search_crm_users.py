@@ -36,9 +36,7 @@ async def search_crm_users(*, context: AgentContext, query: str) -> dict[str, An
             {
                 "user_id": str(user.user_id),
                 "name": user.full_name
-                or " ".join(
-                    part for part in (user.first_name, user.last_name) if part
-                )
+                or " ".join(part for part in (user.first_name, user.last_name) if part)
                 or None,
                 "email": user.email,
             }

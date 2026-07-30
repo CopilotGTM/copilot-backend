@@ -376,9 +376,7 @@ class CalendarInviteAttendeeResolver:
                         {
                             "email": user.email,
                             "name": user.full_name
-                            or " ".join(
-                                part for part in (user.first_name, user.last_name) if part
-                            )
+                            or " ".join(part for part in (user.first_name, user.last_name) if part)
                             or None,
                             "optional": optional,
                             "source": "crm_user",
@@ -1033,9 +1031,7 @@ class CalendarInviteAttendeeResolver:
             "optional": raw_attendee.get("optional", False),
             "deal_id": raw_attendee.get("deal_id"),
             "scope": (
-                "team"
-                if str(raw_attendee.get("scope") or "").strip().lower() == "team"
-                else None
+                "team" if str(raw_attendee.get("scope") or "").strip().lower() == "team" else None
             ),
         }
 
