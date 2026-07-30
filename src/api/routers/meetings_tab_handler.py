@@ -1,8 +1,9 @@
 """Top-level Meetings tab API routes.
 
-These routes are user-calendar scoped, not deal scoped. Existing deal meeting
-routes remain mounted under `/users/crm/deals` for prep, summary, follow-up,
-and manual transcript upload workflows.
+Live meeting routes are user-calendar scoped, while stored recording reads also
+support disconnected integrations and organisation-admin archive access.
+Existing deal meeting routes remain mounted under `/users/crm/deals` for prep,
+summary, follow-up, and manual transcript upload workflows.
 """
 
 from __future__ import annotations
@@ -69,6 +70,7 @@ async def get_meetings_tab_service(
         organisation_id=user_ids.organisation_id,
         user_id=user_ids.user_id,
         user_timezone=user_ids.user_timezone,
+        user_role=user_ids.user_role,
     )
     try:
         yield service

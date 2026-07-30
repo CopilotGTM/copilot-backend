@@ -8,12 +8,15 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from src.api.dependencies.organisation_dependencies import UserIDs
+from src.api.routers.meetings_tab_handler import get_meetings_tab_service
 from src.api.schemas.meetings_tab_models import (
     MeetingBotStatus,
     MeetingDetail,
     MeetingLinkedRecordType,
     MeetingsView,
 )
+from src.domain.models.master_tables.user_models import UserAppRole
 from src.domain.models.organisation_tables.sync.calendar import (
     AssociationStatus,
     CalendarEvent,
@@ -35,19 +38,42 @@ from src.service.meetings_tab_service import (
 )
 
 
-def _service() -> MeetingsTabService:
+def _service(user_role: UserAppRole = UserAppRole.MEMBER) -> MeetingsTabService:
     return MeetingsTabService(
         session=SimpleNamespace(),
         master_session=SimpleNamespace(),
         organisation_id=uuid4(),
         user_id=uuid4(),
         user_timezone="UTC",
+        user_role=user_role,
     )
 
 
 def test_meetings_tab_keeps_legacy_calendar_integrations_readable() -> None:
     """Active direct rows remain visible while provider-parent reconciliation completes."""
     assert CALENDAR_INTEGRATION_TYPES == DISPATCH_CALENDAR_INTEGRATION_TYPES
+
+
+@pytest.mark.asyncio
+async def test_meetings_dependency_passes_admin_role_to_service() -> None:
+    """Authenticated admin authority must reach the recording archive query."""
+    org_session = SimpleNamespace(close=AsyncMock())
+    master_session = SimpleNamespace(close=AsyncMock())
+    dependency = get_meetings_tab_service(
+        user_ids=UserIDs(
+            user_id=uuid4(),
+            organisation_id=uuid4(),
+            user_role=UserAppRole.ADMIN,
+        ),
+        org_session=org_session,
+        master_session=master_session,
+    )
+
+    service = await anext(dependency)
+    try:
+        assert service.user_role == UserAppRole.ADMIN
+    finally:
+        await dependency.aclose()
 
 
 def test_existing_deal_association_is_used_as_link_fallback() -> None:
@@ -89,6 +115,41 @@ def test_meetings_query_requires_enabled_provider_calendar_capability() -> None:
     assert "integration_sync_states.enabled IS true" in compiled
     assert "google_calendar" in compiled
     assert "outlook_calendar" in compiled
+
+
+def test_member_recording_archive_keeps_disconnected_owned_integrations_readable() -> None:
+    """Archive reads retain owner checks but accept disabled calendar capabilities."""
+    service = _service()
+    compiled = str(
+        service._meeting_rows_stmt(  # noqa: SLF001
+            allow_recording_archive=True
+        ).compile(compile_kwargs={"literal_binds": True})
+    )
+
+    assert compiled.count(service.user_id.hex) == 2
+    assert "meeting_recording_sessions.session_id IS NOT NULL" in compiled
+    assert compiled.count("knowledge_integrations.is_active IS true") == 1
+    assert compiled.count("integration_sync_states.enabled IS true") == 2
+    assert compiled.count("integration_sync_states.capability = 'google_calendar'") == 2
+    assert compiled.count("integration_sync_states.capability = 'outlook_calendar'") == 2
+
+
+def test_admin_recording_archive_is_org_wide_but_normal_meetings_stay_owned() -> None:
+    """Admins bypass ownership only inside the Recall recording archive branch."""
+    service = _service(UserAppRole.ADMIN)
+    normal = str(
+        service._meeting_rows_stmt().compile(compile_kwargs={"literal_binds": True})  # noqa: SLF001
+    )
+    archive = str(
+        service._meeting_rows_stmt(  # noqa: SLF001
+            allow_recording_archive=True
+        ).compile(compile_kwargs={"literal_binds": True})
+    )
+
+    assert normal.count(service.user_id.hex) == 1
+    assert "meeting_recording_sessions.session_id IS NOT NULL" not in normal
+    assert archive.count(service.user_id.hex) == 1
+    assert "meeting_recording_sessions.session_id IS NOT NULL" in archive
 
 
 def test_deal_association_surfaces_deal_summary_state() -> None:
@@ -436,6 +497,7 @@ async def test_manual_invite_uses_lifecycle_schedule_with_reinvite(monkeypatch) 
             assert organisation_id == service.organisation_id
 
         async def schedule_for_event(self, *args, **kwargs):
+            """Forward lifecycle arguments so the test can assert the write contract."""
             return await schedule(*args, **kwargs)
 
     service.session.rollback = _rollback
@@ -493,6 +555,7 @@ async def test_manual_invite_maps_ad_hoc_capacity_failure_to_retryable_error(mon
 
 @pytest.mark.asyncio
 async def test_auto_invite_keeps_policy_enforcement(monkeypatch) -> None:
+    """Automatic invites must retain policy enforcement after the ownership lookup."""
     service = _service()
     event_id = uuid4()
     invite = AsyncMock(return_value={"status": "sent"})
@@ -679,7 +742,8 @@ async def test_deal_recording_detail_returns_deal_summary(monkeypatch) -> None:
         },
     )
 
-    async def _get_row(_event_id):
+    async def _get_row(_event_id, *, allow_recording_archive=False):
+        assert allow_recording_archive is True
         return (event, assoc, deal, recording, None)
 
     monkeypatch.setattr(service, "_get_meeting_row", _get_row)
@@ -728,7 +792,7 @@ async def test_recording_detail_falls_back_to_meeting_level_summary(monkeypatch)
         },
     )
 
-    async def _get_row(_event_id):
+    async def _get_row(_event_id, **_kwargs):
         return (event, None, None, recording, meeting)
 
     monkeypatch.setattr(service, "_get_meeting_row", _get_row)
@@ -801,7 +865,7 @@ async def test_recording_detail_returns_transcript_segments_sorted_by_index(monk
         },
     )
 
-    async def _get_row(_event_id):
+    async def _get_row(_event_id, **_kwargs):
         return (event, None, None, recording, meeting)
 
     monkeypatch.setattr(service, "_get_meeting_row", _get_row)
@@ -859,7 +923,7 @@ async def test_recording_detail_returns_empty_transcript_segments_when_missing(m
         },
     )
 
-    async def _get_row(_event_id):
+    async def _get_row(_event_id, **_kwargs):
         return (event, None, None, recording, None)
 
     monkeypatch.setattr(service, "_get_meeting_row", _get_row)
@@ -892,7 +956,7 @@ async def test_recording_detail_uses_persisted_video_artifact(monkeypatch) -> No
         },
     )
 
-    async def _get_row(_event_id):
+    async def _get_row(_event_id, **_kwargs):
         return (event, None, None, recording, None)
 
     monkeypatch.setattr(service, "_get_meeting_row", _get_row)
@@ -933,6 +997,7 @@ async def test_recording_detail_uses_archived_video_sas(monkeypatch) -> None:
         async def generate_read_sas(
             self, blob_path, *, minutes, download_filename=None, content_type=None
         ):
+            """Return deterministic URLs while asserting the archived-media contract."""
             assert blob_path == "meeting_recordings/event/rec_1/video_123.mp4"
             assert minutes == 120
             assert content_type == "video/mp4"
@@ -942,9 +1007,10 @@ async def test_recording_detail_uses_archived_video_sas(monkeypatch) -> None:
             return "https://blob.example/recording.mp4?sas=1"
 
         async def close(self):
+            """Satisfy async storage cleanup without opening an external resource."""
             return None
 
-    async def _get_row(_event_id):
+    async def _get_row(_event_id, **_kwargs):
         return (event, None, None, recording, None)
 
     monkeypatch.setattr(service, "_get_meeting_row", _get_row)
@@ -990,6 +1056,7 @@ async def test_recording_detail_uses_video_columns_for_playback_and_download(mon
         async def generate_read_sas(
             self, blob_path, *, minutes, download_filename=None, content_type=None
         ):
+            """Return deterministic URLs while asserting playback and download inputs."""
             assert blob_path == "meeting_recordings/event/rec_1/video_123.mp4"
             assert minutes == 120
             assert content_type == "video/mp4"
@@ -999,9 +1066,10 @@ async def test_recording_detail_uses_video_columns_for_playback_and_download(mon
             return "https://blob.example/play.mp4?sas=1"
 
         async def close(self):
+            """Satisfy async storage cleanup without opening an external resource."""
             return None
 
-    async def _get_row(_event_id):
+    async def _get_row(_event_id, **_kwargs):
         return (event, None, None, recording, None)
 
     monkeypatch.setattr(service, "_get_meeting_row", _get_row)
@@ -1050,6 +1118,7 @@ async def test_recording_detail_snapshots_video_columns_before_session_release(m
 
         @property
         def video_blob_path(self):
+            """Fail if playback reads this ORM value after the session rollback."""
             if expired:
                 raise AssertionError("video_blob_path was lazy-loaded after rollback")
             return "meeting_recordings/event/rec_1/video_123.mp4"
@@ -1061,6 +1130,7 @@ async def test_recording_detail_snapshots_video_columns_before_session_release(m
         async def generate_read_sas(
             self, blob_path, *, minutes, download_filename=None, content_type=None
         ):
+            """Return deterministic URLs after validating the archived blob request."""
             assert blob_path == "meeting_recordings/event/rec_1/video_123.mp4"
             assert content_type == "video/mp4"
             return (
@@ -1070,9 +1140,10 @@ async def test_recording_detail_snapshots_video_columns_before_session_release(m
             )
 
         async def close(self):
+            """Satisfy async storage cleanup without opening an external resource."""
             return None
 
-    async def _get_row(_event_id):
+    async def _get_row(_event_id, **_kwargs):
         return (event, None, None, _Recording(), None)
 
     monkeypatch.setattr(service, "_get_meeting_row", _get_row)
@@ -1104,6 +1175,7 @@ async def test_recording_detail_snapshots_event_title_before_session_release(mon
 
         @property
         def title(self):
+            """Fail if filename generation reads this ORM value after rollback."""
             if expired:
                 raise AssertionError("event.title was lazy-loaded after rollback")
             return "Customer follow up"
@@ -1129,6 +1201,7 @@ async def test_recording_detail_snapshots_event_title_before_session_release(mon
         async def generate_read_sas(
             self, blob_path, *, minutes, download_filename=None, content_type=None
         ):
+            """Return deterministic URLs while checking the precomputed filename."""
             assert blob_path == "meeting_recordings/event/rec_1/video_123.mp4"
             assert content_type == "video/mp4"
             if download_filename:
@@ -1137,11 +1210,12 @@ async def test_recording_detail_snapshots_event_title_before_session_release(mon
             return "https://blob.example/play.mp4?sas=1"
 
         async def close(self):
+            """Satisfy async storage cleanup without opening an external resource."""
             return None
 
     event = _Event()
 
-    async def _get_row(_event_id):
+    async def _get_row(_event_id, **_kwargs):
         return (event, None, None, recording, None)
 
     monkeypatch.setattr(service, "_get_meeting_row", _get_row)

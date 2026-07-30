@@ -2,7 +2,9 @@
 
 Called by `/users/meetings` routes. The service reuses calendar sync, deal
 meeting associations, CalendarInviteService, and Recall recording sessions
-instead of creating a parallel meeting system.
+instead of creating a parallel meeting system. Live meeting access remains
+user-owned; stored recordings also remain readable after calendar disconnect,
+and organisation admins may read that recording archive.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from src.api.schemas.meetings_tab_models import (
     MeetingTranscriptSegment,
 )
 from src.domain.models.master_tables.organisation_models import Organisation
+from src.domain.models.master_tables.user_models import UserAppRole
 from src.domain.models.organisation_tables.sync.calendar import (
     AssociationStatus,
     CalendarAttendee,
@@ -127,12 +130,14 @@ class MeetingsTabService:
         organisation_id: UUID,
         user_id: UUID,
         user_timezone: str | None = None,
+        user_role: UserAppRole = UserAppRole.MEMBER,
     ) -> None:
         self.session = session
         self.master_session = master_session
         self.organisation_id = organisation_id
         self.user_id = user_id
         self.user_timezone = user_timezone or "UTC"
+        self.user_role = user_role
 
     async def close(self) -> None:
         """Close sessions owned by FastAPI dependencies."""
@@ -185,7 +190,9 @@ class MeetingsTabService:
                     col(CalendarEvent.start_at) < all_day_end,
                 ),
             )
-        stmt = self._meeting_rows_stmt().where(window_filter)
+        stmt = self._meeting_rows_stmt(
+            allow_recording_archive=view == MeetingsView.RECORDINGS
+        ).where(window_filter)
         if view == MeetingsView.RECORDINGS:
             stmt = stmt.where(col(MeetingRecordingSession.session_id).is_not(None))
         if q:
@@ -241,8 +248,8 @@ class MeetingsTabService:
         )
 
     async def get_meeting_detail(self, event_id: UUID) -> MeetingDetail:
-        """Return drawer-ready detail for one user-owned calendar event."""
-        row = await self._get_meeting_row(event_id)
+        """Return detail for a user-owned meeting or an accessible recording."""
+        row = await self._get_meeting_row(event_id, allow_recording_archive=True)
         domains, bot_join_policy = await self._load_bot_policy_context()
         item = self._format_row(
             row,
@@ -415,7 +422,7 @@ class MeetingsTabService:
 
     async def get_recording(self, event_id: UUID) -> MeetingRecordingResponse:
         """Return Recall-bot recording playback and transcript metadata."""
-        row = await self._get_meeting_row(event_id)
+        row = await self._get_meeting_row(event_id, allow_recording_archive=True)
         event, assoc, deal, recording, meeting = row
         if recording is None:
             raise MeetingsTabServiceError("Recording is not ready", 409, code="recording_not_ready")
@@ -548,14 +555,73 @@ class MeetingsTabService:
             for segment in result.scalars().all()
         ]
 
-    def _meeting_rows_stmt(self):
-        """Build the user-owned meeting query shared by list/detail endpoints."""
+    def _meeting_rows_stmt(self, *, allow_recording_archive: bool = False):
+        """Build the meeting query with optional read-only recording archive access.
+
+        The default active, user-owned scope is also used by mutation guards.
+        Archive access adds only rows with Recall sessions, so disconnected
+        recordings cannot broaden access to unrelated meetings or bot controls.
+        """
         event_c = cast(Any, CalendarEvent).__table__.c
         state_c = cast(Any, CalendarEventUserState).__table__.c
         integration_c = cast(Any, KnowledgeIntegration).__table__.c
         assoc_c = cast(Any, CalendarEventDealAssociation).__table__.c
         recording_c = cast(Any, MeetingRecordingSession).__table__.c
         meeting_c = cast(Any, Meeting).__table__.c
+
+        def calendar_provenance(*, enabled_only: bool):
+            """Match provider parents to their calendar capability plus legacy direct rows."""
+
+            def capability_exists(capability: IntegrationType):
+                """Require this tenant integration to have the matching calendar capability."""
+                predicates = [
+                    col(IntegrationSyncState.organisation_id) == self.organisation_id,
+                    col(IntegrationSyncState.integration_id) == integration_c.integration_id,
+                    col(IntegrationSyncState.capability) == capability,
+                ]
+                if enabled_only:
+                    predicates.append(col(IntegrationSyncState.enabled).is_(True))
+                return exists(select(1).where(*predicates))
+
+            return or_(
+                and_(
+                    integration_c.integration_type == IntegrationType.GOOGLE.value,
+                    capability_exists(IntegrationType.GOOGLE_CALENDAR),
+                ),
+                and_(
+                    integration_c.integration_type == IntegrationType.MICROSOFT.value,
+                    capability_exists(IntegrationType.OUTLOOK_CALENDAR),
+                ),
+                # Legacy direct rows have no separate capability state. They
+                # remain readable until provider-parent reconciliation completes.
+                integration_c.integration_type.in_(
+                    (
+                        IntegrationType.GOOGLE_CALENDAR.value,
+                        IntegrationType.OUTLOOK_CALENDAR.value,
+                    )
+                ),
+            )
+
+        active_user_access = and_(
+            integration_c.created_by_user_id == self.user_id,
+            integration_c.is_active.is_(True),
+            calendar_provenance(enabled_only=True),
+        )
+        visibility = active_user_access
+        if allow_recording_archive:
+            # Disconnect disables future sync but does not revoke access to media
+            # already stored for this tenant. Keep capability provenance so an
+            # email-only provider parent cannot masquerade as a calendar source.
+            archive_access = and_(
+                recording_c.session_id.is_not(None),
+                calendar_provenance(enabled_only=False),
+            )
+            if self.user_role != UserAppRole.ADMIN:
+                archive_access = and_(
+                    integration_c.created_by_user_id == self.user_id,
+                    archive_access,
+                )
+            visibility = or_(active_user_access, archive_access)
 
         return (
             select(
@@ -601,56 +667,28 @@ class MeetingsTabService:
                 ),
             )
             .where(
-                # The Meetings tab is current-user scoped: the event must belong to
-                # this org and to an active calendar integration created by this user.
+                # Event and integration organisation checks are the tenant boundary;
+                # neither the caller-supplied event ID nor integration join is trusted alone.
                 event_c.organisation_id == self.organisation_id,
                 state_c.is_deleted.is_(False),
                 integration_c.organisation_id == self.organisation_id,
-                integration_c.created_by_user_id == self.user_id,
-                integration_c.is_active.is_(True),
                 integration_c.integration_type.in_(CALENDAR_INTEGRATION_TYPES),
-                or_(
-                    and_(
-                        integration_c.integration_type == IntegrationType.GOOGLE.value,
-                        exists(
-                            select(1).where(
-                                col(IntegrationSyncState.organisation_id) == self.organisation_id,
-                                col(IntegrationSyncState.integration_id)
-                                == integration_c.integration_id,
-                                col(IntegrationSyncState.capability)
-                                == IntegrationType.GOOGLE_CALENDAR,
-                                col(IntegrationSyncState.enabled).is_(True),
-                            )
-                        ),
-                    ),
-                    and_(
-                        integration_c.integration_type == IntegrationType.MICROSOFT.value,
-                        exists(
-                            select(1).where(
-                                col(IntegrationSyncState.organisation_id) == self.organisation_id,
-                                col(IntegrationSyncState.integration_id)
-                                == integration_c.integration_id,
-                                col(IntegrationSyncState.capability)
-                                == IntegrationType.OUTLOOK_CALENDAR,
-                                col(IntegrationSyncState.enabled).is_(True),
-                            )
-                        ),
-                    ),
-                    # Active legacy direct rows remain readable until the
-                    # provider-parent rollout is fully reconciled.
-                    integration_c.integration_type.in_(
-                        (
-                            IntegrationType.GOOGLE_CALENDAR.value,
-                            IntegrationType.OUTLOOK_CALENDAR.value,
-                        )
-                    ),
-                ),
+                visibility,
             )
         )
 
-    async def _get_meeting_row(self, event_id: UUID):
-        """Load one meeting row through the current-user ownership query."""
-        stmt = self._meeting_rows_stmt().where(col(CalendarEvent.event_id) == event_id).limit(1)
+    async def _get_meeting_row(
+        self,
+        event_id: UUID,
+        *,
+        allow_recording_archive: bool = False,
+    ):
+        """Load one meeting through active ownership or explicit archive access."""
+        stmt = (
+            self._meeting_rows_stmt(allow_recording_archive=allow_recording_archive)
+            .where(col(CalendarEvent.event_id) == event_id)
+            .limit(1)
+        )
         result = await self.session.execute(stmt)
         row = result.first()
         if not row:
