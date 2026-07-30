@@ -16,8 +16,33 @@ from src.service.calendar_invites.models import (
     CalendarInviteAttendee,
     CalendarInviteCreateRequest,
     CalendarInviteError,
+    CalendarMeetingUpdateRequest,
+    CalendarNotificationScope,
 )
 from src.service.calendar_invites.timezones import to_outlook_timezone
+
+
+def _update_request(
+    scope: CalendarNotificationScope,
+    *,
+    changed_fields: frozenset[str] = frozenset({"attendees"}),
+) -> CalendarMeetingUpdateRequest:
+    """Build one Outlook update with an explicit notification contract."""
+
+    return CalendarMeetingUpdateRequest(
+        organisation_id="11111111-1111-1111-1111-111111111111",
+        requested_by_user_id="22222222-2222-2222-2222-222222222222",
+        event_id="33333333-3333-3333-3333-333333333333",
+        expected_version='W/"etag-1"',
+        provider_etag='W/"etag-1"',
+        title="Updated discovery call",
+        start_at=datetime(2026, 5, 12, 14, 30, tzinfo=UTC),
+        end_at=datetime(2026, 5, 12, 15, 0, tzinfo=UTC),
+        timezone="UTC",
+        attendees=[CalendarInviteAttendee(email="buyer@example.com")],
+        changed_fields=changed_fields,
+        notification_scope=scope,
+    )
 
 
 def test_to_outlook_timezone_maps_iana_to_windows_name() -> None:
@@ -118,6 +143,7 @@ async def test_microsoft_client_includes_safe_provider_error_summary(monkeypatch
     """Immediate Graph rejections should keep useful provider detail for the agent."""
 
     async def fake_retry(token_info, request_fn):
+        """Simulate an immediate Microsoft Graph validation rejection."""
         request = httpx.Request("POST", "https://graph.microsoft.com/v1.0/me/events")
         response = httpx.Response(
             400,
@@ -148,3 +174,173 @@ async def test_microsoft_client_includes_safe_provider_error_summary(monkeypatch
     assert exc_info.value.code == "calendar_provider_error"
     assert "Outlook Calendar rejected the invite request" in exc_info.value.message
     assert "At least one attendee is invalid" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_outlook_changed_attendee_scope_sends_attendees_only(monkeypatch) -> None:
+    """Graph must receive only attendees to use its selective-update behavior."""
+
+    calls: list[dict[str, object]] = []
+
+    async def fake_retry(token_info, request_fn):
+        """Run the PATCH with a stable fake Graph access token."""
+        return await request_fn("graph-token")
+
+    async def fake_patch(client, endpoint, *, json_body):
+        """Capture the attendee-only Graph update."""
+        calls.append({"endpoint": endpoint, "headers": dict(client.headers), "json": json_body})
+        return {"id": "event-1", "@odata.etag": 'W/"etag-2"'}
+
+    monkeypatch.setattr(
+        "src.service.calendar_invites.microsoft_graph_client.call_with_token_retry",
+        fake_retry,
+    )
+    monkeypatch.setattr(
+        "src.service.calendar_invites.microsoft_graph_client.graph_api_patch_json",
+        fake_patch,
+    )
+
+    await MicrosoftCalendarInviteClient().update_event(
+        SimpleNamespace(),
+        "event-1",
+        _update_request(CalendarNotificationScope.CHANGED_ATTENDEES_ONLY),
+    )
+
+    assert set(calls[0]["json"]) == {"attendees"}
+    assert calls[0]["headers"]["if-match"] == 'W/"etag-1"'
+
+
+@pytest.mark.asyncio
+async def test_outlook_all_attendee_scope_adds_only_notification_trigger(monkeypatch) -> None:
+    """Explicit all-attendee delivery should not rewrite unrelated meeting fields."""
+
+    calls: list[dict[str, object]] = []
+
+    async def fake_retry(token_info, request_fn):
+        """Run the PATCH with a stable fake Graph access token."""
+        return await request_fn("graph-token")
+
+    async def fake_patch(client, endpoint, *, json_body):
+        """Capture the roster plus its all-attendee notification trigger."""
+        calls.append(json_body)
+        return {"id": "event-1", "@odata.etag": 'W/"etag-2"'}
+
+    monkeypatch.setattr(
+        "src.service.calendar_invites.microsoft_graph_client.call_with_token_retry",
+        fake_retry,
+    )
+    monkeypatch.setattr(
+        "src.service.calendar_invites.microsoft_graph_client.graph_api_patch_json",
+        fake_patch,
+    )
+
+    await MicrosoftCalendarInviteClient().update_event(
+        SimpleNamespace(),
+        "event-1",
+        _update_request(CalendarNotificationScope.ALL_ATTENDEES),
+    )
+
+    assert set(calls[0]) == {"subject", "attendees"}
+
+
+@pytest.mark.asyncio
+async def test_outlook_subject_update_omits_attendee_roster(monkeypatch) -> None:
+    """A scalar Graph update must leave RSVP and resource state untouched."""
+
+    calls: list[dict[str, object]] = []
+
+    async def fake_retry(token_info, request_fn):
+        """Run the PATCH with a stable fake Graph access token."""
+        return await request_fn("graph-token")
+
+    async def fake_patch(client, endpoint, *, json_body):
+        """Capture the sparse subject-only Graph update."""
+        calls.append(json_body)
+        return {"id": "event-1", "@odata.etag": 'W/"etag-2"'}
+
+    monkeypatch.setattr(
+        "src.service.calendar_invites.microsoft_graph_client.call_with_token_retry",
+        fake_retry,
+    )
+    monkeypatch.setattr(
+        "src.service.calendar_invites.microsoft_graph_client.graph_api_patch_json",
+        fake_patch,
+    )
+
+    await MicrosoftCalendarInviteClient().update_event(
+        SimpleNamespace(),
+        "event-1",
+        _update_request(
+            CalendarNotificationScope.ALL_ATTENDEES,
+            changed_fields=frozenset({"title"}),
+        ),
+    )
+
+    assert calls[0] == {"subject": "Updated discovery call"}
+
+
+@pytest.mark.asyncio
+async def test_outlook_attendee_update_preserves_room_and_response(monkeypatch) -> None:
+    """An attendee-only Graph update must retain unchanged resource semantics."""
+
+    calls: list[dict[str, object]] = []
+
+    async def fake_retry(token_info, request_fn):
+        """Run the PATCH with a stable fake Graph access token."""
+        return await request_fn("graph-token")
+
+    async def fake_patch(client, endpoint, *, json_body):
+        """Capture the metadata-preserving attendee update."""
+        calls.append(json_body)
+        return {"id": "event-1", "@odata.etag": 'W/"etag-2"'}
+
+    monkeypatch.setattr(
+        "src.service.calendar_invites.microsoft_graph_client.call_with_token_retry",
+        fake_retry,
+    )
+    monkeypatch.setattr(
+        "src.service.calendar_invites.microsoft_graph_client.graph_api_patch_json",
+        fake_patch,
+    )
+    request = _update_request(CalendarNotificationScope.CHANGED_ATTENDEES_ONLY).model_copy(
+        update={
+            "attendees": [
+                CalendarInviteAttendee(email="room@example.com"),
+                CalendarInviteAttendee(email="new@example.com"),
+            ],
+            "provider_attendees": [
+                {
+                    "emailAddress": {
+                        "address": "room@example.com",
+                        "name": "Board Room",
+                    },
+                    "type": "resource",
+                    "status": {"response": "accepted"},
+                }
+            ],
+        }
+    )
+
+    await MicrosoftCalendarInviteClient().update_event(
+        SimpleNamespace(),
+        "event-1",
+        request,
+    )
+
+    assert calls[0]["attendees"] == [
+        {
+            "emailAddress": {
+                "address": "room@example.com",
+                "name": "Board Room",
+            },
+            "status": {"response": "accepted"},
+            "type": "resource",
+        },
+        {
+            "emailAddress": {
+                "address": "new@example.com",
+                "name": "new@example.com",
+            },
+            "type": "required",
+        },
+    ]

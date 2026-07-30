@@ -520,9 +520,39 @@ async def test_team_scoped_attendee_returns_team_specific_no_match(
         AsyncMock(return_value=CRMUserDirectoryResult(status="not_found", candidates=[])),
     )
     resolver = CalendarInviteAttendeeResolver(MagicMock(), organisation_id=ORG_ID)
-    resolver._search_people = AsyncMock(return_value=[])  # noqa: SLF001
+    resolver._search_contacts = AsyncMock(return_value=[])  # noqa: SLF001
 
     result = await resolver.resolve([{"name": "Unknown Person", "scope": "TEAM"}])
 
     assert result.missing[0]["reason"] == "no_team_match"
-    resolver._search_people.assert_not_awaited()  # noqa: SLF001
+    resolver._search_contacts.assert_awaited_once_with("Unknown Person")  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_team_no_match_surfaces_contact_without_selecting_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A contact alternative should unblock correction without crossing team scope."""
+
+    monkeypatch.setattr(
+        "src.service.calendar_invites.attendee_resolver.CRMUserDirectoryService.search",
+        AsyncMock(return_value=CRMUserDirectoryResult(status="not_found", candidates=[])),
+    )
+    resolver = CalendarInviteAttendeeResolver(MagicMock(), organisation_id=ORG_ID)
+    resolver._search_contacts = AsyncMock(  # noqa: SLF001
+        return_value=[
+            AttendeeCandidate(
+                email="bhavesh@bytescare.com",
+                name="Bhavesh Tagariya",
+                source="organization_contact",
+            )
+        ]
+    )
+
+    result = await resolver.resolve([{"name": "Bhavesh Tagaria", "scope": "team"}])
+
+    assert not result.resolved
+    assert result.missing[0]["reason"] == "no_team_match"
+    assert result.missing[0]["alternatives"] == [
+        {"name": "Bhavesh Tagariya", "email": "bhavesh@bytescare.com"}
+    ]

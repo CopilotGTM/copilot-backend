@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from enum import StrEnum
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, TypeAdapter, field_validator
@@ -11,6 +13,22 @@ EMAIL_ADAPTER = TypeAdapter(EmailStr)
 # Provider requests support large recipient lists, but the resolver must enforce
 # this ceiling before performing one lookup per user-supplied attendee.
 MAX_CALENDAR_INVITE_ATTENDEES = 100
+
+
+class CalendarNotificationScope(StrEnum):
+    """Provider notification audience selected for one meeting update."""
+
+    CHANGED_ATTENDEES_ONLY = "changed_attendees_only"
+    ALL_ATTENDEES = "all_attendees"
+    NONE = "none"
+
+
+class CalendarAttendeeAction(StrEnum):
+    """Semantic roster operation inferred by the agent from the user's wording."""
+
+    ADD = "add"
+    REMOVE = "remove"
+    REPLACE = "replace"
 
 
 class CalendarInviteError(Exception):
@@ -126,6 +144,9 @@ class CalendarMeetingUpdateRequest(BaseModel):
     provider_body_content_type: str | None = Field(default=None, exclude=True)
     previous_body: str | None = Field(default=None, exclude=True)
     provider_etag: str | None = Field(default=None, exclude=True)
+    changed_fields: frozenset[str] = Field(default_factory=frozenset, exclude=True)
+    provider_attendees: list[dict[str, Any]] = Field(default_factory=list, exclude=True)
+    notification_scope: CalendarNotificationScope = CalendarNotificationScope.ALL_ATTENDEES
 
     _clean_required_string = field_validator("title", "timezone", mode="before")(
         CalendarInviteCreateRequest.clean_required_string.__func__

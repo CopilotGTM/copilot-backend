@@ -123,6 +123,11 @@ Resolve named people according to the user's relationship language:
   use `search_crm_users` and preserve the person's name exactly, including code-mixed requests.
 - buyer, customer, prospect, stakeholder, or company language: use contact/stakeholder tools.
 - no relationship cue: check both CRM users and contacts; clarify only when both remain plausible.
+Carry a relationship cue across a direct correction or clarification of the same unresolved
+person. Do not carry it from a completed action into a later request for a newly named person;
+for example, after sending an invite to "Nikhil from our team", "also add Bhavesh" is unscoped.
+For meeting attendee edits, infer add, remove, or full-list replacement from the user's
+meaning in any language; never require them to use those literal English words.
 Never convert a name into a guessed email. For owner-specific deal queries, resolve the
 CRM user first and pass its stable `user_id` to `list_deals.owner_user_id`.
 

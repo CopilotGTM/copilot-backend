@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import String, cast, func, or_, select
 from sqlmodel import col
 from src.domain.models.master_tables.super_admin_models import AdminUserStatus
 from src.domain.models.master_tables.user_models import SupabaseUserStatus, User
@@ -79,15 +79,11 @@ class AttendeeCandidate:
         )
 
     def to_public_dict(self) -> dict[str, Any]:
-        """Expose stable confirmation metadata without ORM objects."""
+        """Expose only the identity and role the user needs to confirm."""
         return {
             "email": self.email,
             "name": self.name,
             "optional": self.optional,
-            "source": self.source,
-            "source_id": self.source_id,
-            "confidence": self.confidence,
-            "input_value": self.input_value,
         }
 
 
@@ -119,6 +115,37 @@ class AttendeeResolutionResult:
         if reason not in self.confirmation_reasons:
             self.confirmation_reasons.append(reason)
         self.requires_confirmation = True
+
+    def clarification_message(self) -> str:
+        """Explain the first identity blocker and the one answer needed next."""
+        if self.ambiguous:
+            item = self.ambiguous[0]
+            options = [
+                f"- {option.get('name') or option['email']} — {option['email']}"
+                for option in item.get("options", [])
+            ]
+            return "\n".join(
+                [
+                    f"I found multiple matches for {item['input']}:",
+                    *options,
+                    "Which email should I use?",
+                ]
+            )
+        if self.missing:
+            item = self.missing[0]
+            alternatives = item.get("alternatives") or []
+            if item.get("reason") == "no_team_match" and alternatives:
+                option = alternatives[0]
+                return (
+                    f"I couldn’t find {item['input']} in your team. I found "
+                    f"{option.get('name') or option['email']} — {option['email']} in contacts. "
+                    "Should I use this contact?"
+                )
+            return (
+                f"I couldn’t find an email for {item.get('input')}. "
+                "What email address should I use?"
+            )
+        return "Which attendee email should I use?"
 
 
 class CalendarInviteAttendeeResolver:
@@ -252,12 +279,18 @@ class CalendarInviteAttendeeResolver:
             directory = CRMUserDirectoryService(self.session, self.organisation_id)
             for normalized_name, intent in team_name_intents.items():
                 team_resolution = await directory.search(intent["value"])
+                contact_alternatives = (
+                    await self._search_contacts(intent["value"])
+                    if team_resolution.status == "not_found"
+                    else []
+                )
                 self._record_team_name_resolution(
                     result,
                     resolution=team_resolution,
                     input_value=intent["value"],
                     optional=bool(intent.get("optional", False)),
                     seen_emails=seen_emails,
+                    contact_alternatives=contact_alternatives,
                 )
                 name_intents.pop(normalized_name)
 
@@ -356,14 +389,23 @@ class CalendarInviteAttendeeResolver:
         input_value: str,
         optional: bool,
         seen_emails: set[str],
+        contact_alternatives: list[AttendeeCandidate],
     ) -> None:
-        """Record a team-only CRM-user match without falling back to contacts."""
+        """Keep team lookup closed while exposing contact alternatives for correction."""
         if resolution.status == "not_found":
+            alternatives = [
+                {"name": candidate.name, "email": candidate.email}
+                for candidate in contact_alternatives[:10]
+            ]
             result.missing.append(
                 {
                     "input": input_value,
                     "reason": "no_team_match",
-                    "message": "No active CRM user from your team matched.",
+                    "message": (
+                        "No active team member matched. Confirm a contact below or "
+                        "provide the correct work email."
+                    ),
+                    "alternatives": alternatives,
                 }
             )
             return
@@ -901,8 +943,10 @@ class CalendarInviteAttendeeResolver:
             select(User)
             .where(
                 col(User.organisation_id) == self.organisation_id,
-                col(User.status) == SupabaseUserStatus.ACTIVE,
-                col(User.admin_status) == AdminUserStatus.APPROVED,
+                # Tenant sessions do not include public in search_path. Comparing the
+                # public enums as text avoids an unqualified enum cast at query time.
+                cast(col(User.status), String) == SupabaseUserStatus.ACTIVE.value,
+                cast(col(User.admin_status), String) == AdminUserStatus.APPROVED.value,
                 identity_filter,
             )
             .limit(self._search_limit(search))

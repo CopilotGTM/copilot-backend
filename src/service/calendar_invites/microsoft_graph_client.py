@@ -25,6 +25,7 @@ from src.workers.integrations_worker.providers._microsoft_graph import (
     graph_api_patch_json,
     graph_api_post_json,
     graph_api_post_no_content,
+    graph_api_request,
 )
 
 
@@ -38,6 +39,45 @@ def _format_outlook_datetime(request_dt, outlook_timezone: str) -> str:
 
     iana_name = win_tz[outlook_timezone]
     return cast(str, request_dt.astimezone(ZoneInfo(iana_name)).replace(tzinfo=None).isoformat())
+
+
+def _microsoft_update_attendees(
+    request: CalendarMeetingUpdateRequest,
+) -> list[dict[str, Any]]:
+    """Preserve Graph attendee roles and response state for unchanged addresses."""
+
+    current: dict[str, dict[str, Any]] = {}
+    for item in request.provider_attendees:
+        email_address = item.get("emailAddress")
+        if not isinstance(email_address, dict):
+            continue
+        email = str(email_address.get("address") or "").strip().lower()
+        if email:
+            current[email] = item
+
+    attendees: list[dict[str, Any]] = []
+    for attendee in request.attendees:
+        raw = current.get(attendee.email, {})
+        raw_address = raw.get("emailAddress")
+        raw_address = raw_address if isinstance(raw_address, dict) else {}
+        merged: dict[str, Any] = {
+            "emailAddress": {
+                "address": attendee.email,
+                "name": raw_address.get("name") or attendee.name or attendee.email,
+            },
+            **({"status": raw["status"]} if isinstance(raw.get("status"), dict) else {}),
+        }
+        current_type = str(raw.get("type") or "").lower()
+        if attendee.optional:
+            merged["type"] = "optional"
+        elif current_type == "optional":
+            merged["type"] = "required"
+        else:
+            # Resource attendees must stay resources; the canonical attendee model
+            # otherwise collapses both resource and required into optional=False.
+            merged["type"] = current_type or "required"
+        attendees.append(merged)
+    return attendees
 
 
 def build_microsoft_event_payload(request: CalendarInviteCreateRequest) -> dict[str, Any]:
@@ -114,6 +154,26 @@ def _outlook_update_body(request: CalendarMeetingUpdateRequest) -> dict[str, str
 class MicrosoftCalendarInviteClient:
     """Create Outlook calendar events that send Teams meeting invites."""
 
+    async def get_event(
+        self,
+        token_info: IntegrationTokenInfo,
+        provider_event_id: str,
+    ) -> dict[str, Any]:
+        """Fetch the organizer mailbox's current event copy and change key."""
+
+        async def _request(access_token: str) -> dict[str, Any]:
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Prefer": 'outlook.timezone="UTC"',
+            }
+            async with httpx.AsyncClient(headers=headers, timeout=30.0) as client:
+                return await graph_api_request(
+                    client,
+                    f"/v1.0/me/events/{provider_event_id}",
+                )
+
+        return cast(dict[str, Any], await self._mutation_call(token_info, _request, "read"))
+
     async def create_event(
         self,
         token_info: IntegrationTokenInfo,
@@ -179,30 +239,40 @@ class MicrosoftCalendarInviteClient:
         """Patch one Outlook event while retaining its online-meeting identity."""
 
         timezone = to_outlook_timezone(request.timezone)
-        payload: dict[str, Any] = {
-            "subject": request.title,
-            "location": {"displayName": request.location or ""},
-            "start": {
-                "dateTime": _format_outlook_datetime(request.start_at, timezone),
-                "timeZone": timezone,
-            },
-            "end": {
-                "dateTime": _format_outlook_datetime(request.end_at, timezone),
-                "timeZone": timezone,
-            },
-            "attendees": [
+        payload: dict[str, Any] = {}
+        if request.notification_scope == "none":
+            raise CalendarInviteError(
+                "outlook_notification_suppression_unsupported",
+                "Outlook cannot suppress meeting-update notifications.",
+                status_code=409,
+            )
+        if "attendees" in request.changed_fields:
+            payload["attendees"] = _microsoft_update_attendees(request)
+        if "title" in request.changed_fields:
+            payload["subject"] = request.title
+        if "location" in request.changed_fields:
+            payload["location"] = {"displayName": request.location or ""}
+        if "time" in request.changed_fields:
+            payload.update(
                 {
-                    "emailAddress": {
-                        "address": attendee.email,
-                        "name": attendee.name or attendee.email,
+                    "start": {
+                        "dateTime": _format_outlook_datetime(request.start_at, timezone),
+                        "timeZone": timezone,
                     },
-                    "type": "optional" if attendee.optional else "required",
+                    "end": {
+                        "dateTime": _format_outlook_datetime(request.end_at, timezone),
+                        "timeZone": timezone,
+                    },
                 }
-                for attendee in request.attendees
-            ],
-        }
+            )
+        if request.notification_scope == "all_attendees" and request.changed_fields == {
+            "attendees"
+        }:
+            # Graph sends selectively only when attendees is the sole PATCH field.
+            # Repeating the unchanged subject triggers the requested all-attendee update.
+            payload["subject"] = request.title
         updated_body = _outlook_update_body(request)
-        if updated_body is not None:
+        if updated_body is not None and "body" in request.changed_fields:
             payload["body"] = updated_body
 
         async def _request(access_token: str) -> dict[str, Any]:

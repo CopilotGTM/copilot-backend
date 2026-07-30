@@ -634,10 +634,6 @@ async def test_send_calendar_invite_uses_current_send_intent_for_resolved_name(
             "email": "saksham@example.com",
             "name": "Saksham Bhutani",
             "optional": False,
-            "source": "contact",
-            "source_id": "contact-1",
-            "confidence": "exact_name",
-            "input_value": "Saksham Bhutani",
         }
     ]
     service.assert_not_called()
@@ -716,8 +712,11 @@ async def test_send_calendar_invite_requires_confirmation_for_resolved_internal_
     )
 
     assert result["status"] == "confirmation_required"
-    assert result["confirmation_payload"]["attendees"][0]["source"] == "internal_user"
-    assert result["confirmation_payload"]["attendees"][0]["email"] == "saksham@copilotgtm.com"
+    assert result["confirmation_payload"]["attendees"][0] == {
+        "email": "saksham@copilotgtm.com",
+        "name": "Saksham Bhutani",
+        "optional": False,
+    }
     service.assert_not_called()
 
 
