@@ -14,10 +14,12 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMParticipantType,
 )
 from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
+from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.service.calendar_invites.attendee_resolver import (
     AttendeeCandidate,
     CalendarInviteAttendeeResolver,
 )
+from src.service.crm.access.crm_user_directory_service import CRMUserDirectoryResult
 
 ORG_ID = UUID("11111111-1111-1111-1111-111111111111")
 DEAL_ID = UUID("33333333-3333-3333-3333-333333333333")
@@ -465,3 +467,62 @@ async def test_resolver_rejects_attendee_limit_before_database_lookup() -> None:
 
     assert result.missing[0]["reason"] == "attendee_limit_exceeded"
     session.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_team_scoped_attendee_uses_crm_user_without_contact_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Team scope wins even when a same-name contact is more commercially contextual."""
+    crm_user = CRMUser(
+        organisation_id=ORG_ID,
+        integration_id=uuid4(),
+        full_name="Bhawesh Tagariya",
+        email="bhawesh@copilotgtm.com",
+        is_active=True,
+        is_deleted=False,
+    )
+    directory_search = AsyncMock(
+        return_value=CRMUserDirectoryResult(status="resolved", candidates=[crm_user])
+    )
+    monkeypatch.setattr(
+        "src.service.calendar_invites.attendee_resolver.CRMUserDirectoryService.search",
+        directory_search,
+    )
+    resolver = CalendarInviteAttendeeResolver(MagicMock(), organisation_id=ORG_ID)
+    resolver._search_people = AsyncMock(  # noqa: SLF001
+        return_value=[
+            AttendeeCandidate(
+                email="bhawesh@external.example",
+                name="Bhawesh Tagariya",
+                source="organization_contact",
+            )
+        ]
+    )
+
+    result = await resolver.resolve(
+        [{"name": "Bhawesh Tagariya", "scope": "team", "optional": True}]
+    )
+
+    assert result.resolved[0].email == "bhawesh@copilotgtm.com"
+    assert result.resolved[0].optional is True
+    assert result.resolved[0].source == "crm_user"
+    resolver._search_people.assert_not_awaited()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_team_scoped_attendee_returns_team_specific_no_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit team request must not silently invite an external contact."""
+    monkeypatch.setattr(
+        "src.service.calendar_invites.attendee_resolver.CRMUserDirectoryService.search",
+        AsyncMock(return_value=CRMUserDirectoryResult(status="not_found", candidates=[])),
+    )
+    resolver = CalendarInviteAttendeeResolver(MagicMock(), organisation_id=ORG_ID)
+    resolver._search_people = AsyncMock(return_value=[])  # noqa: SLF001
+
+    result = await resolver.resolve([{"name": "Unknown Person", "scope": "TEAM"}])
+
+    assert result.missing[0]["reason"] == "no_team_match"
+    resolver._search_people.assert_not_awaited()  # noqa: SLF001

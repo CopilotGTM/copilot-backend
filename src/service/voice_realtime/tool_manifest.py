@@ -57,6 +57,12 @@ def _build_search_deals_factory(context: AgentContext) -> Callable[[], Callable[
     return partial(create_search_deals, context, _build_empty_capabilities)
 
 
+def _build_search_crm_users_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
+    from src.agents.tools.crm.search_crm_users import create_search_crm_users
+
+    return partial(create_search_crm_users, context, _build_empty_capabilities)
+
+
 def _build_list_deals_factory(context: AgentContext) -> Callable[[], Callable[..., Any]]:
     from src.agents.tools.crm.list_deals import create_list_deals
 
@@ -402,6 +408,20 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
         factory_builder=_build_search_deals_factory,
     ),
     VoiceRealtimeToolDefinition(
+        tool_name=ToolName.SEARCH_CRM_USERS,
+        description=(
+            "Find a person from our team by CRM user ID, name, or email. Use the returned "
+            "stable user_id for owner-specific deal questions; never guess an email."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        factory_builder=_build_search_crm_users_factory,
+    ),
+    VoiceRealtimeToolDefinition(
         tool_name=ToolName.LIST_DEALS,
         description="List deals with filters such as status, amount, owner, or company.",
         parameters={
@@ -428,7 +448,14 @@ VOICE_REALTIME_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = (
                     "type": "string",
                     "description": "Maximum expected close date in ISO 8601 format.",
                 },
-                "owner_email": {"type": "string"},
+                "owner_user_id": {
+                    "type": "string",
+                    "description": "Stable CRM user ID returned by search_crm_users.",
+                },
+                "owner_email": {
+                    "type": "string",
+                    "description": "Legacy filter for an email explicitly supplied by the user.",
+                },
                 "company_name": {"type": "string"},
                 "sort_by": {
                     "type": "string",

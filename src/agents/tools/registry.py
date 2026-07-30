@@ -103,6 +103,7 @@ class ToolName(str, Enum):
     # Used by: Chat Agent
     # -------------------------------------------------------------------------
     SEARCH_CONTACTS = "search_contacts"  # Search contacts by name/email/company
+    SEARCH_CRM_USERS = "search_crm_users"  # Search internal team members from crm_users
     SEARCH_ACCOUNTS = "search_accounts"  # Search accounts by name/domain
     CREATE_CONTACT = "create_contact"  # Create an internal CRM contact directly from chat
     CREATE_ACCOUNT = "create_account"  # Create an internal CRM account directly from chat
@@ -313,6 +314,7 @@ GENERAL_AGENT_TOOLS: set[ToolName] = {
     ToolName.GET_MEETING_DEAL_CONTEXT,
     # Contact tools
     ToolName.SEARCH_CONTACTS,
+    ToolName.SEARCH_CRM_USERS,
     ToolName.SEARCH_ACCOUNTS,
     ToolName.CREATE_CONTACT,
     ToolName.CREATE_ACCOUNT,
@@ -620,6 +622,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.GET_MEETING_SUMMARY: ToolCategory.INTELLIGENCE,
     # Contacts
     ToolName.SEARCH_CONTACTS: ToolCategory.CRM,
+    ToolName.SEARCH_CRM_USERS: ToolCategory.CRM,
     ToolName.SEARCH_ACCOUNTS: ToolCategory.CRM,
     ToolName.CREATE_CONTACT: ToolCategory.CRM,
     ToolName.CREATE_ACCOUNT: ToolCategory.CRM,
@@ -744,6 +747,7 @@ class ToolRegistry:
             create_resolve_risk_blocker,
             create_search_accounts,
             create_search_contacts,
+            create_search_crm_users,
             create_search_deals,
             create_update_account,
             create_update_contact,
@@ -804,6 +808,9 @@ class ToolRegistry:
 
         # CRM/Deal tools
         self._tool_factories[ToolName.SEARCH_DEALS] = lambda: create_search_deals(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.SEARCH_CRM_USERS] = lambda: create_search_crm_users(
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.LIST_DEALS] = lambda: create_list_deals(

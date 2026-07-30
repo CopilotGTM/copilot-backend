@@ -31,6 +31,7 @@ from src.agents.tools.crm.manage_risks_blockers import (
 )
 from src.agents.tools.crm.search_accounts import create_search_accounts
 from src.agents.tools.crm.search_contacts import create_search_contacts
+from src.agents.tools.crm.search_crm_users import create_search_crm_users
 from src.agents.tools.crm.search_deals import create_search_deals
 from src.agents.tools.crm.update_account import create_update_account
 from src.agents.tools.crm.update_contact import create_update_contact
@@ -68,6 +69,7 @@ __all__ = [
     "create_create_contact",
     "create_create_account",
     "create_search_contacts",
+    "create_search_crm_users",
     "create_search_accounts",
     "create_update_contact",
     "create_update_account",

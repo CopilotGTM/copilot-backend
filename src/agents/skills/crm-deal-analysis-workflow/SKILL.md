@@ -85,6 +85,12 @@ Use the available tool whose description matches the needed evidence.
 
 Use the best available tools for each data signal. Bracket hints are examples, not hard constraints.
 
+For a named person's deals, an "our team/rep/colleague" reference, or team-member
+performance, use `SearchCRMUsers` first and pass the resolved `user_id` to
+`ListDeals.owner_user_id`. Never infer an owner email from a name. With no team or
+external relationship cue, check both CRM users and contacts and clarify only if both
+remain plausible.
+
 If a specialized analysis skill exists for the user's requested framework, load that skill
 after gathering enough context to know it applies.
 

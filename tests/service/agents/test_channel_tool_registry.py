@@ -172,6 +172,7 @@ def test_general_agent_exposes_context_resolution_read_tools_on_web() -> None:
     assert "get_compressed_transcript_tool" in tool_names
     assert "list_deal_tasks_tool" in tool_names
     assert "list_chat_attachments_tool" in tool_names
+    assert "search_crm_users_tool" in tool_names
     assert "list_deal_meetings_tool" not in tool_names
     assert "list_meetings_by_date_tool" not in tool_names
 
@@ -201,6 +202,7 @@ def test_untrusted_whatsapp_turn_excludes_mutations_but_keeps_reads() -> None:
     assert excluded == WHATSAPP_MUTATING_TOOLS
     assert ToolName.ADD_DEAL_NOTE in excluded
     assert ToolName.SEARCH_DEALS not in excluded
+    assert ToolName.SEARCH_CRM_USERS not in excluded
 
 
 def test_direct_whatsapp_instruction_keeps_mutation_tools_available() -> None:

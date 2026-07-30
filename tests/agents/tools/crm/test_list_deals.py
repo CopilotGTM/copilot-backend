@@ -96,6 +96,7 @@ class TestDealFilters:
         assert f.stage_name is None
         assert f.min_amount is None
         assert f.max_amount is None
+        assert f.owner_user_id is None
         assert f.owner_email is None
         assert f.company_name is None
         assert f.sort_by == "source_modified_at"
@@ -265,6 +266,7 @@ class TestApplyFilters:
             self.deal_status = MagicMock()
             self.stage_name = MagicMock()
             self.amount = MagicMock()
+            self.owner_id = MagicMock()
             self.owner_email = MagicMock()
             self.company_name = MagicMock()
             self.close_date = TestApplyFilters._FilterColumn()
@@ -332,6 +334,35 @@ class TestApplyFilters:
 
         assert result is stmt
         stmt.where.assert_not_called()
+
+    def test_owner_user_id_takes_precedence_over_legacy_email(self) -> None:
+        # A resolved CRM UUID is canonical; a stale email must not also narrow the query.
+        stmt = MagicMock()
+        stmt.where = MagicMock(return_value=stmt)
+        c = self._Columns()
+        owner_id = uuid4()
+
+        result = _apply_filters(
+            stmt,
+            DealFilters(owner_user_id=owner_id, owner_email="stale@example.com"),
+            c,
+        )
+
+        assert result is stmt
+        stmt.where.assert_called_once()
+        c.owner_id.__eq__.assert_called_once_with(owner_id)
+        c.owner_email.__eq__.assert_not_called()
+
+    def test_invalid_owner_user_id_fails_closed(self) -> None:
+        """A malformed owner ID must not broaden the request into all visible deals."""
+        stmt = MagicMock()
+        stmt.where = MagicMock(return_value=stmt)
+        c = self._Columns()
+
+        result = _apply_filters(stmt, DealFilters(owner_user_id="not-a-uuid"), c)
+
+        assert result is stmt
+        stmt.where.assert_called_once()
 
 
 class TestApplySorting:

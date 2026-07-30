@@ -122,6 +122,16 @@ def test_list_deals_voice_schema_supports_expected_close_date_sort() -> None:
     assert "max_close_date" in properties
     assert "min_expected_close_date" in properties
     assert "max_expected_close_date" in properties
+    assert "owner_user_id" in properties
+
+
+def test_voice_can_resolve_crm_users_before_owner_queries() -> None:
+    """Voice uses the same stable team-member identity path as text channels."""
+    schemas = {schema["name"]: schema for schema in build_voice_tool_schemas()}
+
+    schema = schemas[ToolName.SEARCH_CRM_USERS.value]
+    assert schema["parameters"]["required"] == ["query"]
+    assert "query" in schema["parameters"]["properties"]
 
 
 def test_create_task_voice_schema_is_available_for_direct_write() -> None:
