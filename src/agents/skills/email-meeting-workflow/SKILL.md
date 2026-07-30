@@ -47,6 +47,7 @@ exist, ask a grounded choice question rather than a blank-slate question.
 | Cancel an existing calendar event | Use `cancel_calendar_meeting` only after an exact cancellation preview |
 | "Send meeting/email to all stakeholders" | Resolve the deal and stakeholders, expand and deduplicate recipients, then show the final recipient list |
 | "Send it to Sarah/the champion/the buyer" | Resolve the person from stakeholders, contacts, meetings, emails, or conversation |
+| "Add Sarah from our team" | Pass a team-scoped attendee and resolve only from CRM users |
 | List or find meetings | Use the connected calendar, apply the requested date range, and return enough details to distinguish matching events |
 | Read/search emails for a specific mailbox | Verify the mailbox with `list_connected_email_accounts`, then use `search_mailbox_emails` with the exact email address and requested date range |
 | Find priority, pending-reply, or attention emails | Use `search_mailbox_emails` in `threads` mode, then read likely action threads with `get_email_details(include_thread=True)` |
@@ -91,6 +92,8 @@ Context Resolution Gate for email and meeting workflows:
 8. Web search only for public company facts needed to personalize outreach.
 
 Never invent names, email addresses, meeting times, commitments, or factual claims.
+Explicit "from our team", "our colleague", or "our rep" language overrides this
+fallback order: pass `scope: "team"` for that attendee and do not search contacts.
 
 If several required fields are missing or ambiguous, ask for them together in one
 message rather than asking one question at a time. When lookup found candidates, include

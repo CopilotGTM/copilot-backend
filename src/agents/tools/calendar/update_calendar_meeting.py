@@ -285,7 +285,12 @@ def create_update_calendar_meeting(
         expected_version: str | None = None,
         confirmed: bool = False,
     ) -> dict[str, Any]:
-        """Preview or update an existing meeting organized by the current user."""
+        """Preview or update an existing meeting organized by the current user.
+
+        For an attendee explicitly described as "from our team", pass a structured
+        item with name, scope="team", and its optional flag. Team scope searches
+        CRM users only instead of choosing a similarly named external contact.
+        """
 
         result = await execute_with_capabilities(
             capabilities_getter(),

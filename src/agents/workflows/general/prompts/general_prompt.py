@@ -118,6 +118,14 @@ Contextual references include phrases such as "last", "recent", "this", "that",
 "the thread", "the task", "the blocker", "everyone from the meeting", and similar
 shorthand common in sales work.
 
+Resolve named people according to the user's relationship language:
+- "our team", "our rep", "our colleague", a person's deals, or team performance:
+  use `search_crm_users` and preserve the person's name exactly, including code-mixed requests.
+- buyer, customer, prospect, stakeholder, or company language: use contact/stakeholder tools.
+- no relationship cue: check both CRM users and contacts; clarify only when both remain plausible.
+Never convert a name into a guessed email. For owner-specific deal queries, resolve the
+CRM user first and pass its stable `user_id` to `list_deals.owner_user_id`.
+
 Use this gate whenever a request depends on a deal, account, contact, stakeholder,
 meeting, transcript, email, note, task, reminder, attachment, or pipeline segment:
 

@@ -39,6 +39,10 @@ from src.service.calendar_invites.models import (
     MAX_CALENDAR_INVITE_ATTENDEES,
     CalendarInviteAttendee,
 )
+from src.service.crm.access.crm_user_directory_service import (
+    CRMUserDirectoryResult,
+    CRMUserDirectoryService,
+)
 from src.service.crm.contacts.read_service import ContactReadService
 
 _DEAL_STAKEHOLDER_PHRASES = {
@@ -220,6 +224,46 @@ class CalendarInviteAttendeeResolver:
         if not name_intents:
             return result
 
+        # Explicit "from our team" language is a hard entity boundary. Resolve those
+        # names from crm_users only, so a commercially relevant contact cannot outrank
+        # the colleague the user asked for.
+        team_name_intents = {
+            normalized_name: intent
+            for normalized_name, intent in name_intents.items()
+            if intent.get("scope") == "team"
+        }
+        if len(team_name_intents) > MAX_FUZZY_ATTENDEE_NAMES:
+            # Team lookup is exact-first but still allows fuzzy fallback. Keep the same
+            # ten-name ceiling as unscoped fuzzy resolution to bound database work.
+            for normalized_name, intent in team_name_intents.items():
+                result.missing.append(
+                    {
+                        "input": intent["value"],
+                        "reason": "name_lookup_limit_exceeded",
+                        "message": (
+                            "Too many team attendees need name matching; provide exact "
+                            "email addresses for those attendees."
+                        ),
+                    }
+                )
+                name_intents.pop(normalized_name)
+            return result
+        if team_name_intents:
+            directory = CRMUserDirectoryService(self.session, self.organisation_id)
+            for normalized_name, intent in team_name_intents.items():
+                team_resolution = await directory.search(intent["value"])
+                self._record_team_name_resolution(
+                    result,
+                    resolution=team_resolution,
+                    input_value=intent["value"],
+                    optional=bool(intent.get("optional", False)),
+                    seen_emails=seen_emails,
+                )
+                name_intents.pop(normalized_name)
+
+        if not name_intents:
+            return result
+
         # Exact names are searched once per source tier for the complete input set.
         # This retains the user-centric priority without multiplying queries by names.
         exact_matches = await self._search_exact_people(
@@ -303,6 +347,84 @@ class CalendarInviteAttendeeResolver:
             }
         )
         result.add_confirmation_reason("attendee_ambiguous")
+
+    def _record_team_name_resolution(
+        self,
+        result: AttendeeResolutionResult,
+        *,
+        resolution: CRMUserDirectoryResult,
+        input_value: str,
+        optional: bool,
+        seen_emails: set[str],
+    ) -> None:
+        """Record a team-only CRM-user match without falling back to contacts."""
+        if resolution.status == "not_found":
+            result.missing.append(
+                {
+                    "input": input_value,
+                    "reason": "no_team_match",
+                    "message": "No active CRM user from your team matched.",
+                }
+            )
+            return
+
+        if resolution.status == "ambiguous":
+            result.ambiguous.append(
+                {
+                    "input": input_value,
+                    "options": [
+                        {
+                            "email": user.email,
+                            "name": user.full_name
+                            or " ".join(
+                                part for part in (user.first_name, user.last_name) if part
+                            )
+                            or None,
+                            "optional": optional,
+                            "source": "crm_user",
+                            "source_id": str(user.user_id),
+                            "confidence": "name_match",
+                            "input_value": input_value,
+                        }
+                        for user in resolution.candidates
+                    ],
+                }
+            )
+            result.add_confirmation_reason("attendee_ambiguous")
+            return
+
+        user = resolution.candidates[0]
+        if not user.email:
+            result.missing.append(
+                {
+                    "input": input_value,
+                    "source": "crm_user",
+                    "source_id": str(user.user_id),
+                    "reason": "missing_email",
+                    "message": "The matching team member has no CRM email address.",
+                }
+            )
+            return
+
+        name = user.full_name or " ".join(
+            part for part in (user.first_name, user.last_name) if part
+        )
+        self._record_name_resolution(
+            result,
+            matches=[
+                AttendeeCandidate(
+                    email=user.email,
+                    name=name or None,
+                    source="crm_user",
+                    source_id=str(user.user_id),
+                    confidence="exact_name",
+                    input_value=input_value,
+                )
+            ],
+            input_value=input_value,
+            optional=optional,
+            seen_emails=seen_emails,
+        )
 
     async def _search_exact_people(
         self,
@@ -910,6 +1032,11 @@ class CalendarInviteAttendeeResolver:
             "name": raw_attendee.get("name"),
             "optional": raw_attendee.get("optional", False),
             "deal_id": raw_attendee.get("deal_id"),
+            "scope": (
+                "team"
+                if str(raw_attendee.get("scope") or "").strip().lower() == "team"
+                else None
+            ),
         }
 
     @staticmethod

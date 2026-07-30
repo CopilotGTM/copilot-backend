@@ -6,7 +6,7 @@ for browsing and filtering deals across the organization.
 USE CASES:
 - "Show me all open deals" → status="open"
 - "List deals worth more than $100K" → min_amount=100000
-- "What deals does john@company.com own?" → owner_email="john@company.com"
+- "What deals does John own?" → resolve John, then owner_user_id="<crm user id>"
 - "Show deals with Acme" → company_name="Acme"
 - "Find deals in the Negotiation stage" → stage_name="Negotiation"
 
@@ -17,7 +17,8 @@ FILTERS AVAILABLE:
 - min_amount / max_amount: Deal value range
 - min_close_date / max_close_date: Actual close date range
 - min_expected_close_date / max_expected_close_date: Forecast close date range
-- owner_email: Deal owner filter
+- owner_user_id: Stable deal owner filter
+- owner_email: Legacy deal owner filter for explicit email inputs
 - company_name: Partial match on company name
 
 RETURNS:
@@ -37,8 +38,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import false, func, select
 from sqlalchemy.sql import Select
 
 from src.agents.tools.base import execute_with_capabilities
@@ -65,6 +67,7 @@ class DealFilters:
     max_close_date: datetime | str | None = None
     min_expected_close_date: datetime | str | None = None
     max_expected_close_date: datetime | str | None = None
+    owner_user_id: UUID | str | None = None
     owner_email: str | None = None
     company_name: str | None = None
     sort_by: str = "source_modified_at"
@@ -117,7 +120,17 @@ def _apply_filters(stmt: Select, filters: DealFilters, table_columns: Any) -> Se
     if max_expected_close_date is not None:
         stmt = stmt.where(c.expected_close_date <= max_expected_close_date)
 
-    if filters.owner_email:
+    if filters.owner_user_id:
+        try:
+            stmt = stmt.where(c.owner_id == UUID(str(filters.owner_user_id)))
+        except ValueError:
+            # Invalid identity input must fail closed. Ignoring it would broaden an
+            # owner-specific request into every deal visible to the caller.
+            logger.warning("list_deals: invalid owner_user_id rejected: %s", filters.owner_user_id)
+            stmt = stmt.where(false())
+    elif filters.owner_email:
+        # Email remains a compatibility path for explicit email requests. A resolved
+        # owner UUID takes precedence so stale or model-inferred emails cannot narrow it.
         stmt = stmt.where(func.lower(c.owner_email) == func.lower(filters.owner_email))
 
     if filters.company_name:
@@ -289,6 +302,7 @@ def create_list_deals(
         max_close_date: datetime | str | None = None,
         min_expected_close_date: datetime | str | None = None,
         max_expected_close_date: datetime | str | None = None,
+        owner_user_id: str | None = None,
         owner_email: str | None = None,
         company_name: str | None = None,
         sort_by: str = "updated_at",
@@ -309,7 +323,8 @@ def create_list_deals(
             max_close_date: Filter: actual close date <= value
             min_expected_close_date: Filter: forecast close date >= value
             max_expected_close_date: Filter: forecast close date <= value
-            owner_email: Filter by deal owner email
+            owner_user_id: Filter by the stable CRM user ID returned by SearchCRMUsers
+            owner_email: Legacy filter for an email explicitly supplied by the user
             company_name: Filter by company name (partial match)
             sort_by: Sort by: "amount", "created_at", "close_date", "expected_close_date",
                 "updated_at", "name"
@@ -319,7 +334,7 @@ def create_list_deals(
         Examples:
         - "Show open deals over $100K" → status="open", min_amount=100000
         - "List deals with Acme" → company_name="Acme"
-        - "What deals does john@company.com own?" → owner_email="john@company.com"
+        - "What deals does John own?" → first resolve John, then pass owner_user_id
         """
         logger.info(
             "[TOOL CALLED] list_deals - status=%s, min_amount=%s, company_name=%s, limit=%d",
@@ -343,6 +358,7 @@ def create_list_deals(
             max_close_date=max_close_date,
             min_expected_close_date=min_expected_close_date,
             max_expected_close_date=max_expected_close_date,
+            owner_user_id=owner_user_id,
             owner_email=owner_email,
             company_name=company_name,
             sort_by=sort_by,

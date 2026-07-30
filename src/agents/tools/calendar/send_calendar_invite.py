@@ -745,6 +745,10 @@ def create_send_calendar_invite(
         is any identity doubt. Set confirmed=True only when the current user
         message explicitly asks to send the fully resolved invite.
 
+        When the user says "from our team", "our colleague", or "our rep", pass
+        that attendee as {"name": "<name>", "scope": "team", "optional": <bool>}.
+        Team scope searches crm_users only and never falls back to an external contact.
+
         Omit title to derive "Meeting with <name>". Omit end_time to use the
         30-minute default. Date and start time remain required; the tool returns
         every unresolved field together. Sender selection is automatic. A
