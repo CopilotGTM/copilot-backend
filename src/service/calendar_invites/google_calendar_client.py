@@ -52,6 +52,40 @@ def _derive_google_conference_request_id(request: CalendarInviteCreateRequest) -
     return f"invite-{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:32]}"
 
 
+_GOOGLE_ATTENDEE_WRITE_FIELDS = {
+    "email",
+    "displayName",
+    "optional",
+    "responseStatus",
+    "comment",
+    "additionalGuests",
+    "resource",
+}
+
+
+def _google_update_attendees(request: CalendarMeetingUpdateRequest) -> list[dict[str, Any]]:
+    """Preserve writable Google guest state while applying the reviewed final roster."""
+
+    current = {
+        str(item.get("email") or "").strip().lower(): item
+        for item in request.provider_attendees
+        if item.get("email") and not item.get("organizer")
+    }
+    attendees: list[dict[str, Any]] = []
+    for attendee in request.attendees:
+        raw = current.get(attendee.email, {})
+        merged = {key: value for key, value in raw.items() if key in _GOOGLE_ATTENDEE_WRITE_FIELDS}
+        merged["email"] = attendee.email
+        if attendee.name and not merged.get("displayName"):
+            merged["displayName"] = attendee.name
+        if attendee.optional:
+            merged["optional"] = True
+        elif raw.get("optional"):
+            merged.pop("optional", None)
+        attendees.append(merged)
+    return attendees
+
+
 def build_google_event_payload(request: CalendarInviteCreateRequest) -> dict[str, Any]:
     """Build a Google Events.insert payload that creates a Meet-backed invite."""
     if not request.attendees:
@@ -125,6 +159,25 @@ async def google_calendar_api_post_json(
 class GoogleCalendarInviteClient:
     """Create Google Calendar events that send attendee invites."""
 
+    async def get_event(
+        self,
+        token_info: IntegrationTokenInfo,
+        provider_event_id: str,
+    ) -> dict[str, Any]:
+        """Fetch the organizer calendar's current event copy and version."""
+
+        async def _request(access_token: str) -> dict[str, Any]:
+            headers = {"Authorization": f"Bearer {access_token}"}
+            async with httpx.AsyncClient(headers=headers, timeout=30.0) as client:
+                response = await client.get(
+                    f"{GOOGLE_CALENDAR_BASE_URL}/calendar/v3/calendars/primary/events/"
+                    f"{provider_event_id}"
+                )
+                response.raise_for_status()
+                return cast(dict[str, Any], response.json())
+
+        return cast(dict[str, Any], await self._mutation_call(token_info, _request, "read"))
+
     async def create_event(
         self,
         token_info: IntegrationTokenInfo,
@@ -183,27 +236,30 @@ class GoogleCalendarInviteClient:
     ) -> dict[str, Any]:
         """Patch one Google event and notify its attendee roster."""
 
-        payload = {
-            "summary": request.title,
-            "description": request.body or "",
-            "location": request.location or "",
-            "start": {
-                "dateTime": _format_google_datetime(request.start_at, request.timezone),
-                "timeZone": request.timezone,
-            },
-            "end": {
-                "dateTime": _format_google_datetime(request.end_at, request.timezone),
-                "timeZone": request.timezone,
-            },
-            "attendees": [
+        payload: dict[str, Any] = {}
+        if "title" in request.changed_fields:
+            payload["summary"] = request.title
+        if "body" in request.changed_fields:
+            payload["description"] = request.body or ""
+        if "location" in request.changed_fields:
+            payload["location"] = request.location or ""
+        if "time" in request.changed_fields:
+            payload.update(
                 {
-                    "email": attendee.email,
-                    **({"displayName": attendee.name} if attendee.name else {}),
-                    **({"optional": True} if attendee.optional else {}),
+                    "start": {
+                        "dateTime": _format_google_datetime(request.start_at, request.timezone),
+                        "timeZone": request.timezone,
+                    },
+                    "end": {
+                        "dateTime": _format_google_datetime(request.end_at, request.timezone),
+                        "timeZone": request.timezone,
+                    },
                 }
-                for attendee in request.attendees
-            ],
-        }
+            )
+        if "attendees" in request.changed_fields:
+            # Google replaces attendee arrays wholesale, so carry forward guest
+            # response/resource fields that the canonical model does not expose.
+            payload["attendees"] = _google_update_attendees(request)
 
         async def _request(access_token: str) -> dict[str, Any]:
             headers = {
@@ -216,12 +272,18 @@ class GoogleCalendarInviteClient:
                 response = await client.patch(
                     f"{GOOGLE_CALENDAR_BASE_URL}/calendar/v3/calendars/primary/events/{provider_event_id}",
                     json=payload,
-                    params={"sendUpdates": "all", "conferenceDataVersion": 1},
+                    params={
+                        "sendUpdates": ("none" if request.notification_scope == "none" else "all"),
+                        "conferenceDataVersion": 1,
+                    },
                 )
                 response.raise_for_status()
                 return cast(dict[str, Any], response.json())
 
-        return await self._mutation_call(token_info, _request, "update")
+        return cast(
+            dict[str, Any],
+            await self._mutation_call(token_info, _request, "update"),
+        )
 
     async def cancel_event(
         self,

@@ -610,7 +610,9 @@ async def send_calendar_invite(
                 "status": "needs_clarification",
                 "code": clarification_code,
                 "message": (
-                    "I need the remaining meeting details before I can show the final review."
+                    resolution.clarification_message()
+                    if missing_fields == ["attendees"]
+                    else "I need the remaining meeting details before I can show the final review."
                 ),
                 "missing_fields": missing_fields,
                 "resolved_attendees": resolved_attendees,
@@ -748,6 +750,8 @@ def create_send_calendar_invite(
         When the user says "from our team", "our colleague", or "our rep", pass
         that attendee as {"name": "<name>", "scope": "team", "optional": <bool>}.
         Team scope searches crm_users only and never falls back to an external contact.
+        Carry that scope only through clarification of the same unresolved attendee;
+        a later request naming somebody else is unscoped unless it repeats the team cue.
 
         Omit title to derive "Meeting with <name>". Omit end_time to use the
         30-minute default. Date and start time remain required; the tool returns

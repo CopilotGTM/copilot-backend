@@ -38,6 +38,7 @@ from src.service.calendar_invites.models import (
 )
 from src.service.calendar_invites.resolver import CalendarIntegrationResolver
 from src.service.integrations.calendar.normalizer import CalendarEventNormalizer
+from src.service.integrations.calendar.types import NormalizedCalendarEvent
 from src.service.integrations.calendar.writer import CalendarSyncWriter
 
 CALENDAR_UPDATE_ACTIVITY_TYPE = "update_calendar_meeting"
@@ -54,6 +55,16 @@ class CalendarMutationTarget:
     state: CalendarEventUserState
     integration: KnowledgeIntegration
     provider: str
+
+
+@dataclass(frozen=True)
+class CalendarMutationSnapshot:
+    """Organizer provider copy used to preview and version one mutation."""
+
+    target: CalendarMutationTarget
+    provider_payload: dict[str, Any]
+    normalized: NormalizedCalendarEvent
+    provider_etag: str
 
 
 class CalendarMeetingMutationService:
@@ -162,6 +173,47 @@ class CalendarMeetingMutationService:
         )
         return CalendarMutationTarget(event, state, integration, provider)
 
+    async def resolve_snapshot(
+        self,
+        event_id: UUID,
+        *,
+        sender_email: str | None = None,
+    ) -> CalendarMutationSnapshot:
+        """Fetch the organizer copy that must supply both preview data and ETag."""
+
+        target = await self.resolve_target(event_id, sender_email=sender_email)
+        resolved = await self.integration_resolver.resolve(
+            self.session,
+            self.organisation_id,
+            self.requested_by_user_id,
+            sender_email=target.integration.integration_email,
+        )
+        # CalendarEvent is shared across mailbox copies, so its raw payload cannot
+        # safely version a write to this organizer-specific provider event ID.
+        if target.provider == "google":
+            payload = await self.google_client.get_event(
+                resolved.token_info,
+                target.state.external_id,
+            )
+        else:
+            payload = await self.microsoft_client.get_event(
+                resolved.token_info,
+                target.state.external_id,
+            )
+        etag = payload.get("etag") or payload.get("@odata.etag")
+        if not isinstance(etag, str) or not etag:
+            raise CalendarInviteError(
+                "calendar_meeting_version_unavailable",
+                "I could not verify the latest version of this meeting. Please try again.",
+                status_code=502,
+            )
+        return CalendarMutationSnapshot(
+            target=target,
+            provider_payload=payload,
+            normalized=self.normalizer.normalize(payload, target.provider),
+            provider_etag=etag,
+        )
+
     async def update_meeting(
         self,
         request: CalendarMeetingUpdateRequest,
@@ -179,7 +231,12 @@ class CalendarMeetingMutationService:
         if existing:
             return self._replay_result(existing, request.event_id, "updated")
         target = await self.resolve_target(request.event_id, sender_email=sender_email)
-        self._validate_version(target.event, request.expected_version)
+        if not request.provider_etag:
+            raise CalendarInviteError(
+                "calendar_meeting_confirmation_refresh_required",
+                "Please review the latest meeting details before confirming this update.",
+                status_code=409,
+            )
         resolved = await self.integration_resolver.resolve(
             self.session,
             self.organisation_id,
@@ -260,7 +317,12 @@ class CalendarMeetingMutationService:
         if existing:
             return self._replay_result(existing, event_id, "cancelled")
         target = await self.resolve_target(event_id, sender_email=sender_email)
-        self._validate_version(target.event, expected_version)
+        if not expected_version:
+            raise CalendarInviteError(
+                "calendar_meeting_confirmation_refresh_required",
+                "Please review the latest meeting details before confirming cancellation.",
+                status_code=409,
+            )
         resolved = await self.integration_resolver.resolve(
             self.session,
             self.organisation_id,
@@ -277,22 +339,18 @@ class CalendarMeetingMutationService:
         self.session.add(audit)
         await self._commit_sending(audit)
         try:
-            provider_payload = (
-                target.event.data_payload if isinstance(target.event.data_payload, dict) else {}
-            )
-            provider_etag = provider_payload.get("etag") or provider_payload.get("@odata.etag")
             if target.provider == "google":
                 await self.google_client.cancel_event(
                     resolved.token_info,
                     target.state.external_id,
-                    provider_etag,
+                    expected_version,
                 )
             else:
                 await self.microsoft_client.cancel_event(
                     resolved.token_info,
                     target.state.external_id,
                     cancellation_message,
-                    provider_etag,
+                    expected_version,
                 )
             writer = self.writer_factory(self.session, self.organisation_id)
             await writer.soft_delete_user_state(
@@ -334,16 +392,6 @@ class CalendarMeetingMutationService:
                 "calendar_boundary_mismatch",
                 "Meeting update does not match the current user and organisation.",
                 status_code=403,
-            )
-
-    @staticmethod
-    def _validate_version(event: CalendarEvent, expected_version: str | None) -> None:
-        current = event.source_modified_at.isoformat() if event.source_modified_at else None
-        if expected_version and expected_version != current:
-            raise CalendarInviteError(
-                "calendar_meeting_changed",
-                "The meeting changed after preview. Please review its latest details.",
-                status_code=409,
             )
 
     def _audit_row(
@@ -399,10 +447,18 @@ class CalendarMeetingMutationService:
             if isinstance(existing.status, IntegrationActivityRequestStatus)
             else str(existing.status)
         )
+        if status == IntegrationActivityRequestStatus.FAILED.value:
+            # A previous provider rejection is known, not ambiguous. Returning its
+            # concrete reason lets the agent refresh the provider copy and continue.
+            raise CalendarInviteError(
+                existing.error_code or "calendar_meeting_mutation_failed",
+                existing.error_message or "The previous meeting change was not applied.",
+                status_code=409,
+            )
         if status != IntegrationActivityRequestStatus.SENT.value:
             raise CalendarInviteError(
                 "calendar_meeting_mutation_status_unknown",
-                "This meeting change is already in progress or its result is unknown.",
+                "This meeting change is still in progress. Please refresh the meeting.",
                 status_code=409,
             )
         return CalendarMeetingMutationResult(

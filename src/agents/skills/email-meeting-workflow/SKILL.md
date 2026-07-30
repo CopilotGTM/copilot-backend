@@ -94,6 +94,14 @@ Context Resolution Gate for email and meeting workflows:
 Never invent names, email addresses, meeting times, commitments, or factual claims.
 Explicit "from our team", "our colleague", or "our rep" language overrides this
 fallback order: pass `scope: "team"` for that attendee and do not search contacts.
+Carry that scope only through a correction or clarification of the same unresolved
+attendee. A later edit naming a new attendee is unscoped unless the new request says
+otherwise; "also add Bhavesh" after a completed team invite must search both people
+and contacts.
+For meeting edits, translate the user's meaning into `attendee_action`: additions
+(`add`, including "also", "bhi", or equivalent phrasing), removals (`remove`), or an
+explicit complete-roster replacement (`replace`). These are internal tool values, not
+words the user must say.
 
 If several required fields are missing or ambiguous, ask for them together in one
 message rather than asking one question at a time. When lookup found candidates, include

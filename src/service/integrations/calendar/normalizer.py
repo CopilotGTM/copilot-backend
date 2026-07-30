@@ -745,8 +745,9 @@ class CalendarEventNormalizer:
         should still clear the old roster — the provider is telling us the
         roster has been edited, even if every entry it sent is unusable.
         """
-        attendees_data = event_data.get("attendees", [])
-        return isinstance(attendees_data, list) and bool(attendees_data)
+        # An explicit empty list means the organizer removed the final attendee;
+        # absence of the field means a sparse provider response gave no roster.
+        return "attendees" in event_data and isinstance(event_data["attendees"], list)
 
     @staticmethod
     def extract_attendee_email(attendee_data: dict[str, Any]) -> str | None:

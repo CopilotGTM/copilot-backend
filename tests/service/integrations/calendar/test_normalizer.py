@@ -48,6 +48,27 @@ def test_google_normalizer_skips_attendees_without_email() -> None:
     assert normalized.attendees[0].is_organiser is True
 
 
+def test_normalizer_treats_explicit_empty_attendees_as_complete_snapshot() -> None:
+    """An empty provider roster must clear attendees instead of looking sparse."""
+
+    normalized = CalendarEventNormalizer().normalize(
+        {
+            "id": "google-user-event",
+            "iCalUID": "shared-ical",
+            "summary": "Solo hold",
+            "status": "confirmed",
+            "start": {"dateTime": "2024-01-15T10:00:00Z", "timeZone": "UTC"},
+            "end": {"dateTime": "2024-01-15T10:30:00Z", "timeZone": "UTC"},
+            "organizer": {"email": "host@example.com"},
+            "attendees": [],
+        },
+        "google",
+    )
+
+    assert normalized.has_attendee_snapshot is True
+    assert normalized.attendees == []
+
+
 def test_microsoft_normalizer_reads_nested_attendee_payload() -> None:
     """Microsoft's `emailAddress.{address,name}` shape produces the same DTO as Google.
 
@@ -371,6 +392,7 @@ def test_change_detector_detects_changed_google_conference_link() -> None:
 
 
 def test_microsoft_normalizer_extracts_google_meet_from_location() -> None:
+    """Microsoft events may carry a valid Google Meet URL only in location."""
     normalized = CalendarEventNormalizer().normalize(
         {
             "id": "ms-user-event",
@@ -399,6 +421,7 @@ def test_microsoft_normalizer_extracts_google_meet_from_location() -> None:
 
 
 def test_microsoft_normalizer_extracts_zoom_from_locations() -> None:
+    """Microsoft's locations collection should expose a supported Zoom URL."""
     normalized = CalendarEventNormalizer().normalize(
         {
             "id": "ms-user-event",
@@ -426,6 +449,7 @@ def test_microsoft_normalizer_extracts_zoom_from_locations() -> None:
 
 
 def test_microsoft_normalizer_extracts_teams_from_body_when_online_meeting_missing() -> None:
+    """A Teams URL in the body remains usable when structured data is absent."""
     normalized = CalendarEventNormalizer().normalize(
         {
             "id": "ms-user-event",
@@ -449,6 +473,7 @@ def test_microsoft_normalizer_extracts_teams_from_body_when_online_meeting_missi
 
 
 def test_microsoft_normalizer_extracts_webex_from_body_preview() -> None:
+    """Microsoft body previews may be the only source of a Webex link."""
     normalized = CalendarEventNormalizer().normalize(
         {
             "id": "ms-user-event",
@@ -469,6 +494,7 @@ def test_microsoft_normalizer_extracts_webex_from_body_preview() -> None:
 
 
 def test_google_normalizer_extracts_zoom_from_description_when_conference_data_missing() -> None:
+    """Google descriptions should supply Zoom links when conference data is absent."""
     normalized = CalendarEventNormalizer().normalize(
         {
             "id": "google-user-event",
@@ -489,6 +515,7 @@ def test_google_normalizer_extracts_zoom_from_description_when_conference_data_m
 
 
 def test_google_normalizer_extracts_teams_from_location() -> None:
+    """Google event locations may contain a valid Microsoft Teams link."""
     normalized = CalendarEventNormalizer().normalize(
         {
             "id": "google-user-event",
@@ -509,6 +536,7 @@ def test_google_normalizer_extracts_teams_from_location() -> None:
 
 
 def test_google_normalizer_extracts_webex_from_description() -> None:
+    """Google descriptions should expose supported Webex links."""
     normalized = CalendarEventNormalizer().normalize(
         {
             "id": "google-user-event",
@@ -529,6 +557,7 @@ def test_google_normalizer_extracts_webex_from_description() -> None:
 
 
 def test_google_normalizer_classifies_structured_zoom_addon_from_entry_point_uri() -> None:
+    """Structured Google add-on entry points should retain their Zoom provider."""
     normalized = CalendarEventNormalizer().normalize(
         {
             "id": "google-user-event",
@@ -556,6 +585,7 @@ def test_google_normalizer_classifies_structured_zoom_addon_from_entry_point_uri
 
 
 def test_google_join_link_backfill_extracts_structured_zoom_addon() -> None:
+    """Sparse join-link backfill should recognize structured Zoom add-ons."""
     update = CalendarEventNormalizer.extract_join_link_update(
         "google",
         {
@@ -576,6 +606,7 @@ def test_google_join_link_backfill_extracts_structured_zoom_addon() -> None:
 
 
 def test_google_normalizer_prefers_structured_google_meet_over_description_link() -> None:
+    """Structured Google Meet data must win over an incidental description URL."""
     normalized = CalendarEventNormalizer().normalize(
         {
             "id": "google-user-event",
@@ -604,6 +635,7 @@ def test_google_normalizer_prefers_structured_google_meet_over_description_link(
 
 
 def test_normalizer_rejects_unsupported_location_url() -> None:
+    """Unsupported location hosts must not become meeting links."""
     normalized = CalendarEventNormalizer().normalize(
         {
             "id": "ms-user-event",
@@ -624,6 +656,7 @@ def test_normalizer_rejects_unsupported_location_url() -> None:
 
 
 def test_normalizer_rejects_lookalike_hosts() -> None:
+    """Provider lookalike domains must not pass meeting-host validation."""
     for url in (
         "https://zoom.evil.example/j/123456789",
         "https://meet.google.com.evil.example/abc-defg-hij",
@@ -649,6 +682,7 @@ def test_normalizer_rejects_lookalike_hosts() -> None:
 
 
 def test_normalizer_extracts_url_without_trailing_prose() -> None:
+    """Meeting URL extraction must stop before trailing prose and punctuation."""
     normalized = CalendarEventNormalizer().normalize(
         {
             "id": "google-user-event",
@@ -669,6 +703,7 @@ def test_normalizer_extracts_url_without_trailing_prose() -> None:
 
 
 def test_google_normalizer_rejects_unsupported_structured_addon_url() -> None:
+    """Structured add-ons on unsupported hosts must not become meeting links."""
     normalized = CalendarEventNormalizer().normalize(
         {
             "id": "google-user-event",
@@ -696,6 +731,7 @@ def test_google_normalizer_rejects_unsupported_structured_addon_url() -> None:
 
 
 def test_normalizer_unescapes_html_query_parameters() -> None:
+    """HTML-escaped query parameters should survive meeting URL normalization."""
     normalized = CalendarEventNormalizer().normalize(
         {
             "id": "ms-user-event",
@@ -725,6 +761,7 @@ def test_normalizer_unescapes_html_query_parameters() -> None:
 
 
 def test_normalizer_unwraps_microsoft_safelink_to_supported_meeting_url() -> None:
+    """Microsoft Safe Links should unwrap only to a supported meeting provider."""
     normalized = CalendarEventNormalizer().normalize(
         {
             "id": "ms-user-event",
