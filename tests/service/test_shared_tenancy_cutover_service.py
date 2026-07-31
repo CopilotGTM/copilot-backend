@@ -60,6 +60,28 @@ def test_copy_requires_explicit_apply_and_operational_evidence_before_database_i
     assert exc_info.value.code == error_code
 
 
+def test_precheck_uses_bounded_maintenance_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Large tenant digests get more time without changing the session default."""
+
+    session = MagicMock(spec=Session)
+    service = SharedTenancyCutoverService(session, expected_revision="test_head")
+    precheck = SimpleNamespace()
+    monkeypatch.setattr(service, "_run_precheck", lambda _organisation_id: precheck)
+    monkeypatch.setattr(service, "_base_report", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(service, "_precheck_table_reports", lambda _precheck: {})
+
+    report = service.precheck(uuid4())
+
+    statements = [str(call.args[0]) for call in session.execute.call_args_list]
+    assert statements[:2] == [
+        "SET TRANSACTION READ ONLY",
+        "SET LOCAL statement_timeout = '30min'",
+    ]
+    assert report["result"] == "ready"
+
+
 def test_replace_existing_deletes_target_rows_before_copy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -119,7 +141,7 @@ def test_replace_existing_deletes_target_rows_before_copy(
 
     assert events == ["precheck:False", "replace"]
     statements = [str(call.args[0]) for call in session.execute.call_args_list]
-    assert "SET LOCAL statement_timeout = '15min'" in statements
+    assert "SET LOCAL statement_timeout = '30min'" in statements
     assert report["result"] == "copied_and_validated"
     assert report["destination_replaced"] is True
 

@@ -101,6 +101,9 @@ class SharedTenancyCutoverService:
         try:
             with self._session.begin():
                 self._session.execute(text("SET TRANSACTION READ ONLY"))
+                # Large deterministic table digests need a bounded maintenance
+                # ceiling above the normal runtime query timeout.
+                self._session.execute(text("SET LOCAL statement_timeout = '30min'"))
                 precheck = self._run_precheck(organisation_id)
                 report = self._base_report(precheck, operation="precheck")
                 report["tables"] = self._precheck_table_reports(precheck)
@@ -160,7 +163,7 @@ class SharedTenancyCutoverService:
                     self._session.execute(text("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
                 # Full-row JSON hashing can exceed the API query timeout on a
                 # large tenant; keep a bounded maintenance-only ceiling.
-                self._session.execute(text("SET LOCAL statement_timeout = '15min'"))
+                self._session.execute(text("SET LOCAL statement_timeout = '30min'"))
                 precheck_started = time.perf_counter()
                 precheck = self._run_precheck(
                     organisation_id,
