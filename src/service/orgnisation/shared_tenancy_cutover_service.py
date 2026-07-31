@@ -1,10 +1,11 @@
-"""One-source cutover and exact legacy database cleanup for `tenant_data`.
+"""Exact-organisation cutover and legacy database cleanup for `tenant_data`.
 
 The maintenance CLI owns session creation and immutable evidence output. This
-service owns one PostgreSQL transaction: it discovers the sole populated legacy
+service owns one PostgreSQL transaction: it selects the UUID-bound legacy
 schema, proves source/target compatibility, copies in foreign-key order, and
-validates the committed shape without exposing row payloads. After runtime smoke
-evidence exists, it can also remove only the UUID-bound source schema and role.
+validates the committed shape without exposing row payloads. Other populated
+legacy schemas are left untouched. After runtime smoke evidence exists, it can
+also remove only the selected source schema and role.
 """
 
 # ruff: noqa: S608
@@ -76,7 +77,7 @@ class _Precheck:
 
 
 class SharedTenancyCutoverService:
-    """Copy the single legacy dataset and remove only its exact database resources."""
+    """Copy one selected organisation and remove only its exact database resources."""
 
     def __init__(
         self,
@@ -130,8 +131,9 @@ class SharedTenancyCutoverService:
         writers_stopped_evidence: str,
         backup_reference: str,
         apply: bool,
+        replace_existing: bool = False,
     ) -> dict[str, Any]:
-        """Copy and validate in one transaction after all operator gates pass."""
+        """Copy and validate, optionally replacing this tenant's destination rows."""
 
         if not apply:
             raise CutoverError("apply_required", "--apply is required")
@@ -152,12 +154,24 @@ class SharedTenancyCutoverService:
         current_table: str | None = None
         try:
             with self._session.begin():
+                if replace_existing:
+                    # Predicate locking makes concurrent writes abort this
+                    # destructive replacement instead of creating a mixed snapshot.
+                    self._session.execute(text("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
+                # Full-row JSON hashing can exceed the API query timeout on a
+                # large tenant; keep a bounded maintenance-only ceiling.
+                self._session.execute(text("SET LOCAL statement_timeout = '15min'"))
                 precheck_started = time.perf_counter()
-                precheck = self._run_precheck(organisation_id)
+                precheck = self._run_precheck(
+                    organisation_id,
+                    require_empty_destination=not replace_existing,
+                )
                 precheck_ms = _elapsed_ms(precheck_started)
                 self._set_tenant_context(organisation_id)
 
                 sentinel_before = self._sentinel_snapshot(precheck.destination, organisation_id)
+                if replace_existing:
+                    self._replace_destination_rows(precheck)
                 copy_started = time.perf_counter()
                 for current_table in precheck.table_order:
                     self._copy_table(
@@ -193,6 +207,7 @@ class SharedTenancyCutoverService:
                         "writers_stopped_evidence": writers_stopped_evidence,
                         "backup_reference": backup_reference,
                         "mutation_performed": True,
+                        "destination_replaced": replace_existing,
                         "tables": table_reports,
                         "sentinel": {
                             name: {
@@ -256,7 +271,12 @@ class SharedTenancyCutoverService:
             source_role=source_role,
         )
 
-    def _run_precheck(self, organisation_id: UUID) -> _Precheck:
+    def _run_precheck(
+        self,
+        organisation_id: UUID,
+        *,
+        require_empty_destination: bool = True,
+    ) -> _Precheck:
         if not isinstance(organisation_id, UUID):
             raise CutoverError("invalid_organisation_id", "organisation_id must be a UUID")
         self._acquire_lock(organisation_id)
@@ -265,18 +285,11 @@ class SharedTenancyCutoverService:
         self._session.execute(text("SET LOCAL row_security = off"))
         self._validate_master_organisation(organisation_id)
 
-        expected_source = get_schema_name(organisation_id)
-        populated_sources = self._populated_legacy_schemas()
-        if len(populated_sources) != 1:
-            raise CutoverError(
-                "populated_source_count",
-                "exactly one populated canonical legacy schema is required",
-            )
-        source_schema = populated_sources[0]
-        if source_schema != expected_source:
+        source_schema = get_schema_name(organisation_id)
+        if not self._schema_has_rows(source_schema):
             raise CutoverError(
                 "source_identity_mismatch",
-                "the populated source schema does not match the requested organisation",
+                "the requested organisation has no populated canonical source schema",
             )
         try:
             encoded_id = legacy_schema_organisation_id(source_schema)
@@ -298,7 +311,8 @@ class SharedTenancyCutoverService:
         self._validate_destination_rls()
 
         source_counts = self._validate_source_identity(source, organisation_id)
-        self._validate_destination_empty(destination, organisation_id)
+        if require_empty_destination:
+            self._validate_destination_empty(destination, organisation_id)
         table_order, deferred_foreign_keys = self._copy_plan(destination)
         return _Precheck(
             organisation_id=organisation_id,
@@ -516,33 +530,6 @@ class SharedTenancyCutoverService:
                 "requested organisation does not exist in the master schema",
             )
 
-    def _populated_legacy_schemas(self) -> tuple[str, ...]:
-        schema_names = self._session.execute(
-            text(
-                r"""
-                SELECT nspname
-                  FROM pg_namespace
-                 WHERE nspname LIKE 'org\_%' ESCAPE '\'
-                 ORDER BY nspname
-                """
-            )
-        ).scalars()
-        populated: list[str] = []
-        for raw_name in schema_names:
-            schema_name = str(raw_name)
-            try:
-                legacy_schema_organisation_id(schema_name)
-            except ValueError:
-                if self._schema_has_rows(schema_name):
-                    raise CutoverError(
-                        "noncanonical_source_schema",
-                        "a populated noncanonical org_ schema exists",
-                    ) from None
-                continue
-            if self._schema_has_rows(schema_name):
-                populated.append(schema_name)
-        return tuple(populated)
-
     def _schema_has_rows(self, schema_name: str) -> bool:
         validate_migration_schema_name(schema_name)
         table_names = self._schema_table_names(schema_name)
@@ -711,6 +698,31 @@ class SharedTenancyCutoverService:
                     "destination_not_empty",
                     f"destination table {name} already contains target rows",
                 )
+
+    def _replace_destination_rows(self, precheck: _Precheck) -> None:
+        """Delete only the selected tenant in dependency-safe order."""
+
+        for table_name in precheck.table_order:
+            deferred_columns = self._deferred_columns(precheck, table_name)
+            if deferred_columns:
+                table = precheck.destination.tables[table_name]
+                # Nullable cycle links are cleared first so reverse-order deletes
+                # can preserve every non-target tenant and all FK enforcement.
+                self._session.execute(
+                    table.update()
+                    .where(table.c.organisation_id == precheck.organisation_id)
+                    .values(dict.fromkeys(deferred_columns))
+                )
+
+        for table_name in reversed(precheck.table_order):
+            table = precheck.destination.tables[table_name]
+            self._session.execute(
+                table.delete().where(table.c.organisation_id == precheck.organisation_id)
+            )
+        self._validate_destination_empty(
+            precheck.destination,
+            precheck.organisation_id,
+        )
 
     def _validate_destination_rls(self) -> None:
         try:
@@ -947,8 +959,8 @@ class SharedTenancyCutoverService:
         comparator = "=" if include_target else "IS DISTINCT FROM"
         # Reflected identifiers are validated; the organisation value remains bound.
         query = text(
-            f"SELECT jsonb_build_array({key_expression})::text AS key_json, "  # nosec B608
-            f"to_jsonb({alias})::text AS row_json "
+            f"SELECT md5(jsonb_build_array({key_expression})::text) AS key_digest, "  # nosec B608
+            f"md5(to_jsonb({alias})::text) AS row_digest "
             f"FROM {_qualified(str(table.schema), table.name)} AS {alias} "
             f"WHERE {alias}.organisation_id {comparator} :organisation_id "
             f"ORDER BY {key_expression}"
@@ -960,8 +972,8 @@ class SharedTenancyCutoverService:
             query,
             {"organisation_id": str(organisation_id)},
         ):
-            _update_digest(key_hash, str(row.key_json))
-            _update_digest(row_hash, str(row.row_json))
+            _update_digest(key_hash, str(row.key_digest))
+            _update_digest(row_hash, str(row.row_digest))
             count += 1
         return count, key_hash.hexdigest(), row_hash.hexdigest()
 
@@ -1043,7 +1055,10 @@ class SharedTenancyCutoverService:
                            index_catalog.indrelid,
                            true
                        ) AS predicate,
-                       index_catalog.indnullsnotdistinct AS nulls_not_distinct,
+                       COALESCE(
+                           (to_jsonb(index_catalog)->>'indnullsnotdistinct')::boolean,
+                           false
+                       ) AS nulls_not_distinct,
                        index_catalog.indisvalid AS is_valid,
                        index_catalog.indisready AS is_ready
                   FROM pg_index index_catalog

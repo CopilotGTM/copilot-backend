@@ -1,4 +1,4 @@
-"""Real-PostgreSQL proof for atomic one-source tenant cutover."""
+"""Real-PostgreSQL proof for atomic selected-tenant cutover."""
 
 # ruff: noqa: S608
 
@@ -179,7 +179,7 @@ def test_cutover_prechecks_locking_validation_and_failure_rollback() -> None:
         with engine.connect() as connection:
             assert _count_for_org(connection, destination, "parents", organisation_id) == 0
 
-        # A second canonical populated source invalidates the one-source assumption.
+        # Other populated organisations remain valid independent future cutover sources.
         with engine.begin() as connection:
             connection.execute(text(f'CREATE SCHEMA "{extra_source}"'))
             connection.execute(
@@ -192,13 +192,14 @@ def test_cutover_prechecks_locking_validation_and_failure_rollback() -> None:
                 text(f'INSERT INTO "{extra_source}".widgets VALUES (:org, :widget)'),
                 {"org": str(extra_organisation_id), "widget": str(uuid4())},
             )
-        with Session(engine) as session, pytest.raises(CutoverError) as exc_info:
-            SharedTenancyCutoverService(
+        with Session(engine) as session:
+            multi_source_precheck = SharedTenancyCutoverService(
                 session,
                 expected_revision="cutover_test_head",
                 destination_schema=destination,
             ).precheck(organisation_id)
-        assert exc_info.value.code == "populated_source_count"
+        assert multi_source_precheck["result"] == "ready"
+        assert multi_source_precheck["source_schema"] == source
         with engine.begin() as connection:
             connection.execute(text(f'DROP SCHEMA "{extra_source}" CASCADE'))
 

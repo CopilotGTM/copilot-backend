@@ -69,30 +69,33 @@ def test_migration_advances_head_and_owns_exact_audit_inventory() -> None:
     assert migration.TENANT_ORGANISATION_ID_DEFAULT_SQL == EXPECTED_DEFAULT
 
 
-def test_schema_name_is_validated_without_accepting_a_backfill_identity() -> None:
-    """Schema migrations prepare structure and never carry tenant row data."""
+def test_legacy_schema_encodes_its_backfill_identity() -> None:
+    """A selected legacy schema supplies its own canonical organisation UUID."""
 
     helper = _load_module(HELPER_PATH, "tenant_identity")
+    schema_name = "org_11111111_2222_3333_4444_555555555555"
 
     assert helper.validate_migration_schema_name("tenant_data") == "tenant_data"
-    assert not hasattr(helper, "resolve_backfill_identity")
+    assert str(helper.legacy_schema_organisation_id(schema_name)) == (
+        "11111111-2222-3333-4444-555555555555"
+    )
 
 
-def test_migration_only_prepares_empty_shared_schema() -> None:
-    """Organisation data is copied separately after structural migration."""
+def test_migration_backfills_legacy_rows_before_hardening_identity() -> None:
+    """Legacy rows receive their schema identity before NOT NULL is validated."""
 
     assert MIGRATION_PATH.exists(), f"missing migration: {MIGRATION_PATH.name}"
     source = MIGRATION_PATH.read_text(encoding="utf-8")
 
     add_position = source.index("op.add_column")
+    backfill_position = source.index("SET organisation_id = :organisation_id")
     validate_position = source.index("VALIDATE CONSTRAINT")
     not_null_position = source.index("nullable=False")
     default_position = source.index("server_default=sa.text")
 
-    assert add_position < validate_position
+    assert add_position < backfill_position < validate_position
     assert validate_position < not_null_position < default_position
-    assert "resolve_backfill_identity" not in source
-    assert "SET organisation_id = :organisation_id" not in source
+    assert "legacy_schema_organisation_id" in source
     assert 'x_args.get("organisation_id")' not in source
 
 

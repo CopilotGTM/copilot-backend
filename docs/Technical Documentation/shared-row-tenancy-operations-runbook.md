@@ -1,7 +1,9 @@
 # Shared-row tenancy clean-break operations runbook
 
-This runbook is the executable control for moving the one populated organisation
-dataset into the Terraform-owned `tenant_data` schema. It is forward-only:
+This runbook is the executable control for moving one explicitly selected
+organisation dataset into the Terraform-owned `tenant_data` schema. Other
+legacy organisation schemas remain untouched for later approved cutovers. It is
+forward-only:
 
 - master/control-plane data stays in `public` and continues through master
   session functions;
@@ -129,7 +131,8 @@ uv run python -m scripts.maintenance.cutover_shared_tenant_schema precheck `
 The approver must inspect the reports, not only the exit code. Continue only
 when all of the following are proved:
 
-- exactly one populated source schema exists and it is `$SourceSchema`;
+- `$SourceSchema` is populated and is the exact schema derived from
+  `$OrganisationId`;
 - its derived role is exactly `$SourceRole`;
 - the organisation UUID is exactly `$OrganisationId`;
 - source and destination migration heads are compatible;
