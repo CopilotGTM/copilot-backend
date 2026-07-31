@@ -1171,8 +1171,8 @@ module "managed_devops_prod_deploy_pool" {
   dev_center_project_resource_id = local.managed_devops_project_resource_id
   ado_org_url                    = var.org_service_url
   ado_project_names              = [var.devops_project_name]
-  parallelism                    = 2
-  maximum_concurrency            = 2
+  parallelism                    = 1
+  maximum_concurrency            = 1
   subnet_id                      = module.vnet.managed_devops_pools_subnet_ids["mdp-prod-deploy"]
   sku_name                       = var.managed_devops_pool_sku_name
   image_name                     = var.managed_devops_image_name
