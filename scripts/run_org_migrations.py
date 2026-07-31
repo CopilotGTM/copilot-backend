@@ -12,6 +12,9 @@ import urllib.parse  # noqa: E402
 
 from dotenv import load_dotenv  # noqa: E402
 from migrations.migration_manager import migration_manager  # noqa: E402
+from migrations.org_migrations.tenant_identity import (  # noqa: E402
+    validate_migration_schema_name,
+)
 from sqlalchemy import create_engine  # noqa: E402
 from sqlmodel import Session, select  # noqa: E402
 from src.domain.models.master_tables import Organisation, OrganisationStatus  # noqa: E402
@@ -67,8 +70,57 @@ def parse_args():
         action="store_true",
         help="Abort remaining migrations after first failure",
     )
+    p.add_argument(
+        "--schema",
+        help="Run the existing organization migration chain against this explicit schema.",
+    )
 
     return p.parse_args()
+
+
+def validate_cli_targets(
+    *,
+    schema_name: str | None,
+    org_ids: list[str],
+    migrate_all: bool,
+    list_orgs: bool,
+) -> None:
+    """Keep explicit schema migration separate from legacy organisation selection."""
+
+    if schema_name and (org_ids or migrate_all or list_orgs):
+        raise ValueError(
+            "--schema cannot be combined with organization IDs, --all, or --list-orgs"
+        )
+
+
+def run_migration_for_schema(
+    *,
+    schema_name: str,
+    target_version: str,
+    precheck: bool = False,
+) -> bool:
+    """Run the existing Alembic chain against one pre-provisioned schema."""
+
+    validate_migration_schema_name(schema_name)
+
+    if precheck:
+        if not migration_manager._validate_schema_exists(schema_name):
+            print(f"[ERROR] Schema '{schema_name}' does not exist")
+            return False
+        current = migration_manager._get_current_revision(schema_name)
+        print(f"[PRECHECK] {schema_name}: current={current} target={target_version}")
+        return True
+
+    result = migration_manager.run_organization_migration(
+        schema_name=schema_name,
+        target_revision=target_version,
+        validate_schema=True,
+    )
+    if result.success:
+        print(f"[OK] Successfully migrated schema: {schema_name}")
+        return True
+    print(f"[ERROR] Migration failed for schema {schema_name}: {result.error}")
+    return False
 
 
 def list_organizations():
@@ -263,6 +315,26 @@ def run_migrations_for_orgs(
 def main():
     print("Starting organization migrations script...")
     args = parse_args()
+    try:
+        validate_cli_targets(
+            schema_name=args.schema,
+            org_ids=args.org_ids,
+            migrate_all=args.all,
+            list_orgs=args.list_orgs,
+        )
+    except ValueError as exc:
+        print(f"[ERROR] {exc}")
+        sys.exit(2)
+
+    if args.schema:
+        success = run_migration_for_schema(
+            schema_name=args.schema,
+            target_version=args.target_version,
+            precheck=args.precheck,
+        )
+        if not success:
+            sys.exit(1)
+        return
 
     if args.list_orgs:
         list_organizations()

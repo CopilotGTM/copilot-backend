@@ -1,10 +1,14 @@
+import inspect
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
+import pytest
 import scripts.run_org_migrations as run_org_migrations
 from migrations.migration_manager import ProductionMigrationManager
 from sqlalchemy.pool import NullPool
+
+from migrations import migration_manager as migration_manager_module
 
 
 class _FakeResult:
@@ -133,3 +137,116 @@ def test_migration_manager_uses_short_lived_master_connections(monkeypatch):
     assert captured["kwargs"]["poolclass"] is NullPool
     assert "pool_size" not in captured["kwargs"]
     assert "max_overflow" not in captured["kwargs"]
+
+
+def test_migration_manager_passes_only_schema_to_alembic(monkeypatch):
+    """Structural migrations never receive organisation row identity."""
+
+    captured: dict[str, object] = {}
+    manager = ProductionMigrationManager.__new__(ProductionMigrationManager)
+
+    monkeypatch.setattr(manager, "_validate_schema_exists", lambda _schema: True)
+    monkeypatch.setattr(manager, "_get_current_revision", lambda _schema: None)
+    monkeypatch.setattr(manager, "_get_head_revision", lambda: "head-revision")
+    monkeypatch.setattr(
+        migration_manager_module.command,
+        "upgrade",
+        lambda config, revision: captured.update(
+            x_args=config.cmd_opts.x,
+            revision=revision,
+        ),
+    )
+
+    result = manager.run_organization_migration(
+        schema_name="org_11111111_1111_4111_8111_111111111111",
+    )
+
+    assert result.success is True
+    assert captured["x_args"] == ["schema=org_11111111_1111_4111_8111_111111111111"]
+    assert "organisation_id" not in inspect.signature(manager.run_organization_migration).parameters
+
+
+def test_migration_manager_passes_only_schema_for_tenant_data(monkeypatch):
+    """The permanent shared schema migration receives only its schema name."""
+
+    captured: dict[str, object] = {}
+    manager = ProductionMigrationManager.__new__(ProductionMigrationManager)
+
+    monkeypatch.setattr(manager, "_validate_schema_exists", lambda _schema: True)
+    monkeypatch.setattr(manager, "_get_current_revision", lambda _schema: None)
+    monkeypatch.setattr(manager, "_get_head_revision", lambda: "head-revision")
+    monkeypatch.setattr(
+        migration_manager_module.command,
+        "upgrade",
+        lambda config, revision: captured.update(
+            x_args=config.cmd_opts.x,
+            revision=revision,
+        ),
+    )
+
+    result = manager.run_organization_migration(schema_name="tenant_data")
+
+    assert result.success is True
+    assert captured["x_args"] == ["schema=tenant_data"]
+
+
+def test_explicit_schema_path_runs_existing_migration_manager(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        run_org_migrations.migration_manager,
+        "run_organization_migration",
+        lambda **kwargs: captured.update(kwargs)
+        or SimpleNamespace(success=True, error=None, duration=0.1),
+    )
+
+    success = run_org_migrations.run_migration_for_schema(
+        schema_name="tenant_data",
+        target_version="head",
+    )
+
+    assert success is True
+    assert captured == {
+        "schema_name": "tenant_data",
+        "target_revision": "head",
+        "validate_schema": True,
+    }
+
+
+@pytest.mark.parametrize("schema_name", ["tenant_data_test", "feature_123"])
+def test_explicit_schema_path_accepts_safe_test_schema_names(monkeypatch, schema_name):
+    captured = {}
+    monkeypatch.setattr(
+        run_org_migrations.migration_manager,
+        "run_organization_migration",
+        lambda **kwargs: captured.update(kwargs)
+        or SimpleNamespace(success=True, error=None, duration=0.1),
+    )
+
+    assert run_org_migrations.run_migration_for_schema(
+        schema_name=schema_name,
+        target_version="head",
+    )
+    assert captured["schema_name"] == schema_name
+    assert "organisation_id" not in captured
+
+
+@pytest.mark.parametrize(
+    "schema_name",
+    ["tenant-data", "tenant_data; DROP SCHEMA public", "public.tenant_data", ""],
+)
+def test_explicit_schema_path_rejects_unsafe_identifiers(schema_name):
+    with pytest.raises(ValueError, match="schema"):
+        run_org_migrations.run_migration_for_schema(
+            schema_name=schema_name,
+            target_version="head",
+        )
+
+
+def test_explicit_schema_cannot_mix_with_legacy_target_selection():
+    with pytest.raises(ValueError, match="cannot be combined"):
+        run_org_migrations.validate_cli_targets(
+            schema_name="tenant_data",
+            org_ids=["11111111-1111-4111-8111-111111111111"],
+            migrate_all=False,
+            list_orgs=False,
+        )

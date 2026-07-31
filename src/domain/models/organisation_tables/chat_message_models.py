@@ -3,12 +3,13 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, CheckConstraint, Column, String, text
+from sqlalchemy import Boolean, CheckConstraint, Column, Index, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship, SQLModel
 
 from .base_mixins import TimestampMixin
 from .job_models import ChatMessageJob
+from .tenant_constraints import tenant_foreign_key
 
 if TYPE_CHECKING:
     from .chat_session_models import ChatSession
@@ -41,9 +42,38 @@ class ChatMessageAttachmentLink(SQLModel, table=True):
     """
 
     __tablename__ = "chat_message_attachment_link"
+    __table_args__ = (
+        tenant_foreign_key(
+            "chat_message_attachment_link",
+            "message_id",
+            "chat_messages",
+            "message_id",
+        ),
+        tenant_foreign_key(
+            "chat_message_attachment_link",
+            "attachment_id",
+            "attachments",
+            "attachment_id",
+        ),
+        Index(
+            "ix_chat_message_attachment_link_org_attachment_id",
+            "organisation_id",
+            "attachment_id",
+        ),
+    )
 
-    message_id: UUID = Field(foreign_key="chat_messages.message_id", primary_key=True)
-    attachment_id: UUID = Field(foreign_key="attachments.attachment_id", primary_key=True)
+    organisation_id: UUID = Field(
+        foreign_key="public.organisations.organisation_id",
+        nullable=False,
+        index=True,
+        sa_column_kwargs={
+            "server_default": text(
+                "NULLIF(current_setting('app.current_organisation_id', true), '')::uuid"
+            )
+        },
+    )
+    message_id: UUID = Field(primary_key=True)
+    attachment_id: UUID = Field(primary_key=True)
     attachment_order: int = Field(default=0, description="Display order of attachment in message")
 
 
@@ -79,6 +109,22 @@ class Attachment(TimestampMixin, table=True):
     """
 
     __tablename__ = "attachments"
+    __table_args__ = (
+        UniqueConstraint(
+            "organisation_id",
+            "attachment_id",
+            name="uq_attachments_org_attachment_id",
+        ),
+        Index(
+            "uq_attachments_org_whatsapp_source_external_id",
+            "organisation_id",
+            "source_external_id",
+            unique=True,
+            postgresql_where=text(
+                "source_provider = 'whatsapp' AND source_external_id IS NOT NULL"
+            ),
+        ),
+    )
 
     attachment_id: UUID = Field(
         default_factory=uuid4,
@@ -158,6 +204,28 @@ class ChatMessage(TimestampMixin, table=True):
 
     __tablename__ = "chat_messages"
     __table_args__ = (
+        UniqueConstraint(
+            "organisation_id",
+            "message_id",
+            name="uq_chat_messages_org_message_id",
+        ),
+        tenant_foreign_key(
+            "chat_messages",
+            "session_id",
+            "chat_sessions",
+            "session_id",
+        ),
+        tenant_foreign_key(
+            "chat_messages",
+            "parent_message_id",
+            "chat_messages",
+            "message_id",
+        ),
+        Index(
+            "ix_chat_messages_org_parent_message_id",
+            "organisation_id",
+            "parent_message_id",
+        ),
         CheckConstraint("message_version > 0", name="chat_message_version_positive"),
         {"comment": "Stores individual chat messages for all sessions."},
     )
@@ -167,14 +235,22 @@ class ChatMessage(TimestampMixin, table=True):
         primary_key=True,
         description="Primary key for the chat message.",
     )
+    organisation_id: UUID = Field(
+        foreign_key="public.organisations.organisation_id",
+        nullable=False,
+        index=True,
+        sa_column_kwargs={
+            "server_default": text(
+                "NULLIF(current_setting('app.current_organisation_id', true), '')::uuid"
+            )
+        },
+    )
     session_id: UUID = Field(
-        foreign_key="chat_sessions.session_id",
         index=True,
         description="Foreign key linking to the chat session.",
     )
     parent_message_id: UUID | None = Field(
         default=None,
-        foreign_key="chat_messages.message_id",
         description="The ID of the parent message if this is a reply.",
     )
 
@@ -235,9 +311,15 @@ class ChatMessage(TimestampMixin, table=True):
     # self-referencing relationship for message threads
     parent_message: Optional["ChatMessage"] = Relationship(
         back_populates="replies",
-        sa_relationship_kwargs={"remote_side": "ChatMessage.message_id"},
+        sa_relationship_kwargs={
+            "overlaps": "session",
+            "remote_side": "ChatMessage.message_id",
+        },
     )
-    replies: list["ChatMessage"] = Relationship(back_populates="parent_message")
+    replies: list["ChatMessage"] = Relationship(
+        back_populates="parent_message",
+        sa_relationship_kwargs={"overlaps": "session"},
+    )
 
     # Relationship to ChatMessageJob
     jobs: list["ChatMessageJob"] = Relationship(back_populates="message")

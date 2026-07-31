@@ -13,6 +13,7 @@ from .sync.integration_models import (
     EMPTY_JSONB_SQL,
     KnowledgeIntegration,
 )
+from .tenant_constraints import tenant_foreign_key
 
 if TYPE_CHECKING:
     from .job_models import KnowledgeProcessingJob
@@ -52,6 +53,19 @@ class OrganisationSource(TimestampMixin, table=True):
     """
 
     __tablename__ = "organisation_sources"
+    __table_args__ = (
+        UniqueConstraint(
+            "organisation_id",
+            "source_id",
+            name="uq_organisation_sources_org_source_id",
+        ),
+        tenant_foreign_key(
+            "organisation_sources",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+    )
 
     source_id: UUID = Field(
         default_factory=uuid4,
@@ -96,7 +110,6 @@ class OrganisationSource(TimestampMixin, table=True):
     # --- Fields for INTEGRATION type ---
     integration_id: UUID | None = Field(
         default=None,
-        foreign_key="knowledge_integrations.integration_id",
         index=True,
     )
     last_synced_at: datetime | None = Field(default=None)
@@ -129,6 +142,12 @@ class OrganisationSource(TimestampMixin, table=True):
 class OrganisationDocument(TimestampMixin, table=True):
     __tablename__ = "knowledge_base"
     __table_args__ = (
+        tenant_foreign_key(
+            "knowledge_base",
+            "source_id",
+            "organisation_sources",
+            "source_id",
+        ),
         CheckConstraint(
             "(is_org_wide OR uploader_user_id IS NOT NULL)",
             name="ck_kb_owner_required",
@@ -144,8 +163,9 @@ class OrganisationDocument(TimestampMixin, table=True):
             postgresql_where=text("deal_id IS NOT NULL"),
         ),
         UniqueConstraint(
+            "organisation_id",
             "content_hash",
-            name="uq_kb_org_content_hash",
+            name="uq_kb_org_content_hash_scoped",
             deferrable=True,
             initially="DEFERRED",
         ),
@@ -156,9 +176,18 @@ class OrganisationDocument(TimestampMixin, table=True):
         primary_key=True,
         description="Primary key for the knowledge base document/chunk.",
     )
+    organisation_id: UUID = Field(
+        foreign_key="public.organisations.organisation_id",
+        nullable=False,
+        index=True,
+        sa_column_kwargs={
+            "server_default": text(
+                "NULLIF(current_setting('app.current_organisation_id', true), '')::uuid"
+            )
+        },
+    )
     source_id: UUID | None = Field(
         default=None,
-        foreign_key="organisation_sources.source_id",
         index=True,
         description="Foreign key to the original source document.",
     )

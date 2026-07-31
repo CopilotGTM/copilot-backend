@@ -621,6 +621,31 @@ module "application_database" {
   ]
 }
 
+provider "postgresql" {
+  host            = module.application_database.db_host
+  port            = module.application_database.db_port
+  database        = module.application_database.db_name
+  username        = module.application_database.db_user
+  password        = random_password.db_admin.result
+  sslmode         = "require"
+  superuser       = false
+  connect_timeout = 15
+}
+
+resource "postgresql_schema" "tenant_data" {
+  name          = "tenant_data"
+  database      = module.application_database.db_name
+  owner         = module.application_database.db_user
+  if_not_exists = true
+  drop_cascade  = false
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  depends_on = [module.application_database]
+}
+
 # # -----------------------------------------------------------------
 # # Create the DNS CNAME record pointing at the frontend app service
 # # -----------------------------------------------------------------

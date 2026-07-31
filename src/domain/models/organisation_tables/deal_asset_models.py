@@ -8,6 +8,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Column, Field
 
 from .base_mixins import TimestampMixin
+from .tenant_constraints import tenant_foreign_key
 
 EMPTY_JSONB_SQL = "'{}'::jsonb"
 
@@ -45,14 +46,27 @@ class DealAsset(TimestampMixin, table=True):
 
     __tablename__ = "deal_assets"
     __table_args__ = (
+        tenant_foreign_key("deal_assets", "deal_id", "crm_deals", "deal_id"),
+        tenant_foreign_key(
+            "deal_assets",
+            "kb_source_id",
+            "organisation_sources",
+            "source_id",
+        ),
         Index("ix_deal_asset_org_deal", "organisation_id", "deal_id"),
+        Index(
+            "ix_deal_assets_org_kb_source_id",
+            "organisation_id",
+            "kb_source_id",
+        ),
         Index("ix_deal_asset_deal_status", "deal_id", "status"),
         UniqueConstraint(
+            "organisation_id",
             "deal_id",
             "source_type",
             "source_record_id",
             "filename",
-            name="uq_deal_asset_source_dedup",
+            name="uq_deal_asset_source_dedup_org",
         ),
     )
 
@@ -63,7 +77,6 @@ class DealAsset(TimestampMixin, table=True):
     )
     organisation_id: UUID = Field(index=True, description="The organisation this asset belongs to.")
     deal_id: UUID = Field(
-        foreign_key="crm_deals.deal_id",
         index=True,
         description="The deal this asset is associated with.",
     )
@@ -153,7 +166,6 @@ class DealAsset(TimestampMixin, table=True):
     # Knowledge-base linkage
     kb_source_id: UUID | None = Field(
         default=None,
-        foreign_key="organisation_sources.source_id",
         description="FK to knowledge base source if asset was indexed.",
     )
 

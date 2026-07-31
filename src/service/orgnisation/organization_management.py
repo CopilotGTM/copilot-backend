@@ -1,7 +1,13 @@
+"""Organisation control-plane state and shared-tenant default setup.
+
+The admin worker calls this service after accepting an organisation-creation
+job. Database infrastructure is deployment-owned; this module only writes the
+master record and seeds organisation-scoped defaults through the org session.
+"""
+
+import asyncio
 import os
-import secrets
 import time
-from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 from uuid import UUID, uuid4
@@ -11,11 +17,8 @@ from azure.identity import (
     ManagedIdentityCredential,
     WorkloadIdentityCredential,
 )
-from azure.keyvault.secrets import SecretClient
 from azure.storage.blob import BlobServiceClient
-from migrations.migration_manager import migration_manager
-from sqlalchemy import and_, or_, select, text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.master_tables import (
     Organisation,
@@ -26,24 +29,14 @@ from src.domain.models.master_tables import (
 from src.infra.config.configs import (
     cloud_infra_config,
     cloud_storage_config,
-    database_config,
-    secret_manager_config,
 )
 from src.infra.database.sessions import (
     acquire_org_async_session,
     master_async_session_scope,
-    master_session_scope,
 )
-from src.infra.database.tenant_runtime_config import validate_tenant_runtime_config
-from src.infra.database.tenant_runtime_grants import TenantRuntimeGrantService
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
-from src.infra.utils.resource_naming import (
-    get_key_vault_secret_name,
-    get_org_container_name,
-    get_role_name,
-    get_schema_name,
-)
+from src.infra.utils.resource_naming import get_org_container_name
 from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
 
 logger = get_logger("organization_management_service")
@@ -61,20 +54,8 @@ class ProvisioningError(Exception):
         super().__init__(f"Provisioning failed for org {organisation_id}: {message}")
 
 
-class DeletionError(Exception):
-    """Raised when destructive cleanup cannot complete fully."""
-
-    pass
-
-
 class OrganizationManagementService:
-    """Service for managing organizations with schema-level isolation."""
-
-    def __init__(self):
-        """Initializes the service."""
-        self._vector_extension_checked = False
-
-    # Master connection is acquired on-demand from master dependency
+    """Manage master organisation state and shared-schema tenant defaults."""
 
     async def create_organization(
         self,
@@ -82,11 +63,11 @@ class OrganizationManagementService:
         organisation_name: str,
         **org_details,
     ) -> dict[str, Any]:
-        """
-        Creates a new organization with a dedicated schema, role, and runs migrations.
+        """Create master organisation state and idempotent shared-tenant defaults.
 
-        Manages its own sessions in three phases to avoid holding a DB connection
-        across long-running provisioning steps (migrations, Key Vault, storage).
+        Master and organisation sessions remain separate so CRM/storage setup
+        never holds the control-plane connection. The permanent `tenant_data`
+        schema, runtime role, and migrations are deployment-owned prerequisites.
 
         Args:
             admin_id: UUID of the admin creating the organisation.
@@ -133,8 +114,12 @@ class OrganizationManagementService:
                     )
             else:
                 org_data = org_details.copy()
-                org_data["linked_urls"] = org_data.pop("linked_in_url", [])
-                org_data["website_urls"] = org_data.pop("website_url", [])
+                org_data["linked_urls"] = org_data.pop(
+                    "linked_urls", org_data.pop("linked_in_url", [])
+                )
+                org_data["website_urls"] = org_data.pop(
+                    "website_urls", org_data.pop("website_url", [])
+                )
 
                 organization = Organisation(
                     organisation_id=uuid4(),
@@ -152,37 +137,23 @@ class OrganizationManagementService:
             organisation_id = organization.organisation_id
             org_name = organization.organisation_name
 
-        # ── Phase 2: provisioning (no session held) ──
-        schema_name = get_schema_name(organisation_id)
-        role_name = get_role_name(organisation_id)
-        role_password = secrets.token_urlsafe(16)
-
         logger.info(
-            f"Organization record ready for provisioning — ID: {organisation_id}, name: {org_name}"
+            "Organization record ready for default setup — ID: %s, name: %s",
+            organisation_id,
+            org_name,
         )
 
         try:
             provision_metrics: dict[str, float] = {}
 
-            def time_step(label: str, fn: Callable[[], None]):
-                start = time.perf_counter()
-                fn()
-                provision_metrics[label] = round(time.perf_counter() - start, 4)
-
-            time_step(
-                "tenant_database",
-                lambda: self._provision_tenant_database(schema_name, role_name, role_password),
-            )
-            time_step(
-                "store_secret",
-                lambda: self._store_password_in_key_vault(organisation_id, role_password),
-            )
             crm_start = time.perf_counter()
             await self._setup_internal_crm(organisation_id, admin_id)
             provision_metrics["internal_crm_setup"] = round(time.perf_counter() - crm_start, 4)
-            time_step(
-                "storage_container",
-                lambda: self._provision_org_storage_container(organisation_id),
+            storage_start = time.perf_counter()
+            self._provision_org_storage_container(organisation_id)
+            provision_metrics["storage_container"] = round(
+                time.perf_counter() - storage_start,
+                4,
             )
         except ProvisioningError:
             await self._mark_org_failed(
@@ -229,7 +200,7 @@ class OrganizationManagementService:
         logger.info(
             f"Successfully provisioned organization: {org_name} | metrics={provision_metrics}"
         )
-        return {"organization": organization, "schema_name": schema_name}
+        return {"organization": organization}
 
     async def _mark_org_failed(
         self,
@@ -255,170 +226,6 @@ class OrganizationManagementService:
         except Exception:
             logger.error("Failed to mark org %s as FAILED in DB", organisation_id, exc_info=True)
 
-    def _create_database_role_and_schema(self, schema_name: str, role_name: str, password: str):
-        """
-        Creates or updates the database role and schema for an organization idempotently.
-        This operation is transactional; it will roll back on any failure.
-        """
-        self._validate_identifier(schema_name, "schema_name")
-        self._validate_identifier(role_name, "role_name")
-        logger.info(f"Ensuring database role '{role_name}' and schema '{schema_name}' exist.")
-        try:
-            # On first use, ensure vector extension availability is checked once
-            if not self._vector_extension_checked:
-                self._ensure_vector_extension_available()
-                self._vector_extension_checked = True
-
-            with master_session_scope() as session, session.begin():
-                # Check if role exists
-                role_exists = session.execute(
-                    text("SELECT 1 FROM pg_roles WHERE rolname = :role_name"),
-                    {"role_name": role_name},
-                ).scalar_one_or_none()
-
-                if role_exists:
-                    logger.warning(f"Role '{role_name}' already exists. Updating password.")
-                    session.execute(
-                        text(f"ALTER ROLE {role_name} WITH PASSWORD :pwd"),
-                        {"pwd": password},
-                    )
-                else:
-                    logger.info(f"Role '{role_name}' not found. Creating new role.")
-                    session.execute(
-                        text(f"CREATE ROLE {role_name} LOGIN PASSWORD :pwd NOINHERIT"),
-                        {"pwd": password},
-                    )
-
-                # Create schema if it doesn't exist and set authorization
-                session.execute(
-                    text(f"CREATE SCHEMA IF NOT EXISTS {schema_name} AUTHORIZATION {role_name}")
-                )
-
-                # Grant necessary permissions
-                session.execute(text(f"GRANT USAGE, CREATE ON SCHEMA {schema_name} TO {role_name}"))
-                session.execute(
-                    text(f"GRANT ALL PRIVILEGES ON SCHEMA {schema_name} TO {role_name}")
-                )
-
-                # Set default privileges for future objects created by the role
-                session.execute(
-                    text(
-                        f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema_name} GRANT ALL ON TABLES TO {role_name}"
-                    )
-                )
-                session.execute(
-                    text(
-                        f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema_name} GRANT ALL ON SEQUENCES TO {role_name}"
-                    )
-                )
-                session.execute(
-                    text(
-                        f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema_name} GRANT ALL ON FUNCTIONS TO {role_name}"
-                    )
-                )
-
-                # Ensure the role gets the correct schema by default for new connections in this DB
-                db_name = database_config.DATABASE_NAME
-                session.execute(
-                    text(
-                        f'ALTER ROLE {role_name} IN DATABASE "{db_name}" SET search_path = "{schema_name}", public'
-                    )
-                )
-
-                # Grant role to admin user for maintenance
-                admin_user = database_config.DATABASE_USER
-                if admin_user:
-                    session.execute(text(f'GRANT {role_name} TO "{admin_user}"'))
-
-                # Attempt to create vector extension within the schema, failing gracefully
-                try:
-                    session.execute(
-                        text(f"CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA {schema_name}")
-                    )
-                    logger.info(f"Enabled 'vector' extension in schema '{schema_name}'.")
-                except SQLAlchemyError as vector_error:
-                    logger.warning(
-                        f"Could not create vector extension in schema '{schema_name}': {vector_error}. "
-                        "Vector operations may be affected."
-                    )
-            logger.info(
-                f"Successfully created and configured role '{role_name}' and schema '{schema_name}'."
-            )
-        except SQLAlchemyError as e:
-            logger.error(
-                f"Database role/schema creation failed for '{schema_name}': {e}",
-                exc_info=True,
-            )
-            raise ProvisioningError(f"Failed to create database role/schema: {e}") from e
-
-    def _run_organization_migrations(self, schema_name: str, target_version: str = "head"):
-        """Runs Alembic migrations for a specific organization's schema."""
-        logger.info(f"Running migrations for schema '{schema_name}' to version '{target_version}'.")
-        try:
-            result = migration_manager.run_organization_migration(
-                schema_name=schema_name,
-                target_revision=target_version,
-                validate_schema=True,
-            )
-            if not result.success:
-                raise ProvisioningError(
-                    f"Alembic migration failed for schema '{schema_name}': {result.error}"
-                )
-
-            logger.info(
-                f"Successfully applied migrations to schema '{schema_name}' in {result.duration:.2f}s."
-            )
-        except Exception as e:
-            logger.error(
-                f"Migration execution failed for schema '{schema_name}': {e}",
-                exc_info=True,
-            )
-            raise ProvisioningError(f"An unexpected error occurred during migration: {e}") from e
-
-    def _provision_tenant_database(
-        self,
-        schema_name: str,
-        role_name: str,
-        role_password: str,
-    ) -> None:
-        self._create_database_role_and_schema(schema_name, role_name, role_password)
-        self._run_organization_migrations(schema_name)
-        self._grant_tenant_runtime_role_access(schema_name, role_name)
-
-    def _grant_tenant_runtime_role_access(
-        self,
-        schema_name: str,
-        schema_owner_role: str,
-    ) -> None:
-        if not database_config.TENANT_DATABASE_USER:
-            return
-
-        config = validate_tenant_runtime_config(
-            database_user=database_config.DATABASE_USER,
-            tenant_database_user=database_config.TENANT_DATABASE_USER,
-            tenant_password=database_config.TENANT_DATABASE_PASSWORD,
-            tenant_password_secret_name=database_config.TENANT_DATABASE_PASSWORD_SECRET_NAME,
-        )
-        self._validate_identifier(schema_name, "schema_name")
-        self._validate_identifier(schema_owner_role, "schema_owner_role")
-        try:
-            with master_session_scope() as session, session.begin():
-                TenantRuntimeGrantService(session).grant_tenant_runtime_role_access(
-                    schema_name=schema_name,
-                    schema_owner_role=schema_owner_role,
-                    migration_owner_role=database_config.DATABASE_USER,
-                    runtime_role=config.user,
-                )
-        except SQLAlchemyError as e:
-            logger.error(
-                "Failed to grant tenant runtime role '%s' access to schema '%s': %s",
-                config.user,
-                schema_name,
-                e,
-                exc_info=True,
-            )
-            raise ProvisioningError(f"Failed to grant tenant runtime role access: {e}") from e
-
     async def _setup_internal_crm(self, organisation_id: UUID, admin_id: UUID) -> None:
         """Ensure internal CRM integration + default pipeline exist for the organisation."""
         try:
@@ -437,6 +244,27 @@ class OrganizationManagementService:
                 "Internal CRM setup failed",
                 organisation_id=organisation_id,
             ) from exc
+
+    async def setup_tenant_defaults(
+        self,
+        organisation_id: UUID,
+        user_id: UUID,
+    ) -> None:
+        """Seed the existing shared-tenant defaults for any creation workflow.
+
+        Admin organisation creation and public signup both converge on the
+        internal CRM and shared-storage setup owned by this service. Each
+        operation is idempotent, so a reconciliation retry can safely repeat it.
+        """
+
+        await self._setup_internal_crm(organisation_id, user_id)
+        # CRM commits and releases its org session before Azure is contacted.
+        # Blob provisioning is synchronous network I/O, so keep it off the API
+        # event loop while preserving the existing idempotent container owner.
+        await asyncio.to_thread(
+            self._provision_org_storage_container,
+            organisation_id,
+        )
 
     def _provision_org_storage_container(self, organisation_id: UUID):
         """Ensure the per-organisation container exists in the shared storage account (idempotent)."""
@@ -464,87 +292,6 @@ class OrganizationManagementService:
             else:
                 logger.error(f"Failed to create container '{container}' in '{account}': {e}")
                 raise ProvisioningError(f"Container provisioning failed: {e}") from e
-
-    def _store_password_in_key_vault(self, organisation_id: UUID, password: str):
-        """
-        Stores the database role password in Azure Key Vault.
-        This is a non-critical step; failures are logged as warnings.
-        """
-        role_name = get_role_name(organisation_id)
-        secret_name = get_key_vault_secret_name(organisation_id)
-        logger.info(
-            f"Storing password for role '{role_name}' in Key Vault as secret '{secret_name}'."
-        )
-
-        key_vault_url = secret_manager_config.AZURE_KEY_VAULT_URL
-        if not key_vault_url:
-            logger.warning("AZURE_KEY_VAULT_URL not configured. Skipping Key Vault operation.")
-            return
-
-        try:
-            credential = self._get_azure_credential()
-            client = SecretClient(vault_url=key_vault_url, credential=credential)
-            client.set_secret(secret_name, password)
-            logger.info(f"Successfully stored secret '{secret_name}' in Azure Key Vault.")
-        except Exception as e:
-            # Do not block provisioning if Key Vault fails. Log a strong warning.
-            logger.warning(
-                f"CRITICAL: Failed to store password in Key Vault for org {organisation_id}. "
-                f"The password will be lost. Error: {e}",
-                exc_info=True,
-            )
-
-    def _delete_password_from_key_vault(self, organisation_id: UUID):
-        """
-        Deletes a password secret from Azure Key Vault.
-        This operation is non-critical; failures are logged as warnings.
-        """
-        secret_name = get_key_vault_secret_name(organisation_id)
-        logger.info(f"Attempting to delete secret '{secret_name}' from Azure Key Vault.")
-
-        key_vault_url = secret_manager_config.AZURE_KEY_VAULT_URL
-        if not key_vault_url:
-            logger.warning("AZURE_KEY_VAULT_URL not configured. Skipping Key Vault deletion.")
-            return
-
-        try:
-            credential = self._get_azure_credential()
-            client = SecretClient(vault_url=key_vault_url, credential=credential)
-
-            poller = client.begin_delete_secret(secret_name)
-            deleted_secret = poller.result()
-
-            logger.info(
-                f"Successfully deleted secret '{deleted_secret.name}' from Azure Key Vault."
-            )
-        except Exception as e:
-            # This is often not a critical error (e.g., secret already deleted), so log as a warning.
-            logger.warning(
-                f"Failed to delete secret '{secret_name}' from Key Vault: {e}",
-                exc_info=True,
-            )
-
-    def _ensure_vector_extension_available(self):
-        """Ensures the vector extension is available in the database."""
-        try:
-            with master_session_scope() as session, session.begin():
-                # Check if vector extension is available
-                result = session.execute(
-                    text("SELECT 1 FROM pg_available_extensions WHERE name = 'vector'")
-                ).fetchone()
-
-                if result:
-                    # Extension is available, try to create it if not exists
-                    session.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-                    logger.info("Vector extension is available and enabled")
-                else:
-                    logger.warning("Vector extension is not available in this PostgreSQL instance")
-                    logger.warning(
-                        "Vector operations may not work. Consider using pgvector/pgvector Docker image"
-                    )
-        except SQLAlchemyError as e:
-            logger.warning(f"Could not check/create vector extension: {e}")
-            logger.warning("Continuing without vector extension verification")
 
     async def update_organisation_status(
         self,
@@ -768,70 +515,6 @@ class OrganizationManagementService:
         history = result.scalars().all()
         return list(history)
 
-    async def delete_organization(
-        self, session: AsyncSession, organisation_id: UUID, admin_id: UUID
-    ) -> Organisation:
-        """
-        Deletes an organization, its schema, role, and associated data.
-        """
-        logger.info(f"Deleting organization {organisation_id} by admin {admin_id}")
-
-        organisation = await session.get(Organisation, organisation_id)
-        if not organisation:
-            raise ValueError(f"Organization with ID {organisation_id} not found.")
-
-        if organisation.status != OrganisationStatus.SUSPENDED:
-            raise ValueError(
-                f"Organization must be in 'suspended' state to be deleted, but is currently in '{organisation.status.value}' state."
-            )
-
-        schema_name = get_schema_name(organisation_id)
-        role_name = get_role_name(organisation_id)
-
-        # Log the deletion event before starting the destructive operations
-        history_entry = OrganisationActionHistory(
-            organisation_id=organisation_id,
-            action=OrganisationEventType.DELETED,
-            actor_admin_id=admin_id,
-            note=f"Organization '{organisation.organisation_name}' permanently deleted.",
-            details={"schema_name": schema_name, "role_name": role_name},
-        )
-        session.add(history_entry)
-        await session.commit()
-
-        # Delete the organization record from the master database.
-        # Users will be cascade deleted due to the relationship setting.
-        await session.delete(organisation)
-        await session.commit()
-
-        logger.info(f"Deleted organization record for '{organisation.organisation_name}'")
-
-        # Use the master connection to drop schema and role
-        try:
-            with master_session_scope() as master_sess, master_sess.begin():
-                logger.info(f"Dropping schema '{schema_name}' and role '{role_name}'.")
-                master_sess.execute(text(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE"))
-                master_sess.execute(text(f"DROP ROLE IF EXISTS {role_name}"))
-                logger.info(
-                    f"Successfully dropped schema and role for organization {organisation_id}."
-                )
-        except SQLAlchemyError as e:
-            logger.error(
-                f"Failed to drop schema/role for organization {organisation_id}: {e}",
-                exc_info=True,
-            )
-            raise DeletionError(
-                f"Failed to clean up database resources for organization {organisation_id}."
-            ) from e
-
-        # Delete the password from Key Vault
-        self._delete_password_from_key_vault(organisation_id)
-
-        logger.info(
-            f"Successfully deleted organization {organisation_id} and all associated resources."
-        )
-        return organisation
-
     # ------------------ Helper / pagination utilities ------------------ #
     def _get_azure_credential(self):
         """Resolve Azure credential with explicit, deterministic ordering.
@@ -870,53 +553,6 @@ class OrganizationManagementService:
         logger.info("Auth strategy: Managed Identity (no client id provided)")
         return ManagedIdentityCredential()
 
-    def _validate_identifier(self, value: str, field: str):
-        """Basic safety validation for SQL identifiers comprised of lowercase letters, digits, and underscores.
-        Raises ValueError if invalid. This is defensive; names come from controlled generators.
-        """
-        import re
-
-        if not re.fullmatch(r"[a-z0-9_]+", value):
-            raise ValueError(f"Invalid {field} '{value}' – must match [a-z0-9_]+")
-
-    def _quote_identifier(self, value: str) -> str:
-        return '"' + value.replace('"', '""') + '"'
-
-    async def rotate_organization_password(
-        self, organisation_id: UUID, session: AsyncSession, admin_id: UUID
-    ) -> dict[str, Any]:
-        """Rotates the database role password and updates Key Vault.
-        Returns metadata including new secret name.
-        """
-        role_name = get_role_name(organisation_id)
-        schema_name = get_schema_name(organisation_id)
-        new_password = secrets.token_urlsafe(16)
-        self._validate_identifier(role_name, "role_name")
-        try:
-            with master_session_scope() as master_sess, master_sess.begin():
-                master_sess.execute(
-                    text(f"ALTER ROLE {role_name} WITH PASSWORD :pwd"),
-                    {"pwd": new_password},
-                )
-            self._store_password_in_key_vault(organisation_id, new_password)
-            session.add(
-                OrganisationActionHistory(
-                    organisation_id=organisation_id,
-                    action=OrganisationEventType.FIELD_CHANGED,
-                    actor_admin_id=admin_id,
-                    details={
-                        "message": "Database role password rotated",
-                        "schema": schema_name,
-                    },
-                )
-            )
-            await session.commit()
-            return {"role_name": role_name, "schema_name": schema_name}
-        except Exception as e:
-            await session.rollback()
-            logger.error(f"Failed to rotate password for organization {organisation_id}: {e}")
-            raise ProvisioningError(f"Failed to rotate password: {e}") from e
-
     # Override history fetchers to return cursor metadata without breaking original callers
     async def get_organization_history_with_cursor(
         self,
@@ -925,6 +561,7 @@ class OrganizationManagementService:
         limit: int,
         cursor: str | None = None,
     ) -> dict[str, Any]:
+        """Return one organisation's history with cursor metadata."""
         items = await self.get_organization_history(session, organisation_id, limit, cursor)
         has_more = len(items) > limit
         page_items = items[:limit]
@@ -939,6 +576,7 @@ class OrganizationManagementService:
         limit: int,
         cursor: str | None = None,
     ) -> dict[str, Any]:
+        """Return cross-organisation history with cursor metadata."""
         items = await self.get_all_organization_history(session, limit, cursor)
         has_more = len(items) > limit
         page_items = items[:limit]

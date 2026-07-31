@@ -42,7 +42,7 @@ def _publish_status(
     error_message: str | None = None,
     error_code: str | None = None,
 ):
-    """Helper to publish job status to Redis for SSE streaming."""
+    """Publish ephemeral SSE progress after the durable job update."""
     publish_org_job_status(
         job_id=job_id,
         status=status.value,
@@ -87,7 +87,7 @@ async def _update_job_in_db(
     bind=True,
     acks_late=True,
     max_retries=3,
-    soft_time_limit=600,  # 10 minutes — migrations alone can take 4+ minutes
+    soft_time_limit=600,
     time_limit=660,
 )
 def create_organization_task(
@@ -153,7 +153,6 @@ def create_organization_task(
             response_data = {
                 "organisation_id": str(organization.organisation_id),
                 "organisation_name": organization.organisation_name,
-                "schema_name": result["schema_name"],
                 "created_at": organization.created_at.isoformat(),
                 "updated_at": organization.updated_at.isoformat(),
             }

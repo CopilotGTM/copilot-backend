@@ -8,6 +8,7 @@ background jobs.
 import logging
 import os
 import time
+from collections.abc import Callable
 from typing import Any
 
 from celery import Celery, current_app
@@ -17,6 +18,7 @@ from celery.signals import (
     task_failure,
     task_postrun,
     task_prerun,
+    worker_init,
     worker_process_init,
     worker_ready,
 )
@@ -54,10 +56,34 @@ def _validate_tenant_runtime_config_startup() -> None:
 
 
 def _validate_tenant_runtime_startup() -> None:
-    _validate_tenant_runtime_config_startup()
-    validate_current_shared_tenant_runtime_password_sync(
-        get_secret=get_master_key_vault_secret_sync,
-    )
+    from src.infra.database.factory import close_sync_database_provider
+
+    try:
+        _validate_tenant_runtime_config_startup()
+        validate_current_shared_tenant_runtime_password_sync(
+            get_secret=get_master_key_vault_secret_sync,
+        )
+    finally:
+        # worker_init runs in the Celery parent before task consumption starts.
+        # These pools serve only readiness checks and must not occupy PgBouncer.
+        close_sync_database_provider()
+
+
+def _require_worker_startup(validation: Callable[[], None], *, phase: str) -> None:
+    """Terminate Celery when a mandatory tenant-runtime startup check fails."""
+    try:
+        validation()
+    except Exception as error:
+        get_logger(__name__).critical(
+            "Celery tenant runtime startup validation failed",
+            extra={
+                "event": "tenant_runtime_startup_validation_failed",
+                "validation_phase": phase,
+                "error_type": type(error).__name__,
+            },
+        )
+        # Celery signals swallow Exception; SystemExit reaches the worker bootstrap.
+        raise SystemExit(1) from error
 
 
 def _resolve_signal_app_name(sender: Any | None = None) -> str | None:
@@ -141,7 +167,10 @@ def _register_observability_signals() -> None:
 
     @worker_process_init.connect(weak=False)
     def _validate_tenant_runtime_after_fork(sender=None, **kwargs):  # noqa: ARG001
-        _validate_tenant_runtime_config_startup()
+        _require_worker_startup(
+            _validate_tenant_runtime_config_startup,
+            phase="child_process",
+        )
 
     @worker_process_init.connect(weak=False)
     def _init_otel_after_fork(sender=None, **kwargs):  # noqa: ARG001
@@ -149,9 +178,12 @@ def _register_observability_signals() -> None:
 
         init_otel(service_name_suffix=_resolve_runtime_service_name_suffix(sender))
 
-    @worker_ready.connect(weak=False)
+    @worker_init.connect(weak=False)
     def _validate_tenant_runtime_in_main_process(sender=None, **kwargs):  # noqa: ARG001
-        _validate_tenant_runtime_startup()
+        _require_worker_startup(
+            _validate_tenant_runtime_startup,
+            phase="parent_process",
+        )
 
     @worker_ready.connect(weak=False)
     def _init_otel_in_main_process(sender=None, **kwargs):  # noqa: ARG001

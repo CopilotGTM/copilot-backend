@@ -399,6 +399,8 @@ def test_create_fastapi_app_instruments_shared_app_instance(mocker):
 def test_fastapi_lifespan_initializes_supabase_before_observability(mocker):
     call_order: list[str] = []
 
+    mocker.patch("src.api.fastapi_app.validate_current_shared_tenant_runtime_startup")
+    mocker.patch("src.api.fastapi_app.validate_current_shared_tenant_runtime_password")
     mocker.patch(
         "src.api.fastapi_app.initialize_redis_pool",
         side_effect=lambda: call_order.append("redis"),
@@ -416,6 +418,9 @@ def test_fastapi_lifespan_initializes_supabase_before_observability(mocker):
     async def _async_redis_close():
         call_order.append("async_redis_close")
 
+    async def _database_close():
+        call_order.append("database_close")
+
     mocker.patch("src.api.fastapi_app.initialize_async_redis_pool", side_effect=_async_redis_init)
     mocker.patch.object(
         fastapi_app.security_secrets_config,
@@ -428,6 +433,10 @@ def test_fastapi_lifespan_initializes_supabase_before_observability(mocker):
         side_effect=lambda: call_order.append("redis_close"),
     )
     mocker.patch("src.api.fastapi_app.close_async_redis_pool", side_effect=_async_redis_close)
+    mocker.patch(
+        "src.api.fastapi_app.close_database_providers",
+        side_effect=_database_close,
+    )
     mocker.patch(
         "src.api.fastapi_app.init_sentry",
         side_effect=lambda: call_order.append("sentry"),
@@ -457,9 +466,10 @@ def test_fastapi_lifespan_initializes_supabase_before_observability(mocker):
 
     async def _run() -> None:
         async with fastapi_app.lifespan(FastAPI()):
-            return None
+            raise RuntimeError("request lifecycle failed")
 
-    asyncio.run(_run())
+    with pytest.raises(RuntimeError, match="request lifecycle failed"):
+        asyncio.run(_run())
 
     assert call_order == [
         "redis",
@@ -470,6 +480,7 @@ def test_fastapi_lifespan_initializes_supabase_before_observability(mocker):
         "token_revocation",
         "sentry",
         "otel",
+        "database_close",
         "redis_close",
         "async_redis_close",
     ]
@@ -483,7 +494,7 @@ def _build_fresh_fastapi_app(mocker) -> FastAPI:
 
 
 def _registered_paths(app: FastAPI) -> set[str]:
-    return {route.path for route in app.routes if hasattr(route, "path")}
+    return set(app.openapi()["paths"])
 
 
 def test_create_fastapi_app_excludes_voice_realtime_routes_when_feature_flag_disabled(
@@ -515,6 +526,7 @@ def test_create_fastapi_app_includes_voice_realtime_routes_when_feature_flag_ena
 def test_create_celery_app_defers_otel_init_until_worker_process_start(mocker):
     init_mock = mocker.patch("src.infra.observability.otel.init_otel")
     reset_after_fork_mock = mocker.patch("src.infra.utils.async_runner.reset_after_fork")
+    mocker.patch.object(celery_base, "_validate_tenant_runtime_config_startup")
 
     app = celery_base.create_celery_app("unit_worker", _DummyWorkerConfig(), "tests.fake_tasks")
     app.set_current()
@@ -530,6 +542,7 @@ def test_create_celery_app_defers_otel_init_until_worker_process_start(mocker):
 def test_create_celery_app_uses_current_app_name_when_multiple_apps_exist(mocker):
     init_mock = mocker.patch("src.infra.observability.otel.init_otel")
     mocker.patch("src.infra.utils.async_runner.reset_after_fork")
+    mocker.patch.object(celery_base, "_validate_tenant_runtime_config_startup")
 
     chat_app = celery_base.create_celery_app(
         "chat_worker", _DummyWorkerConfig(), "tests.chat_tasks"

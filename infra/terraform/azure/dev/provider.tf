@@ -32,6 +32,10 @@ terraform {
       source  = "gavinbunney/kubectl"
       version = ">= 1.14.0"
     }
+    postgresql = {
+      source  = "cyrilgdn/postgresql"
+      version = "1.26.0"
+    }
   }
   required_version = ">= 1.3.0"
 

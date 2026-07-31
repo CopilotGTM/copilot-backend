@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import Column, Index, Integer, Text, UniqueConstraint
 from sqlmodel import Field
 from src.domain.models.organisation_tables.base_mixins import TimestampMixin
+from src.domain.models.organisation_tables.tenant_constraints import tenant_foreign_key
 
 
 class DealMemory(TimestampMixin, table=True):
@@ -20,6 +21,12 @@ class DealMemory(TimestampMixin, table=True):
 
     __tablename__: ClassVar[str] = "deal_memories"
     __table_args__: ClassVar[tuple] = (
+        tenant_foreign_key(
+            "deal_memories",
+            "deal_id",
+            "crm_deals",
+            "deal_id",
+        ),
         UniqueConstraint("organisation_id", "deal_id", name="uq_deal_memories_org_deal"),
         Index("ix_deal_memories_org", "organisation_id"),
     )
@@ -27,7 +34,6 @@ class DealMemory(TimestampMixin, table=True):
     memory_id: UUID = Field(default_factory=uuid4, primary_key=True)
     organisation_id: UUID = Field(index=True)
     deal_id: UUID = Field(
-        foreign_key="crm_deals.deal_id",
         index=True,
     )
     content: str = Field(

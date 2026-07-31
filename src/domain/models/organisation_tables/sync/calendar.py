@@ -8,6 +8,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship, SQLModel
 from src.domain.models.organisation_tables.base_mixins import utcnow
 from src.domain.models.organisation_tables.sync.base import OrgScopedRecordMixin
+from src.domain.models.organisation_tables.tenant_constraints import tenant_foreign_key
 
 if TYPE_CHECKING:
     from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
@@ -38,7 +39,15 @@ class CalendarEvent(OrgScopedRecordMixin, table=True):
     __tablename__ = "calendar_events"
     __table_args__ = (
         UniqueConstraint(
-            "external_id", "occurrence_anchor", name="uq_calendar_event_external_occurrence"
+            "organisation_id",
+            "event_id",
+            name="uq_calendar_events_org_event_id",
+        ),
+        UniqueConstraint(
+            "organisation_id",
+            "external_id",
+            "occurrence_anchor",
+            name="uq_calendar_event_external_occurrence_org",
         ),
         Index("ix_calendar_event_org_start", "organisation_id", "start_at"),
         Index("ix_calendar_event_owner", "organiser_email"),
@@ -166,7 +175,24 @@ class CalendarEventUserState(SQLModel, table=True):
 
     __tablename__ = "calendar_event_user_states"
     __table_args__ = (
-        UniqueConstraint("event_id", "integration_id", name="uq_calendar_event_user_state"),
+        tenant_foreign_key(
+            "calendar_event_user_states",
+            "event_id",
+            "calendar_events",
+            "event_id",
+        ),
+        tenant_foreign_key(
+            "calendar_event_user_states",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        UniqueConstraint(
+            "organisation_id",
+            "event_id",
+            "integration_id",
+            name="uq_calendar_event_user_state_org",
+        ),
         Index("ix_calendar_user_state_integration", "integration_id"),
         Index("ix_calendar_user_state_integration_external", "integration_id", "external_id"),
         Index(
@@ -181,13 +207,21 @@ class CalendarEventUserState(SQLModel, table=True):
         primary_key=True,
         description="Internal UUID for the per-integration calendar user-state row.",
     )
+    organisation_id: UUID = Field(
+        foreign_key="public.organisations.organisation_id",
+        nullable=False,
+        index=True,
+        sa_column_kwargs={
+            "server_default": text(
+                "NULLIF(current_setting('app.current_organisation_id', true), '')::uuid"
+            )
+        },
+    )
     event_id: UUID = Field(
-        foreign_key="calendar_events.event_id",
         index=True,
         description="Canonical calendar event this per-user state belongs to.",
     )
     integration_id: UUID = Field(
-        foreign_key="knowledge_integrations.integration_id",
         index=True,
         description="Calendar integration that synced this mailbox-specific copy.",
     )
@@ -221,12 +255,28 @@ class CalendarEventUserState(SQLModel, table=True):
 class CalendarAttendee(SQLModel, table=True):
     __tablename__ = "calendar_event_attendees"
     __table_args__ = (
+        UniqueConstraint(
+            "organisation_id",
+            "attendee_id",
+            name="uq_calendar_event_attendees_org_attendee_id",
+        ),
+        tenant_foreign_key(
+            "calendar_event_attendees",
+            "event_id",
+            "calendar_events",
+            "event_id",
+        ),
         Index("ix_calendar_attendee_email", "email"),
         CheckConstraint(
             "response_status IN ('accepted','declined','tentative','needsAction','none')",
             name="ck_calendar_attendee_response",
         ),
-        UniqueConstraint("event_id", "email", name="uq_calendar_attendee_event"),
+        UniqueConstraint(
+            "organisation_id",
+            "event_id",
+            "email",
+            name="uq_calendar_attendee_event_org",
+        ),
     )
 
     attendee_id: UUID = Field(
@@ -234,8 +284,17 @@ class CalendarAttendee(SQLModel, table=True):
         primary_key=True,
         description="Internal UUID for the attendee row.",
     )
+    organisation_id: UUID = Field(
+        foreign_key="public.organisations.organisation_id",
+        nullable=False,
+        index=True,
+        sa_column_kwargs={
+            "server_default": text(
+                "NULLIF(current_setting('app.current_organisation_id', true), '')::uuid"
+            )
+        },
+    )
     event_id: UUID = Field(
-        foreign_key="calendar_events.event_id",
         index=True,
         description="Canonical calendar event this attendee belongs to.",
     )
@@ -267,7 +326,24 @@ class CalendarAttendee(SQLModel, table=True):
 class CalendarEventDealAssociation(SQLModel, table=True):
     __tablename__ = "calendar_event_deal_associations"
     __table_args__ = (
-        UniqueConstraint("event_id", "deal_id", name="uq_calendar_event_deal"),
+        tenant_foreign_key(
+            "calendar_event_deal_associations",
+            "event_id",
+            "calendar_events",
+            "event_id",
+        ),
+        tenant_foreign_key(
+            "calendar_event_deal_associations",
+            "deal_id",
+            "crm_deals",
+            "deal_id",
+        ),
+        UniqueConstraint(
+            "organisation_id",
+            "event_id",
+            "deal_id",
+            name="uq_calendar_event_deal_org",
+        ),
         Index("ix_calendar_assoc_org_status", "organisation_id", "status"),
         Index("ix_calendar_assoc_deal", "deal_id"),
     )
@@ -282,11 +358,9 @@ class CalendarEventDealAssociation(SQLModel, table=True):
         description="Organisation that owns this event-to-deal association.",
     )
     event_id: UUID = Field(
-        foreign_key="calendar_events.event_id",
         description="Canonical calendar event linked to the deal.",
     )
     deal_id: UUID = Field(
-        foreign_key="crm_deals.deal_id",
         description="CRM deal matched to the calendar event.",
     )
 
@@ -345,4 +419,4 @@ class CalendarEventDealAssociation(SQLModel, table=True):
     )
 
     event: "CalendarEvent" = Relationship(back_populates="deal_associations")
-    deal: "CRMDeal" = Relationship()
+    deal: "CRMDeal" = Relationship(sa_relationship_kwargs={"overlaps": "deal_associations,event"})

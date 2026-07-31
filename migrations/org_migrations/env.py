@@ -191,10 +191,6 @@ def run_migrations_offline() -> None:
         transactional_ddl=False,  # Disable transactions for extension creation
     )
 
-    # emit a CREATE SCHEMA if it doesn't exist
-    if target_schema:
-        context.execute(f"CREATE SCHEMA IF NOT EXISTS {target_schema}")
-
     with context.begin_transaction():
         context.run_migrations()
 
@@ -212,16 +208,15 @@ def run_migrations_online() -> None:
     )
 
     try:
-        with connectable.connect() as connection, connection.begin():
-            # Use the connection's transaction context manager.
-            # This will automatically commit on success or rollback on error.
+        with connectable.connect() as connection:
             if target_schema:
-                # Set search_path inside the transaction.
+                # Session-level search_path must survive the commit boundaries
+                # required by concurrent-index migrations.
                 connection.execute(
                     text(f"SET search_path TO {target_schema}, extensions, public")
                 )
+                connection.commit()
 
-            # Configure context within the transaction block.
             context.configure(
                 connection=connection,
                 target_metadata=target_metadata,
@@ -232,7 +227,8 @@ def run_migrations_online() -> None:
                     type_ != "table" or name in target_metadata.tables
                 ),
             )
-            context.run_migrations()
+            with context.begin_transaction():
+                context.run_migrations()
     finally:
         # Explicitly dispose the engine to release all resources
         connectable.dispose()

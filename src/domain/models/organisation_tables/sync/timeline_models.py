@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
 from ..base_mixins import utcnow
+from ..tenant_constraints import tenant_foreign_key
 
 EMPTY_JSONB_ARRAY = "'[]'::jsonb"
 EMPTY_JSONB_SQL = "'{}'::jsonb"
@@ -78,6 +79,12 @@ class DealTimelineEvent(SQLModel, table=True):
 
     __tablename__ = "deal_timeline_events"
     __table_args__ = (
+        tenant_foreign_key(
+            "deal_timeline_events",
+            "deal_id",
+            "crm_deals",
+            "deal_id",
+        ),
         # Primary query pattern: all events for a deal, sorted by time
         Index("ix_timeline_deal_time", "deal_id", "event_timestamp"),
         # Filter by type within a deal
@@ -86,7 +93,11 @@ class DealTimelineEvent(SQLModel, table=True):
         Index("ix_timeline_org_time", "organisation_id", "event_timestamp"),
         # Prevent duplicate entries for same source record
         UniqueConstraint(
-            "deal_id", "event_type", "source_record_id", name="uq_timeline_event_source"
+            "organisation_id",
+            "deal_id",
+            "event_type",
+            "source_record_id",
+            name="uq_timeline_event_source_org",
         ),
     )
 
@@ -96,7 +107,6 @@ class DealTimelineEvent(SQLModel, table=True):
     # Organisation & Deal Context
     organisation_id: UUID = Field(index=True)
     deal_id: UUID = Field(
-        foreign_key="crm_deals.deal_id",
         index=True,
         description="The deal this event belongs to.",
     )

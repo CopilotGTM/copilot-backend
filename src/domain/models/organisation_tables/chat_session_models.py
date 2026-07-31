@@ -2,7 +2,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, Column, Index, String, text
+from sqlalchemy import Boolean, Column, Index, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship
 
@@ -34,6 +34,11 @@ class ChatSession(TimestampMixin, table=True):
 
     __tablename__ = "chat_sessions"
     __table_args__ = (
+        UniqueConstraint(
+            "organisation_id",
+            "session_id",
+            name="uq_chat_sessions_org_session_id",
+        ),
         Index("ix_chat_sessions_organisation_id_user_id", "organisation_id", "user_id"),
         {"comment": "Stores chat session metadata."},
     )
@@ -96,5 +101,8 @@ class ChatSession(TimestampMixin, table=True):
 
     messages: list["ChatMessage"] = Relationship(
         back_populates="session",
-        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+        sa_relationship_kwargs={
+            "cascade": "all, delete-orphan",
+            "overlaps": "parent_message,replies",
+        },
     )

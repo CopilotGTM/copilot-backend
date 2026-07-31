@@ -2,10 +2,7 @@
 
 Creates:
   - One master AsyncEngine (QueuePool — caches TCP connections to pgbouncer)
-  - One shared tenant AsyncEngine when shared tenant DB mode is enabled
-  - Per-tenant AsyncEngines cached in legacy mode to avoid repeated Key Vault lookups
-    (QueuePool — pgbouncer handles backend connection pooling,
-     app-side pool caches TCP connections to pgbouncer)
+  - One tenant AsyncEngine shared by every organisation
 
 pgbouncer transaction-mode compatibility:
   - statement_cache_size=0 (asyncpg) — disables asyncpg's statement cache
@@ -23,9 +20,10 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 import urllib.parse
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import (
@@ -39,19 +37,19 @@ from src.infra.database.interface import AsyncDatabaseProvider
 from src.infra.database.tenant_runtime_config import validate_tenant_runtime_config
 from src.infra.database.tenant_runtime_credentials import load_tenant_runtime_password
 from src.infra.database.tenant_search_path import (
+    DATABASE_RUNTIME_SESSION_KEY,
+    TENANT_DATA_SCHEMA,
+    TENANT_ORGANISATION_ID_SESSION_KEY,
     TENANT_SCHEMA_SESSION_KEY,
     TENANT_SEARCH_PATH_SESSION_KEY,
     TRUSTED_EXTENSION_SCHEMA,
     apply_tenant_transaction_context,
+    classify_tenant_database_failure,
     install_tenant_transaction_context_listener,
+    parse_tenant_organisation_id,
 )
-from src.infra.secrets.manager import master_secrets_manager, secrets_manager
+from src.infra.secrets.manager import master_secrets_manager
 from src.infra.utils.logger import get_logger
-from src.infra.utils.resource_naming import (
-    get_key_vault_secret_name,
-    get_role_name,
-    get_schema_name,
-)
 
 logger = get_logger("async_db_provider")
 
@@ -80,21 +78,10 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._tenant_locks: dict[UUID, asyncio.Lock] = {}
+        self._tenant_engine_lock = asyncio.Lock()
 
         self._master_engine: AsyncEngine | None = None
-        self._shared_tenant_engine: AsyncEngine | None = None
-
-        # Tenant engines are cached to avoid Key Vault fetches on every request.
-        self._tenant_engines: dict[UUID, AsyncEngine] = {}
-
-    def _get_tenant_lock(self, org_id: UUID) -> asyncio.Lock:
-        with self._lock:
-            lock = self._tenant_locks.get(org_id)
-            if lock is None:
-                lock = asyncio.Lock()
-                self._tenant_locks[org_id] = lock
-            return lock
+        self._tenant_engine: AsyncEngine | None = None
 
     # Master -----------------------------------------------------------
     def _get_master_engine(self) -> AsyncEngine:
@@ -112,6 +99,8 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                     pool_timeout=_POOL_TIMEOUT,
                     pool_recycle=_POOL_RECYCLE,
                     pool_pre_ping=True,
+                    pool_use_lifo=True,
+                    pool_reset_on_return="rollback",
                     connect_args={
                         "ssl": (database_config.DATABASE_HOST != "localhost"),
                         "timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
@@ -150,6 +139,8 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
             pool_timeout=_POOL_TIMEOUT,
             pool_recycle=_POOL_RECYCLE,
             pool_pre_ping=True,
+            pool_use_lifo=True,
+            pool_reset_on_return="rollback",
             connect_args={
                 "ssl": (database_config.DATABASE_HOST != "localhost"),
                 "timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
@@ -173,73 +164,34 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
         return config.user, password
 
     # Tenant -----------------------------------------------------------
-    async def _get_tenant_engine(self, org_id: UUID) -> AsyncEngine:
-        """Get or create a tenant engine for the given org_id."""
-        if database_config.USE_SHARED_TENANT_DATABASE:
-            with self._lock:
-                if self._shared_tenant_engine is not None:
-                    return self._shared_tenant_engine
-
-            async with self._get_tenant_lock(UUID(int=0)):
-                with self._lock:
-                    if self._shared_tenant_engine is not None:
-                        return self._shared_tenant_engine
-
-                user, password = await self._require_shared_tenant_credentials()
-                logger.debug("Creating shared tenant engine for org_id: %s", org_id)
-                engine = self._create_tenant_engine(user, password)
-
-                with self._lock:
-                    self._shared_tenant_engine = engine
-                return engine
-
+    async def _get_tenant_engine(self, _org_id: UUID) -> AsyncEngine:
+        """Get or create the one RLS-bound organisation engine."""
         with self._lock:
-            engine = self._tenant_engines.get(org_id)
-            if engine:
-                return engine
+            if self._tenant_engine is not None:
+                return self._tenant_engine
 
-        # Serialize creation per tenant to prevent duplicate Key Vault calls
-        lock = self._get_tenant_lock(org_id)
-        async with lock:
-            # Double-check after acquiring the per-tenant lock
+        async with self._tenant_engine_lock:
             with self._lock:
-                engine = self._tenant_engines.get(org_id)
-                if engine:
-                    return engine
+                if self._tenant_engine is not None:
+                    return self._tenant_engine
 
-            logger.debug("Creating new engine for org_id: %s", org_id)
-            role_name = get_role_name(org_id)
-            secret_name = get_key_vault_secret_name(org_id)
-
-            password = await secrets_manager.get_with_fallback(secret_name)
-            if not password:
-                password = await secrets_manager.get(secret_name)
-
-            if not password:
-                logger.error(
-                    "Tenant secret unavailable",
-                    extra={
-                        "event": "secret_fetch_failed",
-                        "secret_name": secret_name,
-                        "organisation_id": str(org_id),
-                    },
-                )
-                raise RuntimeError(f"Tenant secret '{secret_name}' unavailable")
-
-            engine = self._create_tenant_engine(role_name, password)
-
+            user, password = await self._require_shared_tenant_credentials()
+            logger.debug("Creating shared tenant engine")
+            engine = self._create_tenant_engine(user, password)
             with self._lock:
-                self._tenant_engines[org_id] = engine
-
+                self._tenant_engine = engine
             return engine
 
     # Public Provider API ---------------------------------------------
     @asynccontextmanager
     async def master_session(self) -> AsyncIterator[AsyncSession]:  # pylint: disable=invalid-overridden-method
+        """Yield a control-plane session without tenant schema or RLS context."""
+
         master_engine = self._get_master_engine()
         factory = async_sessionmaker(master_engine, expire_on_commit=False)
         session: AsyncSession = factory()
         try:
+            session.sync_session.info[DATABASE_RUNTIME_SESSION_KEY] = True
             yield session
         except Exception:
             await session.rollback()
@@ -248,36 +200,85 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
             await session.close()
 
     @asynccontextmanager
-    async def tenant_session(self, org_id: UUID) -> AsyncIterator[AsyncSession]:  # pylint: disable=invalid-overridden-method
+    async def tenant_session(self, org_id: UUID | str) -> AsyncIterator[AsyncSession]:  # pylint: disable=invalid-overridden-method
+        """Yield an org-scoped session with canonical transaction identity."""
+
+        org_id = parse_tenant_organisation_id(org_id)
+        started = time.perf_counter()
         logger.debug("Acquiring tenant session for org_id: %s", org_id)
         engine = await self._get_tenant_engine(org_id)
         factory = async_sessionmaker(engine, expire_on_commit=False)
         session: AsyncSession = factory()
         try:
-            schema = get_schema_name(org_id)
-            session.sync_session.info[TENANT_SCHEMA_SESSION_KEY] = schema
-            search_path = (
-                (schema, TRUSTED_EXTENSION_SCHEMA)
-                if database_config.USE_SHARED_TENANT_DATABASE
-                else (schema, TRUSTED_EXTENSION_SCHEMA, "public")
+            session.sync_session.info[TENANT_ORGANISATION_ID_SESSION_KEY] = org_id
+            session.sync_session.info[TENANT_SCHEMA_SESSION_KEY] = TENANT_DATA_SCHEMA
+            session.sync_session.info[TENANT_SEARCH_PATH_SESSION_KEY] = (
+                TENANT_DATA_SCHEMA,
+                TRUSTED_EXTENSION_SCHEMA,
             )
-            session.sync_session.info[TENANT_SEARCH_PATH_SESSION_KEY] = search_path
             yield session
-        except Exception:
-            await session.rollback()
+        except Exception as exc:
+            with suppress(Exception):
+                await session.rollback()
+            failure_kind, sqlstate = classify_tenant_database_failure(exc)
+            logger.error(
+                "Shared tenant database operation failed",
+                extra={
+                    "event": "shared_tenancy_database",
+                    "operation": "tenant_session",
+                    "outcome": "failed",
+                    "organisation_id": str(org_id),
+                    "failure_kind": failure_kind,
+                    "sqlstate": sqlstate,
+                    "error_type": type(exc).__name__,
+                    "duration_ms": round(
+                        (time.perf_counter() - started) * 1000,
+                        3,
+                    ),
+                },
+            )
             raise
         finally:
             await session.close()
 
-    async def invalidate_tenant(self, org_id: UUID) -> None:
+    async def invalidate_tenant(self, _org_id: UUID) -> None:
+        """Discard the shared tenant pool after credentials or connectivity change."""
+
+        # Serialize with lazy creation so invalidation cannot finish immediately
+        # before an in-flight credential load publishes a replacement engine.
+        async with self._tenant_engine_lock:
+            with self._lock:
+                engine = self._tenant_engine
+                self._tenant_engine = None
+        if engine:
+            await engine.dispose()
+
+    async def dispose(self) -> None:
+        """Close every pool after any in-flight tenant creation completes."""
+
+        # Shutdown waits on lazy tenant creation; otherwise that coroutine could
+        # publish a live engine after the provider singleton was already closed.
+        async with self._tenant_engine_lock:
+            with self._lock:
+                engines = (self._master_engine, self._tenant_engine)
+                self._master_engine = None
+                self._tenant_engine = None
+        for engine in engines:
+            if engine is not None:
+                with suppress(Exception):
+                    await engine.dispose()
+
+    def reset_after_fork(self) -> None:
+        """Replace inherited pools without doing event-loop I/O in the child."""
+
         with self._lock:
-            eng = self._tenant_engines.pop(org_id, None)
-            shared_engine = self._shared_tenant_engine
-            self._shared_tenant_engine = None
-        if eng:
-            await eng.dispose()
-        if shared_engine:
-            await shared_engine.dispose()
+            engines = (self._master_engine, self._tenant_engine)
+            self._master_engine = None
+            self._tenant_engine = None
+        for engine in engines:
+            if engine is not None:
+                with suppress(Exception):
+                    engine.sync_engine.dispose(close=False)
 
 
 __all__ = ["AsyncSqlAlchemyProvider", "apply_tenant_transaction_context"]

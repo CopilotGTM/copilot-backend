@@ -16,8 +16,8 @@ python -m scripts.run_master_migrations || {
     exit 1
 }
 
-echo "[startup] Running organization schema migrations (all orgs to head)..."
-python -m scripts.run_org_migrations --all || {
+echo "[startup] Running organization migrations against tenant_data..."
+python -m scripts.run_org_migrations --schema tenant_data || {
     echo "[startup][ERROR] Organization migrations failed" >&2
     exit 1
 }

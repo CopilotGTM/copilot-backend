@@ -10,6 +10,7 @@ from sqlalchemy import Index
 from sqlmodel import Field
 
 from .base_mixins import CreatedAtMixin
+from .tenant_constraints import tenant_foreign_key
 
 
 class ChatSessionAccess(CreatedAtMixin, table=True):
@@ -17,6 +18,12 @@ class ChatSessionAccess(CreatedAtMixin, table=True):
 
     __tablename__ = "chat_session_access"
     __table_args__ = (
+        tenant_foreign_key(
+            "chat_session_access",
+            "session_id",
+            "chat_sessions",
+            "session_id",
+        ),
         Index(
             "ix_chat_session_access_viewer_chats",
             "organisation_id",
@@ -28,7 +35,6 @@ class ChatSessionAccess(CreatedAtMixin, table=True):
 
     organisation_id: UUID = Field(nullable=False)
     session_id: UUID = Field(
-        foreign_key="chat_sessions.session_id",
         primary_key=True,
     )
     viewer_user_id: UUID = Field(primary_key=True)

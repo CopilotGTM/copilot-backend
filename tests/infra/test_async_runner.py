@@ -71,10 +71,83 @@ def test_reset_after_fork_closes_policy_loop_without_thread_local_loop():
 
 def test_reset_after_fork_clears_database_provider_caches(mocker):
     """Fork reset must keep DB engine cleanup coupled to loop cleanup."""
-    async_clear = mocker.patch("src.infra.utils.async_runner._clear_async_db_provider_cache")
+    async_clear = mocker.patch("src.infra.utils.async_runner._reset_async_db_provider_after_fork")
     sync_clear = mocker.patch("src.infra.utils.async_runner._clear_sync_db_provider_cache")
 
     async_runner.reset_after_fork()
 
     async_clear.assert_called_once_with()
     sync_clear.assert_called_once_with()
+
+
+def test_async_cache_clear_awaits_disposal_on_the_current_loop(monkeypatch):
+    """An open owning loop must gracefully close its asyncpg connections."""
+
+    calls: list[asyncio.AbstractEventLoop] = []
+
+    async def close_provider() -> None:
+        """Record the loop used for active provider disposal."""
+
+        calls.append(asyncio.get_running_loop())
+
+    monkeypatch.setattr(
+        "src.infra.database.factory.close_async_database_provider",
+        close_provider,
+        raising=False,
+    )
+    loop = asyncio.new_event_loop()
+    try:
+        async_runner._clear_async_db_provider_cache(loop)
+    finally:
+        loop.close()
+
+    assert calls == [loop]
+
+
+def test_async_cache_clear_uses_recovery_loop_when_owner_is_closed(monkeypatch):
+    """A closed owner loop still needs deterministic active pool disposal."""
+
+    calls: list[asyncio.AbstractEventLoop] = []
+
+    async def close_provider() -> None:
+        """Record the temporary loop used after the owner was closed."""
+
+        calls.append(asyncio.get_running_loop())
+
+    monkeypatch.setattr(
+        "src.infra.database.factory.close_async_database_provider",
+        close_provider,
+        raising=False,
+    )
+    closed_loop = asyncio.new_event_loop()
+    closed_loop.close()
+
+    async_runner._clear_async_db_provider_cache(closed_loop)
+
+    assert len(calls) == 1
+    assert calls[0] is not closed_loop
+    assert calls[0].is_closed()
+
+
+def test_async_fork_reset_delegates_to_passive_factory_cleanup(mocker):
+    """Fork cleanup must preserve the parent's underlying connections."""
+
+    reset = mocker.patch(
+        "src.infra.database.factory.reset_async_database_provider_after_fork",
+    )
+
+    async_runner._reset_async_db_provider_after_fork()
+
+    reset.assert_called_once_with()
+
+
+def test_sync_cache_clear_delegates_to_database_factory(mocker):
+    """Fork cleanup must delegate sync-pool ownership to the factory."""
+
+    reset = mocker.patch(
+        "src.infra.database.factory.reset_sync_database_provider_after_fork",
+    )
+
+    async_runner._clear_sync_db_provider_cache()
+
+    reset.assert_called_once_with()

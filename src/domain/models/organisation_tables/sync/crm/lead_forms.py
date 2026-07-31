@@ -7,13 +7,13 @@ from enum import Enum
 from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, Column, DateTime, Index, String, text
+from sqlalchemy import Boolean, Column, DateTime, Index, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
 from ...base_mixins import utcnow
-from ..base import FlexibleSyncedRecordMixin
 from ..integration_models import EMPTY_JSONB_SQL
+from .base import CRMFlexibleSyncedRecordMixin, tenant_foreign_key
 
 
 class LeadFormStatus(str, Enum):
@@ -46,11 +46,51 @@ class LeadFormFieldDataType(str, Enum):
     JSON = "json"
 
 
-class LeadForm(FlexibleSyncedRecordMixin, table=True):
+class LeadForm(CRMFlexibleSyncedRecordMixin, table=True):
     """Tenant-owned public lead capture form configuration."""
 
     __tablename__: ClassVar[str] = "lead_forms"
-    __table_args__ = (Index("ix_lead_form_org_status", "organisation_id", "status", "is_deleted"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "organisation_id",
+            "form_id",
+            name="uq_lead_forms_org_form_id",
+        ),
+        tenant_foreign_key(
+            "lead_forms",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "lead_forms",
+            "created_by_user_id",
+            "crm_users",
+            "user_id",
+        ),
+        tenant_foreign_key(
+            "lead_forms",
+            "updated_by_user_id",
+            "crm_users",
+            "user_id",
+        ),
+        Index(
+            "ix_lead_forms_org_integration_id",
+            "organisation_id",
+            "integration_id",
+        ),
+        Index(
+            "ix_lead_forms_org_created_by_user_id",
+            "organisation_id",
+            "created_by_user_id",
+        ),
+        Index(
+            "ix_lead_forms_org_updated_by_user_id",
+            "organisation_id",
+            "updated_by_user_id",
+        ),
+        Index("ix_lead_form_org_status", "organisation_id", "status", "is_deleted"),
+    )
 
     form_id: UUID = Field(default_factory=uuid4, primary_key=True)
     name: str = Field(sa_column=Column(String(255), nullable=False))
@@ -64,27 +104,46 @@ class LeadForm(FlexibleSyncedRecordMixin, table=True):
         default_factory=dict,
         sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_SQL)),
     )
-    created_by_user_id: UUID | None = Field(default=None, foreign_key="crm_users.user_id")
-    updated_by_user_id: UUID | None = Field(default=None, foreign_key="crm_users.user_id")
+    created_by_user_id: UUID | None = Field(default=None)
+    updated_by_user_id: UUID | None = Field(default=None)
 
 
-class LeadFormField(FlexibleSyncedRecordMixin, table=True):
+class LeadFormField(CRMFlexibleSyncedRecordMixin, table=True):
     """Mapping from a client website field key to a lead column or property."""
 
     __tablename__: ClassVar[str] = "lead_form_fields"
     __table_args__ = (
+        tenant_foreign_key(
+            "lead_form_fields",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "lead_form_fields",
+            "form_id",
+            "lead_forms",
+            "form_id",
+        ),
         Index(
-            "uq_lead_form_field_key_active",
+            "uq_lead_form_field_key_active_org",
+            "organisation_id",
             "form_id",
             "external_key",
             "is_deleted",
             unique=True,
         ),
+        Index(
+            "ix_lead_form_fields_org_integration_id",
+            "organisation_id",
+            "integration_id",
+        ),
+        Index("ix_lead_form_fields_org_form_id", "organisation_id", "form_id"),
         Index("ix_lead_form_field_form_order", "form_id", "display_order"),
     )
 
     field_id: UUID = Field(default_factory=uuid4, primary_key=True)
-    form_id: UUID = Field(foreign_key="lead_forms.form_id", index=True)
+    form_id: UUID = Field(index=True)
     form_version: int = Field(default=1, nullable=False)
     external_key: str = Field(sa_column=Column(String(128), nullable=False))
     label: str = Field(sa_column=Column(String(255), nullable=False))
@@ -109,11 +168,39 @@ class LeadFormField(FlexibleSyncedRecordMixin, table=True):
     )
 
 
-class LeadFormSubmission(FlexibleSyncedRecordMixin, table=True):
+class LeadFormSubmission(CRMFlexibleSyncedRecordMixin, table=True):
     """Audit trail for a public form submission that created a lead."""
 
     __tablename__: ClassVar[str] = "lead_form_submissions"
     __table_args__ = (
+        tenant_foreign_key(
+            "lead_form_submissions",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "lead_form_submissions",
+            "form_id",
+            "lead_forms",
+            "form_id",
+        ),
+        tenant_foreign_key(
+            "lead_form_submissions",
+            "lead_id",
+            "crm_leads",
+            "lead_id",
+        ),
+        Index(
+            "ix_lead_form_submissions_org_integration_id",
+            "organisation_id",
+            "integration_id",
+        ),
+        Index(
+            "ix_lead_form_submissions_org_lead_id",
+            "organisation_id",
+            "lead_id",
+        ),
         Index("ix_lead_form_submission_form_received", "organisation_id", "form_id", "received_at"),
         Index("ix_lead_form_submission_lead", "lead_id"),
         # Store idempotency state separately from payload JSON so private-form retries
@@ -138,9 +225,9 @@ class LeadFormSubmission(FlexibleSyncedRecordMixin, table=True):
     )
 
     submission_id: UUID = Field(default_factory=uuid4, primary_key=True)
-    form_id: UUID = Field(foreign_key="lead_forms.form_id", index=True)
+    form_id: UUID = Field(index=True)
     form_version: int = Field(nullable=False)
-    lead_id: UUID | None = Field(default=None, foreign_key="crm_leads.lead_id", index=True)
+    lead_id: UUID | None = Field(default=None, index=True)
     # Persisted replay keys let private-form clients recover deterministic state on
     # retry by matching on a concrete org/form/key/token tuple instead of JSON.
     ingestion_key_id: str | None = Field(

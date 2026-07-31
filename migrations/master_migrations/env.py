@@ -1,31 +1,35 @@
-from logging.config import fileConfig
+"""Run the public control-plane Alembic chain with isolated master metadata.
+
+This environment deliberately registers only public master tables; organisation
+tables and their explicit target-schema migration chain are owned separately.
+"""
+
 import os
 import urllib.parse
+from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config, pool, text
 from alembic import context
-from sqlmodel import SQLModel
 from dotenv import load_dotenv
+from sqlalchemy import MetaData, engine_from_config, pool, text
+from src.domain.models.master_tables import (
+    Organisation,
+    OrganisationActionHistory,
+    OrganisationIntegrationDetails,
+    SuperAdmin,
+    User,
+    UserActionHistory,
+)
 
 load_dotenv()
 
 # ---- import every module that declares SQLModel models ----
 # (so that SQLModel.metadata is populated)
-from src.domain.models.master_tables import (
-    Organisation,
-    User,
-    SuperAdmin,
-    OrganisationActionHistory,
-    UserActionHistory,
-    OrganisationIntegrationDetails,
-)
 
 # (and import any new model modules here)
 
 # this is the Alembic Config object
 config = context.config
 
-# set the DB URL from env vars
 DATABASE_HOST = os.getenv("DATABASE_HOST", "localhost")
 DATABASE_PORT = os.getenv("DATABASE_PORT", "5432")
 DATABASE_NAME = os.getenv("DATABASE_NAME", "postgres")
@@ -44,15 +48,11 @@ config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 _skip_file_config = os.getenv("CELERY_SKIP_ALEMBIC_FILECONFIG", "").lower() in ("1", "true", "yes")
 if config.config_file_name is not None and not _skip_file_config:
     import logging
-    # Check if root logger already has handlers (indicates logging is already configured)
+
     if not logging.root.handlers:
         fileConfig(config.config_file_name)
 
-# Create master-specific metadata by importing only master models
-# This ensures we only track master-specific tables
-from sqlalchemy import MetaData
-
-# Create a fresh metadata instance
+# Keep public autogeneration isolated from organisation-table SQLModel metadata.
 master_metadata = MetaData()
 
 # Manually register only the master-specific tables
@@ -78,7 +78,7 @@ target_schema = x_args.get("schema")  # e.g. "org_123"
 version_table_schema = target_schema or "public"
 
 
-def include_object(object, name, type_, reflected, compare_to):
+def include_object(_object, name, type_, _reflected, compare_to):
     """
     Filter objects for autogenerate.
     For master migrations (target_schema is None), only include tables

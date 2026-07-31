@@ -4,11 +4,12 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import sqlalchemy as sa
-from sqlalchemy import Boolean, Column, Index, String, text
+from sqlalchemy import Boolean, Column, Index, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship
 
 from ..base_mixins import TimestampMixin
+from ..tenant_constraints import tenant_foreign_key
 
 EMPTY_JSONB_SQL = "'{}'::jsonb"
 
@@ -74,6 +75,19 @@ class IntegrationScope(str, Enum):
 
 class KnowledgeIntegration(TimestampMixin, table=True):
     __tablename__ = "knowledge_integrations"  # type: ignore
+    __table_args__ = (
+        UniqueConstraint(
+            "organisation_id",
+            "integration_id",
+            name="uq_knowledge_integrations_org_integration_id",
+        ),
+        tenant_foreign_key(
+            "knowledge_integrations",
+            "deal_id",
+            "crm_deals",
+            "deal_id",
+        ),
+    )
 
     integration_id: UUID = Field(default_factory=uuid4, primary_key=True)
     organisation_id: UUID = Field(index=True)
@@ -107,7 +121,6 @@ class KnowledgeIntegration(TimestampMixin, table=True):
 
     deal_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_deals.deal_id",
         index=True,
         description="Optional deal context for deal-specific integrations (e.g., Slack channel for a deal)",
     )
@@ -176,8 +189,16 @@ class IntegrationSyncState(TimestampMixin, table=True):
 
     __tablename__ = "integration_sync_states"  # type: ignore
     __table_args__ = (
+        tenant_foreign_key(
+            "integration_sync_states",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+            ondelete="CASCADE",
+        ),
         Index(
-            "ux_integration_sync_states_integration_capability",
+            "ux_integration_sync_states_integration_capability_org",
+            "organisation_id",
             "integration_id",
             "capability",
             unique=True,
@@ -191,7 +212,6 @@ class IntegrationSyncState(TimestampMixin, table=True):
     integration_id: UUID = Field(
         sa_column=Column(
             sa.Uuid,
-            sa.ForeignKey("knowledge_integrations.integration_id", ondelete="CASCADE"),
             nullable=False,
             index=True,
         ),
@@ -242,13 +262,28 @@ class SyncStatus(str, Enum):
 class IntegrationSyncHistory(TimestampMixin, table=True):
     __tablename__ = "integration_sync_history"  # type: ignore
     __table_args__ = (
+        tenant_foreign_key(
+            "integration_sync_history",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
         Index("ix_sync_history_integration_started", "integration_id", "started_at"),
         Index("ix_sync_history_status", "status"),
     )
 
     sync_id: UUID = Field(default_factory=uuid4, primary_key=True)
+    organisation_id: UUID = Field(
+        foreign_key="public.organisations.organisation_id",
+        nullable=False,
+        index=True,
+        sa_column_kwargs={
+            "server_default": text(
+                "NULLIF(current_setting('app.current_organisation_id', true), '')::uuid"
+            )
+        },
+    )
     integration_id: UUID = Field(
-        foreign_key="knowledge_integrations.integration_id",
         index=True,
         description="The integration that was synced.",
     )

@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship
 
 from ..base_mixins import utcnow
+from ..tenant_constraints import tenant_foreign_key
 from .base import FlexibleSyncedRecordMixin, SyncedRecordMixin
 from .integration_models import EMPTY_JSONB_SQL
 
@@ -25,6 +26,29 @@ class IntegrationParticipant(FlexibleSyncedRecordMixin, table=True):
 
     __tablename__ = "integration_participants"
     __table_args__ = (
+        UniqueConstraint(
+            "organisation_id",
+            "participant_id",
+            name="uq_integration_participants_org_participant_id",
+        ),
+        tenant_foreign_key(
+            "integration_participants",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "integration_participants",
+            "crm_user_id",
+            "crm_users",
+            "user_id",
+        ),
+        tenant_foreign_key(
+            "integration_participants",
+            "crm_contact_id",
+            "crm_contacts",
+            "contact_id",
+        ),
         UniqueConstraint(
             "organisation_id",
             "canonical_email_normalized",
@@ -66,13 +90,11 @@ class IntegrationParticipant(FlexibleSyncedRecordMixin, table=True):
     )
     crm_user_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_users.user_id",
         index=True,
         description="Resolved CRM user identifier when the participant is internal.",
     )
     crm_contact_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_contacts.contact_id",
         index=True,
         description="Resolved CRM contact identifier for external participants.",
     )
@@ -111,17 +133,29 @@ class IntegrationParticipantIdentity(SyncedRecordMixin, table=True):
 
     __tablename__ = "integration_participant_identities"
     __table_args__ = (
+        tenant_foreign_key(
+            "integration_participant_identities",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "integration_participant_identities",
+            "participant_id",
+            "integration_participants",
+            "participant_id",
+        ),
         UniqueConstraint(
+            "organisation_id",
             "integration_id",
             "provider_participant_id",
-            name="uq_integration_participant_identity_provider",
+            name="uq_integration_participant_identity_provider_org",
         ),
         Index("ix_integration_part_identity_email", "provider_email_normalized"),
     )
 
     identity_id: UUID = Field(default_factory=uuid4, primary_key=True)
     participant_id: UUID = Field(
-        foreign_key="integration_participants.participant_id",
         index=True,
         description="Canonical participant this provider identity resolves to.",
     )

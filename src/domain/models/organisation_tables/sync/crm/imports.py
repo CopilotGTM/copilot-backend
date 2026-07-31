@@ -11,6 +11,7 @@ from sqlmodel import Field
 
 from ...base_mixins import TimestampMixin
 from ..integration_models import EMPTY_JSONB_SQL
+from .base import tenant_foreign_key
 
 
 class CRMImportRowStatus(StrEnum):
@@ -26,6 +27,13 @@ class CRMImportRow(TimestampMixin, table=True):
 
     __tablename__ = "crm_import_rows"
     __table_args__ = (
+        tenant_foreign_key(
+            "crm_import_rows",
+            "import_job_id",
+            "deal_jobs",
+            "job_id",
+            ondelete="CASCADE",
+        ),
         Index(
             "ux_crm_import_rows_import_row_number",
             "organisation_id",
@@ -46,7 +54,6 @@ class CRMImportRow(TimestampMixin, table=True):
     import_job_id: UUID = Field(
         sa_column=Column(
             sa.Uuid,
-            sa.ForeignKey("deal_jobs.job_id", ondelete="CASCADE"),
             nullable=False,
             index=True,
         ),

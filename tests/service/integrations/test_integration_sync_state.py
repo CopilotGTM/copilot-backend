@@ -24,7 +24,8 @@ def test_provider_parent_types_and_capability_child_unique_index() -> None:
         for index in IntegrationSyncState.__table__.indexes
     }
 
-    assert index_columns["ux_integration_sync_states_integration_capability"] == [
+    assert index_columns["ux_integration_sync_states_integration_capability_org"] == [
+        "organisation_id",
         "integration_id",
         "capability",
     ]

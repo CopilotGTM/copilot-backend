@@ -22,6 +22,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
 from ..base_mixins import TimestampMixin
+from ..tenant_constraints import tenant_foreign_key
 from .integration_models import EMPTY_JSONB_SQL
 
 
@@ -64,6 +65,12 @@ class MeetingRecordingSession(TimestampMixin, SQLModel, table=True):
 
     __tablename__ = "meeting_recording_sessions"
     __table_args__ = (
+        tenant_foreign_key(
+            "meeting_recording_sessions",
+            "calendar_event_id",
+            "calendar_events",
+            "event_id",
+        ),
         # The matcher may see the same event from multiple passes, so the DB
         # constraint is the final idempotency guard for session creation.
         UniqueConstraint(
@@ -72,8 +79,16 @@ class MeetingRecordingSession(TimestampMixin, SQLModel, table=True):
             "provider",
             name="uq_meeting_recording_org_event_provider",
         ),
-        UniqueConstraint("provider_session_id", name="uq_meeting_recording_provider_session"),
-        UniqueConstraint("dedupe_key", name="uq_meeting_recording_dedupe_key"),
+        UniqueConstraint(
+            "organisation_id",
+            "provider_session_id",
+            name="uq_meeting_recording_provider_session_org",
+        ),
+        UniqueConstraint(
+            "organisation_id",
+            "dedupe_key",
+            name="uq_meeting_recording_dedupe_key_org",
+        ),
         Index("ix_meeting_recording_org_status", "organisation_id", "status"),
         Index("ix_meeting_recording_org_join_at", "organisation_id", "join_at"),
         Index(
@@ -87,7 +102,6 @@ class MeetingRecordingSession(TimestampMixin, SQLModel, table=True):
     session_id: UUID = Field(default_factory=uuid4, primary_key=True)
     organisation_id: UUID = Field(index=True)
     calendar_event_id: UUID = Field(
-        foreign_key="calendar_events.event_id",
         index=True,
         description="Calendar event this provider recording session belongs to.",
     )

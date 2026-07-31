@@ -1,6 +1,8 @@
+"""Regression checks for the shared-tenant runtime source gate."""
+
 from __future__ import annotations
 
-from scripts.maintenance.check_tenant_runtime_bypasses import find_bypasses
+from scripts.maintenance.check_tenant_runtime_bypasses import _read_files, find_bypasses
 
 
 def test_flags_direct_tenant_create_engine() -> None:
@@ -35,6 +37,7 @@ def test_allows_known_migration_script_engine_creation() -> None:
     files = {
         "scripts/run_master_migrations.py": "create_engine(url)",
         "scripts/run_org_migrations.py": "create_engine(url)",
+        "scripts/org_admin_session.py": "create_engine(get_master_db_url())",
         "scripts/maintenance/grant_tenant_runtime_schema_access.py": "create_engine(url)",
         "scripts/cleanup_internal_stakeholders.py": "create_engine(url)",
     }
@@ -56,6 +59,42 @@ def test_flags_explicit_org_schema_sql_when_uuid_starts_with_hex_letter() -> Non
     }
 
     assert find_bypasses(files) == ["src/service/bad.py: explicit org schema reference"]
+
+
+def test_flags_direct_tenant_session_acquisition_from_api_router() -> None:
+    """User routes must obtain tenant sessions through the authenticated dependency."""
+
+    files = {
+        "src/api/routers/crm/bad.py": "async with org_async_session_scope(organisation_id): pass",
+    }
+
+    assert find_bypasses(files) == [
+        "src/api/routers/crm/bad.py: direct tenant-session acquisition from API router"
+    ]
+
+
+def test_allows_reviewed_api_tenant_session_ingress_boundaries() -> None:
+    """Only authenticated dependencies and durable ingress mappings may select a tenant."""
+
+    files = {
+        "src/api/dependencies/organisation_dependencies.py": (
+            "async for session in acquire_org_async_session(user_ids.organisation_id): yield session"
+        ),
+        "src/api/routers/crm/leads/lead_forms_handler.py": (
+            "async for session in acquire_org_async_session(ingress_key.organisation_id): pass"
+        ),
+        "src/api/routers/crm/leads/private_lead_ingestion_handler.py": (
+            "async for session in acquire_org_async_session(ingress_key.organisation_id): pass"
+        ),
+    }
+
+    assert find_bypasses(files) == []
+
+
+def test_runtime_source_has_no_tenant_bypasses() -> None:
+    """Make the real source scan part of the normal pytest release gate."""
+
+    assert find_bypasses(_read_files(["src"])) == []
 
 
 def test_checker_is_strict_by_default() -> None:

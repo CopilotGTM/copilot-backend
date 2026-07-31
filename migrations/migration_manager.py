@@ -3,23 +3,20 @@ Production Migration Manager for Multi-Tenant Schema Architecture
 Handles both master and organization-specific migrations safely.
 """
 
-import logging
-import sys
-from typing import List, Dict, Any, Optional
-from pathlib import Path
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from enum import Enum
-import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from alembic.config import Config
 from alembic import command
+from alembic.config import Config
 from alembic.script import ScriptDirectory
-from alembic.runtime.migration import MigrationContext
-from sqlalchemy import create_engine, text, inspect
+from migrations.org_migrations.tenant_identity import validate_migration_schema_name
+from sqlalchemy import create_engine, text
 from sqlalchemy.pool import NullPool
 from sqlmodel import Session, select
-
 from src.domain.models.master_tables import Organisation
 from src.infra.config.configs import database_config
 from src.infra.utils.logger import get_logger
@@ -113,19 +110,21 @@ class ProductionMigrationManager:
     ) -> MigrationResult:
         """Run migrations for a specific organization schema"""
         import sys
-        
+
         logger.info(f"Starting migration for schema: {schema_name}")
         sys.stdout.flush()
         sys.stderr.flush()
         start_time = time.time()
 
         try:
+            validate_migration_schema_name(schema_name)
             if validate_schema and not self._validate_schema_exists(schema_name):
                 raise Exception(f"Schema {schema_name} does not exist")
 
             cfg = Config("migrations/org_migrations/alembic.ini")
+            x_args = [f"schema={schema_name}"]
             cfg.cmd_opts = type(
-                "Args", (), {"x": [f"schema={schema_name}"], "sql": False, "tag": None}
+                "Args", (), {"x": x_args, "sql": False, "tag": None}
             )()
 
             # Get current revision before migration
@@ -173,7 +172,7 @@ class ProductionMigrationManager:
                 sys.stderr.flush()
 
                 command.upgrade(cfg, target_revision)
-            
+
             logger.info(f"Migration upgrade completed for {schema_name}")
             sys.stdout.flush()
             sys.stderr.flush()
@@ -223,7 +222,9 @@ class ProductionMigrationManager:
             # Submit all migration tasks
             future_to_schema = {
                 executor.submit(
-                    self.run_organization_migration, schema, target_revision
+                    self.run_organization_migration,
+                    schema_name=schema,
+                    target_revision=target_revision,
                 ): schema
                 for schema in schemas
             }

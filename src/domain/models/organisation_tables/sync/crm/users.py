@@ -4,20 +4,36 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, Column, DateTime, Index, String, text
+from sqlalchemy import Boolean, Column, DateTime, Index, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
 from ...base_mixins import utcnow
-from ..base import SyncedRecordMixin
 from ..integration_models import EMPTY_JSONB_SQL
+from .base import CRMSyncedRecordMixin, tenant_foreign_key
 
 
-class CRMUser(SyncedRecordMixin, table=True):
+class CRMUser(CRMSyncedRecordMixin, table=True):
     """Normalised CRM user / owner profile."""
 
     __tablename__ = "crm_users"
     __table_args__ = (
+        UniqueConstraint(
+            "organisation_id",
+            "user_id",
+            name="uq_crm_users_org_user_id",
+        ),
+        tenant_foreign_key(
+            "crm_users",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        Index(
+            "ix_crm_users_org_integration_id",
+            "organisation_id",
+            "integration_id",
+        ),
         Index("ix_crm_user_org_email", "organisation_id", "email"),
         Index("ix_crm_user_active", "organisation_id", "is_active"),
     )

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.base_mixins import utcnow
@@ -114,6 +114,13 @@ class InternalCRMSetupService:
         and seeds a default pipeline when one does not exist. Existing pipeline
         stages are user-owned configuration and are never repaired by name.
         """
+        # Setup uses read-before-create checks across several tables. Serialize
+        # one organisation per transaction so concurrent signup retries cannot
+        # both observe an empty tenant and seed duplicate defaults.
+        await self.session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+            {"lock_key": f"internal-crm-setup:{self.organisation_id}"},
+        )
         integration = await self._ensure_internal_integration()
         pipeline, stages = await self._ensure_default_pipeline(integration.integration_id)
         if commit:
