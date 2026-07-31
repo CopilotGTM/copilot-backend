@@ -77,7 +77,7 @@ resource "azapi_resource" "pool" {
         images = [
           {
             wellKnownImageName = var.image_name
-            aliases            = [var.image_alias]
+            aliases            = [var.image_alias, "${var.image_alias}/latest"]
             buffer             = var.image_buffer
           }
         ]
