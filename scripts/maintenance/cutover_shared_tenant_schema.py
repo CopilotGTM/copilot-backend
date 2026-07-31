@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Forward-only shared-tenancy cutover and exact legacy-resource cleanup.
+"""Forward-only selected-tenant cutover and exact legacy-resource cleanup.
 
 Operators call this module for read-only readiness, transactional copy, and the
 evidence-gated removal of one approved schema, role, and Key Vault secret. It
@@ -84,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Expose only the audited forward-cutover operations."""
 
     parser = argparse.ArgumentParser(
-        description="Precheck or atomically copy the sole legacy tenant dataset."
+        description="Precheck or atomically copy one explicitly selected tenant dataset."
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -95,6 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_arguments(copy)
     copy.add_argument("--writers-stopped-evidence", required=True)
     copy.add_argument("--backup-reference", required=True)
+    copy.add_argument("--replace-existing", action="store_true")
     copy.add_argument("--apply", action="store_true", required=True)
 
     delete = commands.add_parser("delete-source-resources")
@@ -134,6 +135,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             writers_stopped_evidence=args.writers_stopped_evidence,
             backup_reference=args.backup_reference,
             apply=args.apply,
+            replace_existing=args.replace_existing,
         )
 
 

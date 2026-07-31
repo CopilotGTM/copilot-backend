@@ -1,4 +1,4 @@
-"""Contracts for the one-source shared-tenancy cutover boundary."""
+"""Contracts for the exact-organisation shared-tenancy cutover boundary."""
 
 from __future__ import annotations
 
@@ -7,10 +7,13 @@ from argparse import Namespace
 from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import Column, MetaData, String, Table
 from sqlalchemy.orm import Session
 from src.infra.utils.resource_naming import get_role_name, get_schema_name
 from src.service.orgnisation.shared_tenancy_cutover_service import (
@@ -57,6 +60,117 @@ def test_copy_requires_explicit_apply_and_operational_evidence_before_database_i
     assert exc_info.value.code == error_code
 
 
+def test_replace_existing_deletes_target_rows_before_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit replacement must clear only the selected tenant before copying."""
+
+    organisation_id = uuid4()
+    session = MagicMock(spec=Session)
+    service = SharedTenancyCutoverService(session, expected_revision="test_head")
+    precheck = SimpleNamespace(
+        organisation_id=organisation_id,
+        source=SimpleNamespace(schema="source", revision="test_head", tables={}),
+        destination=SimpleNamespace(
+            schema="tenant_data",
+            revision="test_head",
+            tables={},
+        ),
+        table_order=(),
+        deferred_foreign_keys=(),
+        source_counts={},
+    )
+    events: list[str] = []
+
+    monkeypatch.setattr(
+        service,
+        "_run_precheck",
+        lambda _organisation_id, **kwargs: events.append(
+            f"precheck:{kwargs['require_empty_destination']}"
+        )
+        or precheck,
+    )
+    monkeypatch.setattr(
+        service,
+        "_replace_destination_rows",
+        lambda _precheck: events.append("replace"),
+        raising=False,
+    )
+    monkeypatch.setattr(service, "_set_tenant_context", lambda _organisation_id: None)
+    monkeypatch.setattr(service, "_sentinel_snapshot", lambda *_args: {})
+    monkeypatch.setattr(service, "_restore_deferred_foreign_keys", lambda _precheck: None)
+    monkeypatch.setattr(service, "_validate_copied_tables", lambda _precheck: {})
+    monkeypatch.setattr(service, "_validate_foreign_keys", lambda *_args: None)
+    monkeypatch.setattr(service, "_validate_uniqueness", lambda *_args: None)
+    monkeypatch.setattr(service, "_validate_destination_rls", lambda: None)
+    monkeypatch.setattr(
+        service,
+        "_base_report",
+        lambda *_args, **_kwargs: {"table_order": []},
+    )
+
+    report = service.copy_and_validate(
+        organisation_id,
+        writers_stopped_evidence="serializable-transaction",
+        backup_reference="legacy-source-retained",
+        apply=True,
+        replace_existing=True,
+    )
+
+    assert events == ["precheck:False", "replace"]
+    statements = [str(call.args[0]) for call in session.execute.call_args_list]
+    assert "SET LOCAL statement_timeout = '15min'" in statements
+    assert report["result"] == "copied_and_validated"
+    assert report["destination_replaced"] is True
+
+
+def test_uniqueness_catalog_query_supports_postgresql_14_without_dynamic_sql() -> None:
+    """Missing PostgreSQL 14 catalog fields resolve to false without SQL building."""
+
+    session = MagicMock(spec=Session)
+    session.execute.return_value.mappings.return_value = []
+    service = SharedTenancyCutoverService(session, expected_revision="test_head")
+
+    service._validate_uniqueness(
+        SimpleNamespace(schema="tenant_data", tables={}),
+        uuid4(),
+    )
+
+    statement = str(session.execute.call_args.args[0])
+    assert "to_jsonb(index_catalog)->>'indnullsnotdistinct'" in statement
+    assert "SHOW server_version_num" not in statement
+
+
+def test_table_digest_transfers_fixed_size_database_digests() -> None:
+    """Large row payloads must be reduced in PostgreSQL before network transfer."""
+
+    metadata = MetaData()
+    table = Table(
+        "emails",
+        metadata,
+        Column("email_id", String, primary_key=True),
+        Column("organisation_id", String, nullable=False),
+        Column("payload", String),
+        schema="tenant_data",
+    )
+    session = MagicMock(spec=Session)
+    session.execute.return_value = [SimpleNamespace(key_digest="key", row_digest="row")]
+    service = SharedTenancyCutoverService(session, expected_revision="test_head")
+
+    count, key_hash, row_hash = service._table_digest(
+        table,
+        uuid4(),
+        include_target=True,
+    )
+
+    statement = str(session.execute.call_args.args[0])
+    assert "md5(jsonb_build_array" in statement
+    assert "md5(to_jsonb" in statement
+    assert "AS row_json" not in statement
+    assert count == 1
+    assert len(key_hash) == len(row_hash) == 64
+
+
 def test_immutable_report_refuses_to_overwrite_existing_evidence(tmp_path: Path) -> None:
     """A rerun cannot replace evidence from an earlier cutover attempt."""
 
@@ -83,6 +197,63 @@ def test_cli_exposes_only_forward_cutover_and_exact_source_deletion() -> None:
         "copy-and-validate",
         "delete-source-resources",
     }
+
+
+def test_precheck_checks_only_the_requested_source_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exact organisation UUID—not global source discovery—selects the dataset."""
+
+    organisation_id = uuid4()
+    source_schema = get_schema_name(organisation_id)
+    source_inventory = SimpleNamespace(schema=source_schema)
+    destination_inventory = SimpleNamespace(schema="tenant_data")
+    session = MagicMock(spec=Session)
+    service = SharedTenancyCutoverService(
+        session,
+        expected_revision="test_head",
+    )
+
+    monkeypatch.setattr(service, "_acquire_lock", lambda _organisation_id: None)
+    monkeypatch.setattr(
+        service,
+        "_validate_master_organisation",
+        lambda _organisation_id: None,
+    )
+    checked_schemas: list[str] = []
+    monkeypatch.setattr(
+        service,
+        "_schema_has_rows",
+        lambda schema: checked_schemas.append(schema) or True,
+    )
+    monkeypatch.setattr(
+        service,
+        "_inventory_schema",
+        lambda schema: source_inventory if schema == source_schema else destination_inventory,
+    )
+    monkeypatch.setattr(service, "_validate_revisions", lambda _source, _destination: None)
+    monkeypatch.setattr(
+        service,
+        "_validate_compatible_schemas",
+        lambda _source, _destination: None,
+    )
+    monkeypatch.setattr(service, "_validate_destination_rls", lambda: None)
+    monkeypatch.setattr(
+        service,
+        "_validate_source_identity",
+        lambda _source, _organisation_id: {},
+    )
+    monkeypatch.setattr(
+        service,
+        "_validate_destination_empty",
+        lambda _destination, _organisation_id: None,
+    )
+    monkeypatch.setattr(service, "_copy_plan", lambda _destination: ((), ()))
+
+    precheck = service._run_precheck(organisation_id)
+
+    assert precheck.source.schema == source_schema
+    assert checked_schemas == [source_schema]
 
 
 def test_copy_cli_requires_operator_evidence_apply_and_report() -> None:

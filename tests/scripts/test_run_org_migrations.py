@@ -83,6 +83,37 @@ def test_run_org_migrations_returns_false_when_any_org_fails(monkeypatch):
     assert success is False
 
 
+def test_org_lookup_session_closes_before_alembic_runs(monkeypatch):
+    """Concurrent DDL must not wait on the runner's own master snapshot."""
+
+    sessions = []
+
+    class _TrackingSession(_FakeSessionWithOrg):
+        def __init__(self, engine):
+            super().__init__(engine)
+            sessions.append(self)
+
+    def _run_migration(**_kwargs):
+        assert sessions[0].closed is True
+        return SimpleNamespace(success=True, error=None, duration=0.1)
+
+    monkeypatch.setattr(
+        run_org_migrations, "create_engine", lambda *_args, **_kwargs: _FakeEngine()
+    )
+    monkeypatch.setattr(run_org_migrations, "Session", _TrackingSession)
+    monkeypatch.setattr(run_org_migrations, "get_schema_name", lambda _org_id: "org_test")
+    monkeypatch.setattr(
+        run_org_migrations.migration_manager,
+        "run_organization_migration",
+        _run_migration,
+    )
+
+    assert run_org_migrations.run_migrations_for_orgs(
+        org_ids=["6fc45305-2989-44ae-9cc1-a55f39450a9e"],
+        target_version="head",
+    )
+
+
 def test_all_org_migrations_skip_hello5_but_explicit_run_includes_it(monkeypatch):
     migrated_orgs = []
 

@@ -223,7 +223,12 @@ def run_migrations_for_orgs(
             print("No target organizations resolved. Exiting.")
             return not failed
 
-        print(f"Resolved {len(target_orgs)} organization(s) to migrate.")
+        target_org_ids = [organization.organisation_id for organization in target_orgs]
+        # Release the master snapshot before Alembic builds concurrent indexes;
+        # keeping it open can make the migration wait on its own lookup session.
+        session.close()
+
+        print(f"Resolved {len(target_org_ids)} organization(s) to migrate.")
 
         # Precheck: gather current revisions
         if precheck:
@@ -231,8 +236,8 @@ def run_migrations_for_orgs(
             from sqlalchemy import text as sa_text
 
             with engine.connect() as conn:
-                for organization in target_orgs:
-                    schema = get_schema_name(organization.organisation_id)
+                for org_id in target_org_ids:
+                    schema = get_schema_name(org_id)
                     current = None
                     try:
                         res = conn.execute(
@@ -248,8 +253,7 @@ def run_migrations_for_orgs(
 
         from sqlalchemy import text as sa_text
 
-        for organization in target_orgs:
-            org_id = organization.organisation_id
+        for org_id in target_org_ids:
             print(f"\n[MIGRATING] organization: {org_id}")
             schema_name = get_schema_name(org_id)
             # Verify schema exists (skip if missing)

@@ -4,8 +4,9 @@ Revision ID: 3c7f79637717
 Revises: 3c7f79637718
 Create Date: 2026-07-30
 
-This structural migration targets an empty shared schema. Existing
-organisation data is copied separately by the selective cutover process.
+The shared schema must be empty when this revision runs. A selected legacy
+``org_<uuid>`` schema is backfilled from its canonical schema identity before
+the selective cutover copies its rows into the shared schema.
 """
 
 from __future__ import annotations
@@ -14,7 +15,10 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import context, op
-from migrations.org_migrations.tenant_identity import validate_migration_schema_name
+from migrations.org_migrations.tenant_identity import (
+    legacy_schema_organisation_id,
+    validate_migration_schema_name,
+)
 from sqlalchemy.dialects import postgresql
 
 revision: str = "3c7f79637717"
@@ -57,9 +61,14 @@ def _migration_schema() -> str:
 
 
 def upgrade() -> None:
-    """Add the permanent row identity to an empty shared schema."""
+    """Add row identity, backfilling only a canonical legacy organisation schema."""
 
     schema_name = _migration_schema()
+    organisation_id = (
+        legacy_schema_organisation_id(schema_name)
+        if schema_name.startswith("org_")
+        else None
+    )
 
     for table_name in TENANT_IDENTITY_TABLES:
         qualified_table = _qualified(schema_name, table_name)
@@ -76,8 +85,20 @@ def upgrade() -> None:
             schema=schema_name,
         )
 
-        # This fails closed if the structural migration is accidentally pointed
-        # at populated data; selective cutover owns legacy rows.
+        if organisation_id is not None:
+            # The canonical legacy schema name is the ownership boundary, so a
+            # caller cannot assign an unrelated UUID through an Alembic argument.
+            op.get_bind().execute(
+                sa.text(
+                    f"UPDATE {qualified_table} "  # noqa: S608
+                    "SET organisation_id = :organisation_id "
+                    "WHERE organisation_id IS NULL"
+                ),
+                {"organisation_id": str(organisation_id)},
+            )
+
+        # Validation deliberately rejects populated tenant_data or test schemas;
+        # only canonical legacy schemas are eligible for the one-time backfill.
         op.create_check_constraint(
             check_name,
             table_name,
