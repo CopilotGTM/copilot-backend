@@ -80,6 +80,18 @@ uv run python -m scripts.run_master_migrations
 uv run python -m scripts.run_org_migrations
 ```
 
+Terraform owns the permanent `tenant_data` schema in dev and prod. Run the
+existing organisation migration chain against that schema explicitly:
+
+```bash
+uv run python -m scripts.run_org_migrations --schema tenant_data --precheck
+uv run python -m scripts.run_org_migrations --schema tenant_data
+```
+
+For an isolated migration test, create an empty schema and pass its safe,
+lowercase name through the same `--schema` option. Schema targets are command
+arguments, not environment configuration.
+
 Deploy the configured super admin when needed:
 
 ```bash
@@ -116,10 +128,14 @@ makes them relevant. Prefer targeted tests while iterating.
 
 ## Architecture
 
-CopilotGTM is a schema-isolated multi-tenant backend.
+CopilotGTM is a shared-row, RLS-enforced multi-tenant backend.
 
-- `public` schema stores global data such as organisations, users, and super admins.
-- Each organization gets an isolated `org_*` schema for tenant data.
+- `public` stores master/control-plane data such as organisations, users, and
+  super admins; access it through master session functions.
+- `tenant_data` stores every organisation's rows; access it through
+  organisation session functions, which set transaction-local tenant identity.
+- PostgreSQL forced row-level security is the database isolation boundary, with
+  tenant-qualified constraints providing relational integrity.
 - API routes should remain thin and delegate business logic to services.
 - Workers own long-running asynchronous jobs.
 - Agents are initialized with immutable security boundaries and acquire sessions on demand.
@@ -156,7 +172,7 @@ Each worker follows the local worker pattern with `celery_app.py`, `config.py`,
 ```text
 migrations/
 ├── master_migrations/    Alembic migrations for public schema
-└── org_migrations/       Alembic migrations for org_* schemas
+└── org_migrations/       Alembic chain run explicitly against tenant_data or an isolated test schema
 ```
 
 ## Critical Rules
@@ -265,16 +281,14 @@ uv run python -m scripts.test_local.investigate_transcript_data
 uv run python -m scripts.test_local.investigate_timeline_data
 ```
 
-Tenant schema names are derived from organization IDs:
+Use the existing master or organisation session boundary when investigating
+database data. Organisation sessions select `tenant_data, extensions` and set
+transaction-local `app.current_organisation_id`; do not derive an `org_*`
+schema or set a tenant search path manually.
 
-```python
-from src.infra.utils.resource_naming import get_schema_name
-
-schema_name = get_schema_name(org_id)
-```
-
-When querying tenant data directly, set the PostgreSQL search path to the org
-schema plus `public`.
+Direct operator SQL is restricted to controlled audits and cutover work. Follow
+`docs/Technical Documentation/shared-row-tenancy-operations-runbook.md`, use the
+appropriate database role, and never disable or bypass RLS.
 
 ## Docker
 

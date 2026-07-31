@@ -16,15 +16,61 @@ from uuid import UUID
 
 
 class SyncDatabaseProvider(Protocol):
-    def master_session(self) -> AbstractContextManager[Any]: ...
-    def tenant_session(self, org_id: UUID) -> AbstractContextManager[Any]: ...
-    def invalidate_tenant(self, org_id: UUID) -> None: ...
+    """Contract for synchronous master and shared-tenant database access."""
+
+    def master_session(self) -> AbstractContextManager[Any]:
+        """Open an unrestricted control-plane session."""
+
+        ...
+
+    def tenant_session(self, org_id: UUID) -> AbstractContextManager[Any]:
+        """Open a session protected by transaction-local tenant identity."""
+
+        ...
+
+    def invalidate_tenant(self, org_id: UUID) -> None:
+        """Replace the shared tenant pool after a credential or network change."""
+
+        ...
+
+    def dispose(self) -> None:
+        """Close every pool during normal process shutdown."""
+
+        ...
+
+    def reset_after_fork(self) -> None:
+        """Replace inherited pools without closing parent-process connections."""
+
+        ...
 
 
 class AsyncDatabaseProvider(Protocol):
-    def master_session(self) -> AbstractAsyncContextManager[Any]: ...
-    def tenant_session(self, org_id: UUID) -> AbstractAsyncContextManager[Any]: ...
-    async def invalidate_tenant(self, org_id: UUID) -> None: ...
+    """Contract for asynchronous master and shared-tenant database access."""
+
+    def master_session(self) -> AbstractAsyncContextManager[Any]:
+        """Open an unrestricted control-plane session."""
+
+        ...
+
+    def tenant_session(self, org_id: UUID) -> AbstractAsyncContextManager[Any]:
+        """Open a session protected by transaction-local tenant identity."""
+
+        ...
+
+    async def invalidate_tenant(self, org_id: UUID) -> None:
+        """Replace the shared tenant pool after a credential or network change."""
+
+        ...
+
+    async def dispose(self) -> None:
+        """Close every pool during normal process shutdown."""
+
+        ...
+
+    def reset_after_fork(self) -> None:
+        """Replace loop-bound inherited pools without performing async I/O."""
+
+        ...
 
 
 __all__ = ["SyncDatabaseProvider", "AsyncDatabaseProvider"]

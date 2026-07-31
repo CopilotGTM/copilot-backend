@@ -1,3 +1,9 @@
+"""Super-admin organisation lifecycle routes and creation-job streaming.
+
+Creation routes enqueue the worker that writes master organisation state and
+shared-tenant defaults. Shared database infrastructure is deployment-owned.
+"""
+
 from collections.abc import AsyncGenerator
 from uuid import UUID
 
@@ -105,12 +111,10 @@ async def create_organization(
     current_admin: SuperAdmin = Depends(admin_auth),
     service: AdminOrganisationService = Depends(get_admin_organisation_service),
 ) -> GenericResponse[OrganisationJobCreateResponse]:
-    """
-    Create a new organization with a dedicated schema, role, and database user.
-    This endpoint is restricted to super admins.
+    """Queue master organisation creation and shared-tenant default setup.
 
-    Returns 202 Accepted with job_id for tracking. Use the SSE endpoint
-    /jobs/{job_id}/stream to receive real-time status updates.
+    This endpoint is restricted to super admins and returns 202 Accepted with
+    a job ID. The deployment owns the shared schema, runtime role, and migrations.
     """
     try:
         current_user = current_admin.admin_id
@@ -132,7 +136,7 @@ async def create_organization(
         org_details = request.model_dump(exclude_unset=True, exclude={"organisation_name"})
         logger.info(f"Organization details: {org_details}")
 
-        # Create job record for tracking
+        # Persist the job before dispatch so SSE recovery has durable state.
         job_result = await service.create_job(
             job_type=OrganisationJobType.CREATE,
             admin_id=current_user,
@@ -630,6 +634,7 @@ async def stream_job_status(
     if current_admin.role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
         # For SSE, we return an error event instead of a JSON response
         async def error_gen():
+            """Emit the authorization failure using the endpoint's SSE contract."""
             yield {
                 "event": "error",
                 "data": '{"message": "Access denied", "code": "FORBIDDEN"}',
@@ -644,6 +649,7 @@ async def stream_job_status(
         )
 
     async def event_generator():
+        """Relay durable job progress until the stream reaches a terminal state."""
         service = OrganisationJobSSEService(current_admin.admin_id)
         try:
             async for evt in service.stream_job_events(

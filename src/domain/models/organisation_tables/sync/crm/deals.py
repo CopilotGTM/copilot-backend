@@ -19,14 +19,15 @@ from sqlalchemy import (
     Index,
     Numeric,
     String,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlmodel import Field, Relationship
 
 from ...base_mixins import TimestampMixin, utcnow
-from ..base import SyncedRecordMixin
 from ..integration_models import EMPTY_JSONB_SQL
+from .base import CRMSyncedRecordMixin, tenant_foreign_key
 
 
 class CRMParticipantType(str, Enum):
@@ -57,11 +58,29 @@ class CRMStageState(str, Enum):
     LOST = "lost"
 
 
-class CRMPipeline(SyncedRecordMixin, table=True):
+class CRMPipeline(CRMSyncedRecordMixin, table=True):
     """CRM pipeline metadata (e.g., HubSpot deal pipeline)."""
 
     __tablename__ = "crm_pipelines"
-    __table_args__ = (Index("ix_crm_pipeline_org_name", "organisation_id", "name"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "organisation_id",
+            "pipeline_id",
+            name="uq_crm_pipelines_org_pipeline_id",
+        ),
+        tenant_foreign_key(
+            "crm_pipelines",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        Index(
+            "ix_crm_pipelines_org_integration_id",
+            "organisation_id",
+            "integration_id",
+        ),
+        Index("ix_crm_pipeline_org_name", "organisation_id", "name"),
+    )
 
     pipeline_id: UUID = Field(default_factory=uuid4, primary_key=True)
     synced_at: datetime = Field(
@@ -104,11 +123,33 @@ class CRMPipeline(SyncedRecordMixin, table=True):
     stages: list["CRMDealStage"] = Relationship(back_populates="pipeline")
 
 
-class CRMDealStage(SyncedRecordMixin, table=True):
+class CRMDealStage(CRMSyncedRecordMixin, table=True):
     """Stages within a CRM pipeline."""
 
     __tablename__ = "crm_deal_stages"
     __table_args__ = (
+        UniqueConstraint(
+            "organisation_id",
+            "stage_id",
+            name="uq_crm_deal_stages_org_stage_id",
+        ),
+        tenant_foreign_key(
+            "crm_deal_stages",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "crm_deal_stages",
+            "pipeline_id",
+            "crm_pipelines",
+            "pipeline_id",
+        ),
+        Index(
+            "ix_crm_deal_stages_org_pipeline_id",
+            "organisation_id",
+            "pipeline_id",
+        ),
         Index("ix_crm_stage_pipeline_order", "pipeline_id", "display_order"),
         Index("ix_crm_stage_org_name", "organisation_id", "name"),
         Index("ix_crm_deal_stage_pipeline_active", "pipeline_id", "is_active"),
@@ -182,7 +223,6 @@ class CRMDealStage(SyncedRecordMixin, table=True):
 
     # Pipeline linkage
     pipeline_id: UUID = Field(
-        foreign_key="crm_pipelines.pipeline_id",
         index=True,
         description="Owning pipeline ID (FK).",
     )
@@ -207,11 +247,65 @@ class CRMDealStage(SyncedRecordMixin, table=True):
     pipeline: CRMPipeline | None = Relationship(back_populates="stages")
 
 
-class CRMDeal(SyncedRecordMixin, table=True):
+class CRMDeal(CRMSyncedRecordMixin, table=True):
     """Canonical deal record across CRMs."""
 
     __tablename__ = "crm_deals"
     __table_args__ = (
+        UniqueConstraint(
+            "organisation_id",
+            "deal_id",
+            name="uq_crm_deals_org_deal_id",
+        ),
+        tenant_foreign_key(
+            "crm_deals",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "crm_deals",
+            "pipeline_id",
+            "crm_pipelines",
+            "pipeline_id",
+        ),
+        tenant_foreign_key(
+            "crm_deals",
+            "stage_id",
+            "crm_deal_stages",
+            "stage_id",
+        ),
+        tenant_foreign_key("crm_deals", "owner_id", "crm_users", "user_id"),
+        tenant_foreign_key(
+            "crm_deals",
+            "created_by_user_id",
+            "crm_users",
+            "user_id",
+        ),
+        tenant_foreign_key(
+            "crm_deals",
+            "updated_by_user_id",
+            "crm_users",
+            "user_id",
+        ),
+        tenant_foreign_key(
+            "crm_deals",
+            "company_id",
+            "crm_companies",
+            "company_id",
+        ),
+        tenant_foreign_key(
+            "crm_deals",
+            "primary_contact_id",
+            "crm_contacts",
+            "contact_id",
+        ),
+        Index(
+            "ix_crm_deals_org_integration_id",
+            "organisation_id",
+            "integration_id",
+        ),
+        Index("ix_crm_deals_org_owner_id", "organisation_id", "owner_id"),
         Index("ix_crm_deal_org_stage", "organisation_id", "stage_id"),
         Index("ix_crm_deal_org_pipeline", "organisation_id", "pipeline_id"),
         Index("ix_crm_deal_created_by", "organisation_id", "created_by_user_id"),
@@ -338,13 +432,11 @@ class CRMDeal(SyncedRecordMixin, table=True):
     )
     pipeline_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_pipelines.pipeline_id",
         index=True,
         description="Reference to the normalised pipeline row for this deal.",
     )
     stage_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_deal_stages.stage_id",
         index=True,
         description="Reference to the normalised current stage row for this deal.",
     )
@@ -382,22 +474,18 @@ class CRMDeal(SyncedRecordMixin, table=True):
     )
     owner_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_users.user_id",
         description="Resolved internal user ID for the deal owner (FK to crm_users).",
     )
     created_by_user_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_users.user_id",
         description="Canonical internal CRM user ID for the actor that created this deal when resolved.",
     )
     updated_by_user_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_users.user_id",
         description="Canonical internal CRM user ID for the actor that last updated this deal when resolved.",
     )
     company_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_companies.company_id",
         description="Resolved internal company ID for the primary associated company.",
     )
     company_name: str | None = Field(
@@ -412,7 +500,6 @@ class CRMDeal(SyncedRecordMixin, table=True):
     )
     primary_contact_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_contacts.contact_id",
         description="Resolved internal contact ID for the primary contact linked to the deal.",
     )
     primary_contact_name: str | None = Field(
@@ -514,15 +601,32 @@ class CRMDeal(SyncedRecordMixin, table=True):
     participants: list["CRMDealParticipant"] = Relationship(back_populates="deal")
     stage_history: list["CRMDealStageHistory"] = Relationship(back_populates="deal")
 
-    stage: Optional["CRMDealStage"] = Relationship()
-    pipeline: Optional["CRMPipeline"] = Relationship()
+    stage: Optional["CRMDealStage"] = Relationship(sa_relationship_kwargs={"overlaps": "pipeline"})
+    pipeline: Optional["CRMPipeline"] = Relationship(sa_relationship_kwargs={"overlaps": "stage"})
 
 
-class CRMDealParticipant(SyncedRecordMixin, table=True):
+class CRMDealParticipant(CRMSyncedRecordMixin, table=True):
     """Links deals to contacts, companies, owners, or other CRM entities."""
 
     __tablename__ = "crm_deal_participants"
     __table_args__ = (
+        tenant_foreign_key(
+            "crm_deal_participants",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "crm_deal_participants",
+            "deal_id",
+            "crm_deals",
+            "deal_id",
+        ),
+        Index(
+            "ix_crm_deal_participants_org_integration_id",
+            "organisation_id",
+            "integration_id",
+        ),
         Index("ix_crm_deal_participant_type", "participant_type"),
         Index("ix_crm_deal_participant_related", "related_local_id"),
         Index("ix_crm_deal_participant_org", "organisation_id", "participant_type"),
@@ -551,7 +655,6 @@ class CRMDealParticipant(SyncedRecordMixin, table=True):
     )
     # Linkage
     deal_id: UUID = Field(
-        foreign_key="crm_deals.deal_id",
         index=True,
         description="Deal ID (FK) this participant is associated with.",
     )
@@ -636,11 +739,57 @@ class CRMDealParticipant(SyncedRecordMixin, table=True):
     deal: CRMDeal | None = Relationship(back_populates="participants")
 
 
-class CRMDealStageHistory(SyncedRecordMixin, table=True):
+class CRMDealStageHistory(CRMSyncedRecordMixin, table=True):
     """Stage transition history for deals."""
 
     __tablename__ = "crm_deal_stage_history"
-    __table_args__ = (Index("ix_crm_stage_history_deal", "deal_id", "entered_at"),)
+    __table_args__ = (
+        tenant_foreign_key(
+            "crm_deal_stage_history",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "crm_deal_stage_history",
+            "deal_id",
+            "crm_deals",
+            "deal_id",
+        ),
+        tenant_foreign_key(
+            "crm_deal_stage_history",
+            "stage_id",
+            "crm_deal_stages",
+            "stage_id",
+        ),
+        tenant_foreign_key(
+            "crm_deal_stage_history",
+            "from_stage_id",
+            "crm_deal_stages",
+            "stage_id",
+        ),
+        Index(
+            "ix_crm_deal_stage_history_org_integration_id",
+            "organisation_id",
+            "integration_id",
+        ),
+        Index(
+            "ix_crm_deal_stage_history_org_deal_id",
+            "organisation_id",
+            "deal_id",
+        ),
+        Index(
+            "ix_crm_deal_stage_history_org_stage_id",
+            "organisation_id",
+            "stage_id",
+        ),
+        Index(
+            "ix_crm_deal_stage_history_org_from_stage_id",
+            "organisation_id",
+            "from_stage_id",
+        ),
+        Index("ix_crm_stage_history_deal", "deal_id", "entered_at"),
+    )
 
     # Identity
     history_id: UUID = Field(
@@ -650,19 +799,16 @@ class CRMDealStageHistory(SyncedRecordMixin, table=True):
     )
     # Deal and stage linkage
     deal_id: UUID = Field(
-        foreign_key="crm_deals.deal_id",
         index=True,
         description="Deal ID (FK) for which the transition occurred.",
     )
     stage_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_deal_stages.stage_id",
         index=True,
         description="Internal stage ID (FK) after the transition, when resolved.",
     )
     from_stage_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_deal_stages.stage_id",
         index=True,
         description="Internal stage ID (FK) the deal exited from, when resolved.",
     )
@@ -729,6 +875,12 @@ class CRMDealMutationEvent(TimestampMixin, table=True):
 
     __tablename__ = "crm_mutation_events"
     __table_args__ = (
+        tenant_foreign_key(
+            "crm_mutation_events",
+            "deal_id",
+            "crm_deals",
+            "deal_id",
+        ),
         # Multi-field updates can expose several workflow semantics from one audit event.
         Index(
             "ix_crm_mutation_events_semantic_event_types",
@@ -790,7 +942,6 @@ class CRMDealMutationEvent(TimestampMixin, table=True):
     )
     deal_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_deals.deal_id",
         index=True,
         description="Direct deal UUID for fast deal-history and workflow lookups.",
     )

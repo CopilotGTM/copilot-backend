@@ -36,6 +36,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship
 
 from ..base_mixins import utcnow
+from ..tenant_constraints import tenant_foreign_key
 from .base import SyncedRecordMixin
 from .integration_models import EMPTY_JSONB_SQL
 from .participant_models import IntegrationParticipant, IntegrationParticipantIdentity
@@ -88,7 +89,30 @@ class CICall(SyncedRecordMixin, table=True):
 
     __tablename__ = "ci_calls"
     __table_args__ = (
-        UniqueConstraint("integration_id", "external_id", name="uq_ci_call_external"),
+        UniqueConstraint(
+            "organisation_id",
+            "call_id",
+            name="uq_ci_calls_org_call_id",
+        ),
+        tenant_foreign_key(
+            "ci_calls",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key("ci_calls", "crm_owner_id", "crm_users", "user_id"),
+        tenant_foreign_key(
+            "ci_calls",
+            "primary_deal_id",
+            "crm_deals",
+            "deal_id",
+        ),
+        UniqueConstraint(
+            "organisation_id",
+            "integration_id",
+            "external_id",
+            name="uq_ci_call_external_org",
+        ),
         Index("ix_ci_call_org_started", "organisation_id", "started_at"),
         Index("ix_ci_call_org_primary_deal", "organisation_id", "primary_deal_id"),
     )
@@ -146,13 +170,11 @@ class CICall(SyncedRecordMixin, table=True):
     )
     crm_owner_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_users.user_id",
         index=True,
         description="Resolved CRM user owning the call.",
     )
     primary_deal_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_deals.deal_id",
         index=True,
         description="Primary CRM deal the provider associates with the call.",
     )
@@ -197,7 +219,10 @@ class CICall(SyncedRecordMixin, table=True):
     transcript_segments: list["CICallTranscriptSegment"] = Relationship(back_populates="call")
     analytics_snapshots: list["CICallAnalyticsSnapshot"] = Relationship(back_populates="call")
     deal_links: list["CICallDealLink"] = Relationship(back_populates="call")
-    speakers: list["CICallSpeaker"] = Relationship(back_populates="call")
+    speakers: list["CICallSpeaker"] = Relationship(
+        back_populates="call",
+        sa_relationship_kwargs={"overlaps": "speakers"},
+    )
 
 
 class CICallDealLink(SyncedRecordMixin, table=True):
@@ -205,12 +230,37 @@ class CICallDealLink(SyncedRecordMixin, table=True):
 
     __tablename__ = "ci_call_deal_links"
     __table_args__ = (
-        UniqueConstraint("integration_id", "call_id", "deal_id", name="uq_ci_call_deal"),
+        tenant_foreign_key(
+            "ci_call_deal_links",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "ci_call_deal_links",
+            "call_id",
+            "ci_calls",
+            "call_id",
+        ),
+        tenant_foreign_key(
+            "ci_call_deal_links",
+            "deal_id",
+            "crm_deals",
+            "deal_id",
+        ),
         UniqueConstraint(
+            "organisation_id",
+            "integration_id",
+            "call_id",
+            "deal_id",
+            name="uq_ci_call_deal_org",
+        ),
+        UniqueConstraint(
+            "organisation_id",
             "integration_id",
             "call_id",
             "deal_external_id",
-            name="uq_ci_call_deal_external",
+            name="uq_ci_call_deal_external_org",
         ),
         Index("ix_ci_call_deal_deal_id", "deal_id"),
         Index("ix_ci_call_deal_external", "deal_external_id"),
@@ -218,12 +268,10 @@ class CICallDealLink(SyncedRecordMixin, table=True):
 
     link_id: UUID = Field(default_factory=uuid4, primary_key=True)
     call_id: UUID = Field(
-        foreign_key=_FK_CI_CALLS_CALL_ID,
         index=True,
         description=_DESC_CI_CALL_ID,
     )
     deal_id: UUID = Field(
-        foreign_key="crm_deals.deal_id",
         index=True,
         description="CRM deal associated with the call.",
     )
@@ -278,17 +326,52 @@ class CICallSpeaker(SyncedRecordMixin, table=True):
     __tablename__ = "ci_call_speakers"
     __table_args__ = (
         UniqueConstraint(
+            "organisation_id",
+            "speaker_id",
+            name="uq_ci_call_speakers_org_speaker_id",
+        ),
+        tenant_foreign_key(
+            "ci_call_speakers",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "ci_call_speakers",
+            "call_id",
+            "ci_calls",
+            "call_id",
+        ),
+        tenant_foreign_key(
+            "ci_call_speakers",
+            "participant_id",
+            "integration_participants",
+            "participant_id",
+        ),
+        tenant_foreign_key(
+            "ci_call_speakers",
+            "crm_contact_id",
+            "crm_contacts",
+            "contact_id",
+        ),
+        tenant_foreign_key(
+            "ci_call_speakers",
+            "crm_user_id",
+            "crm_users",
+            "user_id",
+        ),
+        UniqueConstraint(
+            "organisation_id",
             "integration_id",
             "call_id",
             "external_participant_id",
-            name="uq_ci_call_speaker_external",
+            name="uq_ci_call_speaker_external_org",
         ),
         Index("ix_ci_call_speaker_call_role", "call_id", "speaker_role"),
     )
 
     speaker_id: UUID = Field(default_factory=uuid4, primary_key=True)
     call_id: UUID = Field(
-        foreign_key=_FK_CI_CALLS_CALL_ID,
         index=True,
         description=_DESC_CI_CALL_ID,
     )
@@ -311,19 +394,16 @@ class CICallSpeaker(SyncedRecordMixin, table=True):
     )
     participant_id: UUID | None = Field(
         default=None,
-        foreign_key="integration_participants.participant_id",
         index=True,
         description="Canonical participant identity linked to this speaker instance.",
     )
     crm_contact_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_contacts.contact_id",
         index=True,
         description="Resolved CRM contact identifier for external speakers.",
     )
     crm_user_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_users.user_id",
         index=True,
         description="Resolved CRM user identifier for internal speakers.",
     )
@@ -363,9 +443,18 @@ class CICallSpeaker(SyncedRecordMixin, table=True):
         description="Most recent time this speaker was observed during sync.",
     )
 
-    call: CICall | None = Relationship(back_populates="speakers")
-    transcript_segments: list["CICallTranscriptSegment"] = Relationship(back_populates="speaker")
-    participant: IntegrationParticipant | None = Relationship(back_populates="speakers")
+    call: CICall | None = Relationship(
+        back_populates="speakers",
+        sa_relationship_kwargs={"overlaps": "speakers"},
+    )
+    transcript_segments: list["CICallTranscriptSegment"] = Relationship(
+        back_populates="speaker",
+        sa_relationship_kwargs={"overlaps": "transcript_segments"},
+    )
+    participant: IntegrationParticipant | None = Relationship(
+        back_populates="speakers",
+        sa_relationship_kwargs={"overlaps": "call,speakers"},
+    )
 
 
 class CICallTranscriptSegment(SyncedRecordMixin, table=True):
@@ -373,24 +462,41 @@ class CICallTranscriptSegment(SyncedRecordMixin, table=True):
 
     __tablename__ = "ci_transcript_segments"
     __table_args__ = (
+        tenant_foreign_key(
+            "ci_transcript_segments",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "ci_transcript_segments",
+            "call_id",
+            "ci_calls",
+            "call_id",
+        ),
+        tenant_foreign_key(
+            "ci_transcript_segments",
+            "speaker_id",
+            "ci_call_speakers",
+            "speaker_id",
+        ),
         UniqueConstraint(
+            "organisation_id",
             "integration_id",
             "call_id",
             "segment_index",
-            name="uq_ci_transcript_sequence",
+            name="uq_ci_transcript_sequence_org",
         ),
         Index("ix_ci_transcript_call_sequence", "call_id", "segment_index"),
     )
 
     segment_id: UUID = Field(default_factory=uuid4, primary_key=True)
     call_id: UUID = Field(
-        foreign_key=_FK_CI_CALLS_CALL_ID,
         index=True,
         description=_DESC_CI_CALL_ID,
     )
     speaker_id: UUID | None = Field(
         default=None,
-        foreign_key="ci_call_speakers.speaker_id",
         index=True,
         description="Speaker delivering this portion of the transcript.",
     )
@@ -461,8 +567,14 @@ class CICallTranscriptSegment(SyncedRecordMixin, table=True):
         description="Most recent time this segment was observed during sync.",
     )
 
-    call: CICall | None = Relationship(back_populates="transcript_segments")
-    speaker: CICallSpeaker | None = Relationship(back_populates="transcript_segments")
+    call: CICall | None = Relationship(
+        back_populates="transcript_segments",
+        sa_relationship_kwargs={"overlaps": "transcript_segments"},
+    )
+    speaker: CICallSpeaker | None = Relationship(
+        back_populates="transcript_segments",
+        sa_relationship_kwargs={"overlaps": "call,transcript_segments"},
+    )
 
 
 class CICallAnalyticsSnapshot(SyncedRecordMixin, table=True):
@@ -470,18 +582,30 @@ class CICallAnalyticsSnapshot(SyncedRecordMixin, table=True):
 
     __tablename__ = "ci_call_analytics"
     __table_args__ = (
+        tenant_foreign_key(
+            "ci_call_analytics",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "ci_call_analytics",
+            "call_id",
+            "ci_calls",
+            "call_id",
+        ),
         UniqueConstraint(
+            "organisation_id",
             "integration_id",
             "call_id",
             "analysis_type",
-            name="uq_ci_call_analysis_type",
+            name="uq_ci_call_analysis_type_org",
         ),
         Index("ix_ci_call_analytics_timeline", "call_id", "generated_at"),
     )
 
     analytics_id: UUID = Field(default_factory=uuid4, primary_key=True)
     call_id: UUID = Field(
-        foreign_key=_FK_CI_CALLS_CALL_ID,
         index=True,
         description=_DESC_CI_CALL_ID,
     )

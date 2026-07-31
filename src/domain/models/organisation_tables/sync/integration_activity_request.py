@@ -17,6 +17,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 from src.domain.models.organisation_tables.base_mixins import utcnow
+from src.domain.models.organisation_tables.tenant_constraints import tenant_foreign_key
 
 
 class IntegrationActivityRequestStatus(str, Enum):
@@ -33,6 +34,18 @@ class IntegrationActivityRequest(SQLModel, table=True):
 
     __tablename__ = "integration_activity_requests"
     __table_args__ = (
+        tenant_foreign_key(
+            "integration_activity_requests",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "integration_activity_requests",
+            "deal_id",
+            "crm_deals",
+            "deal_id",
+        ),
         UniqueConstraint(
             "organisation_id",
             "requested_by_user_id",
@@ -51,8 +64,8 @@ class IntegrationActivityRequest(SQLModel, table=True):
     request_id: UUID = Field(default_factory=uuid4, primary_key=True)
     organisation_id: UUID = Field(index=True)
     requested_by_user_id: UUID = Field(index=True)
-    integration_id: UUID = Field(foreign_key="knowledge_integrations.integration_id", index=True)
-    deal_id: UUID | None = Field(default=None, foreign_key="crm_deals.deal_id", index=True)
+    integration_id: UUID = Field(index=True)
+    deal_id: UUID | None = Field(default=None, index=True)
     linked_record_type: str | None = Field(default=None, sa_column=Column(String(64), index=True))
     linked_record_id: UUID | None = Field(default=None, index=True)
     activity_type: str = Field(sa_column=Column(String(64), nullable=False, index=True))

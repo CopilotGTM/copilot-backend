@@ -97,6 +97,7 @@ from src.api.routers.reminders import agents_router, reminders_router
 from src.api.routers.users.auth_handler import router as user_auth_router
 from src.api.routers.users.realtime_handler import router as user_realtime_router
 from src.infra.config.configs import app_config, security_secrets_config
+from src.infra.database.factory import close_database_providers
 from src.infra.database.tenant_runtime_config import (
     validate_current_shared_tenant_runtime_startup,
 )
@@ -131,52 +132,53 @@ def _voice_realtime_api_enabled() -> bool:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler for FastAPI application."""
-    # Startup
-    logger.info("Starting application services...")
-    validate_current_shared_tenant_runtime_startup()
-    await validate_current_shared_tenant_runtime_password(
-        secrets_manager=master_secrets_manager,
-    )
+    try:
+        # Startup
+        logger.info("Starting application services...")
+        validate_current_shared_tenant_runtime_startup()
+        await validate_current_shared_tenant_runtime_password(
+            secrets_manager=master_secrets_manager,
+        )
 
-    # Initialize Redis connection pools at startup
-    logger.info("Initializing Redis connection pools...")
-    initialize_redis_pool()  # Sync Redis pool
-    await initialize_async_redis_pool()  # Async Redis pool
-    logger.info("Redis connection pools initialized successfully")
+        # Initialize Redis connection pools at startup
+        logger.info("Initializing Redis connection pools...")
+        initialize_redis_pool()  # Sync Redis pool
+        await initialize_async_redis_pool()  # Async Redis pool
+        logger.info("Redis connection pools initialized successfully")
 
-    await security_secrets_config.preload_required(
-        include_voice_realtime=_voice_realtime_api_enabled()
-    )
-    logger.info("Security signing secrets initialized")
+        await security_secrets_config.preload_required(
+            include_voice_realtime=_voice_realtime_api_enabled()
+        )
+        logger.info("Security signing secrets initialized")
 
-    # Load Supabase credentials from Key Vault (or env vars for local dev)
-    from src.infra.auth.supabase_admin_client import supabase_admin_client
-    from src.infra.auth.supabase_user_client import supabase_user_client
-    from src.infra.security.token_revocation import token_revocation_service
+        # Load Supabase credentials from Key Vault (or env vars for local dev)
+        from src.infra.auth.supabase_admin_client import supabase_admin_client
+        from src.infra.auth.supabase_user_client import supabase_user_client
+        from src.infra.security.token_revocation import token_revocation_service
 
-    await supabase_admin_client.initialize()
-    await supabase_user_client.initialize()
-    await token_revocation_service.initialize()
-    logger.info("Supabase clients initialized")
+        await supabase_admin_client.initialize()
+        await supabase_user_client.initialize()
+        await token_revocation_service.initialize()
+        logger.info("Supabase clients initialized")
 
-    # Supabase auth uses an HTTP/2 httpx transport; create it before observability
-    # integrations instrument httpx, otherwise auth requests can fail at framing time.
-    init_sentry()
-    logger.info("Sentry initialized")
+        # Supabase auth uses an HTTP/2 httpx transport; create it before observability
+        # integrations instrument httpx, otherwise auth requests can fail at framing time.
+        init_sentry()
+        logger.info("Sentry initialized")
 
-    # Load OTel auth headers from Key Vault and initialize tracing
-    await async_init_otel(service_name_suffix="-api")
-    logger.info("OpenTelemetry initialized")
+        # Load OTel auth headers from Key Vault and initialize tracing
+        await async_init_otel(service_name_suffix="-api")
+        logger.info("OpenTelemetry initialized")
 
-    yield
-
-    # Shutdown
-    logger.info("Shutting down application services...")
-
-    # Close Redis connection pools
-    close_redis_pool()
-    await close_async_redis_pool()
-    logger.info("Redis connection pools closed")
+        yield
+    finally:
+        # A failed startup or request lifecycle must not leave DB/Redis sockets
+        # alive in a process that is shutting down or being restarted.
+        logger.info("Shutting down application services...")
+        await close_database_providers()
+        close_redis_pool()
+        await close_async_redis_pool()
+        logger.info("Redis connection pools closed")
 
 
 def create_fastapi_app():

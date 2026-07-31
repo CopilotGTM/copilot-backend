@@ -3,12 +3,24 @@ from enum import Enum
 from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime, Index, Integer, Numeric, String, Text, func, text
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlmodel import Field, SQLModel
 
 from .base_mixins import TimestampMixin
+from .tenant_constraints import tenant_foreign_key
 
 # SQL server defaults
 _DEFAULT_STATUS_ACTIVE = text("'active'")
@@ -69,7 +81,12 @@ class UserReminder(TimestampMixin, table=True):
     """
 
     __tablename__: ClassVar[str] = "user_reminders"
-    __table_args__: ClassVar[tuple[Index, ...]] = (
+    __table_args__: ClassVar[tuple[Any, ...]] = (
+        UniqueConstraint(
+            "organisation_id",
+            "reminder_id",
+            name="uq_user_reminders_org_reminder_id",
+        ),
         Index("ix_user_reminders_org_status", "organisation_id", "status"),
         Index("ix_user_reminders_next_trigger", "next_trigger_at", "status"),
         Index("ix_user_reminders_user_status", "user_id", "status"),
@@ -182,7 +199,13 @@ class UserReminderRun(SQLModel, table=True):
     """
 
     __tablename__: ClassVar[str] = "user_reminder_runs"
-    __table_args__: ClassVar[tuple[Index, ...]] = (
+    __table_args__: ClassVar[tuple[Any, ...]] = (
+        tenant_foreign_key(
+            "user_reminder_runs",
+            "reminder_id",
+            "user_reminders",
+            "reminder_id",
+        ),
         Index("ix_user_reminder_runs_org_started", "organisation_id", "started_at"),
         Index("ix_user_reminder_runs_reminder_started", "reminder_id", "started_at"),
         Index("ix_user_reminder_runs_user_started", "user_id", "started_at"),
@@ -198,7 +221,6 @@ class UserReminderRun(SQLModel, table=True):
         description="Organisation boundary copied from the parent reminder for audit consistency.",
     )
     reminder_id: UUID = Field(
-        foreign_key="user_reminders.reminder_id",
         index=True,
         description="Parent reminder that this execution attempt belongs to.",
     )

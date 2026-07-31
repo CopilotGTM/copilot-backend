@@ -7,13 +7,22 @@ from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, Column, DateTime, Index, Numeric, String, text
+from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    DateTime,
+    Index,
+    Numeric,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
 from ...base_mixins import utcnow
-from ..base import FlexibleSyncedRecordMixin
 from ..integration_models import EMPTY_JSONB_SQL
+from .base import CRMFlexibleSyncedRecordMixin, tenant_foreign_key
 
 
 class CRMLeadSourceType(str, Enum):
@@ -57,11 +66,70 @@ class CRMLeadParticipantType(str, Enum):
     CUSTOM = "custom"
 
 
-class CRMLead(FlexibleSyncedRecordMixin, table=True):
+class CRMLead(CRMFlexibleSyncedRecordMixin, table=True):
     """Pre-opportunity CRM record captured from forms, imports, APIs, or providers."""
 
     __tablename__ = "crm_leads"
     __table_args__ = (
+        UniqueConstraint(
+            "organisation_id",
+            "lead_id",
+            name="uq_crm_leads_org_lead_id",
+        ),
+        tenant_foreign_key(
+            "crm_leads",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key("crm_leads", "owner_id", "crm_users", "user_id"),
+        tenant_foreign_key(
+            "crm_leads",
+            "contact_id",
+            "crm_contacts",
+            "contact_id",
+        ),
+        tenant_foreign_key(
+            "crm_leads",
+            "company_id",
+            "crm_companies",
+            "company_id",
+        ),
+        tenant_foreign_key(
+            "crm_leads",
+            "converted_deal_id",
+            "crm_deals",
+            "deal_id",
+        ),
+        tenant_foreign_key(
+            "crm_leads",
+            "created_by_user_id",
+            "crm_users",
+            "user_id",
+        ),
+        tenant_foreign_key(
+            "crm_leads",
+            "updated_by_user_id",
+            "crm_users",
+            "user_id",
+        ),
+        Index(
+            "ix_crm_leads_org_integration_id",
+            "organisation_id",
+            "integration_id",
+        ),
+        Index("ix_crm_leads_org_contact_id", "organisation_id", "contact_id"),
+        Index("ix_crm_leads_org_company_id", "organisation_id", "company_id"),
+        Index(
+            "ix_crm_leads_org_created_by_user_id",
+            "organisation_id",
+            "created_by_user_id",
+        ),
+        Index(
+            "ix_crm_leads_org_updated_by_user_id",
+            "organisation_id",
+            "updated_by_user_id",
+        ),
         Index("ix_crm_lead_org_status_captured", "organisation_id", "status", "captured_at"),
         Index("ix_crm_lead_org_owner_status", "organisation_id", "owner_id", "status"),
         Index(
@@ -264,7 +332,6 @@ class CRMLead(FlexibleSyncedRecordMixin, table=True):
     )
     owner_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_users.user_id",
         index=True,
         description="Resolved internal CRM user currently assigned to the lead.",
     )
@@ -286,20 +353,17 @@ class CRMLead(FlexibleSyncedRecordMixin, table=True):
 
     contact_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_contacts.contact_id",
         index=True,
         description="Resolved CRM contact created from or matched to this lead.",
     )
     company_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_companies.company_id",
         index=True,
         description="Resolved CRM company created from or matched to this lead.",
     )
 
     converted_deal_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_deals.deal_id",
         index=True,
         description="Deal created when this lead was converted into an opportunity.",
     )
@@ -435,25 +499,36 @@ class CRMLead(FlexibleSyncedRecordMixin, table=True):
 
     created_by_user_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_users.user_id",
         index=True,
         description="Internal CRM user who manually created the lead, when available.",
     )
     updated_by_user_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_users.user_id",
         index=True,
         description="Internal CRM user who last updated the lead, when available.",
     )
 
 
-class CRMLeadParticipant(FlexibleSyncedRecordMixin, table=True):
+class CRMLeadParticipant(CRMFlexibleSyncedRecordMixin, table=True):
     """Contact, company, owner, or custom participant linked to a lead."""
 
     __tablename__ = "crm_lead_participants"
     __table_args__ = (
+        tenant_foreign_key(
+            "crm_lead_participants",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "crm_lead_participants",
+            "lead_id",
+            "crm_leads",
+            "lead_id",
+        ),
         Index(
-            "uq_crm_lead_participant_local_role",
+            "uq_crm_lead_participant_local_role_org",
+            "organisation_id",
             "lead_id",
             "participant_type",
             "related_local_id",
@@ -462,7 +537,8 @@ class CRMLeadParticipant(FlexibleSyncedRecordMixin, table=True):
             postgresql_where=text("related_local_id IS NOT NULL AND is_deleted = false"),
         ),
         Index(
-            "uq_crm_lead_participant_primary_role",
+            "uq_crm_lead_participant_primary_role_org",
+            "organisation_id",
             "lead_id",
             "participant_type",
             "relationship_role",
@@ -470,6 +546,11 @@ class CRMLeadParticipant(FlexibleSyncedRecordMixin, table=True):
             postgresql_where=text("is_primary = true AND is_deleted = false"),
         ),
         Index("ix_crm_lead_participant_org_lead", "organisation_id", "lead_id"),
+        Index(
+            "ix_crm_lead_participants_org_integration_id",
+            "organisation_id",
+            "integration_id",
+        ),
         Index(
             "ix_crm_lead_participant_org_type",
             "organisation_id",
@@ -496,7 +577,6 @@ class CRMLeadParticipant(FlexibleSyncedRecordMixin, table=True):
     )
 
     lead_id: UUID = Field(
-        foreign_key="crm_leads.lead_id",
         index=True,
         description="Lead that owns this participant relationship.",
     )
@@ -597,6 +677,12 @@ class CRMLeadStatusHistory(SQLModel, table=True):
 
     __tablename__ = "crm_lead_status_history"
     __table_args__ = (
+        tenant_foreign_key(
+            "crm_lead_status_history",
+            "lead_id",
+            "crm_leads",
+            "lead_id",
+        ),
         Index("ix_crm_lead_status_history_lead", "organisation_id", "lead_id", "changed_at"),
         Index(
             "ix_crm_lead_status_history_status",
@@ -616,7 +702,6 @@ class CRMLeadStatusHistory(SQLModel, table=True):
         description="Organisation that owns the lead and status transition.",
     )
     lead_id: UUID = Field(
-        foreign_key="crm_leads.lead_id",
         index=True,
         description="Lead whose status changed.",
     )

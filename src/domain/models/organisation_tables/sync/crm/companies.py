@@ -6,20 +6,54 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, Column, DateTime, Index, Integer, Numeric, String, Text, text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
 from ...base_mixins import utcnow
-from ..base import SyncedRecordMixin
 from ..integration_models import EMPTY_JSONB_SQL
+from .base import CRMSyncedRecordMixin, tenant_foreign_key
 
 
-class CRMCompany(SyncedRecordMixin, table=True):
+class CRMCompany(CRMSyncedRecordMixin, table=True):
     """Normalised CRM company/account record."""
 
     __tablename__ = "crm_companies"
     __table_args__ = (
+        UniqueConstraint(
+            "organisation_id",
+            "company_id",
+            name="uq_crm_companies_org_company_id",
+        ),
+        tenant_foreign_key(
+            "crm_companies",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "crm_companies",
+            "owner_id",
+            "crm_users",
+            "user_id",
+        ),
+        Index(
+            "ix_crm_companies_org_integration_id",
+            "organisation_id",
+            "integration_id",
+        ),
+        Index("ix_crm_companies_org_owner_id", "organisation_id", "owner_id"),
         Index("ix_crm_company_org_domain", "organisation_id", "domain"),
         Index("ix_crm_company_org_name", "organisation_id", "name"),
         Index("ix_crm_company_lifecycle", "organisation_id", "lifecycle_stage"),
@@ -47,7 +81,6 @@ class CRMCompany(SyncedRecordMixin, table=True):
     owner_name: str | None = Field(default=None, description="Display name of the account owner.")
     owner_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_users.user_id",
         description="Resolved internal user ID for the company owner (FK to crm_users).",
     )
 

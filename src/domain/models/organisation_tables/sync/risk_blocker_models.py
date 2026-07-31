@@ -22,6 +22,7 @@ from sqlalchemy.ext.mutable import MutableDict
 from sqlmodel import Field, SQLModel
 
 from ..base_mixins import utcnow
+from ..tenant_constraints import tenant_foreign_key
 
 EMPTY_JSONB_SQL = "'{}'::jsonb"
 
@@ -137,6 +138,12 @@ class DealRiskBlocker(SQLModel, table=True):
 
     __tablename__ = "deal_risks_blockers"
     __table_args__ = (
+        tenant_foreign_key(
+            "deal_risks_blockers",
+            "deal_id",
+            "crm_deals",
+            "deal_id",
+        ),
         # Primary query: All items for a deal by status
         Index("ix_risk_blocker_deal_status", "deal_id", "status"),
         # Filter by type within a deal
@@ -167,7 +174,6 @@ class DealRiskBlocker(SQLModel, table=True):
         description="Organisation this risk/blocker belongs to.",
     )
     deal_id: UUID = Field(
-        foreign_key="crm_deals.deal_id",
         index=True,
         description="The deal this risk/blocker is associated with.",
     )

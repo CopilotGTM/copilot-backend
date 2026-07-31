@@ -152,7 +152,6 @@ class AdminUserResponse(BaseModel):
 class CreateOrganizationResponse(BaseModel):
     organisation_id: UUID
     organisation_name: str
-    schema_name: str
     created_at: datetime
     updated_at: datetime
 
@@ -177,22 +176,6 @@ class UpdateOrganizationRequest(BaseModel):
 
     class Config:
         extra = "ignore"
-
-
-class DeleteOrganizationResponse(BaseModel):
-    organisation_id: UUID
-    organisation_name: str
-    schema_name: str | None = None
-
-
-class RunMigrationsRequest(BaseModel):
-    target_version: str = "head"
-
-
-class RunMigrationsResponse(BaseModel):
-    organisation_id: UUID
-    schema_name: str
-    target_version: str
 
 
 class RunMasterMigrationsResponse(BaseModel):

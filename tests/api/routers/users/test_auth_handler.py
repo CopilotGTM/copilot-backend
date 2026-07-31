@@ -46,6 +46,7 @@ async def test_login_success_returns_default_contact_list_columns(user_auth_test
 
     @asynccontextmanager
     async def fake_master_async_session_scope():
+        """Yield the fake master session for the direct handler test."""
         yield user_auth_test_data["master_session"]
 
     mocker.patch.object(
@@ -163,34 +164,28 @@ def test_login_ignores_malformed_timezone_header(client_with_user_auth):
 
 
 def test_login_user_not_found(client_with_user_auth):
-    """Test login with non-existent email returns error status.
-
-    Note: API returns HTTP 200 with status=ERROR in body (design pattern).
-    """
+    """Test login with non-existent email returns unauthorized."""
     client = client_with_user_auth["client"]
 
     resp = client.post(
         "/users/auth/login",
         json={"email": "nonexistent@example.com", "password": "password123"},
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 401, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"
     assert "User not found" in body["message"]
 
 
 def test_login_invalid_password(client_with_user_auth):
-    """Test login with wrong password returns error status.
-
-    Note: API returns HTTP 200 with status=ERROR in body (design pattern).
-    """
+    """Test login with wrong password returns unauthorized."""
     client = client_with_user_auth["client"]
 
     resp = client.post(
         "/users/auth/login",
         json={"email": "testuser@example.com", "password": "wrongpassword"},
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 401, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"
     assert "Invalid credentials" in body["message"]
@@ -337,10 +332,7 @@ def test_reset_password_success(client_with_user_auth):
 
 
 def test_reset_password_missing_token(client_with_user_auth):
-    """Test reset password without token returns error status.
-
-    Note: API returns HTTP 200 with status=ERROR in body (design pattern).
-    """
+    """Test reset password without token returns bad request."""
     client = client_with_user_auth["client"]
 
     resp = client.post(
@@ -351,17 +343,14 @@ def test_reset_password_missing_token(client_with_user_auth):
             "action": "forgot",
         },
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 400, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"
     assert "Recovery token" in body["message"] or "token_hash" in body["message"]
 
 
 def test_reset_password_missing_password(client_with_user_auth):
-    """Test reset password without new password returns error status.
-
-    Note: API returns HTTP 200 with status=ERROR in body (design pattern).
-    """
+    """Test reset password without new password returns bad request."""
     client = client_with_user_auth["client"]
 
     resp = client.post(
@@ -372,17 +361,14 @@ def test_reset_password_missing_password(client_with_user_auth):
             "action": "forgot",
         },
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 400, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"
     assert "New password" in body["message"] or "password is required" in body["message"]
 
 
 def test_reset_password_mismatch(client_with_user_auth):
-    """Test reset password with mismatched confirm returns error status.
-
-    Note: API returns HTTP 200 with status=ERROR in body (design pattern).
-    """
+    """Test reset password with mismatched confirmation returns bad request."""
     client = client_with_user_auth["client"]
 
     resp = client.post(
@@ -394,17 +380,14 @@ def test_reset_password_mismatch(client_with_user_auth):
             "action": "forgot",
         },
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 400, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"
     assert "do not match" in body["message"] or "mismatch" in body["message"].lower()
 
 
 def test_reset_password_invalid_token(client_with_user_auth):
-    """Test reset password with invalid token returns error status.
-
-    Note: API returns HTTP 200 with status=ERROR in body (design pattern).
-    """
+    """Test reset password with invalid token returns bad request."""
     client = client_with_user_auth["client"]
 
     resp = client.post(
@@ -415,17 +398,14 @@ def test_reset_password_invalid_token(client_with_user_auth):
             "action": "forgot",
         },
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 400, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"
     assert "Invalid" in body["message"] or "expired" in body["message"]
 
 
 def test_reset_password_invalid_action(client_with_user_auth):
-    """Test reset password with invalid action returns error status.
-
-    Note: API returns HTTP 200 with status=ERROR in body (design pattern).
-    """
+    """Test reset password with invalid action returns bad request."""
     client = client_with_user_auth["client"]
 
     resp = client.post(
@@ -436,7 +416,7 @@ def test_reset_password_invalid_action(client_with_user_auth):
             "action": "invalid_action",
         },
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 400, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"
     assert "Invalid action" in body["message"] or "force_change" in body["message"]
@@ -480,17 +460,14 @@ def test_refresh_token_success(client_with_user_auth):
 
 
 def test_refresh_token_invalid(client_with_user_auth):
-    """Test refresh with invalid token returns error status.
-
-    Note: API returns HTTP 200 with status=ERROR in body (design pattern).
-    """
+    """Test refresh with invalid token returns unauthorized."""
     client = client_with_user_auth["client"]
 
     resp = client.post(
         "/users/auth/refresh-token",
         json={"refresh_token": "invalid_refresh_token"},
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 401, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"
     assert "Invalid" in body["message"] or "invalid" in body["message"].lower()

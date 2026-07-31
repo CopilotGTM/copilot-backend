@@ -12,6 +12,7 @@ from sqlmodel import Field
 
 from ...base_mixins import TimestampMixin, utcnow
 from ..integration_models import EMPTY_JSONB_SQL
+from .base import tenant_foreign_key
 
 
 class CRMSourceKind(StrEnum):
@@ -49,6 +50,13 @@ class CRMSourceObjectMapping(TimestampMixin, table=True):
 
     __tablename__ = "crm_source_object_mappings"
     __table_args__ = (
+        tenant_foreign_key(
+            "crm_source_object_mappings",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+            ondelete="CASCADE",
+        ),
         CheckConstraint(
             "source_kind IN ('integration', 'migration')",
             name="ck_crm_source_mapping_source_kind",
@@ -136,7 +144,6 @@ class CRMSourceObjectMapping(TimestampMixin, table=True):
         default=None,
         sa_column=Column(
             sa.Uuid,
-            sa.ForeignKey("knowledge_integrations.integration_id", ondelete="CASCADE"),
             nullable=True,
             index=True,
         ),

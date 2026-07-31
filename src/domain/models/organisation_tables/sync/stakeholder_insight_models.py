@@ -24,6 +24,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
 from ..base_mixins import utcnow
+from ..tenant_constraints import tenant_foreign_key
 
 EMPTY_JSONB_SQL = "'{}'::jsonb"
 EMPTY_JSONB_ARRAY_SQL = "'[]'::jsonb"
@@ -207,6 +208,12 @@ class DealStakeholderInsight(SQLModel, table=True):
 
     __tablename__ = "deal_stakeholder_insights"
     __table_args__ = (
+        tenant_foreign_key(
+            "deal_stakeholder_insights",
+            "deal_id",
+            "crm_deals",
+            "deal_id",
+        ),
         # Primary query: All insights for a deal by status
         Index("ix_stakeholder_insight_deal_status", "deal_id", "status"),
         # Filter by stakeholder
@@ -232,7 +239,6 @@ class DealStakeholderInsight(SQLModel, table=True):
         description="Organisation this insight belongs to.",
     )
     deal_id: UUID = Field(
-        foreign_key="crm_deals.deal_id",
         index=True,
         description="The deal this insight is associated with.",
     )

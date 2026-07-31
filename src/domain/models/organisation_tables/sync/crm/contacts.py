@@ -4,20 +4,49 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime, Index, String, Text, text
+from sqlalchemy import Column, DateTime, Index, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
 from ...base_mixins import utcnow
-from ..base import SyncedRecordMixin
 from ..integration_models import EMPTY_JSONB_SQL
+from .base import CRMSyncedRecordMixin, tenant_foreign_key
 
 
-class CRMContact(SyncedRecordMixin, table=True):
+class CRMContact(CRMSyncedRecordMixin, table=True):
     """Normalised CRM contact profile."""
 
     __tablename__ = "crm_contacts"
     __table_args__ = (
+        UniqueConstraint(
+            "organisation_id",
+            "contact_id",
+            name="uq_crm_contacts_org_contact_id",
+        ),
+        tenant_foreign_key(
+            "crm_contacts",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "crm_contacts",
+            "company_id",
+            "crm_companies",
+            "company_id",
+        ),
+        tenant_foreign_key(
+            "crm_contacts",
+            "owner_id",
+            "crm_users",
+            "user_id",
+        ),
+        Index(
+            "ix_crm_contacts_org_integration_id",
+            "organisation_id",
+            "integration_id",
+        ),
+        Index("ix_crm_contacts_org_owner_id", "organisation_id", "owner_id"),
         Index("ix_crm_contact_org_email", "organisation_id", "email"),
         Index("ix_crm_contact_lifecycle", "organisation_id", "lifecycle_stage"),
         Index("ix_crm_contact_company_id", "organisation_id", "company_id"),
@@ -42,7 +71,6 @@ class CRMContact(SyncedRecordMixin, table=True):
     # Explicit FK to the linked account — takes precedence over domain matching
     company_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_companies.company_id",
         description="Explicit FK to the linked account. When set, takes precedence over domain matching.",
     )
 
@@ -84,7 +112,6 @@ class CRMContact(SyncedRecordMixin, table=True):
     )
     owner_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_users.user_id",
         description="Resolved internal user ID for the contact owner (FK to crm_users).",
     )
     lifecycle_stage: str | None = Field(

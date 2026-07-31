@@ -41,16 +41,15 @@ def test_accepts_key_vault_secret_without_inline_password() -> None:
     assert result.password_secret_name == "shared-tenant-db-password"
 
 
-def test_startup_validation_skips_when_shared_mode_disabled() -> None:
-    result = validate_shared_tenant_runtime_startup(
-        use_shared_tenant_database=False,
-        database_user="postgres",
-        tenant_database_user="",
-        tenant_password="",
-        tenant_password_secret_name="",
-    )
-
-    assert result is None
+def test_startup_validation_rejects_legacy_database_mode() -> None:
+    with pytest.raises(TenantRuntimeConfigError, match="must be enabled"):
+        validate_shared_tenant_runtime_startup(
+            use_shared_tenant_database=False,
+            database_user="postgres",
+            tenant_database_user="",
+            tenant_password="",
+            tenant_password_secret_name="",
+        )
 
 
 def test_startup_validation_fails_when_shared_mode_reuses_master_user() -> None:

@@ -20,7 +20,6 @@ class SyncedRecordMixin(TimestampMixin):
     organisation_id: UUID = Field(index=True)
     integration_id: UUID = Field(
         index=True,
-        foreign_key="knowledge_integrations.integration_id",
         description="Integration owning this record.",
     )
     is_deleted: bool = Field(
@@ -39,7 +38,6 @@ class FlexibleSyncedRecordMixin(TimestampMixin):
     integration_id: UUID | None = Field(
         default=None,
         index=True,
-        foreign_key="knowledge_integrations.integration_id",
         description="Integration owning this record.",
     )
     is_deleted: bool = Field(

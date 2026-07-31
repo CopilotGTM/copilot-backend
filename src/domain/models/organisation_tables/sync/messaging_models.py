@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship, SQLModel
 
 from ..base_mixins import utcnow
+from ..tenant_constraints import tenant_foreign_key
 from .base import OrgScopedRecordMixin, SyncedRecordMixin
 from .integration_models import EMPTY_JSONB_SQL
 
@@ -75,6 +76,11 @@ class MessagingChannel(OrgScopedRecordMixin, table=True):
 
     __tablename__ = "messaging_channels"
     __table_args__ = (
+        UniqueConstraint(
+            "organisation_id",
+            "channel_id",
+            name="uq_messaging_channels_org_channel_id",
+        ),
         UniqueConstraint(
             "organisation_id",
             "provider",
@@ -194,10 +200,23 @@ class MessagingChannelIntegrationState(SQLModel, table=True):
 
     __tablename__ = "messaging_channel_integration_states"
     __table_args__ = (
+        tenant_foreign_key(
+            "messaging_channel_integration_states",
+            "channel_id",
+            "messaging_channels",
+            "channel_id",
+        ),
+        tenant_foreign_key(
+            "messaging_channel_integration_states",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
         UniqueConstraint(
+            "organisation_id",
             "channel_id",
             "integration_id",
-            name="uq_messaging_channel_integration_state",
+            name="uq_messaging_channel_integration_state_org",
         ),
         Index("ix_msg_channel_state_integration", "integration_id"),
         Index(
@@ -212,12 +231,10 @@ class MessagingChannelIntegrationState(SQLModel, table=True):
         primary_key=True,
     )
     channel_id: UUID = Field(
-        foreign_key="messaging_channels.channel_id",
         index=True,
         description="Canonical messaging channel.",
     )
     integration_id: UUID = Field(
-        foreign_key="knowledge_integrations.integration_id",
         index=True,
         description="Integration that can access this channel.",
     )
@@ -265,10 +282,17 @@ class MessagingChannelMember(OrgScopedRecordMixin, table=True):
 
     __tablename__ = "messaging_channel_members"
     __table_args__ = (
+        tenant_foreign_key(
+            "messaging_channel_members",
+            "channel_id",
+            "messaging_channels",
+            "channel_id",
+        ),
         UniqueConstraint(
+            "organisation_id",
             "channel_id",
             "external_user_id",
-            name="uq_channel_member",
+            name="uq_channel_member_org",
         ),
         Index("ix_channel_member_channel", "channel_id"),
         Index("ix_channel_member_email", "email_normalized"),
@@ -277,7 +301,6 @@ class MessagingChannelMember(OrgScopedRecordMixin, table=True):
 
     membership_id: UUID = Field(default_factory=uuid4, primary_key=True)
     channel_id: UUID = Field(
-        foreign_key="messaging_channels.channel_id",
         index=True,
         description="Channel this membership belongs to.",
     )
@@ -332,6 +355,30 @@ class MessagingDealLink(SyncedRecordMixin, table=True):
 
     __tablename__ = "messaging_deal_links"
     __table_args__ = (
+        tenant_foreign_key(
+            "messaging_deal_links",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "messaging_deal_links",
+            "message_id",
+            "messaging_messages",
+            "message_id",
+        ),
+        tenant_foreign_key(
+            "messaging_deal_links",
+            "channel_id",
+            "messaging_channels",
+            "channel_id",
+        ),
+        tenant_foreign_key(
+            "messaging_deal_links",
+            "deal_id",
+            "crm_deals",
+            "deal_id",
+        ),
         Index("ix_messaging_deal_link_message", "message_id"),
         Index("ix_messaging_deal_link_channel", "channel_id"),
         Index("ix_messaging_deal_link_deal", "deal_id"),
@@ -341,18 +388,15 @@ class MessagingDealLink(SyncedRecordMixin, table=True):
     link_id: UUID = Field(default_factory=uuid4, primary_key=True)
     message_id: UUID | None = Field(
         default=None,
-        foreign_key="messaging_messages.message_id",
         index=True,
         description="Message being linked (NULL if channel-level link).",
     )
     channel_id: UUID | None = Field(
         default=None,
-        foreign_key="messaging_channels.channel_id",
         index=True,
         description="Channel being linked (NULL if message-level link).",
     )
     deal_id: UUID = Field(
-        foreign_key="crm_deals.deal_id",
         index=True,
         description="Deal being linked to.",
     )
@@ -412,9 +456,27 @@ class MessagingMessage(OrgScopedRecordMixin, table=True):
     __tablename__ = "messaging_messages"
     __table_args__ = (
         UniqueConstraint(
+            "organisation_id",
+            "message_id",
+            name="uq_messaging_messages_org_message_id",
+        ),
+        tenant_foreign_key(
+            "messaging_messages",
+            "channel_id",
+            "messaging_channels",
+            "channel_id",
+        ),
+        tenant_foreign_key(
+            "messaging_messages",
+            "parent_message_id",
+            "messaging_messages",
+            "message_id",
+        ),
+        UniqueConstraint(
+            "organisation_id",
             "channel_id",
             "external_message_id",
-            name="uq_messaging_message_external",
+            name="uq_messaging_message_external_org",
         ),
         Index("ix_messaging_message_channel_sent", "channel_id", "sent_at"),
         Index("ix_messaging_message_thread", "thread_id"),
@@ -423,7 +485,6 @@ class MessagingMessage(OrgScopedRecordMixin, table=True):
 
     message_id: UUID = Field(default_factory=uuid4, primary_key=True)
     channel_id: UUID = Field(
-        foreign_key="messaging_channels.channel_id",
         index=True,
         description="Channel this message belongs to.",
     )
@@ -461,7 +522,6 @@ class MessagingMessage(OrgScopedRecordMixin, table=True):
     )
     parent_message_id: UUID | None = Field(
         default=None,
-        foreign_key="messaging_messages.message_id",
         index=True,
         description="Parent message for replies.",
     )
@@ -555,6 +615,24 @@ class MessagingThreadSummary(SyncedRecordMixin, table=True):
 
     __tablename__ = "messaging_thread_summaries"
     __table_args__ = (
+        tenant_foreign_key(
+            "messaging_thread_summaries",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "messaging_thread_summaries",
+            "channel_id",
+            "messaging_channels",
+            "channel_id",
+        ),
+        tenant_foreign_key(
+            "messaging_thread_summaries",
+            "deal_id",
+            "crm_deals",
+            "deal_id",
+        ),
         Index("ix_messaging_summary_channel_time", "channel_id", "time_range_start"),
         Index("ix_messaging_summary_deal", "deal_id"),
         Index("ix_messaging_summary_thread", "thread_id"),
@@ -562,7 +640,6 @@ class MessagingThreadSummary(SyncedRecordMixin, table=True):
 
     summary_id: UUID = Field(default_factory=uuid4, primary_key=True)
     channel_id: UUID = Field(
-        foreign_key="messaging_channels.channel_id",
         index=True,
         description="Channel the summary is for.",
     )
@@ -574,7 +651,6 @@ class MessagingThreadSummary(SyncedRecordMixin, table=True):
     )
     deal_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_deals.deal_id",
         index=True,
         description="Associated deal for deal-linked channels.",
     )

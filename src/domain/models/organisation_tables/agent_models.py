@@ -23,11 +23,11 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     DateTime,
-    ForeignKey,
     Index,
     Integer,
     Numeric,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -35,6 +35,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
 from .base_mixins import utcnow
+from .tenant_constraints import tenant_foreign_key
 
 _EMPTY_OBJECT_DEFAULT = text("'{}'::jsonb")
 _EMPTY_ARRAY_DEFAULT = text("'[]'::jsonb")
@@ -117,6 +118,11 @@ class UserAgent(SQLModel, table=True):
 
     __tablename__ = "user_agents"
     __table_args__ = (
+        UniqueConstraint(
+            "organisation_id",
+            "agent_id",
+            name="uq_user_agents_org_agent_id",
+        ),
         Index(
             "ix_user_agents_owner_status_updated",
             "organisation_id",
@@ -279,6 +285,11 @@ class AutomationTrigger(SQLModel, table=True):
 
     __tablename__ = "automation_triggers"
     __table_args__ = (
+        UniqueConstraint(
+            "organisation_id",
+            "trigger_id",
+            name="uq_automation_triggers_org_trigger_id",
+        ),
         Index(
             "ix_automation_triggers_target",
             "organisation_id",
@@ -549,6 +560,20 @@ class AgentRun(SQLModel, table=True):
 
     __tablename__ = "agent_runs"
     __table_args__ = (
+        tenant_foreign_key(
+            "agent_runs",
+            "agent_id",
+            "user_agents",
+            "agent_id",
+            ondelete="RESTRICT",
+        ),
+        tenant_foreign_key(
+            "agent_runs",
+            "trigger_id",
+            "automation_triggers",
+            "trigger_id",
+            ondelete="RESTRICT",
+        ),
         Index(
             "ix_agent_runs_owner_created",
             "organisation_id",
@@ -619,7 +644,6 @@ class AgentRun(SQLModel, table=True):
     agent_id: UUID = Field(
         sa_column=Column(
             sa.Uuid,
-            ForeignKey("user_agents.agent_id", ondelete="RESTRICT"),
             nullable=False,
         ),
         description="Agent definition whose pinned revision was executed.",
@@ -628,7 +652,6 @@ class AgentRun(SQLModel, table=True):
         default=None,
         sa_column=Column(
             sa.Uuid,
-            ForeignKey("automation_triggers.trigger_id", ondelete="RESTRICT"),
             nullable=True,
         ),
         description="Causing trigger, or null for a manual run.",

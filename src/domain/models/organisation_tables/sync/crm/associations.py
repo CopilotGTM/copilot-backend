@@ -21,8 +21,8 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
 from ...base_mixins import utcnow
-from ..base import FlexibleSyncedRecordMixin
 from ..integration_models import EMPTY_JSONB_SQL
+from .base import CRMFlexibleSyncedRecordMixin, tenant_foreign_key
 
 
 class CRMObjectType(str, Enum):
@@ -65,7 +65,7 @@ class CRMAssociationCategory(str, Enum):
     OTHER = "other"
 
 
-class CRMObjectAssociation(FlexibleSyncedRecordMixin, table=True):
+class CRMObjectAssociation(CRMFlexibleSyncedRecordMixin, table=True):
     """
     Generic association between two CRM objects.
 
@@ -82,6 +82,12 @@ class CRMObjectAssociation(FlexibleSyncedRecordMixin, table=True):
 
     __tablename__ = "crm_object_associations"
     __table_args__ = (
+        tenant_foreign_key(
+            "crm_object_associations",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
         # Uniqueness for logical association (prevent duplicates)
         UniqueConstraint(
             "organisation_id",

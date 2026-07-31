@@ -162,7 +162,9 @@ class FakeEmailService:
         self._should_fail = False
         self._sent_emails: list[dict] = []
 
-    def send_password_reset_email(self, to_email: str, first_name: str, reset_url: str) -> bool:
+    async def send_password_reset_email(
+        self, to_email: str, first_name: str, reset_url: str
+    ) -> bool:
         """Simulate sending password reset email."""
         if self._should_fail:
             return False
@@ -213,6 +215,10 @@ class FakeMasterSession:
             self._last_query_supabase_id,
         )
 
+    async def get(self, _model, _identity):
+        """Return no organisation override so auth uses normalized defaults."""
+        return None
+
     def add(self, obj):
         """Add object to session."""
         pass
@@ -236,6 +242,7 @@ class FakeResult:
         self._query_supabase_id = query_supabase_id
 
     def scalars(self):
+        """Mirror SQLAlchemy's scalar-result adapter for the fake query."""
         return self
 
     def first(self):
@@ -294,7 +301,6 @@ def user_auth_test_data():
     email_service = FakeEmailService()
     master_session = FakeMasterSession()
 
-    # Create default test user
     user, supabase_id = create_user(
         email="testuser@example.com",
         password="correctpassword",
@@ -345,6 +351,15 @@ def client_with_user_auth(mocker, user_auth_test_data):
     mocker.patch("src.api.fastapi_app.close_async_redis_pool", new=AsyncMock())
     mocker.patch("src.api.fastapi_app.async_init_otel", new=AsyncMock())
     mocker.patch(
+        "src.api.fastapi_app.validate_current_shared_tenant_runtime_startup",
+        return_value=None,
+    )
+    mocker.patch(
+        "src.api.fastapi_app.validate_current_shared_tenant_runtime_password",
+        new=AsyncMock(),
+    )
+    mocker.patch("src.api.fastapi_app.init_sentry", return_value=None)
+    mocker.patch(
         "src.infra.auth.supabase_admin_client.supabase_admin_client.initialize",
         new=AsyncMock(),
     )
@@ -371,6 +386,7 @@ def client_with_user_auth(mocker, user_auth_test_data):
 
     @asynccontextmanager
     async def fake_master_async_session_scope():
+        """Yield the test's isolated fake master session."""
         yield master_session
 
     mocker.patch(
@@ -391,15 +407,19 @@ def client_with_user_auth(mocker, user_auth_test_data):
 
     # Override dependencies
     async def override_master_session():
+        """Supply the fake master session to dependency-injected handlers."""
         yield master_session
 
     async def override_rate_limit_login():
+        """Keep login tests independent from distributed Redis counters."""
         return None
 
     async def override_rate_limit_password_reset():
+        """Keep reset tests independent from distributed Redis counters."""
         return None
 
     async def override_user_auth():
+        """Return the fixture user for authenticated endpoints."""
         return user
 
     _fastapp.dependency_overrides[get_master_async_session] = override_master_session

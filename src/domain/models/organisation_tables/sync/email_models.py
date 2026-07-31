@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship, SQLModel
 
 from ..base_mixins import utcnow
+from ..tenant_constraints import tenant_foreign_key
 from .base import SyncedRecordMixin
 from .calendar import AssociationStatus
 from .integration_models import EMPTY_JSONB_SQL
@@ -47,9 +48,21 @@ class EmailFolder(SyncedRecordMixin, table=True):
     __tablename__ = "email_folders"
     __table_args__ = (
         UniqueConstraint(
+            "organisation_id",
+            "folder_id",
+            name="uq_email_folders_org_folder_id",
+        ),
+        tenant_foreign_key(
+            "email_folders",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        UniqueConstraint(
+            "organisation_id",
             "integration_id",
             "external_folder_id",
-            name="uq_email_folder_external",
+            name="uq_email_folder_external_org",
         ),
         Index("ix_email_folder_org_monitored", "organisation_id", "is_monitored"),
         Index("ix_email_folder_name", "folder_name"),
@@ -147,10 +160,30 @@ class Email(SyncedRecordMixin, table=True):
 
     __tablename__ = "emails"
     __table_args__ = (
+        tenant_foreign_key(
+            "emails",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "emails",
+            "folder_id",
+            "email_folders",
+            "folder_id",
+        ),
+        tenant_foreign_key(
+            "emails",
+            "from_participant_id",
+            "integration_participants",
+            "participant_id",
+        ),
+        tenant_foreign_key("emails", "deal_id", "crm_deals", "deal_id"),
         UniqueConstraint(
+            "organisation_id",
             "integration_id",
             "external_message_id",
-            name="uq_email_external",
+            name="uq_email_external_org",
         ),
         Index("ix_email_folder_received", "folder_id", "received_at"),
         Index("ix_email_thread", "thread_id"),
@@ -161,7 +194,6 @@ class Email(SyncedRecordMixin, table=True):
 
     email_id: UUID = Field(default_factory=uuid4, primary_key=True)
     folder_id: UUID = Field(
-        foreign_key="email_folders.folder_id",
         index=True,
         description="Folder this email belongs to.",
     )
@@ -193,7 +225,6 @@ class Email(SyncedRecordMixin, table=True):
 
     from_participant_id: UUID | None = Field(
         default=None,
-        foreign_key="integration_participants.participant_id",
         index=True,
         description="Sender resolved to canonical participant.",
     )
@@ -310,7 +341,6 @@ class Email(SyncedRecordMixin, table=True):
 
     deal_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_deals.deal_id",
         index=True,
         description="Associated deal (auto-detected or manually linked).",
     )
@@ -346,6 +376,24 @@ class EmailThreadSummary(SyncedRecordMixin, table=True):
 
     __tablename__ = "email_thread_summaries"
     __table_args__ = (
+        tenant_foreign_key(
+            "email_thread_summaries",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "email_thread_summaries",
+            "folder_id",
+            "email_folders",
+            "folder_id",
+        ),
+        tenant_foreign_key(
+            "email_thread_summaries",
+            "deal_id",
+            "crm_deals",
+            "deal_id",
+        ),
         Index("ix_email_summary_folder_time", "folder_id", "time_range_start"),
         Index("ix_email_summary_deal", "deal_id"),
         Index("ix_email_summary_thread", "thread_id"),
@@ -353,7 +401,6 @@ class EmailThreadSummary(SyncedRecordMixin, table=True):
 
     summary_id: UUID = Field(default_factory=uuid4, primary_key=True)
     folder_id: UUID = Field(
-        foreign_key="email_folders.folder_id",
         index=True,
         description="Folder the summary is for.",
     )
@@ -370,7 +417,6 @@ class EmailThreadSummary(SyncedRecordMixin, table=True):
 
     deal_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_deals.deal_id",
         index=True,
         description="Associated deal for deal-linked threads.",
     )
@@ -476,7 +522,18 @@ class DealEmailAssociation(SQLModel, table=True):
 
     __tablename__ = "deal_email_associations"
     __table_args__ = (
-        UniqueConstraint("deal_id", "internet_message_id", name="uq_deal_email"),
+        tenant_foreign_key(
+            "deal_email_associations",
+            "deal_id",
+            "crm_deals",
+            "deal_id",
+        ),
+        UniqueConstraint(
+            "organisation_id",
+            "deal_id",
+            "internet_message_id",
+            name="uq_deal_email_org",
+        ),
         Index("ix_deal_email_org_status", "organisation_id", "status"),
         Index("ix_deal_email_deal", "deal_id"),
         Index("ix_deal_email_internet_msg", "internet_message_id"),
@@ -485,7 +542,6 @@ class DealEmailAssociation(SQLModel, table=True):
     association_id: UUID = Field(default_factory=uuid4, primary_key=True)
     organisation_id: UUID = Field(index=True)
     deal_id: UUID = Field(
-        foreign_key="crm_deals.deal_id",
         description="The deal this email is associated with.",
     )
     internet_message_id: str = Field(

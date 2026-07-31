@@ -11,11 +11,12 @@ from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, Index, Integer, Numeric, String, Text, text
+from sqlalchemy import Column, Index, Integer, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship
 
 from .base_mixins import TimestampMixin
+from .tenant_constraints import tenant_foreign_key
 
 if TYPE_CHECKING:
     from .chat_message_models import ChatMessage
@@ -45,8 +46,15 @@ class ChatMessageJob(TimestampMixin, table=True):
 
     __tablename__ = "chat_message_jobs"
     __table_args__ = (
+        tenant_foreign_key(
+            "chat_message_jobs",
+            "message_id",
+            "chat_messages",
+            "message_id",
+        ),
         Index(
-            "uq_chat_message_jobs_channel_idempotency",
+            "uq_chat_message_jobs_channel_idempotency_org",
+            "organisation_id",
             "chat_type",
             "idempotency_key",
             unique=True,
@@ -66,9 +74,18 @@ class ChatMessageJob(TimestampMixin, table=True):
         primary_key=True,
         description="Primary key for the job.",
     )
+    organisation_id: UUID = Field(
+        foreign_key="public.organisations.organisation_id",
+        nullable=False,
+        index=True,
+        sa_column_kwargs={
+            "server_default": text(
+                "NULLIF(current_setting('app.current_organisation_id', true), '')::uuid"
+            )
+        },
+    )
     message_id: UUID | None = Field(
         default=None,
-        foreign_key="chat_messages.message_id",
         index=True,
         description="Foreign key linking to the chat message. Nullable for group/channel bot chats.",
     )
@@ -150,14 +167,31 @@ class KnowledgeProcessingJob(TimestampMixin, table=True):
     """
 
     __tablename__ = "knowledge_processing_jobs"
+    __table_args__ = (
+        tenant_foreign_key(
+            "knowledge_processing_jobs",
+            "source_id",
+            "organisation_sources",
+            "source_id",
+        ),
+    )
 
     job_id: UUID = Field(
         default_factory=uuid4,
         primary_key=True,
         description="Primary key for the job.",
     )
+    organisation_id: UUID = Field(
+        foreign_key="public.organisations.organisation_id",
+        nullable=False,
+        index=True,
+        sa_column_kwargs={
+            "server_default": text(
+                "NULLIF(current_setting('app.current_organisation_id', true), '')::uuid"
+            )
+        },
+    )
     source_id: UUID = Field(
-        foreign_key="organisation_sources.source_id",
         index=True,
         description="Foreign key linking to the knowledge source.",
     )
@@ -247,6 +281,18 @@ class DealJobs(TimestampMixin, table=True):
 
     __tablename__ = "deal_jobs"
     __table_args__ = (
+        UniqueConstraint(
+            "organisation_id",
+            "job_id",
+            name="uq_deal_jobs_org_job_id",
+        ),
+        tenant_foreign_key("deal_jobs", "deal_id", "crm_deals", "deal_id"),
+        tenant_foreign_key(
+            "deal_jobs",
+            "event_id",
+            "calendar_events",
+            "event_id",
+        ),
         Index("ix_deal_jobs_org_deal", "organisation_id", "deal_id"),
         Index("ix_deal_jobs_org_status", "organisation_id", "status"),
         Index("ix_deal_jobs_type_status", "job_type", "status"),
@@ -273,13 +319,11 @@ class DealJobs(TimestampMixin, table=True):
     # Associations (nullable - depends on job type)
     deal_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_deals.deal_id",
         index=True,
         description="The deal this job is associated with (nullable for org-level jobs)",
     )
     event_id: UUID | None = Field(
         default=None,
-        foreign_key="calendar_events.event_id",
         index=True,
         description="Optional: The calendar event (for meeting-related jobs)",
     )

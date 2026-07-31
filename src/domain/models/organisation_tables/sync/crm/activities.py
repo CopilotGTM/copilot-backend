@@ -36,8 +36,8 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
 from ...base_mixins import utcnow
-from ..base import FlexibleSyncedRecordMixin
 from ..integration_models import EMPTY_JSONB_SQL
+from .base import CRMFlexibleSyncedRecordMixin, tenant_foreign_key
 
 
 class CRMActivityStatus(StrEnum):
@@ -183,7 +183,7 @@ def validate_crm_activity_display_payload(
     )
 
 
-class CRMActivity(FlexibleSyncedRecordMixin, table=True):
+class CRMActivity(CRMFlexibleSyncedRecordMixin, table=True):
     """Compact activity-feed projection across CRM and communication sources.
 
     Full task and note content lives in ``crm_tasks`` and ``crm_notes``. This
@@ -208,6 +208,49 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
             "activity_id",
             name="uq_crm_activity_org_activity",
         ),
+        tenant_foreign_key(
+            "crm_activities",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "crm_activities",
+            "source_integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key(
+            "crm_activities",
+            "deal_id",
+            "crm_deals",
+            "deal_id",
+        ),
+        tenant_foreign_key(
+            "crm_activities",
+            "contact_id",
+            "crm_contacts",
+            "contact_id",
+        ),
+        tenant_foreign_key(
+            "crm_activities",
+            "company_id",
+            "crm_companies",
+            "company_id",
+        ),
+        Index(
+            "ix_crm_activities_org_integration_id",
+            "organisation_id",
+            "integration_id",
+        ),
+        Index(
+            "ix_crm_activities_org_source_integration_id",
+            "organisation_id",
+            "source_integration_id",
+        ),
+        Index("ix_crm_activities_org_deal_id", "organisation_id", "deal_id"),
+        Index("ix_crm_activities_org_contact_id", "organisation_id", "contact_id"),
+        Index("ix_crm_activities_org_company_id", "organisation_id", "company_id"),
         Index("ix_crm_activity_deal", "deal_id"),
         Index("ix_crm_activity_org_type", "organisation_id", "activity_type"),
         Index("ix_crm_activity_org_occurred", "organisation_id", "occurred_at"),
@@ -256,18 +299,15 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
     # ─────────────────────────────────────────────────────────────────────────
     deal_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_deals.deal_id",
         index=True,
         description="Internal deal ID (FK) this activity is associated with.",
     )
     contact_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_contacts.contact_id",
         description="Internal contact ID (FK) this activity is associated with.",
     )
     company_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_companies.company_id",
         description="Internal company ID (FK) this activity is associated with.",
     )
     # ─────────────────────────────────────────────────────────────────────────
@@ -319,7 +359,6 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
     )
     source_integration_id: UUID | None = Field(
         default=None,
-        foreign_key="knowledge_integrations.integration_id",
         description="Integration that produced the source record, when distinct from this row.",
     )
     source_url: str | None = Field(
@@ -474,7 +513,7 @@ class CRMActivityLink(SQLModel, table=True):
     )
 
 
-class CRMTask(FlexibleSyncedRecordMixin, table=True):
+class CRMTask(CRMFlexibleSyncedRecordMixin, table=True):
     """Canonical task source record used by the feed activity projection.
 
     This table stores current task state only. Reassignment, due-date changes,
@@ -493,6 +532,46 @@ class CRMTask(FlexibleSyncedRecordMixin, table=True):
             "priority IN ('NONE', 'LOW', 'MEDIUM', 'HIGH', 'URGENT')",
             name="ck_crm_task_priority",
         ),
+        tenant_foreign_key(
+            "crm_tasks",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key("crm_tasks", "deal_id", "crm_deals", "deal_id"),
+        tenant_foreign_key(
+            "crm_tasks",
+            "assigned_to_user_id",
+            "crm_users",
+            "user_id",
+        ),
+        tenant_foreign_key(
+            "crm_tasks",
+            "owner_user_id",
+            "crm_users",
+            "user_id",
+        ),
+        tenant_foreign_key(
+            "crm_tasks",
+            "completed_by_user_id",
+            "crm_users",
+            "user_id",
+        ),
+        Index(
+            "ix_crm_tasks_org_integration_id",
+            "organisation_id",
+            "integration_id",
+        ),
+        Index(
+            "ix_crm_tasks_org_owner_user_id",
+            "organisation_id",
+            "owner_user_id",
+        ),
+        Index(
+            "ix_crm_tasks_org_completed_by_user_id",
+            "organisation_id",
+            "completed_by_user_id",
+        ),
         Index("ix_crm_task_org_due", "organisation_id", "due_at", "task_id"),
         Index("ix_crm_task_org_due_date", "organisation_id", "due_date", "task_id"),
         Index(
@@ -510,7 +589,6 @@ class CRMTask(FlexibleSyncedRecordMixin, table=True):
     task_id: UUID = Field(default_factory=uuid4, primary_key=True)
     deal_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_deals.deal_id",
         description="Primary deal context for fast deal-scoped task reads.",
     )
     title: str = Field(sa_column=Column(String(500), nullable=False))
@@ -546,7 +624,6 @@ class CRMTask(FlexibleSyncedRecordMixin, table=True):
     )
     assigned_to_user_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_users.user_id",
         description="Resolved CRM user assigned to the task, when known.",
     )
     assigned_to_email: str | None = Field(
@@ -563,13 +640,11 @@ class CRMTask(FlexibleSyncedRecordMixin, table=True):
     )
     owner_user_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_users.user_id",
         description="CRM owner accountable for the task record, distinct from assignee.",
     )
     owner_email: str | None = Field(default=None, sa_column=Column(String(255), nullable=True))
     completed_by_user_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_users.user_id",
         description="Resolved CRM user who completed the task, when known.",
     )
     source_created_at: datetime | None = Field(
@@ -664,7 +739,7 @@ class CRMTask(FlexibleSyncedRecordMixin, table=True):
         return bool(self.is_deleted)
 
 
-class CRMNote(FlexibleSyncedRecordMixin, table=True):
+class CRMNote(CRMFlexibleSyncedRecordMixin, table=True):
     """Canonical note source record used by the feed activity projection."""
 
     __tablename__: ClassVar[str] = "crm_notes"
@@ -676,6 +751,24 @@ class CRMNote(FlexibleSyncedRecordMixin, table=True):
         CheckConstraint(
             "visibility IN ('PRIVATE', 'TEAM', 'ORG')",
             name="ck_crm_note_visibility",
+        ),
+        tenant_foreign_key(
+            "crm_notes",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
+        tenant_foreign_key("crm_notes", "deal_id", "crm_deals", "deal_id"),
+        tenant_foreign_key(
+            "crm_notes",
+            "author_user_id",
+            "crm_users",
+            "user_id",
+        ),
+        Index(
+            "ix_crm_notes_org_integration_id",
+            "organisation_id",
+            "integration_id",
         ),
         Index("ix_crm_note_author", "organisation_id", "author_user_id"),
         Index(
@@ -691,7 +784,6 @@ class CRMNote(FlexibleSyncedRecordMixin, table=True):
     note_id: UUID = Field(default_factory=uuid4, primary_key=True)
     deal_id: UUID | None = Field(
         default=None,
-        foreign_key="crm_deals.deal_id",
         description="Primary deal context for fast deal-scoped note reads.",
     )
     title: str | None = Field(default=None, sa_column=Column(String(500), nullable=True))
@@ -703,7 +795,7 @@ class CRMNote(FlexibleSyncedRecordMixin, table=True):
         default="plain_text",
         sa_column=Column(String(32), nullable=False, server_default=text("'plain_text'")),
     )
-    author_user_id: UUID | None = Field(default=None, foreign_key="crm_users.user_id")
+    author_user_id: UUID | None = Field(default=None)
     author_name: str | None = Field(default=None, sa_column=Column(String(255), nullable=True))
     author_email: str | None = Field(default=None, sa_column=Column(String(255), nullable=True))
     visibility: str = Field(

@@ -3,6 +3,8 @@
 # Terraform lock file
 .terraform.lock.hcl
 terraform/terraform.lock.hcl
+!terraform/azure/dev/.terraform.lock.hcl
+!terraform/azure/prod/.terraform.lock.hcl
 
 # Terraform plan/output
 terraform/tfplan

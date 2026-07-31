@@ -11,6 +11,7 @@ from sqlmodel import Field
 
 from ...base_mixins import TimestampMixin
 from ..integration_models import EMPTY_JSONB_SQL
+from .base import tenant_foreign_key
 
 
 class CRMCustomFieldEntity(str, Enum):
@@ -48,6 +49,12 @@ class CRMCustomFieldDefinition(TimestampMixin, table=True):
 
     __tablename__ = "crm_custom_field_definitions"
     __table_args__ = (
+        tenant_foreign_key(
+            "crm_custom_field_definitions",
+            "integration_id",
+            "knowledge_integrations",
+            "integration_id",
+        ),
         Index(
             "uq_crm_custom_field_internal_key_state",
             "organisation_id",
@@ -58,7 +65,8 @@ class CRMCustomFieldDefinition(TimestampMixin, table=True):
             postgresql_where=text("field_source = 'internal'"),
         ),
         Index(
-            "uq_crm_custom_field_provider_key_state",
+            "uq_crm_custom_field_provider_key_state_org",
+            "organisation_id",
             "integration_id",
             "entity_type",
             "provider_field_key",
@@ -80,6 +88,11 @@ class CRMCustomFieldDefinition(TimestampMixin, table=True):
             "entity_type",
             "is_active",
             "is_deleted",
+        ),
+        Index(
+            "ix_crm_custom_field_definitions_org_integration_id",
+            "organisation_id",
+            "integration_id",
         ),
         CheckConstraint(
             "key ~ '^[a-z][a-z0-9_]{1,62}$'",
@@ -128,7 +141,6 @@ class CRMCustomFieldDefinition(TimestampMixin, table=True):
     )
     integration_id: UUID | None = Field(
         default=None,
-        foreign_key="knowledge_integrations.integration_id",
         index=True,
         description="Owning integration for provider-backed field definitions. Null for internal fields.",
     )

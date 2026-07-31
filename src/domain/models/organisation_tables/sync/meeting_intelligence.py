@@ -42,6 +42,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship, SQLModel
 
 from ..base_mixins import TimestampMixin
+from ..tenant_constraints import tenant_foreign_key
 from .calendar import GenerationStatus
 
 # =============================================================================
@@ -105,7 +106,22 @@ class Meeting(TimestampMixin, SQLModel, table=True):
 
     __tablename__ = "meetings"
     __table_args__ = (
-        UniqueConstraint("calendar_event_id", name="uq_meeting_calendar_event"),
+        UniqueConstraint(
+            "organisation_id",
+            "meeting_id",
+            name="uq_meetings_org_meeting_id",
+        ),
+        tenant_foreign_key(
+            "meetings",
+            "calendar_event_id",
+            "calendar_events",
+            "event_id",
+        ),
+        UniqueConstraint(
+            "organisation_id",
+            "calendar_event_id",
+            name="uq_meeting_calendar_event_org",
+        ),
         Index("ix_meeting_org_status", "organisation_id", "status"),
     )
 
@@ -114,7 +130,6 @@ class Meeting(TimestampMixin, SQLModel, table=True):
 
     # Link to calendar event (REQUIRED - this is the source of truth)
     calendar_event_id: UUID = Field(
-        foreign_key="calendar_events.event_id",
         index=True,
         description="Calendar event this meeting transcript belongs to.",
     )
@@ -244,18 +259,40 @@ class TranscriptSegment(TimestampMixin, SQLModel, table=True):
     """
 
     __tablename__ = "transcript_segments"
-    __table_args__ = (Index("ix_transcript_segment_meeting", "meeting_id", "segment_index"),)
+    __table_args__ = (
+        tenant_foreign_key(
+            "transcript_segments",
+            "meeting_id",
+            "meetings",
+            "meeting_id",
+        ),
+        tenant_foreign_key(
+            "transcript_segments",
+            "attendee_id",
+            "calendar_event_attendees",
+            "attendee_id",
+        ),
+        Index("ix_transcript_segment_meeting", "meeting_id", "segment_index"),
+    )
 
     segment_id: UUID = Field(default_factory=uuid4, primary_key=True)
+    organisation_id: UUID = Field(
+        foreign_key="public.organisations.organisation_id",
+        nullable=False,
+        index=True,
+        sa_column_kwargs={
+            "server_default": text(
+                "NULLIF(current_setting('app.current_organisation_id', true), '')::uuid"
+            )
+        },
+    )
     meeting_id: UUID = Field(
-        foreign_key="meetings.meeting_id",
         index=True,
     )
 
     # Speaker identity - try to match to CalendarAttendee
     attendee_id: UUID | None = Field(
         default=None,
-        foreign_key="calendar_event_attendees.attendee_id",
         index=True,
         description="Matched calendar attendee (if found by email).",
     )

@@ -554,10 +554,35 @@ def admin_org_client(mocker, admin_test_data):
 
     fake_service = FakeAdminOrganisationService()
 
+    mocker.patch.object(fastapi_app, "validate_current_shared_tenant_runtime_startup")
+    mocker.patch.object(
+        fastapi_app,
+        "validate_current_shared_tenant_runtime_password",
+        new=AsyncMock(),
+    )
+
     # Patch Redis client
     mocker.patch(
         "src.infra.messaging.redis_client.get_redis_client",
         return_value=fakeredis.FakeRedis(),
+    )
+    mocker.patch("src.api.fastapi_app.initialize_redis_pool", return_value=None)
+    mocker.patch("src.api.fastapi_app.close_redis_pool", return_value=None)
+    mocker.patch("src.api.fastapi_app.initialize_async_redis_pool", new=AsyncMock())
+    mocker.patch("src.api.fastapi_app.close_async_redis_pool", new=AsyncMock())
+    mocker.patch("src.api.fastapi_app.async_init_otel", new=AsyncMock())
+    mocker.patch("src.api.fastapi_app.init_sentry", return_value=None)
+    mocker.patch(
+        "src.infra.auth.supabase_admin_client.supabase_admin_client.initialize",
+        new=AsyncMock(),
+    )
+    mocker.patch(
+        "src.infra.auth.supabase_user_client.supabase_user_client.initialize",
+        new=AsyncMock(),
+    )
+    mocker.patch(
+        "src.infra.security.token_revocation.token_revocation_service.initialize",
+        new=AsyncMock(),
     )
 
     # Patch task senders to avoid actual message queue calls (must be async)
