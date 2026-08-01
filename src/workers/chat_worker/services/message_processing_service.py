@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
+from celery.exceptions import Retry
 from sqlmodel import col
 
 from src.domain.models.organisation_tables.chat_message_models import (
@@ -168,11 +169,15 @@ class MessageProcessingService:
             result = self._execute_agent_workflow(conversation_data)
 
             # Phase 3: Save results and finalize (DB operation)
-            self._save_results(conversation_data, result)
+            if not self._save_results(conversation_data, result):
+                logger.warning("Discarded late result for terminal chat job %s", job_id)
+                return False
 
             logger.info("Job %s completed successfully", job_id)
             return True
 
+        except Retry:
+            raise
         except Exception as e:
             error_message = str(e)
             logger.exception(
@@ -217,6 +222,49 @@ class MessageProcessingService:
             # Recovery may republish a task after broker acceptance. Lock and
             # re-read the row so only one delivery can claim a pending job.
             session.refresh(job, with_for_update=True)
+            metadata = dict(job.job_metadata or {})
+            if job.status == JobStatus.PENDING and metadata.get("enqueue_status") == "enqueuing":
+                retries = int(celery_task.request.retries) if celery_task else 0
+                max_retries = getattr(celery_task, "max_retries", None)
+                if isinstance(max_retries, int) and retries >= max_retries:
+                    job.status = JobStatus.FAILED
+                    job.error_message = "Chat task publication did not finish"
+                    metadata.update(
+                        {
+                            "enqueue_status": "failed",
+                            "processing_stage": "failed",
+                            "failure_stage": "enqueue_handshake",
+                        }
+                    )
+                    job.job_metadata = metadata
+                    session.add(job)
+                    session.commit()
+                    return None
+                session.rollback()
+                if celery_task:
+                    countdown = min(2**retries, 8)
+                    raise celery_task.retry(
+                        exc=RuntimeError(f"Job {job_id} publication is not committed"),
+                        countdown=countdown,
+                    )
+                return None
+
+            delivery_info = getattr(getattr(celery_task, "request", None), "delivery_info", {})
+            if (
+                job.status == JobStatus.IN_PROGRESS
+                and isinstance(delivery_info, dict)
+                and delivery_info.get("redelivered")
+            ):
+                # An agent may already have mutated external systems. Redelivery
+                # closes the command instead of risking a second tool execution.
+                job.status = JobStatus.FAILED
+                job.error_message = "Chat worker stopped before completion"
+                metadata.update({"processing_stage": "failed", "failure_stage": "worker_lost"})
+                job.job_metadata = metadata
+                session.add(job)
+                session.commit()
+                return None
+
             if job.status != JobStatus.PENDING:
                 logger.info("Skipping already claimed chat job=%s status=%s", job_id, job.status)
                 session.rollback()
@@ -648,13 +696,21 @@ class MessageProcessingService:
                 result_summary["duration_seconds"],
             )
 
-    def _save_results(self, data: ConversationData, result: AgentResult) -> None:
+    def _save_results(self, data: ConversationData, result: AgentResult) -> bool:
         """Save agent results and finalize job.
 
         Acquires session via context manager, saves data.
         Session is automatically released when the block exits.
         """
         for session in acquire_org_session(self.organisation_id):
+            job = session.get(ChatMessageJob, data.job_id)
+            if not job:
+                return False
+            session.refresh(job, with_for_update=True)
+            if job.status != JobStatus.IN_PROGRESS:
+                session.rollback()
+                return False
+
             # Persist the assistant row and terminal job state in the same
             # session so clients never observe completion without its answer.
             assistant_message = ChatMessage(
@@ -690,50 +746,48 @@ class MessageProcessingService:
             session.add(assistant_message)
 
             # Finalize job
-            job = session.get(ChatMessageJob, data.job_id)
-            if job:
-                job.result_data = {
-                    "answer": result.answer,
-                    "confidence": result.confidence,
-                    "sources": result.sources,
-                    "suggested_questions": result.suggestions,
-                    "assistant_message_id": str(data.assistant_message_id),
-                    "user_questions_count": len(result.user_questions),
-                    "progress_updates_count": len(result.progress_updates),
-                    "tool_usage_count": len(result.tool_usage),
-                    "thinking_updates_count": len(result.thinking_updates),
-                    "visualizations_count": len(result.visualizations),
-                    "structured_data_count": len(result.structured_data),
-                    "task_list": result.task_list,
-                    "token_usage": result.token_usage,
-                    "model_name": result.model_name,
-                }
-                job.token_usage = result.token_usage
-                job.model_name = result.model_name
-                if result.cost is not None:
-                    from decimal import Decimal
+            job.result_data = {
+                "answer": result.answer,
+                "confidence": result.confidence,
+                "sources": result.sources,
+                "suggested_questions": result.suggestions,
+                "assistant_message_id": str(data.assistant_message_id),
+                "user_questions_count": len(result.user_questions),
+                "progress_updates_count": len(result.progress_updates),
+                "tool_usage_count": len(result.tool_usage),
+                "thinking_updates_count": len(result.thinking_updates),
+                "visualizations_count": len(result.visualizations),
+                "structured_data_count": len(result.structured_data),
+                "task_list": result.task_list,
+                "token_usage": result.token_usage,
+                "model_name": result.model_name,
+            }
+            job.token_usage = result.token_usage
+            job.model_name = result.model_name
+            if result.cost is not None:
+                from decimal import Decimal
 
-                    job.cost = Decimal(str(result.cost))
-                if result.duration_seconds is not None:
-                    job.latency_ms = int(result.duration_seconds * 1000)
-                if not result.token_usage:
-                    logger.warning(
-                        "No token_usage on AgentResult for job %s — columns will be NULL",
-                        data.job_id,
-                    )
-                if data.user_id:
-                    job.user_id = data.user_id
-                logger.info(
-                    "Saving job %s: token_usage=%s, model_name=%s, cost=%s, latency_ms=%s, user_id=%s",
+                job.cost = Decimal(str(result.cost))
+            if result.duration_seconds is not None:
+                job.latency_ms = int(result.duration_seconds * 1000)
+            if not result.token_usage:
+                logger.warning(
+                    "No token_usage on AgentResult for job %s — columns will be NULL",
                     data.job_id,
-                    job.token_usage,
-                    job.model_name,
-                    job.cost,
-                    job.latency_ms,
-                    job.user_id,
                 )
-                job.status = JobStatus.COMPLETED
-                session.add(job)
+            if data.user_id:
+                job.user_id = data.user_id
+            logger.info(
+                "Saving job %s: token_usage=%s, model_name=%s, cost=%s, latency_ms=%s, user_id=%s",
+                data.job_id,
+                job.token_usage,
+                job.model_name,
+                job.cost,
+                job.latency_ms,
+                job.user_id,
+            )
+            job.status = JobStatus.COMPLETED
+            session.add(job)
 
             session.commit()
 
@@ -745,6 +799,7 @@ class MessageProcessingService:
 
         # Publish final frames (outside of session)
         self._publish_final_frames(data, result)
+        return True
 
     def _publish_final_frames(self, data: ConversationData, result: AgentResult) -> None:
         """Publish final frames to Redis."""

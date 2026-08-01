@@ -20,13 +20,14 @@ This worker handles chat-related background tasks, specifically attachment proce
 - **attachments**: For attachment processing tasks
 - **chat_processing**: For general chat processing tasks
 - **chat_messages**: For user chat message processing jobs (task `chat.process_message`)
+- **voice_realtime**: For long-running voice sideband sessions
 
 ## Usage
 
 ### Start the worker
 
 ```powershell
-celery -A src.workers.chat_worker.celery_app worker -l info -Q attachments,chat_processing,chat_messages,voice_realtime --pool=solo
+celery -A src.workers.chat_worker.celery_app worker -l info -Q attachments,chat_processing,chat_messages,voice_realtime --pool=threads --concurrency=10
 ```
 
 ### Test connectivity

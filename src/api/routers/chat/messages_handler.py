@@ -1,7 +1,7 @@
 """Authenticated web-chat message, feedback, history, and SSE endpoints.
 
-The send path commits the user message and recovery metadata before publishing
-to Celery so a broker timeout cannot silently discard an accepted request.
+The send path publishes each instant chat once. Redis acceptance completes the
+request; a broker error marks the job failed instead of reviving it later.
 """
 
 import asyncio
@@ -31,6 +31,7 @@ from src.domain.models.organisation_tables.chat_message_models import (
     ChatMessageRole,
     ChatMessageType,
 )
+from src.domain.models.organisation_tables.job_models import JobStatus
 from src.infra.utils.logger import get_logger
 from src.service.chat.chat_message_service import ChatMessageService
 from src.service.chat.chat_message_sse_service import ChatMessageSSEService
@@ -71,10 +72,10 @@ async def send_message(
     user_ids: UserIDs = Depends(get_current_user),
     _rl: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[SendMessageResponse]:
-    """Persist a user message and make its processing job recoverable.
+    """Persist and enqueue one instant web-chat message.
 
-    A successful response means the database owns enough state to republish the
-    job; it does not promise that the first broker publication succeeded.
+    Success means Redis accepted the task. A publish failure is terminal so an
+    old web chat cannot start later through background recovery.
     """
     try:
         # Map attachments to IDs, respecting order if provided
@@ -86,7 +87,7 @@ async def send_message(
         else:
             message_type = payload.message_type
 
-        # The message and pending job share a transaction so recovery never
+        # The message and pending job share a transaction so the worker never
         # observes a job whose input message is missing.
         user_message, job, assistant_message_id = await service.create_user_message(
             session_id=payload.session_id,
@@ -107,8 +108,8 @@ async def send_message(
         # Commit before enqueueing so the worker can always see the job/message.
         await service.db.commit()
 
-        # Persist a lease before broker I/O. If the API dies after this commit,
-        # the scheduled sweep can safely republish the still-pending job.
+        # Record the single publication attempt before broker I/O. A timeout is
+        # treated as terminal; a late delivery sees FAILED and becomes a no-op.
         metadata = dict(job.job_metadata or {})
         attempt = int(metadata.get("enqueue_attempts") or 0) + 1
         metadata.update(
@@ -128,8 +129,6 @@ async def send_message(
             user_ids.organisation_id,
             job.job_id,
         )
-        task_id: str | None = None
-        enqueue_error: str | None = None
         try:
             task_id = await asyncio.wait_for(
                 send_chat_task_async(
@@ -154,25 +153,39 @@ async def send_message(
                 exc,
                 exc_info=True,
             )
-
-        # Broker publication and PostgreSQL cannot commit atomically. Recording
-        # either outcome lets recovery retry an unclaimed PENDING job.
-        try:
             metadata = dict(job.job_metadata or {})
             if int(metadata.get("enqueue_attempts") or 0) == attempt:
                 metadata.update(
                     {
-                        "enqueue_status": "enqueued" if task_id else "failed",
-                        "celery_task_id": task_id,
+                        "enqueue_status": "failed",
+                        "celery_task_id": None,
                         "last_enqueue_error": enqueue_error,
                     }
                 )
                 job.job_metadata = metadata
+                job.status = JobStatus.FAILED
+                job.error_message = "Web chat task publication failed"
                 service.db.add(job)
                 await service.db.commit()
-        except Exception:
-            await service.db.rollback()
-            logger.exception("Failed to record enqueue result for web chat job=%s", job.job_id)
+            return Response.internal_server_error_response(
+                "Unable to start chat processing",
+                response=response,
+            )
+
+        # Redis owns delivery after acceptance; PostgreSQL keeps only the task
+        # identity and lifecycle state used by the worker and SSE clients.
+        metadata = dict(job.job_metadata or {})
+        if int(metadata.get("enqueue_attempts") or 0) == attempt:
+            metadata.update(
+                {
+                    "enqueue_status": "enqueued",
+                    "celery_task_id": task_id,
+                    "last_enqueue_error": None,
+                }
+            )
+            job.job_metadata = metadata
+            service.db.add(job)
+            await service.db.commit()
 
         return Response.success_response("Message accepted", resp)
     except ValueError as e:

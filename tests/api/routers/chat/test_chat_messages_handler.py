@@ -207,10 +207,10 @@ def test_send_message_with_attachments(client: TestClient, messages_dependency_o
     assert body["status"] == "SUCCESS"
 
 
-def test_send_message_celery_task_failure(
+def test_send_message_celery_task_failure_is_terminal(
     client: TestClient, messages_dependency_overrides, mocker
 ):
-    """A broker failure leaves accepted durable work for scheduled recovery."""
+    """Instant web chat fails immediately when Redis does not accept its task."""
     mocker.patch("src.api.dependencies.rate_limit._enforce_rate_limit")
     mocker.patch(
         "src.api.routers.chat.messages_handler.send_chat_task_async",
@@ -223,11 +223,11 @@ def test_send_message_celery_task_failure(
         "content": "Hello",
     }
     resp = client.post("/users/chats/send_message", json=payload)
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 500, resp.text
     body = resp.json()
-    assert body["status"] == "SUCCESS"
-    job = messages_dependency_overrides.jobs[body["data"]["job_id"]]
-    assert job.status == JobStatus.PENDING
+    assert body["status"] == "ERROR"
+    job = next(iter(messages_dependency_overrides.jobs.values()))
+    assert job.status == JobStatus.FAILED
     assert job.job_metadata["enqueue_status"] == "failed"
     assert job.job_metadata["enqueue_attempts"] == 1
     assert "Celery connection failed" in job.job_metadata["last_enqueue_error"]

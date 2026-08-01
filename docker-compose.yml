@@ -342,7 +342,8 @@ services:
     command: >
       celery -A src.workers.chat_worker.celery_app worker
       --queues=attachments,chat_processing,chat_messages,voice_realtime
-      --concurrency=5
+      --concurrency=10
+      --pool=threads
       --loglevel=info
       --hostname=chat@%h
     environment:

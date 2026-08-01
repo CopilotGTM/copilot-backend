@@ -1,14 +1,11 @@
-"""Stale job cleanup tasks for chat worker.
+"""Delayed-work recovery tasks hosted by the chat worker.
 
 Two-tier task pattern:
-- Tier 1: cleanup_stale_chat_jobs_all_orgs_task - Coordinator, dispatches to all orgs
-- Tier 2: cleanup_stale_chat_jobs_org_task - Per-org cleanup with retry support
+- Tier 1: cleanup_delayed_work_all_orgs_task - Coordinator, dispatches to all orgs
+- Tier 2: cleanup_delayed_work_org_task - Per-org cleanup with retry support
 
-Runs every 15 seconds via Celery Beat. Recovers durable chat jobs and cleans up:
-- Web and WhatsApp pending jobs (>15sec), plus response-ready WhatsApp jobs (>2min)
-- WhatsApp agent executions with unknown outcomes (>12min)
+Runs every minute via Celery Beat. Recovers delayed asynchronous work:
 - Attachment processing whose post-upload task was lost (>12min)
-- Other stale ChatMessageJobs (PENDING >60min, IN_PROGRESS >30min)
 - Stuck TRIGGERED reminders (>30min), reset to ACTIVE or FAILED
 - Stale UserReminderRuns (IN_PROGRESS >30min)
 """
@@ -47,12 +44,12 @@ logger = get_logger("chat_stale_job_cleanup_tasks")
     soft_time_limit=300,
     time_limit=360,
 )
-def cleanup_stale_chat_jobs_all_orgs_task() -> dict[str, Any]:
+def cleanup_delayed_work_all_orgs_task() -> dict[str, Any]:
     """Tier 1: Coordinator task that dispatches cleanup to all approved organizations.
 
-    Scheduled every 15 seconds so transient publish failures recover promptly.
+    Scheduled every minute for delayed workflows where recovery remains useful.
     """
-    logger.info("Starting chat stale job cleanup coordinator for all organizations")
+    logger.info("Starting delayed-work cleanup coordinator for all organizations")
 
     async def _dispatch_all_orgs() -> dict[str, Any]:
         org_ids: list[UUID] = []
@@ -79,7 +76,7 @@ def cleanup_stale_chat_jobs_all_orgs_task() -> dict[str, Any]:
         for org_id in org_ids:
             try:
                 # Keep coordinator and per-org cleanup logs under the same request/task lineage.
-                task = cleanup_stale_chat_jobs_org_task.apply_async(
+                task = cleanup_delayed_work_org_task.apply_async(
                     kwargs={"organisation_id": str(org_id)},
                     queue="chat_processing",
                     headers=correlation_headers(),
@@ -92,13 +89,13 @@ def cleanup_stale_chat_jobs_all_orgs_task() -> dict[str, Any]:
                 )
             except Exception as e:
                 logger.error(
-                    "Failed to dispatch chat stale job cleanup for org %s: %s",
+                    "Failed to dispatch delayed-work cleanup for org %s: %s",
                     org_id,
                     e,
                 )
 
         logger.info(
-            "Chat stale job cleanup coordinator completed: dispatched %d/%d org tasks",
+            "Delayed-work cleanup coordinator completed: dispatched %d/%d org tasks",
             len(org_tasks),
             len(org_ids),
         )
@@ -123,16 +120,16 @@ def cleanup_stale_chat_jobs_all_orgs_task() -> dict[str, Any]:
     soft_time_limit=300,
     time_limit=360,
 )
-def cleanup_stale_chat_jobs_org_task(
+def cleanup_delayed_work_org_task(
     self: Task,
     organisation_id: str,
 ) -> dict[str, Any]:
-    """Tier 2: Per-organization stale chat job and reminder cleanup.
+    """Tier 2: Per-organization attachment and reminder recovery.
 
     Args:
         organisation_id: The organization UUID string
     """
-    logger.info("Starting chat stale job cleanup for org=%s", organisation_id)
+    logger.info("Starting delayed-work cleanup for org=%s", organisation_id)
 
     try:
         org_uuid = UUID(organisation_id)
@@ -140,13 +137,12 @@ def cleanup_stale_chat_jobs_org_task(
         result = service.cleanup_stale_jobs()
 
         logger.info(
-            "Chat stale cleanup completed for org=%s: "
+            "Delayed-work cleanup completed for org=%s: "
             "attachments_requeued=%d, attachment_requeue_failed=%d, "
-            "stale_chat_jobs=%d, stuck_reminders=%d, stale_runs=%d",
+            "stuck_reminders=%d, stale_runs=%d",
             organisation_id,
             result.get("attachments_requeued", 0),
             result.get("attachment_requeue_failed", 0),
-            result.get("stale_chat_jobs", 0),
             result.get("stuck_triggered_reminders", 0),
             result.get("stale_reminder_runs", 0),
         )
@@ -158,7 +154,7 @@ def cleanup_stale_chat_jobs_org_task(
 
     except Exception as exc:
         logger.error(
-            "Chat stale job cleanup failed for org=%s: %s",
+            "Delayed-work cleanup failed for org=%s: %s",
             organisation_id,
             exc,
             exc_info=True,
@@ -167,7 +163,7 @@ def cleanup_stale_chat_jobs_org_task(
         if self.request.retries < self.max_retries:
             countdown = 60 * (2**self.request.retries)
             logger.info(
-                "Retrying chat stale job cleanup for org=%s in %d seconds (attempt %d/%d)",
+                "Retrying delayed-work cleanup for org=%s in %d seconds (attempt %d/%d)",
                 organisation_id,
                 countdown,
                 self.request.retries + 1,

@@ -1,4 +1,4 @@
-"""WhatsApp intake, durable job, recovery, media, and provider-send contracts."""
+"""WhatsApp intake, terminal enqueue, media, and provider-send contracts."""
 
 import asyncio
 from types import SimpleNamespace
@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from src.domain.models.organisation_tables.job_models import JobStatus
 from src.infra.config.configs import slack_config, teams_config, whatsapp_config
 from src.service.bots.whatsapp_bot_service import (
     WhatsAppBotService,
@@ -277,7 +278,7 @@ async def test_linked_user_enqueues_when_typing_indicator_fails(
 
 
 @pytest.mark.asyncio
-async def test_linked_user_leaves_durable_job_for_recovery_when_enqueue_fails(
+async def test_linked_user_reports_terminal_enqueue_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = WhatsAppBotService()
@@ -287,16 +288,25 @@ async def test_linked_user_leaves_durable_job_for_recovery_when_enqueue_fails(
         email="test@example.com",
     )
     send_mock = AsyncMock(return_value=True)
+    advance_mock = AsyncMock(return_value=False)
+    chat_session_id = uuid4()
 
     monkeypatch.setattr(service, "_get_linked_user", AsyncMock(return_value=(user, {})))
     monkeypatch.setattr(service, "send_typing_indicator", AsyncMock(return_value=False))
     monkeypatch.setattr(service, "send_text_message", send_mock)
-    _, _, enqueue_mock = _patch_durable_job(monkeypatch, service)
+    monkeypatch.setattr(service, "enqueue_next_session_job", advance_mock)
+    job, _, enqueue_mock = _patch_durable_job(monkeypatch, service)
+    job.job_metadata["session_id"] = str(chat_session_id)
     enqueue_mock.return_value = False
 
     await service._route_message(_message())
 
-    send_mock.assert_not_awaited()
+    send_mock.assert_awaited_once_with(
+        phone_number_id="phone-123",
+        recipient_wa_id="15551234567",
+        text="Sorry, I couldn't start processing that message. Please try again.",
+    )
+    advance_mock.assert_awaited_once_with(user.organisation_id, chat_session_id)
 
 
 @pytest.mark.asyncio
@@ -1229,7 +1239,7 @@ async def test_enqueue_success_records_task_id(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.asyncio
-async def test_enqueue_failure_records_recoverable_pending_state(
+async def test_enqueue_failure_records_terminal_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from src.service.bots import whatsapp_bot_service
@@ -1259,6 +1269,45 @@ async def test_enqueue_failure_records_recoverable_pending_state(
         task_id=None,
         error="redis unavailable",
     )
+
+
+@pytest.mark.asyncio
+async def test_record_enqueue_failure_marks_job_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = WhatsAppBotService()
+    job = SimpleNamespace(
+        status=JobStatus.PENDING,
+        error_message=None,
+        job_metadata={"enqueue_attempts": 1},
+    )
+
+    class Session:
+        async def get(self, *_args):
+            return job
+
+        def add(self, _value):
+            return None
+
+        async def commit(self):
+            return None
+
+    async def sessions(_org_id):
+        yield Session()
+
+    monkeypatch.setattr("src.infra.database.sessions.acquire_org_async_session", sessions)
+
+    await service._record_enqueue_result(
+        uuid4(),
+        uuid4(),
+        attempt=1,
+        task_id=None,
+        error="redis unavailable",
+    )
+
+    assert job.status == JobStatus.FAILED
+    assert job.error_message == "WhatsApp task publication failed"
+    assert job.job_metadata["enqueue_status"] == "failed"
 
 
 class _SendResponse:

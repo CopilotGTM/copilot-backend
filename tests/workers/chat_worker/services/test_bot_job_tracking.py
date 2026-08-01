@@ -15,10 +15,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
+from celery.exceptions import Retry
+from src.domain.models.organisation_tables.job_models import JobStatus
 from src.workers.chat_worker.services.bot_message_processing_service import (
     BotAgentResult,
     BotMessageProcessingService,
-    WhatsAppDeliveryRetryableError,
 )
 
 _PATCH_SESSION = "src.infra.database.sessions.org_session_scope"
@@ -334,7 +335,7 @@ class TestFinalizeJob:
 
         mock_job = SimpleNamespace(
             job_id=job_id,
-            status=None,
+            status=JobStatus.IN_PROGRESS,
             token_usage=None,
             model_name=None,
             cost=None,
@@ -357,7 +358,7 @@ class TestFinalizeJob:
         job_id = uuid4()
         mock_job = SimpleNamespace(
             job_id=job_id,
-            status=None,
+            status=JobStatus.IN_PROGRESS,
             token_usage=None,
             model_name=None,
             cost=None,
@@ -376,7 +377,7 @@ class TestFinalizeJob:
         job_id = uuid4()
         mock_job = SimpleNamespace(
             job_id=job_id,
-            status=None,
+            status=JobStatus.IN_PROGRESS,
             token_usage=None,
             model_name=None,
             cost=None,
@@ -390,6 +391,28 @@ class TestFinalizeJob:
 
         assert mock_job.status.value == "failed"
 
+    def test_terminal_job_cannot_be_finalized_by_late_delivery(self, service):
+        from src.domain.models.organisation_tables.job_models import JobStatus
+
+        job_id = uuid4()
+        mock_job = SimpleNamespace(
+            job_id=job_id,
+            status=JobStatus.FAILED,
+            token_usage=None,
+            model_name=None,
+            cost=None,
+            latency_ms=None,
+        )
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_job
+
+        with patch(_PATCH_SESSION, return_value=_fake_session(mock_session)):
+            finalized = service._finalize_job(job_id, [], success=True)
+
+        assert finalized is False
+        assert mock_job.status == JobStatus.FAILED
+        mock_session.add.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # _mark_job_in_progress
@@ -397,6 +420,25 @@ class TestFinalizeJob:
 
 
 class TestMarkJobInProgress:
+    def test_process_propagates_celery_retry_without_running_agent(self, service, monkeypatch):
+        """The publish-handshake retry must not be swallowed as a completed Celery task."""
+        job_id = uuid4()
+        monkeypatch.setattr(
+            service,
+            "_mark_job_in_progress",
+            MagicMock(side_effect=Retry("wait")),
+        )
+
+        with pytest.raises(Retry):
+            service.process(
+                user_id=uuid4(),
+                message_text="hello",
+                provider="whatsapp",
+                reply_context={},
+                job_id=job_id,
+                celery_task=MagicMock(),
+            )
+
     def test_transitions_to_in_progress(self, service):
         job_id = uuid4()
         mock_job = SimpleNamespace(
@@ -445,6 +487,44 @@ class TestMarkJobInProgress:
         assert should_process is False
         assert mock_job.status == JobStatus.IN_PROGRESS
 
+    def test_redelivered_in_progress_job_becomes_terminal(self, service):
+        """A worker-loss redelivery terminates WhatsApp work rather than rerunning tools."""
+        from src.domain.models.organisation_tables.job_models import JobStatus
+
+        job_id = uuid4()
+        session_id = uuid4()
+        mock_job = SimpleNamespace(
+            job_id=job_id,
+            chat_type="WHATSAPP_CHAT",
+            status=JobStatus.IN_PROGRESS,
+            error_message=None,
+            job_metadata={
+                "processing_stage": "agent_running",
+                "session_id": str(session_id),
+            },
+        )
+        mock_session = MagicMock()
+        mock_session.execute = MagicMock(return_value=SimpleNamespace(rowcount=0))
+        mock_session.get = MagicMock(return_value=mock_job)
+        celery_task = MagicMock()
+        celery_task.request.delivery_info = {"redelivered": True}
+        advance = MagicMock()
+
+        with (
+            patch(_PATCH_SESSION, return_value=_fake_session(mock_session)),
+            patch.object(service, "_enqueue_next_whatsapp_session_job", advance),
+        ):
+            should_process = service._mark_job_in_progress(
+                job_id,
+                celery_task=celery_task,
+            )
+
+        assert should_process is False
+        assert mock_job.status == JobStatus.FAILED
+        assert mock_job.job_metadata["processing_stage"] == "failed"
+        assert "worker" in mock_job.error_message.lower()
+        advance.assert_called_once_with(session_id)
+
     def test_process_skips_completed_job_without_agent_or_send(self, monkeypatch):
         service = BotMessageProcessingService(uuid4())
         job_id = uuid4()
@@ -479,6 +559,76 @@ class TestMarkJobInProgress:
 
         assert result is True
         assert calls == []
+
+    def test_published_task_claims_job_while_enqueue_result_is_being_recorded(self, service):
+        """A delivered Celery task may claim before intake records its task ID."""
+        from sqlalchemy.dialects import postgresql
+        from src.domain.models.organisation_tables.job_models import JobStatus
+
+        job_id = uuid4()
+        mock_job = SimpleNamespace(
+            job_id=job_id,
+            chat_type="WHATSAPP_CHAT",
+            status=JobStatus.PENDING,
+            error_message=None,
+            job_metadata={"enqueue_status": "enqueuing", "processing_stage": "pending"},
+        )
+        mock_session = MagicMock()
+        mock_session.execute.side_effect = lambda statement: SimpleNamespace(
+            rowcount=(
+                0
+                if "enqueue_status"
+                in str(
+                    statement.compile(
+                        dialect=postgresql.dialect(),
+                        compile_kwargs={"literal_binds": True},
+                    )
+                )
+                else 1
+            )
+        )
+        mock_session.get.return_value = mock_job
+
+        with patch(_PATCH_SESSION, return_value=_fake_session(mock_session)):
+            should_process = service._mark_job_in_progress(job_id)
+
+        assert should_process is True
+        assert mock_job.job_metadata["processing_stage"] == "agent_running"
+
+    def test_exhausted_enqueue_handshake_becomes_terminal(self, service):
+        """A bot command cannot remain pending after its handoff retry budget."""
+        job_id = uuid4()
+        session_id = uuid4()
+        mock_job = SimpleNamespace(
+            job_id=job_id,
+            chat_type="WHATSAPP_CHAT",
+            status=JobStatus.PENDING,
+            error_message=None,
+            job_metadata={
+                "enqueue_status": "enqueuing",
+                "processing_stage": "pending",
+                "session_id": str(session_id),
+            },
+        )
+        mock_session = MagicMock()
+        mock_session.execute.return_value = SimpleNamespace(rowcount=0)
+        mock_session.get.return_value = mock_job
+        celery_task = MagicMock()
+        celery_task.request.retries = 3
+        celery_task.max_retries = 3
+        advance = MagicMock()
+
+        with (
+            patch(_PATCH_SESSION, return_value=_fake_session(mock_session)),
+            patch.object(service, "_enqueue_next_whatsapp_session_job", advance),
+        ):
+            should_process = service._mark_job_in_progress(job_id, celery_task=celery_task)
+
+        assert should_process is False
+        assert mock_job.status == JobStatus.FAILED
+        assert mock_job.job_metadata["failure_stage"] == "enqueue_handshake"
+        celery_task.retry.assert_not_called()
+        advance.assert_called_once_with(session_id)
 
     def test_process_does_not_report_stale_in_progress_job_as_success(self, monkeypatch):
         service = BotMessageProcessingService(uuid4())
@@ -536,7 +686,7 @@ def test_whatsapp_process_persists_chunks_before_send(monkeypatch: pytest.Monkey
         return True
 
     monkeypatch.setattr(service, "_persist_whatsapp_response", persist_response, raising=False)
-    monkeypatch.setattr(service, "resume_whatsapp_delivery", resume_delivery, raising=False)
+    monkeypatch.setattr(service, "deliver_whatsapp_response", resume_delivery, raising=False)
     monkeypatch.setattr(
         service,
         "_send_payload_with_optional_override",
@@ -590,8 +740,8 @@ def test_whatsapp_retryable_send_does_not_use_untracked_cleanup_fallback(
     monkeypatch.setattr(service, "_persist_whatsapp_response", MagicMock())
     monkeypatch.setattr(
         service,
-        "resume_whatsapp_delivery",
-        MagicMock(side_effect=WhatsAppDeliveryRetryableError("Meta rate limited")),
+        "deliver_whatsapp_response",
+        MagicMock(return_value=False),
     )
     monkeypatch.setattr(service, "_cleanup_thinking_indicator", cleanup_mock)
 
@@ -608,7 +758,7 @@ def test_whatsapp_retryable_send_does_not_use_untracked_cleanup_fallback(
     cleanup_mock.assert_not_awaited()
 
 
-def test_whatsapp_send_only_recovery_skips_accepted_chunks(
+def test_whatsapp_delivery_skips_accepted_chunks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from src.service.bots import whatsapp_bot_service
@@ -653,7 +803,7 @@ def test_whatsapp_send_only_recovery_skips_accepted_chunks(
     monkeypatch.setattr(
         service,
         "_run_agent_and_accumulate",
-        AsyncMock(side_effect=AssertionError("send-only recovery must not run the agent")),
+        AsyncMock(side_effect=AssertionError("delivery must not rerun the agent")),
     )
     monkeypatch.setattr(
         whatsapp_bot_service,
@@ -661,7 +811,7 @@ def test_whatsapp_send_only_recovery_skips_accepted_chunks(
         FakeWhatsAppBotService,
     )
 
-    assert service.resume_whatsapp_delivery(job_id) is True
+    assert service.deliver_whatsapp_response(job_id) is True
     assert sent_texts == ["send me"]
     accepted_mock.assert_called_once()
     complete_mock.assert_called_once_with(job_id)
@@ -695,14 +845,49 @@ def test_accepted_whatsapp_chunk_renews_send_lease(service) -> None:
     assert assistant_message.extra["whatsapp_message_ids"] == ["wamid.accepted"]
 
 
+def test_terminal_whatsapp_job_rejects_late_agent_response(service) -> None:
+    """A timeout or worker-loss decision cannot be reversed by a late agent return."""
+    from src.domain.models.organisation_tables.job_models import JobStatus
+
+    job_id = uuid4()
+    job = SimpleNamespace(
+        message_id=uuid4(),
+        job_metadata={"processing_stage": "failed"},
+        status=JobStatus.FAILED,
+        error_message="Chat processing deadline exceeded",
+        token_usage=None,
+        model_name=None,
+        cost=None,
+        latency_ms=None,
+    )
+    session = MagicMock()
+    session.get.return_value = job
+
+    with patch(_PATCH_SESSION, return_value=_fake_session(session)):
+        saved = service._persist_whatsapp_response(
+            job_id,
+            text="late answer",
+            assistant_text="late answer",
+            frames=[],
+            agent_success=True,
+            error_message=None,
+        )
+
+    assert saved is False
+    assert job.status == JobStatus.FAILED
+    session.add.assert_not_called()
+
+
 def test_whatsapp_response_links_assistant_clarification_to_pending_action(service) -> None:
     """Reply to an assistant clarification must resolve the same pending action later."""
+    from src.domain.models.organisation_tables.job_models import JobStatus
+
     job_id = uuid4()
     session_id = uuid4()
     job = SimpleNamespace(
         message_id=uuid4(),
         job_metadata={"session_id": str(session_id), "processing_stage": "agent_running"},
-        status=None,
+        status=JobStatus.IN_PROGRESS,
         error_message=None,
         token_usage=None,
         model_name=None,
@@ -760,7 +945,7 @@ def test_terminal_whatsapp_send_failure_marks_job_failed(service) -> None:
     assert job.error_message == "invalid access token"
 
 
-def test_retryable_whatsapp_send_failure_remains_recoverable(service) -> None:
+def test_retryable_whatsapp_send_failure_is_terminal(service) -> None:
     from src.domain.models.organisation_tables.job_models import JobStatus
 
     job_id = uuid4()
@@ -787,10 +972,12 @@ def test_retryable_whatsapp_send_failure_remains_recoverable(service) -> None:
             ),
         )
 
-    assert job.status == JobStatus.IN_PROGRESS
+    assert job.status == JobStatus.FAILED
     assert job.job_metadata["send_status"] == "retryable"
-    assert job.job_metadata["processing_stage"] == "response_ready"
-    assert job.job_metadata["next_send_attempt_at"] is not None
+    assert job.job_metadata["processing_stage"] == "failed"
+    assert job.job_metadata["next_send_attempt_at"] is None
+    assert job.job_metadata["failure_stage"] == "sending"
+    assert job.error_message == "rate limited"
 
 
 def test_whatsapp_exception_before_agent_result_persists_static_failure(
@@ -815,7 +1002,7 @@ def test_whatsapp_exception_before_agent_result_persists_static_failure(
         ),
     )
     monkeypatch.setattr(service, "_persist_whatsapp_response", persist_mock)
-    monkeypatch.setattr(service, "resume_whatsapp_delivery", lambda _job_id: True)
+    monkeypatch.setattr(service, "deliver_whatsapp_response", lambda _job_id: True)
 
     result = service.process(
         user_id=uuid4(),

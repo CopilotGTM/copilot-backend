@@ -15,6 +15,7 @@ configure_logging(component=resolve_celery_component("chat_worker"))
 
 # Redis connection pool management
 from src.infra.messaging.redis_client import close_redis_pool, initialize_redis_pool
+from src.infra.utils.async_runner import start_shared_loop, stop_shared_loop
 from src.infra.utils.logger import get_logger
 from src.workers.base.celery_base import create_celery_app
 from src.workers.chat_worker.config import ChatWorkerConfig
@@ -77,6 +78,9 @@ def worker_ready_handler(sender=None, **kwargs):
         "Chat worker starting",
         extra={"event": "worker_starting", "worker_component": WORKER_COMPONENT},
     )
+    # The threads pool overlaps chat I/O, while this single loop keeps async DB
+    # engines and provider clients attached to one event-loop owner.
+    start_shared_loop()
     initialize_redis_pool()
     logger.info(
         "Chat worker ready",
@@ -105,6 +109,8 @@ def worker_shutdown_handler(sender=None, **kwargs):
             "Failed to close Redis connection pool",
             extra={"event": "redis_pool_close_failed", "worker_component": WORKER_COMPONENT},
         )
+    finally:
+        stop_shared_loop()
 
 
 # Explicitly import task modules to ensure registration

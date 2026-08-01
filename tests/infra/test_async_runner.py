@@ -3,9 +3,41 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from src.infra.utils import async_runner
+
+
+def test_shared_loop_runs_thread_pool_coroutines_on_one_event_loop():
+    """Threaded Celery tasks must share one loop so async pools stay loop-safe."""
+    started = 0
+    started_lock = threading.Lock()
+    both_started = threading.Event()
+
+    async def overlap() -> int:
+        """Wait until both task threads have entered their coroutine."""
+        nonlocal started
+        with started_lock:
+            started += 1
+            if started == 2:
+                both_started.set()
+
+        while not both_started.is_set():
+            await asyncio.sleep(0.001)
+        return id(asyncio.get_running_loop())
+
+    async_runner.start_shared_loop()
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            loop_ids = list(
+                executor.map(lambda _index: async_runner.run_async(overlap()), range(2))
+            )
+    finally:
+        async_runner.stop_shared_loop()
+
+    assert len(set(loop_ids)) == 1
 
 
 def test_reset_after_fork_discards_inherited_thread_local_loop():
@@ -31,6 +63,19 @@ def test_reset_after_fork_discards_inherited_thread_local_loop():
             del async_runner._thread_local.loop
 
     assert child_loop_id != id(parent_loop)
+
+
+def test_reset_after_fork_discards_inherited_shared_loop(mocker):
+    """A prefork child must not submit work to the parent's vanished loop thread."""
+    inherited_loop = mocker.Mock()
+    inherited_thread = mocker.Mock()
+    async_runner._shared_loop = inherited_loop
+    async_runner._shared_loop_thread = inherited_thread
+
+    async_runner.reset_after_fork()
+
+    assert async_runner._shared_loop is None
+    assert async_runner._shared_loop_thread is None
 
 
 def test_reset_after_fork_clears_asyncio_policy_loop():

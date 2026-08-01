@@ -3,12 +3,16 @@ from pathlib import Path
 import yaml
 
 
-def test_chat_worker_subscribes_to_voice_realtime_queue() -> None:
+def test_chat_worker_subscribes_to_all_chat_queues_with_ten_slots() -> None:
     compose_path = Path(__file__).resolve().parents[3] / "docker-compose.yml"
-    compose_text = compose_path.read_text(encoding="utf-8")
+    compose = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+    command = compose["services"]["chat-worker"]["command"]
 
     expected = "--queues=attachments,chat_processing,chat_messages,voice_realtime"
-    assert expected in compose_text
+    assert expected in command
+    assert "--concurrency=10" in command
+    assert "--pool=threads" in command
+    assert "chat-message-worker" not in compose["services"]
 
 
 def test_integrations_worker_subscribes_to_salesforce_streaming_queue() -> None:
