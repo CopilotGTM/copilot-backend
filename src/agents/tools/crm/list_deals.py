@@ -76,8 +76,14 @@ class DealFilters:
     offset: int = 0
 
 
-def _apply_filters(stmt: Select, filters: DealFilters, table_columns: Any) -> Select:
-    """Apply filter conditions to the query.
+def _apply_filters(
+    stmt: Select,
+    filters: DealFilters,
+    table_columns: Any,
+    *,
+    fuzzy_identity: bool = False,
+) -> Select:
+    """Apply structured filters with optional agent-only identity recovery.
 
     Args:
         stmt: SQLAlchemy select statement
@@ -94,7 +100,11 @@ def _apply_filters(stmt: Select, filters: DealFilters, table_columns: Any) -> Se
     max_expected_close_date = _parse_filter_datetime(filters.max_expected_close_date)
 
     if filters.name:
-        stmt = stmt.where(func.lower(c.name).like(func.lower(f"%{filters.name}%")))
+        stmt = stmt.where(
+            c.name.op("%")(filters.name.lower())
+            if fuzzy_identity
+            else func.lower(c.name).like(func.lower(f"%{filters.name}%"))
+        )
 
     if filters.status:
         stmt = _apply_status_filter(stmt, filters.status, c)
@@ -134,7 +144,11 @@ def _apply_filters(stmt: Select, filters: DealFilters, table_columns: Any) -> Se
         stmt = stmt.where(func.lower(c.owner_email) == func.lower(filters.owner_email))
 
     if filters.company_name:
-        stmt = stmt.where(func.lower(c.company_name).like(func.lower(f"%{filters.company_name}%")))
+        stmt = stmt.where(
+            c.company_name.op("%")(filters.company_name.lower())
+            if fuzzy_identity
+            else func.lower(c.company_name).like(func.lower(f"%{filters.company_name}%"))
+        )
 
     return stmt
 
@@ -260,16 +274,54 @@ async def list_deals(
 
             # The policy predicate is applied before user filters so broad agent
             # questions never reveal records outside the caller's deal scope.
-            stmt = select(CRMDeal).where(
+            base_stmt = select(CRMDeal).where(
                 c.organisation_id == organisation_id,
                 c.is_deleted.is_(False),
                 DealAccessPolicy(session, organisation_id, actor).visible_deal_predicate(c),
             )
-            stmt = _apply_filters(stmt, filters, c)
+            stmt = _apply_filters(base_stmt, filters, c)
             stmt = _apply_sorting(stmt, filters, c)
             stmt = stmt.offset(effective_offset).limit(effective_limit)
             result = await session.execute(stmt)
             deals = result.scalars().all()
+            fuzzy_scores: dict[UUID, float] = {}
+            if not deals and (filters.name or filters.company_name):
+                # Keep every business filter intact and replace only the missed
+                # identity text with the same pg_trgm recovery used by deal search.
+                score_parts = []
+                if filters.name:
+                    score_parts.append(
+                        func.similarity(func.coalesce(c.name, ""), filters.name.lower())
+                    )
+                if filters.company_name:
+                    score_parts.append(
+                        func.similarity(
+                            func.coalesce(c.company_name, ""),
+                            filters.company_name.lower(),
+                        )
+                    )
+                fuzzy_score = (
+                    func.greatest(*score_parts) if len(score_parts) > 1 else score_parts[0]
+                )
+                fuzzy_stmt = select(CRMDeal, fuzzy_score.label("score")).where(
+                    c.organisation_id == organisation_id,
+                    c.is_deleted.is_(False),
+                    DealAccessPolicy(session, organisation_id, actor).visible_deal_predicate(c),
+                )
+                fuzzy_stmt = _apply_filters(
+                    fuzzy_stmt,
+                    filters,
+                    c,
+                    fuzzy_identity=True,
+                ).order_by(fuzzy_score.desc())
+                fuzzy_stmt = _apply_sorting(fuzzy_stmt, filters, c)
+                fuzzy_rows = (
+                    await session.execute(
+                        fuzzy_stmt.offset(effective_offset).limit(effective_limit)
+                    )
+                ).all()
+                deals = [row[0] for row in fuzzy_rows]
+                fuzzy_scores = {row[0].deal_id: float(row.score or 0.0) for row in fuzzy_rows}
         except AgentCRMAccessError:
             logger.warning("list_deals: authenticated CRM actor unavailable")
             return []
@@ -277,7 +329,16 @@ async def list_deals(
             logger.exception(f"list_deals: database error: {e}")
             return []
 
-        output = [_format_deal_output(deal) for deal in deals]
+        output = []
+        for deal in deals:
+            item = _format_deal_output(deal)
+            if deal.deal_id in fuzzy_scores:
+                item["match"] = {
+                    "field": "name/company_name",
+                    "type": "fuzzy",
+                    "score": fuzzy_scores[deal.deal_id],
+                }
+            output.append(item)
 
     logger.info("list_deals: found %d deals", len(output))
     return output

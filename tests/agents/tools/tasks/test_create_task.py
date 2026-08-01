@@ -1,3 +1,5 @@
+"""Contracts for direct task creation, assignment, reminders, and channel receipts."""
+
 from __future__ import annotations
 
 import json
@@ -30,6 +32,7 @@ class _FakeContext:
 
     @asynccontextmanager
     async def acquire_session(self):
+        """Yield the tenant session used by task services."""
         yield None  # Not used for preview-only tests
 
 
@@ -87,6 +90,7 @@ def _stub_task_confirmation_nonce(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.asyncio
 async def test_create_task_requires_title() -> None:
+    """A write cannot proceed without meaningful task content."""
     ctx = _FakeContext(organisation_id=uuid4(), user_id=uuid4(), channel="slack", metadata={})
     result = await create_task(context=ctx, title="")
     assert result["status"] == "error"
@@ -110,6 +114,7 @@ async def test_create_task_rejects_generic_titles() -> None:
 
 @pytest.mark.asyncio
 async def test_create_task_rejects_assignment_only_placeholder_titles() -> None:
+    """Assignment wording alone is not persisted as a task title."""
     ctx = _FakeContext(
         organisation_id=uuid4(),
         user_id=uuid4(),
@@ -142,6 +147,7 @@ def test_fix_date_typos_corrects_common_misspellings() -> None:
 
 @pytest.mark.asyncio
 async def test_create_task_requires_user_id() -> None:
+    """Missing actor identity fails closed before task creation."""
     ctx = _FakeContext(organisation_id=uuid4(), user_id=None, channel="slack", metadata={})
     result = await create_task(context=ctx, title="Do something")
     assert result["status"] == "error"
@@ -150,6 +156,7 @@ async def test_create_task_requires_user_id() -> None:
 
 @pytest.mark.asyncio
 async def test_create_task_rejects_invalid_priority() -> None:
+    """Unknown priorities cannot cross the task service boundary."""
     ctx = _FakeContext(
         organisation_id=uuid4(),
         user_id=uuid4(),
@@ -163,6 +170,7 @@ async def test_create_task_rejects_invalid_priority() -> None:
 
 @pytest.mark.asyncio
 async def test_create_task_rejects_invalid_reminder_option() -> None:
+    """Unsupported reminder shortcuts are rejected before date calculation."""
     ctx = _FakeContext(
         organisation_id=uuid4(),
         user_id=uuid4(),
@@ -176,6 +184,7 @@ async def test_create_task_rejects_invalid_reminder_option() -> None:
 
 @pytest.mark.asyncio
 async def test_create_task_rejects_unparseable_due_date() -> None:
+    """An unreadable due date cannot silently become a different date."""
     ctx = _FakeContext(
         organisation_id=uuid4(),
         user_id=uuid4(),
@@ -189,6 +198,7 @@ async def test_create_task_rejects_unparseable_due_date() -> None:
 
 @pytest.mark.asyncio
 async def test_create_task_title_only_creates_with_context_owner_and_defaults() -> None:
+    """The smallest valid request uses the authenticated owner and safe defaults."""
     context = _direct_context()
     task = _created_task()
     org_session = context.acquire_session().session
@@ -228,6 +238,7 @@ async def test_create_task_title_only_creates_with_context_owner_and_defaults() 
 
 @pytest.mark.asyncio
 async def test_create_task_persists_explicit_due_date() -> None:
+    """An explicit due date reaches the write service unchanged after parsing."""
     context = _direct_context()
     task = _created_task(due_date=datetime(2030, 6, 15, 17, tzinfo=UTC))
 
@@ -251,6 +262,7 @@ async def test_create_task_persists_explicit_due_date() -> None:
 
 @pytest.mark.asyncio
 async def test_create_task_omitted_optional_fields_do_not_block_creation() -> None:
+    """Optional CRM fields remain optional in the direct path."""
     context = _direct_context(channel="web")
     task = _created_task(subject="Update CRM notes", owner_name="Current User")
 
@@ -276,6 +288,7 @@ async def test_create_task_omitted_optional_fields_do_not_block_creation() -> No
 
 @pytest.mark.asyncio
 async def test_create_task_deal_name_association_remains_org_scoped() -> None:
+    """A resolved deal ID stays bound to the authenticated organisation."""
     context = _direct_context()
     deal_id = UUID("44444444-4444-4444-4444-444444444444")
     task = _created_task(deal_id=deal_id, related_name="Acme")
@@ -310,6 +323,7 @@ async def test_create_task_deal_name_association_remains_org_scoped() -> None:
 
 @pytest.mark.asyncio
 async def test_create_task_assignee_resolution_uses_org_scoped_lookup() -> None:
+    """Assignee names resolve through the context-bound canonical directory."""
     context = _direct_context()
     assignee_id = UUID("55555555-5555-5555-5555-555555555555")
     task = _created_task(owner_name="Mrinmoy")
@@ -329,7 +343,7 @@ async def test_create_task_assignee_resolution_uses_org_scoped_lookup() -> None:
 
         result = await create_task(context=context, title="Review deck", assign_to="Mrinmoy")
 
-    resolve_user.assert_awaited_once_with(context.organisation_id, "Mrinmoy")
+    resolve_user.assert_awaited_once_with(context, "Mrinmoy")
     payload = service.create_task.await_args.args[0]
     assert payload["owner_user_id"] == assignee_id
     assert result["assignee_name"] == "Mrinmoy"
@@ -337,6 +351,7 @@ async def test_create_task_assignee_resolution_uses_org_scoped_lookup() -> None:
 
 @pytest.mark.asyncio
 async def test_create_task_creates_reminder_only_when_requested_with_due_date() -> None:
+    """Reminder configuration is written only with explicit reminder intent."""
     context = _direct_context(channel="slack")
     context.metadata = {"user_timezone": "UTC"}
     due_date = datetime(2030, 6, 15, 17, tzinfo=UTC)
@@ -364,6 +379,7 @@ async def test_create_task_creates_reminder_only_when_requested_with_due_date() 
 
 @pytest.mark.asyncio
 async def test_create_task_due_date_uses_anchored_user_local_weekday_for_reminder() -> None:
+    """Relative weekdays use the captured local clock rather than worker time."""
     context = _direct_context(channel="slack")
     context.metadata = {
         "user_timezone": "Asia/Kolkata",
@@ -393,6 +409,7 @@ async def test_create_task_due_date_uses_anchored_user_local_weekday_for_reminde
 
 @pytest.mark.asyncio
 async def test_create_task_preserves_whatsapp_channel_for_reminder_delivery() -> None:
+    """WhatsApp-originated reminders retain their delivery channel."""
     context = _direct_context(channel="whatsapp")
     context.metadata = {"user_timezone": "UTC"}
     due_date = datetime(2030, 6, 15, 17, tzinfo=UTC)
@@ -418,6 +435,7 @@ async def test_create_task_preserves_whatsapp_channel_for_reminder_delivery() ->
 
 @pytest.mark.asyncio
 async def test_create_task_rejects_reminder_without_due_date() -> None:
+    """A reminder needs a concrete due instant to schedule safely."""
     context = _direct_context()
     result = await create_task(context=context, title="Follow up", reminder="at_due")
 
@@ -427,6 +445,7 @@ async def test_create_task_rejects_reminder_without_due_date() -> None:
 
 @pytest.mark.asyncio
 async def test_create_task_returns_structured_failure_for_write_service_error() -> None:
+    """Service validation failures remain explicit agent errors."""
     context = _direct_context()
     org_session = context.acquire_session().session
 
@@ -450,6 +469,7 @@ async def test_create_task_returns_structured_failure_for_write_service_error() 
 
 @pytest.mark.asyncio
 async def test_create_task_builds_slack_success_payload() -> None:
+    """Slack receives a channel-native task confirmation payload."""
     context = _direct_context(channel="slack")
     task = _created_task(priority="HIGH", related_name="Acme")
 
@@ -470,6 +490,7 @@ async def test_create_task_builds_slack_success_payload() -> None:
 
 @pytest.mark.asyncio
 async def test_create_task_builds_teams_success_payload() -> None:
+    """Teams receives a channel-native task confirmation payload."""
     context = _direct_context(channel="teams")
     task = _created_task()
 
@@ -491,6 +512,7 @@ async def test_create_task_builds_teams_success_payload() -> None:
 
 @pytest.mark.asyncio
 async def test_create_task_builds_whatsapp_text_payload() -> None:
+    """WhatsApp receives concise text confirmation instead of a web card."""
     context = _direct_context(channel="whatsapp")
     deal_id = UUID("44444444-4444-4444-4444-444444444444")
     task = _created_task(related_name="Acme", deal_id=deal_id)
@@ -518,6 +540,7 @@ async def test_create_task_builds_whatsapp_text_payload() -> None:
 
 @pytest.mark.asyncio
 async def test_create_task_web_and_voice_include_ui_card_payload() -> None:
+    """Web and voice clients receive the structured confirmation card."""
     for channel in ("web", "voice"):
         context = _direct_context(channel=channel)
         task = _created_task()
@@ -545,6 +568,7 @@ async def test_create_task_web_and_voice_include_ui_card_payload() -> None:
 
 @pytest.mark.asyncio
 async def test_create_task_tool_uses_direct_create_path_and_hides_channel_payload() -> None:
+    """Internal channel payloads do not leak through the public tool result."""
     context = _direct_context()
     tool = create_create_task(context, lambda: None)
 
@@ -568,12 +592,16 @@ async def test_create_task_tool_uses_direct_create_path_and_hides_channel_payloa
 
 @pytest.mark.asyncio
 async def test_create_task_sends_slack_preview(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Legacy Slack preview delivery retains its payload contract."""
     sent: dict = {}
 
     class FakeSlackBotService:
+        """Capture a Slack preview without external delivery."""
+
         async def send_block_kit_message(
             self, team_id: str, channel_id: str, blocks: list, text_fallback: str
         ) -> bool:
+            """Record the Block Kit request for assertions."""
             sent["team_id"] = team_id
             sent["channel_id"] = channel_id
             sent["blocks"] = blocks
@@ -640,12 +668,16 @@ async def test_create_task_sends_slack_preview(monkeypatch: pytest.MonkeyPatch) 
 
 @pytest.mark.asyncio
 async def test_create_task_sends_teams_preview(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Legacy Teams preview delivery retains its payload contract."""
     sent: dict = {}
 
     class FakeTeamsBotService:
+        """Capture a Teams preview without external delivery."""
+
         async def send_proactive_payload(
             self, service_url: str, conversation_id: str, payload: dict, text_fallback: str
         ) -> bool:
+            """Record the proactive card request for assertions."""
             sent["service_url"] = service_url
             sent["conversation_id"] = conversation_id
             sent["payload"] = payload
@@ -687,7 +719,10 @@ async def test_create_task_default_priority_is_medium(monkeypatch: pytest.Monkey
     sent: dict = {}
 
     class FakeSlackBotService:
+        """Capture the default-priority Slack preview."""
+
         async def send_block_kit_message(self, **kwargs) -> bool:
+            """Record the Block Kit request for assertions."""
             sent.update(kwargs)
             return True
 
@@ -716,10 +751,14 @@ async def test_create_task_default_priority_is_medium(monkeypatch: pytest.Monkey
 async def test_create_task_includes_description_in_preview(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """User-provided descriptions remain visible in the review payload."""
     sent: dict = {}
 
     class FakeSlackBotService:
+        """Capture the description-bearing Slack preview."""
+
         async def send_block_kit_message(self, **kwargs) -> bool:
+            """Record the Block Kit request for assertions."""
             sent.update(kwargs)
             return True
 

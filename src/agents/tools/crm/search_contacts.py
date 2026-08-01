@@ -33,6 +33,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
 from src.service.crm.access.record_access_policy import DealAccessPolicy
 from src.service.crm.contacts.read_service import ContactReadService
+from src.service.crm.utils.identity import normalize_spoken_email_query
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -69,12 +70,13 @@ async def search_contacts(
         logger.warning("search_contacts: missing organisation_id in context")
         return []
 
-    if not query and not company_name:
+    normalized_query = normalize_spoken_email_query(query) if query else None
+    if not normalized_query and not company_name:
         logger.warning("search_contacts: at least query or company_name required")
         return []
     if any(
         value is not None and (not value.strip() or len(value.strip()) > MAX_CONTACT_QUERY_CHARS)
-        for value in (query, company_name)
+        for value in (normalized_query, company_name)
     ):
         logger.warning(
             "search_contacts: identifying query must be 1-%d characters", MAX_CONTACT_QUERY_CHARS
@@ -93,7 +95,7 @@ async def search_contacts(
                 session,
                 organisation_id,
             ).search_contacts_for_agent(
-                q=query,
+                q=normalized_query,
                 company_name=company_name,
                 limit=effective_limit,
             )
@@ -107,7 +109,7 @@ async def search_contacts(
             return []
 
         if not contacts:
-            logger.info("search_contacts: no contacts found for query=%s", query)
+            logger.info("search_contacts: no contacts found for query=%s", normalized_query)
             return []
 
         # Deal rows are separately access-filtered; finding an org contact does
@@ -226,6 +228,8 @@ def create_search_contacts(
 
         Use this tool to find contacts by name, email, or company.
         Returns contact info along with their associated deals.
+        When match.type is fuzzy and match.field is email, repeat the searched
+        address and candidate address and ask before using it in a write action.
 
         Args:
             query: Search by name or email (case-insensitive, partial match)

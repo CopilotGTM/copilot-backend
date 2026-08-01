@@ -1,144 +1,148 @@
+"""Regression contracts for canonical task-assignee resolution."""
+
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from uuid import UUID
+from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID, uuid4
 
 import pytest
-from src.agents.tools.tasks.create_task import _resolve_user_by_name
+from src.agents.tools.tasks.create_task import _resolve_deal_by_name, _resolve_user_by_name
+from src.service.crm.access.crm_user_directory_service import CRMUserDirectoryResult
 
 ORG_ID = UUID("11111111-1111-1111-1111-111111111111")
-OTHER_ORG_ID = UUID("99999999-9999-9999-9999-999999999999")
 
 
-class _Result:
-    def __init__(self, users: list[SimpleNamespace]) -> None:
-        self._users = users
+class _Context:
+    organisation_id = ORG_ID
 
-    def scalars(self) -> _Result:
-        return self
-
-    def first(self) -> SimpleNamespace | None:
-        return self._users[0] if self._users else None
-
-    def all(self) -> list[SimpleNamespace]:
-        return self._users
+    @asynccontextmanager
+    async def acquire_session(self):  # noqa: ANN201
+        """Yield the org session used by the shared directory."""
+        yield MagicMock()
 
 
-class _Session:
-    def __init__(self, users: list[SimpleNamespace]) -> None:
-        self.users = users
-
-    async def execute(self, stmt: object) -> _Result:
-        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True})).lower()
-        if "wrong-org@example.com" in compiled:
-            return _Result([user for user in self.users if user.email == "wrong-org@example.com"])
-        if "@" in compiled:
-            return _Result([user for user in self.users if user.email.lower() in compiled])
-        if "concat" not in compiled:
-            return _Result([])
-        return _Result(self.users)
-
-
-def _user(
-    first_name: str,
-    last_name: str,
-    email: str,
-    *,
-    organisation_id: UUID = ORG_ID,
-) -> SimpleNamespace:
+def _user(name: str = "Jonathan Mehta") -> SimpleNamespace:
+    first_name, last_name = name.split(" ", 1)
     return SimpleNamespace(
-        user_id=UUID(int=abs(hash(email)) % (1 << 128)),
-        organisation_id=organisation_id,
+        user_id=uuid4(),
+        full_name=name,
         first_name=first_name,
         last_name=last_name,
-        email=email,
+        email="jonathan@example.com",
     )
-
-
-def _session_scope(users: list[SimpleNamespace]):
-    async def scope():
-        yield _Session(users)
-
-    return scope()
 
 
 @pytest.mark.asyncio
-async def test_resolve_user_by_name_matches_exact_full_name(
+async def test_resolve_user_by_name_accepts_one_canonical_name_match(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    target = _user("Nikhil", "Singhal", "nikhil@copilotgtm.com")
-
+    """An exact unique directory result may safely become a task assignee ID."""
+    target = _user()
+    search = AsyncMock(
+        return_value=CRMUserDirectoryResult(
+            status="resolved",
+            candidates=[target],
+            match_type="exact",
+        )
+    )
+    directory = MagicMock()
+    directory.return_value.search = search
     monkeypatch.setattr(
-        "src.infra.database.sessions.acquire_master_async_session",
-        lambda: _session_scope([target]),
+        "src.service.crm.access.crm_user_directory_service.CRMUserDirectoryService",
+        directory,
     )
 
-    result = await _resolve_user_by_name(ORG_ID, "Nikhil Singhal")
+    result = await _resolve_user_by_name(_Context(), "Jonathan Mehta")
 
-    assert result == (target.user_id, "Nikhil Singhal")
+    assert result == (target.user_id, "Jonathan Mehta")
+    assert directory.call_args.args[1] == ORG_ID
+    search.assert_awaited_once_with("Jonathan Mehta")
 
 
 @pytest.mark.asyncio
-async def test_resolve_user_by_name_matches_case_insensitive_full_name(
+async def test_resolve_user_by_name_rejects_one_fuzzy_name_match(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    target = _user("Nikhil", "Singhal", "nikhil@copilotgtm.com")
-
+    """A unique fuzzy name remains a suggestion and cannot authorize a task write."""
+    target = _user()
+    search = AsyncMock(
+        return_value=CRMUserDirectoryResult(
+            status="resolved",
+            candidates=[target],
+            match_type="fuzzy_name",
+        )
+    )
+    directory = MagicMock()
+    directory.return_value.search = search
     monkeypatch.setattr(
-        "src.infra.database.sessions.acquire_master_async_session",
-        lambda: _session_scope([target]),
+        "src.service.crm.access.crm_user_directory_service.CRMUserDirectoryService",
+        directory,
     )
 
-    result = await _resolve_user_by_name(ORG_ID, "nikhil singhal")
-
-    assert result == (target.user_id, "Nikhil Singhal")
+    assert await _resolve_user_by_name(_Context(), "Jonatan Mehta") is None
 
 
 @pytest.mark.asyncio
-async def test_resolve_user_by_name_returns_none_for_ambiguous_partial_name(
+@pytest.mark.parametrize("match_type", ["partial", "fuzzy_email"])
+async def test_resolve_user_by_name_rejects_ambiguous_or_suggested_identity(
     monkeypatch: pytest.MonkeyPatch,
+    match_type: str,
 ) -> None:
-    users = [
-        _user("Nikhil", "Singhal", "nikhil@copilotgtm.com"),
-        _user("Nikhil", "Shah", "nikhil.shah@copilotgtm.com"),
-    ]
-
+    """A write path must not pick the first person or a close email suggestion."""
+    users = [_user("Jonathan Mehta"), _user("Jonathan Menon")]
+    search = AsyncMock(
+        return_value=CRMUserDirectoryResult(
+            status="ambiguous",
+            candidates=users,
+            match_type=match_type,  # type: ignore[arg-type]
+        )
+    )
+    directory = MagicMock()
+    directory.return_value.search = search
     monkeypatch.setattr(
-        "src.infra.database.sessions.acquire_master_async_session",
-        lambda: _session_scope(users),
+        "src.service.crm.access.crm_user_directory_service.CRMUserDirectoryService",
+        directory,
     )
 
-    assert await _resolve_user_by_name(ORG_ID, "Nikhil") is None
+    assert await _resolve_user_by_name(_Context(), "jonthan@example.com") is None
 
 
 @pytest.mark.asyncio
-async def test_resolve_user_by_name_rejects_single_token_match_for_multi_word_name(
+async def test_resolve_deal_by_name_rejects_one_fuzzy_search_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    target = _user("John", "Smith", "john.smith@copilotgtm.com")
-
+    """A unique fuzzy deal remains a suggestion and cannot authorize task linking."""
+    deal = SimpleNamespace(deal_id=uuid4(), name="Northern Star Renewal")
+    search = AsyncMock(return_value=[{"deal": deal, "match": {"type": "fuzzy"}}])
+    service = MagicMock()
+    service.return_value.search_deals_for_agent = search
     monkeypatch.setattr(
-        "src.infra.database.sessions.acquire_master_async_session",
-        lambda: _session_scope([target]),
+        "src.agents.tools.tasks.create_task.resolve_agent_access_actor",
+        AsyncMock(return_value=MagicMock()),
     )
+    monkeypatch.setattr("src.service.crm.deals.read_service.DealReadService", service)
 
-    assert await _resolve_user_by_name(ORG_ID, "John Doe") is None
+    assert await _resolve_deal_by_name(_Context(), "Nothern Star Renewal") is None
+    search.assert_awaited_once_with(q="Nothern Star Renewal", limit=5)
 
 
 @pytest.mark.asyncio
-async def test_resolve_user_by_name_never_returns_cross_org_user(
+async def test_resolve_deal_by_name_accepts_one_exact_search_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    wrong_org_user = _user(
-        "Nikhil",
-        "Singhal",
-        "wrong-org@example.com",
-        organisation_id=OTHER_ORG_ID,
-    )
-
+    """One exact accessible deal may safely become the task's related record."""
+    deal = SimpleNamespace(deal_id=uuid4(), name="Northern Star Renewal")
+    search = AsyncMock(return_value=[{"deal": deal, "match": {"type": "exact"}}])
+    service = MagicMock()
+    service.return_value.search_deals_for_agent = search
     monkeypatch.setattr(
-        "src.infra.database.sessions.acquire_master_async_session",
-        lambda: _session_scope([wrong_org_user]),
+        "src.agents.tools.tasks.create_task.resolve_agent_access_actor",
+        AsyncMock(return_value=MagicMock()),
     )
+    monkeypatch.setattr("src.service.crm.deals.read_service.DealReadService", service)
 
-    assert await _resolve_user_by_name(ORG_ID, "wrong-org@example.com") is None
+    result = await _resolve_deal_by_name(_Context(), "Northern Star Renewal")
+
+    assert result == (deal.deal_id, "Northern Star Renewal")

@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.service.crm.access.crm_user_directory_service import CRMUserDirectoryService
+from src.service.crm.utils.identity import normalize_spoken_email_query
 
 
 def _crm_user(*, organisation_id, full_name: str, email: str | None) -> CRMUser:  # noqa: ANN001
@@ -106,3 +107,50 @@ async def test_blank_query_does_not_touch_database() -> None:
     assert resolution.status == "not_found"
     assert resolution.candidates == []
     session.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_misspelled_name_uses_fuzzy_fallback_only_after_direct_miss() -> None:
+    """Speech-like name errors get one bounded fallback after exact and partial miss."""
+    organisation_id = uuid4()
+    user = _crm_user(
+        organisation_id=organisation_id,
+        full_name="Jonathan Mehta",
+        email="jonathan@example.com",
+    )
+    session = AsyncMock()
+    session.execute.side_effect = [_result(), _result(), _result(user)]
+
+    resolution = await CRMUserDirectoryService(session, organisation_id).search("Jonatan Mehta")
+
+    assert resolution.status == "resolved"
+    assert resolution.match_type == "fuzzy_name"
+    assert resolution.candidates == [user]
+    assert "similarity" in str(session.execute.await_args.args[0])
+
+
+@pytest.mark.asyncio
+async def test_fuzzy_email_is_returned_as_a_suggestion_even_when_unique() -> None:
+    """A close address must require confirmation before any recipient or write use."""
+    organisation_id = uuid4()
+    user = _crm_user(
+        organisation_id=organisation_id,
+        full_name="Jonathan Mehta",
+        email="north.star@company.com",
+    )
+    session = AsyncMock()
+    session.execute.side_effect = [_result(), _result(), _result(user)]
+
+    resolution = await CRMUserDirectoryService(session, organisation_id).search(
+        "northstar@company.com"
+    )
+
+    assert resolution.status == "ambiguous"
+    assert resolution.match_type == "fuzzy_email"
+    assert resolution.candidates == [user]
+
+
+def test_spoken_email_normalization_is_conservative() -> None:
+    """Only an explicit at-and-dot address phrase is rewritten from voice text."""
+    assert normalize_spoken_email_query("north star at company dot com") == "northstar@company.com"
+    assert normalize_spoken_email_query("Meet Matt at Dot Labs") == "meet matt at dot labs"
