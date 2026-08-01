@@ -152,7 +152,6 @@ class EmailFolder(SyncedRecordMixin, table=True):
     )
 
     emails: list["Email"] = Relationship(back_populates="folder")
-    thread_summaries: list["EmailThreadSummary"] = Relationship(back_populates="folder")
 
 
 class Email(SyncedRecordMixin, table=True):
@@ -371,146 +370,6 @@ class Email(SyncedRecordMixin, table=True):
     folder: EmailFolder | None = Relationship(back_populates="emails")
 
 
-class EmailThreadSummary(SyncedRecordMixin, table=True):
-    """AI-generated summaries of email threads for context retrieval."""
-
-    __tablename__ = "email_thread_summaries"
-    __table_args__ = (
-        tenant_foreign_key(
-            "email_thread_summaries",
-            "integration_id",
-            "knowledge_integrations",
-            "integration_id",
-        ),
-        tenant_foreign_key(
-            "email_thread_summaries",
-            "folder_id",
-            "email_folders",
-            "folder_id",
-        ),
-        tenant_foreign_key(
-            "email_thread_summaries",
-            "deal_id",
-            "crm_deals",
-            "deal_id",
-        ),
-        Index("ix_email_summary_folder_time", "folder_id", "time_range_start"),
-        Index("ix_email_summary_deal", "deal_id"),
-        Index("ix_email_summary_thread", "thread_id"),
-    )
-
-    summary_id: UUID = Field(default_factory=uuid4, primary_key=True)
-    folder_id: UUID = Field(
-        index=True,
-        description="Folder the summary is for.",
-    )
-
-    thread_id: str = Field(
-        sa_column=Column(String(255), nullable=False),
-        description="Email thread identifier.",
-    )
-    subject: str | None = Field(
-        default=None,
-        sa_column=Column(String(512), nullable=True),
-        description="Thread subject line.",
-    )
-
-    deal_id: UUID | None = Field(
-        default=None,
-        index=True,
-        description="Associated deal for deal-linked threads.",
-    )
-
-    summary_text: str = Field(
-        sa_column=Column(Text, nullable=False),
-        description="Concise AI-generated summary of the email thread.",
-    )
-    key_points: list[str] = Field(
-        default_factory=list,
-        sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_ARRAY)),
-        description="Key discussion points extracted.",
-    )
-    action_items: list[str] = Field(
-        default_factory=list,
-        sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_ARRAY)),
-        description="Action items identified.",
-    )
-    participants_summary: dict[str, Any] = Field(
-        default_factory=dict,
-        sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_SQL)),
-        description="Participant stats (email counts, key contributors).",
-    )
-
-    email_count: int = Field(
-        default=0,
-        description="Number of emails included in this summary.",
-    )
-    time_range_start: datetime = Field(
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="Start of the time range covered.",
-    )
-    time_range_end: datetime = Field(
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="End of the time range covered.",
-    )
-
-    sentiment_score: float | None = Field(
-        default=None,
-        description="Overall sentiment score (-1 to 1).",
-    )
-    urgency_level: str | None = Field(
-        default=None,
-        sa_column=Column(String(32), nullable=True),
-        description="Urgency classification (low/medium/high/critical).",
-    )
-    topics: list[str] = Field(
-        default_factory=list,
-        sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_ARRAY)),
-        description="Identified topics/themes.",
-    )
-
-    summary_embedding: list[float] | None = Field(
-        default=None,
-        sa_column=Column(JSONB, nullable=True),
-        description="Vector embedding of the summary for semantic search.",
-    )
-
-    source_email_ids: list[str] = Field(
-        default_factory=list,
-        sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_ARRAY)),
-        description="List of email IDs included in this summary.",
-    )
-    generated_at: datetime = Field(
-        default_factory=utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="When the summary was generated.",
-    )
-    generated_by: str | None = Field(
-        default=None,
-        sa_column=Column(String(64), nullable=True),
-        description="Model/version used for generation.",
-    )
-
-    exported_to_kb: bool = Field(
-        default=False,
-        sa_column=Column(String, nullable=False, server_default=text("false"), index=True),
-        description="Whether this summary has been exported to the knowledge base.",
-    )
-    kb_source_id: UUID | None = Field(
-        default=None,
-        index=True,
-        description="Reference to the OrganisationSource created from this summary.",
-    )
-
-    summary_metadata: dict[str, Any] = Field(
-        default_factory=dict,
-        sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_SQL)),
-        description="Additional metadata.",
-    )
-
-    folder: EmailFolder | None = Relationship(back_populates="thread_summaries")
-
-
 class DealEmailAssociation(SQLModel, table=True):
     """
     Links emails to deals using internet_message_id for cross-user deduplication.
@@ -601,6 +460,5 @@ __all__ = [
     "EmailPriority",
     "EmailFolder",
     "Email",
-    "EmailThreadSummary",
     "DealEmailAssociation",
 ]

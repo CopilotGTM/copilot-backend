@@ -41,7 +41,6 @@ from src.domain.models.organisation_tables import (
 from src.domain.models.organisation_tables.sync.email_models import (
     Email,
     EmailFolder,
-    EmailThreadSummary,
 )
 from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     Meeting,
@@ -52,14 +51,11 @@ from src.domain.models.organisation_tables.sync.messaging_models import (
     MessagingChannelMember,
     MessagingDealLink,
     MessagingMessage,
-    MessagingThreadSummary,
 )
 from src.domain.models.organisation_tables.sync.participant_models import (
     IntegrationParticipant,
-    IntegrationParticipantIdentity,
 )
 from src.domain.models.organisation_tables.sync.risk_blocker_models import DealRiskBlocker
-from src.domain.models.organisation_tables.sync.timeline_models import DealTimelineEvent
 
 load_dotenv()
 
@@ -132,21 +128,16 @@ all_org_models: list[type[Any]] = [
     # Email tables
     EmailFolder,
     Email,
-    EmailThreadSummary,
     # Messaging tables
     MessagingChannel,
     MessagingChannelMember,
     MessagingDealLink,
     MessagingMessage,
-    MessagingThreadSummary,
     # Participant tables (shared across integrations)
     IntegrationParticipant,
-    IntegrationParticipantIdentity,
     # Meeting intelligence tables
     Meeting,
     TranscriptSegment,
-    # Timeline tables
-    DealTimelineEvent,
     # Risk/Blocker tables
     DealRiskBlocker,
     DashboardSnapshot,

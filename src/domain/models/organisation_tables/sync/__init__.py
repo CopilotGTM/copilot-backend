@@ -14,20 +14,6 @@ from .calendar import (
     CalendarEventUserState,
     GenerationStatus,
 )
-
-# DEPRECATED: Use meeting_intelligence models instead for new development
-# Kept for backward compatibility and potential future Gong/Chorus sync
-from .conversation_intelligence import (
-    CICall,
-    CICallAnalyticsSnapshot,
-    CICallDealLink,
-    CICallMedium,
-    CICallRecordingStatus,
-    CICallSpeaker,
-    CICallTranscriptSegment,
-    CISpeakerRole,
-    TranscriptContentFormat,
-)
 from .crm import (
     CRMAssociationCategory,
     CRMCompany,
@@ -78,7 +64,6 @@ from .email_models import (
     EmailDirection,
     EmailFolder,
     EmailPriority,
-    EmailThreadSummary,
 )
 from .integration_activity_request import (
     IntegrationActivityRequest,
@@ -112,14 +97,13 @@ from .messaging_models import (
     MessagingChannelMember,
     MessagingDealLink,
     MessagingMessage,
-    MessagingThreadSummary,
 )
 from .notification_delivery import (
     NotificationDelivery,
     NotificationDeliveryChannel,
     NotificationDeliveryStatus,
 )
-from .participant_models import IntegrationParticipant, IntegrationParticipantIdentity
+from .participant_models import IntegrationParticipant
 from .risk_blocker_models import (
     DealRiskBlocker,
     RiskBlockerCategory,
@@ -199,16 +183,6 @@ __all__ = [
     "DecisionPower",
     "StakeholderTemperature",
     "StakeholderSource",
-    # Legacy CI models (deprecated - use Meeting* instead)
-    "CICall",
-    "CICallDealLink",
-    "CICallSpeaker",
-    "CICallTranscriptSegment",
-    "CICallAnalyticsSnapshot",
-    "CICallMedium",
-    "CICallRecordingStatus",
-    "CISpeakerRole",
-    "TranscriptContentFormat",
     # New Meeting Intelligence models (minimal - reuses calendar models)
     "MeetingSource",
     "MeetingStatus",
@@ -224,7 +198,6 @@ __all__ = [
     "NotificationDeliveryStatus",
     # Participant models
     "IntegrationParticipant",
-    "IntegrationParticipantIdentity",
     # Messaging models
     "ChannelType",
     "MessageType",
@@ -233,14 +206,12 @@ __all__ = [
     "MessagingChannelMember",
     "MessagingDealLink",
     "MessagingMessage",
-    "MessagingThreadSummary",
     # Email models
     "EmailDirection",
     "DealEmailDirection",
     "EmailPriority",
     "EmailFolder",
     "Email",
-    "EmailThreadSummary",
     "DealEmailAssociation",
     # Timeline models
     # Risk & Blocker models

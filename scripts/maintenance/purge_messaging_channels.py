@@ -9,7 +9,6 @@ Tables affected:
 - messaging_channel_members
 - messaging_messages
 - messaging_deal_links
-- messaging_thread_summaries
 - integration_sync_history (for messaging integrations only)
 
 Examples
@@ -47,7 +46,6 @@ from sqlalchemy.engine import Engine
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.infra.utils.resource_naming import get_schema_name  # noqa: E402
-
 
 # Messaging integration types
 MESSAGING_INTEGRATION_TYPES = ("teams",)
@@ -124,7 +122,7 @@ def confirm(org_id: str | None, schema: str | None, auto_confirm: bool, export_o
     prompt = (
         f"This will {action} messaging channel data for {scope}.\n"
         f"Tables: messaging_channels, messaging_channel_members, messaging_messages, "
-        f"messaging_deal_links, messaging_thread_summaries, integration_sync_history (messaging only)\n"
+        f"messaging_deal_links, integration_sync_history (messaging only)\n"
         f"Continue? [y/N]: "
     )
     response = input(prompt).strip().lower()
@@ -338,18 +336,6 @@ def export_single_org_data(
     counts["messaging_deal_links"] = count
     print(f"{count} records")
 
-    # Export messaging_thread_summaries
-    print("    Exporting messaging_thread_summaries...", end=" ", flush=True)
-    count = export_table_to_json(
-        engine,
-        "messaging_thread_summaries",
-        base_dir / "messaging_thread_summaries.json",
-        org_id,
-        schema,
-    )
-    counts["messaging_thread_summaries"] = count
-    print(f"{count} records")
-
     # Export integration_sync_history (messaging only)
     print("    Exporting integration_sync_history (messaging)...", end=" ", flush=True)
     count = export_messaging_sync_history(
@@ -408,7 +394,6 @@ def export_all_data(
         "messaging_channel_members": 0,
         "messaging_messages": 0,
         "messaging_deal_links": 0,
-        "messaging_thread_summaries": 0,
         "integration_sync_history": 0,
     }
     org_summaries = []
@@ -475,10 +460,9 @@ def delete_single_org_data(engine: Engine, org_id: str, schema: str) -> dict[str
     1. messaging_deal_links (FK to messages and channels)
     2. messaging_messages (FK to channels)
     3. messaging_channel_members (FK to channels)
-    4. messaging_thread_summaries (FK to channels)
-    5. messaging_channels (main table)
-    6. integration_sync_history (for messaging integrations)
-    7. Reset last_synced_at on messaging integrations
+    4. messaging_channels (main table)
+    5. integration_sync_history (for messaging integrations)
+    6. Reset last_synced_at on messaging integrations
     """
     counts = {}
 
@@ -520,22 +504,14 @@ def delete_single_org_data(engine: Engine, org_id: str, schema: str) -> dict[str
         counts["messaging_channel_members"] = count
         print(f"{count} deleted")
 
-        # 4. Delete messaging_thread_summaries
-        print("    Deleting messaging_thread_summaries...", end=" ", flush=True)
-        summaries_table = qualify("messaging_thread_summaries", schema)
-        query = f"DELETE FROM {summaries_table} WHERE organisation_id = :org_id"  # noqa: S608
-        count = execute_delete(query, {"org_id": org_id})
-        counts["messaging_thread_summaries"] = count
-        print(f"{count} deleted")
-
-        # 5. Delete messaging_channels
+        # 4. Delete messaging_channels
         print("    Deleting messaging_channels...", end=" ", flush=True)
         query = f"DELETE FROM {channels_table} WHERE organisation_id = :org_id"  # noqa: S608
         count = execute_delete(query, {"org_id": org_id})
         counts["messaging_channels"] = count
         print(f"{count} deleted")
 
-        # 6. Delete integration_sync_history for messaging integrations
+        # 5. Delete integration_sync_history for messaging integrations
         print("    Deleting integration_sync_history (messaging)...", end=" ", flush=True)
         history_table = qualify("integration_sync_history", schema)
         integrations_table = qualify("knowledge_integrations", schema)
@@ -551,7 +527,7 @@ def delete_single_org_data(engine: Engine, org_id: str, schema: str) -> dict[str
         counts["integration_sync_history"] = count
         print(f"{count} deleted")
 
-        # 7. Reset last_synced_at on messaging integrations to trigger full re-sync
+        # 6. Reset last_synced_at on messaging integrations to trigger full re-sync
         print("    Resetting last_synced_at on messaging integrations...", end=" ", flush=True)
         query = f"""
             UPDATE {integrations_table}
@@ -587,7 +563,6 @@ def delete_messaging_channel_data(
         "messaging_channel_members": 0,
         "messaging_messages": 0,
         "messaging_deal_links": 0,
-        "messaging_thread_summaries": 0,
         "integration_sync_history": 0,
         "integrations_reset": 0,
     }

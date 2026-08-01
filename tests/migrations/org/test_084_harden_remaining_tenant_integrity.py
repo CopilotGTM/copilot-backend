@@ -41,6 +41,17 @@ GLOBAL_STORAGE_RULES = {
     ("deal_assets", ("storage_path",)),
     ("organisation_sources", ("storage_path",)),
 }
+RETIRED_TABLES = {
+    "ci_call_analytics",
+    "ci_call_deal_links",
+    "ci_call_speakers",
+    "ci_calls",
+    "ci_transcript_segments",
+    "deal_timeline_events",
+    "email_thread_summaries",
+    "integration_participant_identities",
+    "messaging_thread_summaries",
+}
 
 
 def _load_migration() -> ModuleType:
@@ -159,13 +170,29 @@ def test_revision_084_matches_model_derived_relationships() -> None:
     migration = _load_migration()
     tables = {table.name: table for table in _organisation_tables()}
     relationships = _remaining_foreign_key_specs()
+    active_migration_relationships = {
+        relationship
+        for relationship in migration.REMAINING_TENANT_FOREIGN_KEYS
+        if relationship[0] not in RETIRED_TABLES
+        and relationship[2] not in RETIRED_TABLES
+    }
+    active_candidate_keys = tuple(
+        candidate
+        for candidate in migration.REMAINING_CANDIDATE_KEYS
+        if candidate[0] not in RETIRED_TABLES
+    )
+    active_foreign_key_indexes = tuple(
+        index
+        for index in migration.REMAINING_FOREIGN_KEY_INDEXES
+        if index[0] not in RETIRED_TABLES
+    )
 
     assert migration.revision == "3c7f79637715"
     assert migration.down_revision == "3c7f79637716"
-    assert len(relationships) == 76
-    assert set(migration.REMAINING_TENANT_FOREIGN_KEYS) == relationships
-    assert len(migration.REMAINING_CANDIDATE_KEYS) == 16
-    assert len(migration.REMAINING_FOREIGN_KEY_INDEXES) == 3
+    assert len(relationships) == 51
+    assert active_migration_relationships == relationships
+    assert len(active_candidate_keys) == 14
+    assert len(active_foreign_key_indexes) == 3
 
     for child, local_id, parent, remote_id, _ondelete in relationships:
         assert _has_unique_key(
@@ -180,12 +207,12 @@ def test_revision_084_matches_model_derived_relationships() -> None:
             ("organisation_id", local_id),
         ), f"{child}.{local_id}"
 
-    for table_name, identity_column in migration.REMAINING_CANDIDATE_KEYS:
+    for table_name, identity_column in active_candidate_keys:
         name = migration._candidate_name(table_name, identity_column)
         constraints = {constraint.name for constraint in tables[table_name].constraints}
         assert name in constraints
 
-    for table_name, local_column in migration.REMAINING_FOREIGN_KEY_INDEXES:
+    for table_name, local_column in active_foreign_key_indexes:
         name = migration._foreign_key_index_name(table_name, local_column)
         assert name in {index.name for index in tables[table_name].indexes}
 
@@ -217,8 +244,13 @@ def test_revision_084_matches_scoped_and_global_unique_rules() -> None:
 
     migration = _load_migration()
     tables = {table.name: table for table in _organisation_tables()}
+    active_migration_unique_rules = tuple(
+        rule
+        for rule in migration.REMAINING_SCOPED_UNIQUE_RULES
+        if rule[0] not in RETIRED_TABLES
+    )
 
-    assert len(migration.REMAINING_SCOPED_UNIQUE_RULES) == 26
+    assert len(active_migration_unique_rules) == 18
     for (
         table_name,
         kind,
@@ -228,7 +260,7 @@ def test_revision_084_matches_scoped_and_global_unique_rules() -> None:
         predicate,
         deferrable,
         initially,
-    ) in migration.REMAINING_SCOPED_UNIQUE_RULES:
+    ) in active_migration_unique_rules:
         table = tables[table_name]
         if kind == "constraint":
             matches = [
