@@ -1,5 +1,6 @@
 """Tests for GeneralAgent skills integration."""
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
@@ -141,3 +142,16 @@ def test_general_prompt_does_not_contain_hardcoded_reminder_instructions() -> No
     assert 'reminder_type="static"' not in prompt
     assert 'reminder_type="agentic"' not in prompt
     assert "Do NOT ask the user for their timezone" not in prompt
+
+
+def test_meeting_skill_routes_existing_events_to_mutation_tools() -> None:
+    """The workflow must not contradict the registered update and cancellation tools."""
+
+    skill = (
+        Path(__file__).parents[2] / "src/agents/skills/email-meeting-workflow/SKILL.md"
+    ).read_text()
+
+    assert "they do not update or cancel calendar events" not in skill
+    assert "`update_calendar_meeting`" in skill
+    assert "`cancel_calendar_meeting`" in skill
+    assert "internal validation prevented the calendar action" in skill

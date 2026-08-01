@@ -79,6 +79,7 @@ class _AnswerEmissionState:
         self.emitted_text = ""
 
     def next_delta(self, content: str) -> str:
+        """Return only content that has not already been emitted to the caller."""
         if not content:
             return ""
 
@@ -104,7 +105,7 @@ class GeneralAgent(BaseAgent):
         self.metadata_parser = MetadataParser(self.json_extractor)
         self.separators = ["⟦AEP:1⟧"]
 
-        # Get all tools for GeneralAgent from the registry
+        # Bind tools to this immutable context so model arguments cannot change tenancy.
         self._tools: list[Callable[..., Any]] = get_tools_for_agent(
             "GeneralAgent", context, lambda: self.capabilities
         )
@@ -121,7 +122,7 @@ class GeneralAgent(BaseAgent):
         skills_path = Path(__file__).parent.parent.parent / "skills"
         skills = Skills(loaders=[LocalSkills(str(skills_path))])
 
-        # Get model config
+        # Keep model selection in central config so deployments can change it consistently.
         config = agent_config.get_config("general_agent")
         endpoint = (openai_config.AZURE_OPENAI_ENDPOINT or "").rstrip("/")
         api_key = openai_config.AZURE_OPENAI_API_KEY
@@ -214,6 +215,7 @@ class GeneralAgent(BaseAgent):
             provider_started_at = perf_counter()
             first_frame_recorded = False
             provider_failed = False
+            buffer: StreamingAnswerBuffer | None = None
             try:
                 # Agno V2: arun(stream=True) returns async generator directly (no await)
                 # stream_events=True enables RunCompleted event for token metrics
@@ -242,6 +244,19 @@ class GeneralAgent(BaseAgent):
                 provider_failed = True
                 logger.exception("Error in enhanced run_workflow: %s", exc)
             finally:
+                _log_latency(
+                    self.context,
+                    stage="provider_run",
+                    started_at=provider_started_at,
+                    outcome=(
+                        "failed"
+                        if provider_failed
+                        else "degraded"
+                        if (buffer and buffer.had_tool_failure)
+                        or (self.capabilities and self.capabilities.had_tool_failure)
+                        else "success"
+                    ),
+                )
                 if not first_frame_recorded:
                     _log_latency(
                         self.context,
@@ -284,6 +299,7 @@ class GeneralAgent(BaseAgent):
         capabilities = AgentCapabilities(message_id)
 
         def emit_frame(frame: Frame):
+            """Queue transparent tool progress without blocking tool execution."""
             # Put frame into asyncio.Queue so it can be consumed immediately
             # by the concurrent drain task, even while Agno is blocked on tool execution.
             frame_queue.put_nowait(frame)
@@ -382,6 +398,23 @@ class GeneralAgent(BaseAgent):
 
         if kind == "skill_tool":
             await output_queue.put(self._build_skill_tool_frame(content))
+            return
+
+        if kind == "tool_failure":
+            logger.error(
+                "Agent tool failed tool_name=%s failure_kind=%s",
+                content["tool_name"],
+                content["failure_kind"],
+                extra={
+                    "event": "agent_tool_failure",
+                    "channel": self.context.channel,
+                    "message_id": self.context.message_id,
+                    "organisation_id": str(self.context.organisation_id),
+                    "user_id": str(self.context.user_id) if self.context.user_id else None,
+                    "tool_name": content["tool_name"],
+                    "failure_kind": content["failure_kind"],
+                },
+            )
             return
 
         if kind == "run_completed":
