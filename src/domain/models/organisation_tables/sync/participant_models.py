@@ -1,18 +1,16 @@
+"""Canonical participant records shared across synced provider data."""
+
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import Column, DateTime, Index, Numeric, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlmodel import Field, Relationship
+from sqlmodel import Field
 
-from ..base_mixins import utcnow
 from ..tenant_constraints import tenant_foreign_key
-from .base import FlexibleSyncedRecordMixin, SyncedRecordMixin
+from .base import FlexibleSyncedRecordMixin
 from .integration_models import EMPTY_JSONB_SQL
-
-if TYPE_CHECKING:
-    from .conversation_intelligence import CICallSpeaker
 
 
 class IntegrationParticipant(FlexibleSyncedRecordMixin, table=True):
@@ -20,8 +18,8 @@ class IntegrationParticipant(FlexibleSyncedRecordMixin, table=True):
     Canonical participant record — org-scoped, shared across integrations.
 
     integration_id is nullable: set to the first integration that discovered
-    this participant, but not used for scoping. Per-integration identity
-    mappings are tracked in IntegrationParticipantIdentity.
+    this participant, but not used for scoping. Provider-specific details are
+    kept on the canonical participant record.
     """
 
     __tablename__ = "integration_participants"
@@ -124,85 +122,7 @@ class IntegrationParticipant(FlexibleSyncedRecordMixin, table=True):
         description="Aggregated metadata specific to the participant regardless of provider.",
     )
 
-    identities: list["IntegrationParticipantIdentity"] = Relationship(back_populates="participant")
-    speakers: list["CICallSpeaker"] = Relationship(back_populates="participant")
-
-
-class IntegrationParticipantIdentity(SyncedRecordMixin, table=True):
-    """Provider level identity mapping tied to the canonical participant."""
-
-    __tablename__ = "integration_participant_identities"
-    __table_args__ = (
-        tenant_foreign_key(
-            "integration_participant_identities",
-            "integration_id",
-            "knowledge_integrations",
-            "integration_id",
-        ),
-        tenant_foreign_key(
-            "integration_participant_identities",
-            "participant_id",
-            "integration_participants",
-            "participant_id",
-        ),
-        UniqueConstraint(
-            "organisation_id",
-            "integration_id",
-            "provider_participant_id",
-            name="uq_integration_participant_identity_provider_org",
-        ),
-        Index("ix_integration_part_identity_email", "provider_email_normalized"),
-    )
-
-    identity_id: UUID = Field(default_factory=uuid4, primary_key=True)
-    participant_id: UUID = Field(
-        index=True,
-        description="Canonical participant this provider identity resolves to.",
-    )
-    provider_participant_id: str = Field(
-        sa_column=Column(String(255), nullable=False),
-        description="Provider specific participant identifier (e.g. Gong user id).",
-    )
-    provider_email: str | None = Field(
-        default=None,
-        sa_column=Column(String(320), nullable=True),
-        description="Email observed from the provider for this identity.",
-    )
-    provider_email_normalized: str | None = Field(
-        default=None,
-        sa_column=Column(String(320), nullable=True),
-        description="Normalized (lowercase) email for matching.",
-    )
-    provider_display_name: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Display name returned by the provider for the identity.",
-    )
-    first_seen_at: datetime = Field(
-        default_factory=utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="Timestamp when this identity was first observed.",
-    )
-    last_seen_at: datetime = Field(
-        default_factory=utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="Most recent observation timestamp for this identity.",
-    )
-    match_confidence: float | None = Field(
-        default=None,
-        sa_column=Column(Numeric(5, 4), nullable=True),
-        description="Confidence assigned when linking the identity to the canonical participant.",
-    )
-    identity_metadata: dict[str, Any] = Field(
-        default_factory=dict,
-        sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_SQL)),
-        description="Additional provider specific metadata for the identity.",
-    )
-
-    participant: IntegrationParticipant | None = Relationship(back_populates="identities")
-
 
 __all__ = [
     "IntegrationParticipant",
-    "IntegrationParticipantIdentity",
 ]

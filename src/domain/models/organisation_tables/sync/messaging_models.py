@@ -179,7 +179,6 @@ class MessagingChannel(OrgScopedRecordMixin, table=True):
     )
 
     messages: list["MessagingMessage"] = Relationship(back_populates="channel")
-    thread_summaries: list["MessagingThreadSummary"] = Relationship(back_populates="channel")
     integration_states: list["MessagingChannelIntegrationState"] = Relationship(
         back_populates="channel"
     )
@@ -610,141 +609,6 @@ class MessagingMessage(OrgScopedRecordMixin, table=True):
     channel: MessagingChannel | None = Relationship(back_populates="messages")
 
 
-class MessagingThreadSummary(SyncedRecordMixin, table=True):
-    """AI-generated summaries of message threads for context retrieval."""
-
-    __tablename__ = "messaging_thread_summaries"
-    __table_args__ = (
-        tenant_foreign_key(
-            "messaging_thread_summaries",
-            "integration_id",
-            "knowledge_integrations",
-            "integration_id",
-        ),
-        tenant_foreign_key(
-            "messaging_thread_summaries",
-            "channel_id",
-            "messaging_channels",
-            "channel_id",
-        ),
-        tenant_foreign_key(
-            "messaging_thread_summaries",
-            "deal_id",
-            "crm_deals",
-            "deal_id",
-        ),
-        Index("ix_messaging_summary_channel_time", "channel_id", "time_range_start"),
-        Index("ix_messaging_summary_deal", "deal_id"),
-        Index("ix_messaging_summary_thread", "thread_id"),
-    )
-
-    summary_id: UUID = Field(default_factory=uuid4, primary_key=True)
-    channel_id: UUID = Field(
-        index=True,
-        description="Channel the summary is for.",
-    )
-
-    thread_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True),
-        description="Thread identifier if this is a thread-level summary.",
-    )
-    deal_id: UUID | None = Field(
-        default=None,
-        index=True,
-        description="Associated deal for deal-linked channels.",
-    )
-
-    summary_text: str = Field(
-        sa_column=Column(Text, nullable=False),
-        description="Concise AI-generated summary of the conversation.",
-    )
-    key_points: list[str] = Field(
-        default_factory=list,
-        sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_ARRAY)),
-        description="Key discussion points extracted.",
-    )
-    action_items: list[str] = Field(
-        default_factory=list,
-        sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_ARRAY)),
-        description="Action items identified.",
-    )
-    participants_summary: dict[str, Any] = Field(
-        default_factory=dict,
-        sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_SQL)),
-        description="Participant stats (message counts, key contributors).",
-    )
-
-    message_count: int = Field(
-        default=0,
-        description="Number of messages included in this summary.",
-    )
-    time_range_start: datetime = Field(
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="Start of the time range covered.",
-    )
-    time_range_end: datetime = Field(
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="End of the time range covered.",
-    )
-
-    sentiment_score: float | None = Field(
-        default=None,
-        description="Overall sentiment score (-1 to 1).",
-    )
-    urgency_level: str | None = Field(
-        default=None,
-        sa_column=Column(String(32), nullable=True),
-        description="Urgency classification (low/medium/high/critical).",
-    )
-    topics: list[str] = Field(
-        default_factory=list,
-        sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_ARRAY)),
-        description="Identified topics/themes.",
-    )
-
-    summary_embedding: list[float] | None = Field(
-        default=None,
-        sa_column=Column(JSONB, nullable=True),
-        description="Vector embedding of the summary for semantic search.",
-    )
-
-    source_message_ids: list[str] = Field(
-        default_factory=list,
-        sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_ARRAY)),
-        description="List of message IDs included in this summary.",
-    )
-    generated_at: datetime = Field(
-        default_factory=utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-        description="When the summary was generated.",
-    )
-    generated_by: str | None = Field(
-        default=None,
-        sa_column=Column(String(64), nullable=True),
-        description="Model/version used for generation.",
-    )
-
-    summary_metadata: dict[str, Any] = Field(
-        default_factory=dict,
-        sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_SQL)),
-        description="Additional metadata.",
-    )
-
-    exported_to_kb: bool = Field(
-        default=False,
-        sa_column=Column(String, nullable=False, server_default=text("false"), index=True),
-        description="Whether this summary has been exported to the knowledge base.",
-    )
-    kb_source_id: UUID | None = Field(
-        default=None,
-        index=True,
-        description="Reference to the OrganisationSource created from this summary.",
-    )
-
-    channel: MessagingChannel | None = Relationship(back_populates="thread_summaries")
-
-
 __all__ = [
     "ChannelType",
     "MessageType",
@@ -753,5 +617,4 @@ __all__ = [
     "MessagingChannelMember",
     "MessagingDealLink",
     "MessagingMessage",
-    "MessagingThreadSummary",
 ]

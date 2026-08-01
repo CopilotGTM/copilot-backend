@@ -71,13 +71,11 @@ ORG_REWRITE_TABLES: dict[str, RewriteTable] = {
         "organisation_sources",
         "email_folders",
         "emails",
-        "email_thread_summaries",
         "integration_participants",
         "integration_participant_identities",
         "calendar_event_user_states",
         "messaging_channel_integration_states",
         "messaging_deal_links",
-        "messaging_thread_summaries",
         "integration_activity_requests",
         "deal_stakeholders",
     )
@@ -94,7 +92,6 @@ EVENT_CENTRIC_TABLES = {
     "calendar_event_deal_associations",
     "meeting_jobs",
     "meeting_recordings",
-    "deal_timeline_events",
     "meeting_transcripts",
 }
 

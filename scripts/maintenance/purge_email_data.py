@@ -6,7 +6,6 @@ allowing for data comparison and recovery if needed.
 
 Tables affected:
 - deal_email_associations
-- email_thread_summaries
 - emails
 - email_folders
 - integration_sync_history (for email integrations only)
@@ -46,7 +45,6 @@ from sqlalchemy.engine import Engine
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.infra.utils.resource_naming import get_schema_name  # noqa: E402
-
 
 # Email integration types
 EMAIL_INTEGRATION_TYPES = ("gmail", "outlook_email")
@@ -122,7 +120,7 @@ def confirm(org_id: str | None, schema: str | None, auto_confirm: bool, export_o
     action = "export" if export_only else "export and DELETE"
     prompt = (
         f"This will {action} email data for {scope}.\n"
-        f"Tables: emails, email_folders, email_thread_summaries, "
+        f"Tables: emails, email_folders, "
         f"deal_email_associations, integration_sync_history (email only)\n"
         f"Continue? [y/N]: "
     )
@@ -279,18 +277,6 @@ def export_single_org_data(
     counts["emails"] = count
     print(f"{count} records")
 
-    # Export email_thread_summaries
-    print("    Exporting email_thread_summaries...", end=" ", flush=True)
-    count = export_table_to_json(
-        engine,
-        "email_thread_summaries",
-        base_dir / "email_thread_summaries.json",
-        org_id,
-        schema,
-    )
-    counts["email_thread_summaries"] = count
-    print(f"{count} records")
-
     # Export deal_email_associations
     print("    Exporting deal_email_associations...", end=" ", flush=True)
     count = export_table_to_json(
@@ -359,7 +345,6 @@ def export_all_data(
     total_counts: dict[str, int] = {
         "email_folders": 0,
         "emails": 0,
-        "email_thread_summaries": 0,
         "deal_email_associations": 0,
         "integration_sync_history": 0,
     }
@@ -438,15 +423,7 @@ def delete_single_org_data(engine: Engine, org_id: str, schema: str) -> dict[str
         counts["deal_email_associations"] = count
         print(f"{count} deleted")
 
-        # 2. Delete email_thread_summaries
-        print("    Deleting email_thread_summaries...", end=" ", flush=True)
-        summaries_table = qualify("email_thread_summaries", schema)
-        query = f"DELETE FROM {summaries_table} WHERE organisation_id = :org_id"  # noqa: S608
-        count = execute_delete(query, {"org_id": org_id})
-        counts["email_thread_summaries"] = count
-        print(f"{count} deleted")
-
-        # 3. Delete emails
+        # 2. Delete emails
         print("    Deleting emails...", end=" ", flush=True)
         emails_table = qualify("emails", schema)
         query = f"DELETE FROM {emails_table} WHERE organisation_id = :org_id"  # noqa: S608
@@ -454,7 +431,7 @@ def delete_single_org_data(engine: Engine, org_id: str, schema: str) -> dict[str
         counts["emails"] = count
         print(f"{count} deleted")
 
-        # 4. Delete email_folders
+        # 3. Delete email_folders
         print("    Deleting email_folders...", end=" ", flush=True)
         folders_table = qualify("email_folders", schema)
         query = f"DELETE FROM {folders_table} WHERE organisation_id = :org_id"  # noqa: S608
@@ -462,7 +439,7 @@ def delete_single_org_data(engine: Engine, org_id: str, schema: str) -> dict[str
         counts["email_folders"] = count
         print(f"{count} deleted")
 
-        # 5. Delete integration_sync_history for email integrations
+        # 4. Delete integration_sync_history for email integrations
         print("    Deleting integration_sync_history (email)...", end=" ", flush=True)
         history_table = qualify("integration_sync_history", schema)
         integrations_table = qualify("knowledge_integrations", schema)
@@ -478,7 +455,7 @@ def delete_single_org_data(engine: Engine, org_id: str, schema: str) -> dict[str
         counts["integration_sync_history"] = count
         print(f"{count} deleted")
 
-        # 6. Reset last_synced_at on email integrations to trigger full re-sync
+        # 5. Reset last_synced_at on email integrations to trigger full re-sync
         print("    Resetting last_synced_at on email integrations...", end=" ", flush=True)
         query = f"""
             UPDATE {integrations_table}
@@ -510,7 +487,6 @@ def delete_email_data(engine: Engine, org_id: str | None, schema: str | None) ->
     total_counts: dict[str, int] = {
         "email_folders": 0,
         "emails": 0,
-        "email_thread_summaries": 0,
         "deal_email_associations": 0,
         "integration_sync_history": 0,
         "integrations_reset": 0,

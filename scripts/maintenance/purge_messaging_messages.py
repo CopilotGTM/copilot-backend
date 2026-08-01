@@ -14,7 +14,6 @@ Tables affected:
 Tables NOT affected:
 - messaging_channels (preserved)
 - messaging_channel_members (preserved)
-- messaging_thread_summaries (preserved)
 - messaging_deal_links (channel-level links preserved)
 
 Examples
@@ -125,7 +124,7 @@ def confirm(org_id: str | None, schema: str | None, auto_confirm: bool, export_o
     prompt = (
         f"This will {action} messaging MESSAGES data for {scope}.\n"
         f"Tables affected: messaging_messages, messaging_deal_links (message-level only)\n"
-        f"Tables preserved: messaging_channels, messaging_channel_members, messaging_thread_summaries\n"
+        f"Tables preserved: messaging_channels, messaging_channel_members\n"
         f"Continue? [y/N]: "
     )
     response = input(prompt).strip().lower()
