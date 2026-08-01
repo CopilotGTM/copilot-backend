@@ -1,4 +1,4 @@
-"""Tests for list_deals tool, DealFilters, and helper functions."""
+"""Contracts for filtered agent deal browsing and its fuzzy identity fallback."""
 
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ def authenticated_member(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def mock_context() -> MagicMock:
+    """Provide a tenant-bound context with one reusable async session."""
     ctx = MagicMock()
     ctx.organisation_id = UUID("11111111-1111-1111-1111-111111111111")
 
@@ -90,6 +91,7 @@ class TestDealFilters:
     """Tests for the DealFilters dataclass defaults."""
 
     def test_defaults(self) -> None:
+        """Unspecified browse filters retain the public tool defaults."""
         f = DealFilters()
         assert f.name is None
         assert f.status is None
@@ -105,6 +107,7 @@ class TestDealFilters:
         assert f.offset == 0
 
     def test_custom_values(self) -> None:
+        """Explicit filter values survive dataclass construction unchanged."""
         f = DealFilters(
             name="Acme",
             status="open",
@@ -121,6 +124,7 @@ class TestDealFilters:
         assert f.offset == 10
 
     def test_date_filter_annotations_accept_voice_schema_strings(self) -> None:
+        """Voice tool schemas may supply ISO date filters as strings."""
         hints = get_type_hints(DealFilters)
 
         for field_name in (
@@ -133,9 +137,10 @@ class TestDealFilters:
 
 
 class TestFormatDealOutput:
-    """Tests for the _format_deal_output helper."""
+    """Lock the compact record shape returned to the agent."""
 
     def test_full_deal(self) -> None:
+        """A populated deal exposes identifiers, ownership, stage, and value context."""
         deal = _make_deal()
         output = _format_deal_output(deal)
 
@@ -157,6 +162,7 @@ class TestFormatDealOutput:
         assert output["updated_at"] == "2026-02-20T14:30:00"
 
     def test_outputs_expected_and_actual_close_dates(self) -> None:
+        """Forecast and actual close dates remain separate fields."""
         deal = _make_deal()
         deal.expected_close_date = datetime(2026, 6, 30, 0, 0, 0)
         deal.close_date = datetime(2026, 7, 2, 12, 30, 0)
@@ -167,16 +173,19 @@ class TestFormatDealOutput:
         assert output["close_date"] == "2026-07-02T12:30:00"
 
     def test_none_amount(self) -> None:
+        """Missing monetary values remain null instead of becoming zero."""
         deal = _make_deal(amount=None)
         output = _format_deal_output(deal)
         assert output["amount"] is None
 
     def test_zero_amount_is_preserved(self) -> None:
+        """A real zero amount is not mistaken for missing data."""
         deal = _make_deal(amount=0)
         output = _format_deal_output(deal)
         assert output["amount"] == 0.0
 
     def test_none_dates(self) -> None:
+        """Missing timestamps serialize safely as null values."""
         deal = _make_deal()
         deal.expected_close_date = None
         deal.close_date = None
@@ -192,9 +201,10 @@ class TestFormatDealOutput:
 
 
 class TestApplyStatusFilter:
-    """Tests for _apply_status_filter helper."""
+    """Lock the mapping from conversational statuses to CRM states."""
 
     def test_open_filter(self) -> None:
+        """Open requests select only the open CRM state."""
         stmt = MagicMock()
         stmt.where = MagicMock(return_value=stmt)
         c = MagicMock()
@@ -203,6 +213,7 @@ class TestApplyStatusFilter:
         assert result is stmt
 
     def test_closed_filter(self) -> None:
+        """Closed requests include both won and lost outcomes."""
         stmt = MagicMock()
         stmt.where = MagicMock(return_value=stmt)
         c = MagicMock()
@@ -211,6 +222,7 @@ class TestApplyStatusFilter:
         assert result is stmt
 
     def test_won_filter(self) -> None:
+        """Won requests select only won deals."""
         stmt = MagicMock()
         stmt.where = MagicMock(return_value=stmt)
         c = MagicMock()
@@ -219,6 +231,7 @@ class TestApplyStatusFilter:
         assert result is stmt
 
     def test_lost_filter(self) -> None:
+        """Lost requests select only lost deals."""
         stmt = MagicMock()
         stmt.where = MagicMock(return_value=stmt)
         c = MagicMock()
@@ -236,6 +249,7 @@ class TestApplyStatusFilter:
         assert result is stmt
 
     def test_case_insensitive(self) -> None:
+        """Agent status casing does not change filter behavior."""
         stmt = MagicMock()
         stmt.where = MagicMock(return_value=stmt)
         c = MagicMock()
@@ -273,6 +287,7 @@ class TestApplyFilters:
             self.expected_close_date = TestApplyFilters._FilterColumn()
 
     def test_expected_close_date_filters_use_forecast_date(self) -> None:
+        """Expected-date bounds must not accidentally constrain actual close dates."""
         stmt = MagicMock()
         stmt.where = MagicMock(return_value=stmt)
         c = self._Columns()
@@ -294,6 +309,7 @@ class TestApplyFilters:
         assert c.close_date.le_calls == 0
 
     def test_string_expected_close_date_filters_are_parsed(self) -> None:
+        """ISO strings from voice schemas become database datetimes."""
         stmt = MagicMock()
         stmt.where = MagicMock(return_value=stmt)
         c = self._Columns()
@@ -308,6 +324,7 @@ class TestApplyFilters:
         assert comparison_value == datetime(2026, 7, 1, 0, 0, 0)
 
     def test_aware_datetime_close_date_filter_is_normalized(self) -> None:
+        """Timezone-aware bounds are normalized before comparing naive CRM timestamps."""
         stmt = MagicMock()
         stmt.where = MagicMock(return_value=stmt)
         c = self._Columns()
@@ -322,6 +339,7 @@ class TestApplyFilters:
         assert comparison_value == datetime(2026, 7, 1, 0, 0, 0)
 
     def test_invalid_string_close_date_filter_is_ignored(self) -> None:
+        """An invalid optional date does not crash the browsing tool."""
         stmt = MagicMock()
         stmt.where = MagicMock(return_value=stmt)
         c = self._Columns()
@@ -336,6 +354,7 @@ class TestApplyFilters:
         stmt.where.assert_not_called()
 
     def test_owner_user_id_takes_precedence_over_legacy_email(self) -> None:
+        """Canonical owner UUIDs override compatibility email filters."""
         # A resolved CRM UUID is canonical; a stale email must not also narrow the query.
         stmt = MagicMock()
         stmt.where = MagicMock(return_value=stmt)
@@ -366,7 +385,7 @@ class TestApplyFilters:
 
 
 class TestApplySorting:
-    """Tests for _apply_sorting helper."""
+    """Lock conversational sort names to their correct CRM columns."""
 
     class _SortColumn:
         def __init__(self) -> None:
@@ -374,14 +393,17 @@ class TestApplySorting:
             self.asc_calls = 0
 
         def desc(self) -> TestApplySorting._SortColumn:
+            """Record descending-order selection for the test double."""
             self.desc_calls += 1
             return self
 
         def asc(self) -> TestApplySorting._SortColumn:
+            """Record ascending-order selection for the test double."""
             self.asc_calls += 1
             return self
 
         def nulls_last(self) -> TestApplySorting._SortColumn:
+            """Mirror SQLAlchemy's fluent null-ordering API."""
             return self
 
     class _Columns:
@@ -394,6 +416,7 @@ class TestApplySorting:
             self.name = TestApplySorting._SortColumn()
 
     def test_close_date_sort_uses_actual_close_date(self) -> None:
+        """Actual close-date sorting must not use the forecast column."""
         stmt = MagicMock()
         stmt.order_by = MagicMock(return_value=stmt)
         c = self._Columns()
@@ -406,6 +429,7 @@ class TestApplySorting:
         assert c.expected_close_date.desc_calls == 0
 
     def test_expected_close_date_sort_uses_forecast_date(self) -> None:
+        """Forecast sorting targets expected_close_date."""
         stmt = MagicMock()
         stmt.order_by = MagicMock(return_value=stmt)
         c = self._Columns()
@@ -423,6 +447,7 @@ class TestListDeals:
 
     @pytest.mark.asyncio
     async def test_missing_org_returns_empty(self, mock_context: MagicMock) -> None:
+        """Missing tenant identity fails closed before database access."""
         mock_context.organisation_id = None
 
         result = await list_deals(context=mock_context, filters=DealFilters())
@@ -431,6 +456,7 @@ class TestListDeals:
 
     @pytest.mark.asyncio
     async def test_successful_listing(self, mock_context: MagicMock) -> None:
+        """Visible deals return through the actor-scoped query."""
         deal = _make_deal()
         session = await mock_context.acquire_session().__aenter__()
         session.execute = AsyncMock(
@@ -449,6 +475,7 @@ class TestListDeals:
 
     @pytest.mark.asyncio
     async def test_empty_results(self, mock_context: MagicMock) -> None:
+        """An unfiltered empty list does not trigger identity recovery."""
         session = await mock_context.acquire_session().__aenter__()
         session.execute = AsyncMock(
             return_value=MagicMock(
@@ -461,7 +488,39 @@ class TestListDeals:
         assert result == []
 
     @pytest.mark.asyncio
+    async def test_name_filter_uses_fuzzy_fallback_without_dropping_status(
+        self,
+        mock_context: MagicMock,
+    ) -> None:
+        """A spoken-name typo retries only identity matching and keeps business filters."""
+        deal = _make_deal(name="Northern Star Renewal")
+        fuzzy_row = MagicMock(score=0.82)
+        fuzzy_row.__getitem__.side_effect = lambda index: deal if index == 0 else None
+        literal_result = MagicMock()
+        literal_result.scalars.return_value.all.return_value = []
+        fuzzy_result = MagicMock()
+        fuzzy_result.all.return_value = [fuzzy_row]
+        session = await mock_context.acquire_session().__aenter__()
+        session.execute = AsyncMock(side_effect=[literal_result, fuzzy_result])
+
+        result = await list_deals(
+            context=mock_context,
+            filters=DealFilters(name="Nothern Star Renewal", status="won"),
+        )
+
+        assert result[0]["name"] == "Northern Star Renewal"
+        assert result[0]["match"] == {
+            "field": "name/company_name",
+            "type": "fuzzy",
+            "score": 0.82,
+        }
+        fuzzy_statement = str(session.execute.await_args.args[0])
+        assert "crm_deals.name %" in fuzzy_statement
+        assert "crm_deals.deal_status" in fuzzy_statement
+
+    @pytest.mark.asyncio
     async def test_limit_clamped_to_100(self, mock_context: MagicMock) -> None:
+        """Extreme agent limits remain bounded at the tool boundary."""
         session = await mock_context.acquire_session().__aenter__()
         session.execute = AsyncMock(
             return_value=MagicMock(
@@ -476,6 +535,7 @@ class TestListDeals:
 
     @pytest.mark.asyncio
     async def test_negative_offset_clamped_to_zero(self, mock_context: MagicMock) -> None:
+        """Negative pagination offsets cannot reach SQL."""
         session = await mock_context.acquire_session().__aenter__()
         session.execute = AsyncMock(
             return_value=MagicMock(
@@ -489,6 +549,7 @@ class TestListDeals:
 
     @pytest.mark.asyncio
     async def test_db_error_returns_empty(self, mock_context: MagicMock) -> None:
+        """Database failures produce no fabricated deal results."""
         session = await mock_context.acquire_session().__aenter__()
         session.execute = AsyncMock(side_effect=RuntimeError("DB error"))
 
@@ -498,6 +559,7 @@ class TestListDeals:
 
     @pytest.mark.asyncio
     async def test_multiple_deals_returned(self, mock_context: MagicMock) -> None:
+        """Broad browsing preserves every visible row returned within the limit."""
         deals = [
             _make_deal(deal_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", name="Deal A"),
             _make_deal(deal_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", name="Deal B"),

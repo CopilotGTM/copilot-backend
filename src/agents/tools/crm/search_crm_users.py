@@ -32,6 +32,7 @@ async def search_crm_users(*, context: AgentContext, query: str) -> dict[str, An
 
     return {
         "status": result.status,
+        "match_type": result.match_type,
         "candidates": [
             {
                 "user_id": str(user.user_id),
@@ -56,7 +57,9 @@ def create_search_crm_users(
 
         Use this before filtering deals by a named owner, analyzing a team
         member, or resolving phrases such as "our rep" and "from our team".
-        Do not guess an email address from a name. If status is ambiguous, ask
+        Do not guess an email address from a name. A fuzzy_email result is a
+        suggestion even when only one candidate is returned, so repeat the
+        user's address and ask before using the candidate. If status is ambiguous, ask
         the user to choose from the returned candidates. If a name is not
         found, ask for an email; if that direct identifier is also not found,
         report no match. An error means the lookup failed, not that the person

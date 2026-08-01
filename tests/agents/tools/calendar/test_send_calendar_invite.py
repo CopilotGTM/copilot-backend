@@ -11,6 +11,7 @@ from uuid import UUID
 
 import pytest
 from src.agents.tools.calendar.send_calendar_invite import (
+    _current_turn_clarification_email,
     _meeting_location,
     _normalize_invite_title,
     send_calendar_invite,
@@ -777,6 +778,103 @@ async def test_send_calendar_invite_blocks_ambiguous_attendees(monkeypatch) -> N
     assert result["missing_fields"] == ["attendees"]
     assert result["ambiguous_attendees"][0]["input"] == "Saksham"
     service.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_current_turn_email_replaces_one_stale_unresolved_attendee(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A persisted email clarification replaces stale model arguments but cannot send."""
+    message_id = UUID("77777777-7777-7777-7777-777777777777")
+    session = MagicMock()
+    context = _FakeContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={
+            "user_timezone": "Asia/Kolkata",
+            "current_user_message_id": str(message_id),
+        },
+    )
+    session.get = AsyncMock(
+        return_value=SimpleNamespace(
+            organisation_id=context.organisation_id,
+            content={"text": "north.star@company.com"},
+        )
+    )
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(session))
+
+    class FakeResolver:
+        """Resolve only after the tool substitutes the persisted exact email."""
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def resolve(self, attendees, *, deal_id=None):  # noqa: ANN001, ANN201
+            """Return a blocker first and the direct email on the guarded retry."""
+            if attendees == [{"name": "Jonatan Mehta", "scope": "team"}]:
+                return AttendeeResolutionResult(
+                    missing=[{"input": "Jonatan Mehta", "reason": "no_team_match"}]
+                )
+            assert attendees == [
+                {
+                    "email": "north.star@company.com",
+                    "name": "Jonatan Mehta",
+                    "optional": False,
+                }
+            ]
+            return AttendeeResolutionResult(
+                resolved=[
+                    AttendeeCandidate(
+                        email="north.star@company.com",
+                        name="Jonatan Mehta",
+                        source="direct_email",
+                    )
+                ]
+            )
+
+    service = MagicMock()
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.send_calendar_invite.CalendarInviteService",
+        service,
+    )
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.send_calendar_invite.CalendarInviteAttendeeResolver",
+        FakeResolver,
+    )
+
+    result = await send_calendar_invite(
+        context=context,
+        attendees=[{"name": "Jonatan Mehta", "scope": "team"}],
+        start_time="2026-05-12T20:00:00+05:30",
+        end_time="2026-05-12T20:30:00+05:30",
+        sender_email="seller@contoso.com",
+        confirmed=True,
+    )
+
+    assert result["status"] == "confirmation_required"
+    assert result["confirmation_payload"]["attendees"][0]["email"] == ("north.star@company.com")
+    assert result["confirmation_payload"]["title"] == "Meeting with Jonatan Mehta"
+    service.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_current_turn_email_guard_rejects_negated_or_multiple_addresses() -> None:
+    """The deterministic override accepts a clarification, not arbitrary email prose."""
+    message_id = UUID("77777777-7777-7777-7777-777777777777")
+    context = _FakeContext(
+        organisation_id=UUID("11111111-1111-1111-1111-111111111111"),
+        user_id=UUID("22222222-2222-2222-2222-222222222222"),
+        metadata={"current_user_message_id": str(message_id)},
+    )
+    session = MagicMock()
+    session.get = AsyncMock(
+        return_value=SimpleNamespace(
+            organisation_id=context.organisation_id,
+            content={"text": "Do not use wrong@example.com; use right@example.com"},
+        )
+    )
+
+    assert await _current_turn_clarification_email(session, context) is None
 
 
 @pytest.mark.asyncio

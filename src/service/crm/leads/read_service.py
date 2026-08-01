@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.leads import (
     CRMLead,
@@ -26,6 +27,7 @@ from src.service.crm.utils.crm_user_identity import (
     CRMUserIdentityResolutionError,
     ensure_app_user_crm_identity,
 )
+from src.service.crm.utils.identity import is_valid_email, normalize_spoken_email_query
 
 logger = get_logger("lead_read_service")
 
@@ -103,6 +105,89 @@ class LeadReadService:
         rows = (await self.org_session.execute(stmt)).scalars().all()
         return list(rows), total_count
 
+    async def search_leads_for_agent(
+        self,
+        *,
+        q: str,
+        limit: int = 20,
+        status: CRMLeadStatus | None = None,
+        owner_id: UUID | None = None,
+        source_type: CRMLeadSourceType | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return fuzzy lead suggestions after the agent's literal search misses.
+
+        This method is agent-only so picker and HTTP list semantics remain
+        literal. Email matches expose their field and score to let the agent ask
+        for confirmation instead of treating a close address as authoritative.
+        """
+        query = normalize_spoken_email_query(q)
+        if not query:
+            return []
+
+        name_score = func.similarity(func.coalesce(col(CRMLead.full_name), ""), query)
+        company_score = func.similarity(func.coalesce(col(CRMLead.company_name), ""), query)
+        domain_score = func.similarity(func.coalesce(col(CRMLead.company_domain), ""), query)
+        email_score = func.similarity(func.coalesce(col(CRMLead.email), ""), query)
+        match_score: ColumnElement[Any] = func.greatest(
+            name_score, email_score, company_score, domain_score
+        )
+        match_field: ColumnElement[Any] = case(
+            (name_score >= func.greatest(email_score, company_score, domain_score), "full_name"),
+            (email_score >= func.greatest(company_score, domain_score), "email"),
+            (company_score >= domain_score, "company_name"),
+            else_="company_domain",
+        )
+
+        if is_valid_email(query):
+            query_local, query_domain = query.split("@", 1)
+            stored_email = func.lower(func.coalesce(col(CRMLead.email), ""))
+            local_score = func.similarity(func.split_part(stored_email, "@", 1), query_local)
+            stored_domain_score = func.similarity(
+                func.split_part(stored_email, "@", 2),
+                query_domain,
+            )
+            match_score = local_score * 0.75 + stored_domain_score * 0.25
+            match_field = literal("email")
+            fuzzy_filter: ColumnElement[bool] = (local_score >= 0.40) & (match_score >= 0.55)
+        else:
+            fuzzy_filter = match_score >= 0.40
+
+        stmt = select(
+            CRMLead,
+            match_score.label("score"),
+            match_field.label("match_field"),
+        ).where(
+            col(CRMLead.organisation_id) == self.organisation_id,
+            col(CRMLead.is_deleted).is_(False),
+            self._access.visible_lead_predicate(),
+            fuzzy_filter,
+        )
+        if status is not None:
+            stmt = stmt.where(col(CRMLead.status) == status.value)
+        if owner_id is not None:
+            stmt = stmt.where(col(CRMLead.owner_id) == owner_id)
+        if source_type is not None:
+            stmt = stmt.where(col(CRMLead.source_type) == source_type.value)
+
+        rows = (
+            await self.org_session.execute(
+                stmt.order_by(match_score.desc(), col(CRMLead.lead_id).asc()).limit(
+                    max(1, min(limit, 20))
+                )
+            )
+        ).all()
+        return [
+            {
+                "lead": row[0],
+                "match": {
+                    "field": row.match_field,
+                    "type": "fuzzy",
+                    "score": float(row.score or 0.0),
+                },
+            }
+            for row in rows
+        ]
+
     async def get_lead(self, lead_id: UUID) -> tuple[CRMLead, list[CRMLeadParticipant]]:
         """Return a lead and its active participants."""
         lead = await self._get_lead_or_404(lead_id)
@@ -149,7 +234,7 @@ class LeadReadService:
             lead, _decision = await self._access.require_lead(lead_id, level)
         except CRMRecordAccessError as exc:
             raise LeadServiceError(exc.message, status_code=exc.status_code) from exc
-        return lead
+        return cast(CRMLead, lead)
 
     @staticmethod
     def _enum_value(value: Any) -> Any:

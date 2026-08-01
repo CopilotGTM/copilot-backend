@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from src.agents.tools.base import execute_with_capabilities
 from src.agents.tools.crm.access import AgentCRMAccessError, require_agent_deal_access
 from src.service.crm.participants.stakeholder_read_service import StakeholderReadService
+from src.service.crm.utils.identity import is_valid_email, normalize_spoken_email_query
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -99,8 +101,9 @@ async def list_deal_stakeholders(
                 session,
                 organisation_id,
                 getattr(context, "user_id", None),
-                access_actor=actor,
+                access_actor=actor,  # type: ignore[arg-type]
             )
+            stakeholders: list[Any]
             if parsed_stakeholder_id:
                 payload = await service.get_stakeholder_detail(
                     actual_deal_id,
@@ -122,40 +125,55 @@ async def list_deal_stakeholders(
             logger.exception(f"list_deal_stakeholders: database error: {e}")
             return []
 
-        output: list[dict[str, Any]] = []
-        for stakeholder in stakeholders:
-            payload = _stakeholder_payload(stakeholder)
-            if query and not _matches_query(payload, query):
-                continue
-            output.append(
-                {
-                    "participant_id": str(payload["participant_id"]),
-                    "deal_id": str(payload["deal_id"]),
-                    "contact_id": str(payload["contact_id"]) if payload["contact_id"] else None,
-                    "email": payload["email"],
-                    "name": payload["name"],
-                    "job_title": payload["job_title"],
-                    "relationship_role": payload["relationship_role"],
-                    "phone_number": payload["phone_number"],
-                    "department": payload["department"],
-                    "linkedin_url": payload["linkedin_url"],
-                    "external_links": _external_links_payload(payload["external_links"]),
-                    "stance": _enum_value(payload["stance"]),
-                    "decision_power": _enum_value(payload["decision_power"]),
-                    "motivation": payload["motivation"],
-                    "pain_points": payload["pain_points"] or [],
-                    "keywords": payload["keywords"] or [],
-                    "temperature": _enum_value(payload["temperature"]),
-                    "last_contact_at": payload["last_contact_at"].isoformat()
-                    if payload["last_contact_at"]
-                    else None,
-                    "source": _enum_value(payload["source"]),
-                    "stakeholder_research": payload["stakeholder_research"],
-                    "last_researched_at": payload["last_researched_at"].isoformat()
-                    if payload["last_researched_at"]
-                    else None,
-                }
+        payloads = [_stakeholder_payload(stakeholder) for stakeholder in stakeholders]
+        selected: list[tuple[dict[str, Any], dict[str, Any] | None]] = [
+            (payload, None) for payload in payloads if not query or _matches_query(payload, query)
+        ]
+        if query and not selected:
+            # A deal has at most fifty loaded stakeholders here, so an in-memory
+            # fallback avoids another join-heavy query while keeping work bounded.
+            selected = [
+                (payload, match)
+                for payload in payloads
+                if (match := _fuzzy_identity_match(payload, query)) is not None
+            ]
+            selected.sort(
+                key=lambda item: float((item[1] or {}).get("score", 0.0)),
+                reverse=True,
             )
+
+        output: list[dict[str, Any]] = []
+        for payload, match in selected:
+            item = {
+                "participant_id": str(payload["participant_id"]),
+                "deal_id": str(payload["deal_id"]),
+                "contact_id": str(payload["contact_id"]) if payload["contact_id"] else None,
+                "email": payload["email"],
+                "name": payload["name"],
+                "job_title": payload["job_title"],
+                "relationship_role": payload["relationship_role"],
+                "phone_number": payload["phone_number"],
+                "department": payload["department"],
+                "linkedin_url": payload["linkedin_url"],
+                "external_links": _external_links_payload(payload["external_links"]),
+                "stance": _enum_value(payload["stance"]),
+                "decision_power": _enum_value(payload["decision_power"]),
+                "motivation": payload["motivation"],
+                "pain_points": payload["pain_points"] or [],
+                "keywords": payload["keywords"] or [],
+                "temperature": _enum_value(payload["temperature"]),
+                "last_contact_at": payload["last_contact_at"].isoformat()
+                if payload["last_contact_at"]
+                else None,
+                "source": _enum_value(payload["source"]),
+                "stakeholder_research": payload["stakeholder_research"],
+                "last_researched_at": payload["last_researched_at"].isoformat()
+                if payload["last_researched_at"]
+                else None,
+            }
+            if match:
+                item["match"] = match
+            output.append(item)
             if len(output) >= effective_limit:
                 break
     # Session released
@@ -231,6 +249,31 @@ def _matches_query(payload: dict[str, Any], query: str) -> bool:
     return any(needle in str(value).lower() for value in fields if value)
 
 
+def _fuzzy_identity_match(payload: dict[str, Any], query: str) -> dict[str, Any] | None:
+    """Score a missed stakeholder query against person identity fields only."""
+    normalized = normalize_spoken_email_query(query)
+    if is_valid_email(normalized):
+        candidate = str(payload.get("email") or "").strip().lower()
+        if "@" not in candidate:
+            return None
+        query_local, query_domain = normalized.split("@", 1)
+        candidate_local, candidate_domain = candidate.split("@", 1)
+        local_score = SequenceMatcher(None, query_local, candidate_local).ratio()
+        domain_score = SequenceMatcher(None, query_domain, candidate_domain).ratio()
+        score = local_score * 0.75 + domain_score * 0.25
+        if local_score < 0.60 or score < 0.70:
+            return None
+        return {"field": "email", "type": "fuzzy", "score": score}
+
+    candidate_name = str(payload.get("name") or "").strip().lower()
+    if not candidate_name:
+        return None
+    score = SequenceMatcher(None, normalized, candidate_name).ratio()
+    if score < 0.72:
+        return None
+    return {"field": "name", "type": "fuzzy", "score": score}
+
+
 def create_list_deal_stakeholders(
     context: AgentContext,
     capabilities_getter: Callable[[], AgentCapabilities | None],
@@ -264,6 +307,7 @@ def create_list_deal_stakeholders(
                 are not in a deal view.
             stakeholder_id: Optional participant UUID. Returns at most one row.
             query: Optional person search across stakeholder name/email/title/role/department.
+                Fuzzy email results are suggestions and require confirmation before writes.
             limit: Maximum number of results (default: 20, max: 50)
 
         Note: organisation_id is automatically set from context and cannot be

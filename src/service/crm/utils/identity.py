@@ -1,3 +1,5 @@
+"""Canonical email normalization shared by CRM identity boundaries."""
+
 from __future__ import annotations
 
 from pydantic import EmailStr, TypeAdapter, ValidationError
@@ -23,6 +25,22 @@ def is_valid_email(email: str | None) -> bool:
     except ValidationError:
         return False
     return True
+
+
+def normalize_spoken_email_query(query: str) -> str:
+    """Normalize an email or a clearly spoken ``at``/``dot`` email phrase.
+
+    General prose is left alone so a person's name containing either word is
+    never rewritten as an address. Validation remains the caller's decision.
+    """
+    normalized = " ".join(query.strip().lower().split())
+    if "@" in normalized:
+        return normalized.replace(" ", "")
+    if " at " not in normalized or " dot " not in normalized:
+        return normalized
+    local_part, domain = normalized.split(" at ", 1)
+    candidate = f"{local_part.replace(' ', '')}@{domain.replace(' dot ', '.').replace(' ', '')}"
+    return candidate if is_valid_email(candidate) else normalized
 
 
 def extract_email_domain(email: str | None) -> str | None:

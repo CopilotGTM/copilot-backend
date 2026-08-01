@@ -5,8 +5,9 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from src.agents.tools.base import execute_with_capabilities
@@ -117,6 +118,76 @@ def _looks_like_email(value: str | None) -> bool:
     if not value:
         return False
     return bool(_EMAIL_PATTERN.fullmatch(value.strip()))
+
+
+async def _current_turn_clarification_email(
+    session: Any,
+    context: AgentContext,
+) -> str | None:
+    """Return one explicit email from the persisted current user message.
+
+    The tool reads the persisted turn instead of trusting reconstructed model
+    arguments. Only an email by itself or behind a small affirmative wrapper is
+    accepted, so negated or multi-address messages still require clarification.
+    """
+    raw_message_id = (context.metadata or {}).get("current_user_message_id")
+    if not raw_message_id:
+        return None
+    try:
+        message_id = UUID(str(raw_message_id))
+    except ValueError:
+        return None
+
+    from src.domain.models.organisation_tables.chat_message_models import ChatMessage
+
+    message = await session.get(ChatMessage, message_id)
+    if not message or message.organisation_id != context.organisation_id:
+        return None
+    content = message.content
+    text = str(content.get("text") or "") if isinstance(content, dict) else str(content or "")
+    matches = {match.lower() for match in _EMAIL_PATTERN.findall(text)}
+    if len(matches) != 1:
+        return None
+    email = matches.pop()
+    remainder = _EMAIL_PATTERN.sub("", text).strip().lower().strip(" .,:!?")
+    safe_wrappers = {"", "use", "use this", "email", "email is", "his email is", "her email is"}
+    return email if remainder in safe_wrappers else None
+
+
+def _replace_one_unresolved_attendee(
+    attendees: list[str] | list[dict[str, Any]],
+    *,
+    unresolved_input: Any,
+    email: str,
+) -> list[str] | list[dict[str, Any]] | None:
+    """Replace one unresolved model argument while preserving its attendee role."""
+    unresolved = str(unresolved_input or "").strip().lower()
+    replacement: list[Any] = []
+    replaced = False
+    for attendee in attendees:
+        if isinstance(attendee, str):
+            if not replaced and attendee.strip().lower() == unresolved:
+                replacement.append(email)
+                replaced = True
+            else:
+                replacement.append(attendee)
+            continue
+
+        value = str(
+            attendee.get("value") or attendee.get("email") or attendee.get("name") or ""
+        ).strip()
+        if not replaced and value.lower() == unresolved:
+            replacement.append(
+                {
+                    "email": email,
+                    "name": attendee.get("name") or value or None,
+                    "optional": bool(attendee.get("optional", False)),
+                }
+            )
+            replaced = True
+        else:
+            replacement.append(attendee)
+    return cast(list[str] | list[dict[str, Any]], replacement) if replaced else None
 
 
 def _attendees_are_only_direct_emails(attendees: list[str] | list[dict[str, Any]]) -> bool:
@@ -535,6 +606,24 @@ async def send_calendar_invite(
             user_email=getattr(context, "user_email", None),
         )
         resolution = await attendee_resolver.resolve(attendees, deal_id=deal_id)
+        blockers = [*resolution.missing, *resolution.ambiguous]
+        if len(blockers) == 1:
+            clarification_email = await _current_turn_clarification_email(session, context)
+            replacement = (
+                _replace_one_unresolved_attendee(
+                    attendees,
+                    unresolved_input=blockers[0].get("input"),
+                    email=clarification_email,
+                )
+                if clarification_email
+                else None
+            )
+            if replacement is not None:
+                # Supplying the missing address completes identity resolution but
+                # is not permission to send; always return the reviewed invite.
+                attendees = replacement
+                confirmed = False
+                resolution = await attendee_resolver.resolve(attendees, deal_id=deal_id)
 
         try:
             sender_resolution = await CalendarIntegrationResolver().resolve(
@@ -746,6 +835,10 @@ def create_send_calendar_invite(
         confirmation_required or needs_clarification instead of sending if there
         is any identity doubt. Set confirmed=True only when the current user
         message explicitly asks to send the fully resolved invite.
+
+        If lookup suggests a close but non-exact email, repeat the address the
+        user supplied and the suggested address, then ask before using it. A
+        valid direct email needs no saved contact and may proceed to preview.
 
         When the user says "from our team", "our colleague", or "our rep", pass
         that attendee as {"name": "<name>", "scope": "team", "optional": <bool>}.

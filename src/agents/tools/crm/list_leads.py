@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class LeadFilters:
+    """Agent-supplied lead filters that remain active during fuzzy recovery."""
+
     q: str | None = None
     status: CRMLeadStatus | None = None
     owner_id: UUID | None = None
@@ -69,8 +71,12 @@ def _parse_uuid(value: UUID | str | None) -> UUID | None:
         return None
 
 
-def _format_lead_output(lead: Any) -> dict[str, Any]:
-    return {
+def _format_lead_output(
+    lead: Any,
+    *,
+    match: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    output = {
         "lead_id": str(lead.lead_id),
         "status": lead.status.value if hasattr(lead.status, "value") else lead.status,
         "source_type": lead.source_type.value
@@ -92,6 +98,9 @@ def _format_lead_output(lead: Any) -> dict[str, Any]:
         "captured_at": lead.captured_at.isoformat() if lead.captured_at else None,
         "updated_at": lead.updated_at.isoformat() if lead.updated_at else None,
     }
+    if match:
+        output["match"] = match
+    return output
 
 
 async def list_leads(
@@ -116,7 +125,7 @@ async def list_leads(
             organisation_id,
             actor_user_id=context.user_id,
             master_session=None,
-            access_actor=access_actor,
+            access_actor=access_actor,  # type: ignore[arg-type]
         )
         try:
             leads, _total_count = await service.list_leads(
@@ -127,6 +136,17 @@ async def list_leads(
                 owner_id=filters.owner_id,
                 source_type=filters.source_type,
             )
+            fuzzy_rows = []
+            if not leads and filters.q:
+                # Agent speech gets one bounded recovery attempt. UI callers use
+                # LeadReadService.list_leads directly and retain literal search.
+                fuzzy_rows = await service.search_leads_for_agent(
+                    q=filters.q,
+                    limit=filters.limit,
+                    status=filters.status,
+                    owner_id=filters.owner_id,
+                    source_type=filters.source_type,
+                )
         except LeadServiceError as exc:
             logger.warning("list_leads: service error: %s", exc.message)
             return []
@@ -134,6 +154,8 @@ async def list_leads(
             logger.exception("list_leads: unexpected failure")
             return []
 
+    if fuzzy_rows:
+        return [_format_lead_output(row["lead"], match=row["match"]) for row in fuzzy_rows]
     return [_format_lead_output(lead) for lead in leads]
 
 
@@ -150,7 +172,12 @@ def create_list_leads(
         source_type: str | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """List CRM leads with optional search, status, owner, and source filters."""
+        """List CRM leads with optional search, status, owner, and source filters.
+
+        A returned fuzzy email match is a suggestion, not an exact identity.
+        Repeat the address that was searched and ask before using that lead in
+        any write action.
+        """
         filters = LeadFilters(
             q=q.strip() if isinstance(q, str) and q.strip() else None,
             status=_parse_status(status),

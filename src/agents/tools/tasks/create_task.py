@@ -200,168 +200,66 @@ def _resolve_due_date(
 
 
 async def _resolve_user_by_name(
-    organisation_id: UUID,
+    context: AgentContext,
     name_or_email: str,
 ) -> tuple[UUID, str] | None:
-    """Find an org member by name or email.
+    """Resolve one task assignee through the canonical CRM-user directory.
 
-    Returns (user_id, display_name) for the best match, or None.
-    Queries the public.users table filtered by organisation_id.
+    The shared directory keeps calendar, owner, and task assignment identity
+    rules aligned. Only exact results can authorize a write; partial or fuzzy
+    matches remain suggestions for the agent to clarify with the user.
     """
-    from sqlalchemy import func, or_, select
-    from sqlmodel import col
+    from src.service.crm.access.crm_user_directory_service import CRMUserDirectoryService
 
-    from src.domain.models.master_tables.user_models import User
-    from src.infra.database.sessions import acquire_master_async_session
-    from src.service.crm.access.crm_user_service import build_user_display_name
-
-    search = name_or_email.strip()
-    if not search:
+    async with context.acquire_session() as session:
+        resolution = await CRMUserDirectoryService(
+            session,
+            context.organisation_id,
+        ).search(name_or_email)
+    if (
+        resolution.status != "resolved"
+        or resolution.match_type != "exact"
+        or len(resolution.candidates) != 1
+    ):
         return None
-
-    def same_org(user: Any) -> bool:
-        return getattr(user, "organisation_id", None) == organisation_id
-
-    def display_name(user: Any) -> str:
-        return build_user_display_name(user) or str(getattr(user, "email", search))
-
-    def normalized_full_name(user: Any) -> str:
-        first = getattr(user, "first_name", "") or ""
-        last = getattr(user, "last_name", "") or ""
-        return f"{first} {last}".strip().lower()
-
-    async for session in acquire_master_async_session():
-        # Try exact email match first
-        if "@" in search:
-            stmt = select(User).where(
-                col(User.organisation_id) == organisation_id,
-                col(User.email) == search.lower(),
-            )
-            result = await session.execute(stmt)
-            user = result.scalars().first()
-            if user and same_org(user):
-                return (user.user_id, display_name(user))
-            return None
-
-        # Name search is token-aware so "Nikhil Singhal" can match separate
-        # first_name/last_name columns instead of searching the full phrase in
-        # each column independently.
-        lower_search = search.lower()
-        tokens = [token for token in re.split(r"\s+", lower_search) if token]
-        full_name_expr = func.concat(col(User.first_name), " ", col(User.last_name))
-        conditions: list[Any] = [
-            full_name_expr.ilike(f"%{lower_search}%"),
-            col(User.first_name).ilike(f"%{lower_search}%"),
-            col(User.last_name).ilike(f"%{lower_search}%"),
-            col(User.email).ilike(f"%{lower_search}%"),
-        ]
-        for token in tokens:
-            conditions.extend(
-                [
-                    col(User.first_name).ilike(f"%{token}%"),
-                    col(User.last_name).ilike(f"%{token}%"),
-                    col(User.email).ilike(f"%{token}%"),
-                ]
-            )
-
-        stmt = (
-            select(User)
-            .where(
-                col(User.organisation_id) == organisation_id,
-                or_(*conditions),
-            )
-            .limit(10)
-        )
-        result = await session.execute(stmt)
-        users = [user for user in result.scalars().all() if same_org(user)]
-
-    if not users:
-        return None
-
-    # Full names are unambiguous when the user provides both first and last name.
-    for u in users:
-        if normalized_full_name(u) == lower_search:
-            return (u.user_id, display_name(u))
-
-    if len(tokens) >= 2:
-        first_token = tokens[0]
-        last_token = tokens[-1]
-        ordered_matches = [
-            u
-            for u in users
-            if (getattr(u, "first_name", "") or "").lower().startswith(first_token)
-            and (getattr(u, "last_name", "") or "").lower().startswith(last_token)
-        ]
-        if len(ordered_matches) == 1:
-            match = ordered_matches[0]
-            return (match.user_id, display_name(match))
-        return None
-
-    if len(users) == 1:
-        return (users[0].user_id, display_name(users[0]))
-
-    # A partial name with multiple candidates is unsafe for assignment. Ask for
-    # an email or full name instead of silently assigning to the first result.
-    for u in users:
-        if (getattr(u, "email", "") or "").lower() == lower_search:
-            return (u.user_id, display_name(u))
-
-    return None
+    user = resolution.candidates[0]
+    display_name = (
+        user.full_name
+        or " ".join(part for part in (user.first_name, user.last_name) if part)
+        or user.email
+        or name_or_email
+    )
+    return user.user_id, display_name
 
 
 async def _resolve_deal_by_name(
     context: AgentContext,
     deal_name: str,
 ) -> tuple[UUID, str] | None:
-    """Find a deal by fuzzy name match within the user's org.
+    """Find one exact deal name match within the user's org.
 
-    Returns (deal_id, deal_name) for the best match, or None.
+    Fuzzy search still recovers candidates for read tools, but a task write
+    returns None until the user supplies an exact deal identity.
     """
-    from sqlalchemy import select
-    from sqlmodel import col
-
-    from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
-    from src.service.crm.access.record_access_policy import DealAccessPolicy
+    from src.service.crm.deals.read_service import DealReadService
 
     async with context.acquire_session() as session:
         try:
             actor = await resolve_agent_access_actor(context)
         except AgentCRMAccessError:
             return None
-        # Case-insensitive search, limit to 5 candidates
-        stmt = (
-            select(CRMDeal)
-            .where(
-                col(CRMDeal.organisation_id) == context.organisation_id,
-                col(CRMDeal.is_deleted) == False,  # noqa: E712
-                col(CRMDeal.name).ilike(f"%{deal_name}%"),
-                DealAccessPolicy(
-                    session,
-                    context.organisation_id,
-                    actor,
-                ).visible_deal_predicate(),
-            )
-            .limit(5)
-        )
-        result = await session.execute(stmt)
-        deals = result.scalars().all()
+        matches = await DealReadService(
+            session,
+            context.organisation_id,
+            actor=actor,  # type: ignore[arg-type]
+        ).search_deals_for_agent(q=deal_name, limit=5)
 
-    if not deals:
+    # A unique fuzzy candidate is still only a suggestion. Task creation cannot
+    # attach data to it until a later turn supplies the exact identity.
+    if len(matches) != 1 or matches[0]["match"]["type"] != "exact":
         return None
-
-    if len(deals) == 1:
-        return (deals[0].deal_id, deals[0].name or deal_name)
-
-    # Multiple matches — prefer exact (case-insensitive), then starts-with, then first
-    lower_name = deal_name.lower()
-    for deal in deals:
-        if deal.name and deal.name.lower() == lower_name:
-            return (deal.deal_id, deal.name)
-    for deal in deals:
-        if deal.name and deal.name.lower().startswith(lower_name):
-            return (deal.deal_id, deal.name)
-
-    return (deals[0].deal_id, deals[0].name or deal_name)
+    deal = matches[0]["deal"]
+    return deal.deal_id, deal.name or deal_name
 
 
 def _build_slack_preview(
@@ -861,7 +759,7 @@ async def create_task(
     owner_user_id = user_id
     assignee_name: str | None = None
     if assign_to:
-        match = await _resolve_user_by_name(organisation_id, assign_to.strip())
+        match = await _resolve_user_by_name(context, assign_to.strip())
         if match:
             owner_user_id = match[0]
             assignee_name = match[1]
@@ -1064,7 +962,7 @@ async def create_task_form(
     resolved_assignee_name: str | None = None
 
     if assign_to:
-        match = await _resolve_user_by_name(organisation_id, assign_to.strip())
+        match = await _resolve_user_by_name(context, assign_to.strip())
         if match:
             resolved_assignee_id = str(match[0])
             resolved_assignee_name = match[1]
