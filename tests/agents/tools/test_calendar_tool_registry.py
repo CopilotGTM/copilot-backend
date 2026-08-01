@@ -22,11 +22,7 @@ def test_general_agent_exposes_send_calendar_invite_tool() -> None:
 
     tools = get_tools_for_agent("GeneralAgent", context, lambda: None)
     tool_names = {tool.__name__ for tool in tools}
-    send_tool = next(
-        tool
-        for tool in tools
-        if tool.__name__ == "send_calendar_invite_tool"
-    )
+    send_tool = next(tool for tool in tools if tool.__name__ == "send_calendar_invite_tool")
     attendee_items = Function.from_callable(send_tool).parameters["properties"]["attendees"][
         "items"
     ]["anyOf"]
@@ -88,9 +84,9 @@ async def test_update_tool_accepts_mixed_attendees_through_agno_validation(monke
         attendee_action="add",
     )
 
-    attendee_schema = agno_function.parameters["properties"]["attendees"]["anyOf"][0][
-        "items"
-    ]["anyOf"]
+    attendee_schema = agno_function.parameters["properties"]["attendees"]["anyOf"][0]["items"][
+        "anyOf"
+    ]
     assert {item["type"] for item in attendee_schema} == {"string", "object"}
     assert set(attendee_schema[1]["properties"]) >= {"email", "name", "optional", "scope"}
     assert captured["attendees"][0] == "bhawesh@copilotgtm.com"
