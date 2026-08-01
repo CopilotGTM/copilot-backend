@@ -8,6 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock
 
 import pytest
+from celery import Celery
+from kombu import pools
 from src.infra.messaging import task_dispatcher
 
 PUBLISH_CONTRACTS = [
@@ -31,9 +33,40 @@ def test_task_client_reuses_health_checked_redis_connections(monkeypatch):
 
     client = task_dispatcher._create_task_client()
 
-    assert client.conf.broker_pool_limit == 4
+    assert client.conf.broker_pool_limit == 10
     assert client.conf.broker_transport_options["health_check_interval"] == 30
     assert client.conf.task_publish_retry is False
+
+
+def test_task_client_does_not_shrink_an_in_use_default_producer_pool(monkeypatch):
+    """Mixed API producers must share Kombu's process-wide limit of ten."""
+
+    class _Config:
+        broker_url = "memory://"
+        backend_url = "cache+memory://"
+        redis_password = ""
+        ssl_config = None
+
+    from src.workers.base import worker_config
+
+    monkeypatch.setattr(worker_config, "BaseWorkerConfig", _Config)
+    original_limit = pools.get_limit()
+    pools.reset()
+    pools.set_limit(10)
+    existing_client = Celery("existing_api_producer", broker="memory://")
+    borrowed_connections = [existing_client.pool.acquire() for _ in range(5)]
+
+    try:
+        dispatcher_client = task_dispatcher._create_task_client()
+
+        # Accessing .pool applies this app's configured limit to every Kombu
+        # pool. The old value of four raised while these five were borrowed.
+        assert dispatcher_client.pool.limit == 10
+    finally:
+        for connection in borrowed_connections:
+            connection.release()
+        pools.reset()
+        pools.set_limit(original_limit)
 
 
 def _assert_publish_event(call, *, task_name: str, queue: str, outcome: str) -> None:

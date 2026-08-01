@@ -57,12 +57,17 @@ priorityClassName: ""
 
 probes:
   enabled: true
+  # heartbeat avoids restarting a live worker merely because Redis control traffic is slow.
+  livenessMode: celeryPing
+  heartbeatMaxAgeSeconds: 120
+  livenessTimeoutSeconds: 5
   initialDelaySeconds: 60
   periodSeconds: 30
   timeoutSeconds: 20
   failureThreshold: 4
   readinessInitialDelaySeconds: 30
   readinessPeriodSeconds: 30
+  readinessPingTimeoutSeconds: 10
   readinessFailureThreshold: 3
 
 # GPU Configuration (optional)
