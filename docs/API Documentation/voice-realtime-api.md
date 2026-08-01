@@ -5,6 +5,11 @@ This document covers the dedicated APIs used by the mobile voice realtime experi
 Route exposure is deployment-controlled via `VOICE_REALTIME_API_ENABLED`. In production this flag
 should remain `false`, which means these routes are not mounted and return `404 Not Found`.
 
+`VOICE_REALTIME_EXPANDED_TOOLS_ENABLED` defaults to `true`. Set it to `false` and start a new
+realtime session to restore the pre-expansion manifest while leaving the voice APIs available.
+`VOICE_REALTIME_PUBLIC_WEB_TOOLS_ENABLED` defaults to `false`; public search and crawling remain
+hidden until the deployment explicitly accepts the public-query boundary.
+
 ## Base URLs
 
 ```text
@@ -60,6 +65,13 @@ Voice realtime uses two backend write endpoints and two existing chat read endpo
 The backend never proxies audio. The client connects directly to Azure Realtime using the
 `endpoint` and `ephemeral_key` returned by the bootstrap endpoint, but the backend remains the
 source of truth for the voice prompt and allowed tool contract.
+
+The expanded manifest adds public search and crawling, deal memory and stakeholder lookup,
+meeting update and cancellation, connected-mailbox discovery and search, email attachment reading,
+and provider draft save/send workflows. These tools reuse the General Agent's org-scoped backend
+implementations; the realtime prompt supplies the voice-specific routing and confirmation policy.
+Direct `send_email` is not advertised to realtime. New email delivery follows the provider-draft
+review path, and external mutations require a new user audio turn after their preview.
 
 ---
 
