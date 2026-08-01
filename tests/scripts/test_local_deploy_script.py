@@ -27,6 +27,16 @@ def test_full_local_deploy_reuses_existing_cluster_values() -> None:
     assert "global.redis.port" not in existing_release_branch
 
 
+def test_full_local_deploy_applies_async_chat_worker_runtime() -> None:
+    script_text = SCRIPT_PATH.read_text(encoding="utf-8")
+    full_deploy_args = _full_deploy_helm_args(script_text)
+
+    assert '"chat-worker.config.concurrency=10"' in full_deploy_args
+    assert '"chat-worker.config.pool=threads"' in full_deploy_args
+    assert '"chat-worker.config.maxTasksPerChild=null"' in full_deploy_args
+    assert '"chat-worker.config.maxMemoryPerChildKb=null"' in full_deploy_args
+
+
 def test_full_local_deploy_keeps_bootstrap_install_values() -> None:
     script_text = SCRIPT_PATH.read_text(encoding="utf-8")
     full_deploy_args = _full_deploy_helm_args(script_text)

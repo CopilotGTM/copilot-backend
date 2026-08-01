@@ -655,6 +655,12 @@ function Deploy-WithHelm {
     $helmArgs += @(
         "--set", "api.image.repository=$apiRepo",
         "--set", "api.image.tag=$IMAGE_TAG",
+        # copilotgtm: --reuse-values preserves the old prefork settings unless the
+        # async chat runtime is overridden explicitly during full local deploys.
+        "--set", "chat-worker.config.concurrency=10",
+        "--set", "chat-worker.config.pool=threads",
+        "--set-json", "chat-worker.config.maxTasksPerChild=null",
+        "--set-json", "chat-worker.config.maxMemoryPerChildKb=null",
         "--set", "knowledge-extract-worker.autoscaling.enabled=true",
         "--set", "knowledge-extract-worker.gpu.enabled=true",
         "--set", "knowledge-upload-worker.autoscaling.enabled=true",

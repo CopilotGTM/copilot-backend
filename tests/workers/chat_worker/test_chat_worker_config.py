@@ -5,12 +5,12 @@ from __future__ import annotations
 from src.workers.chat_worker.config import ChatWorkerConfig
 
 
-def test_stale_chat_job_cleanup_runs_every_fifteen_seconds() -> None:
+def test_remaining_stale_job_cleanup_runs_once_per_minute() -> None:
     config = ChatWorkerConfig()
 
     schedule = config.beat_schedule["cleanup-stale-chat-jobs"]
     assert schedule["task"] == "chat.cleanup_stale_jobs_all_orgs"
-    assert schedule["schedule"] == 15.0
+    assert schedule["schedule"] == 60.0
     assert schedule["options"] == {
         "queue": "chat_processing",
         "routing_key": "chat_processing",

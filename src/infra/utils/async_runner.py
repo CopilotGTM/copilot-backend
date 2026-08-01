@@ -19,6 +19,77 @@ T = TypeVar("T")
 
 logger = get_logger(__name__)
 _thread_local = threading.local()
+_shared_loop: asyncio.AbstractEventLoop | None = None
+_shared_loop_thread: threading.Thread | None = None
+_shared_loop_lock = threading.Lock()
+
+
+def _serve_shared_loop(
+    loop: asyncio.AbstractEventLoop,
+    started: threading.Event,
+) -> None:
+    """Run the worker-owned event loop until Celery begins graceful shutdown."""
+    asyncio.set_event_loop(loop)
+    started.set()
+    try:
+        loop.run_forever()
+    finally:
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        loop.close()
+
+
+def start_shared_loop() -> None:
+    """Start one asyncio loop shared by synchronous tasks in a threaded worker.
+
+    Async database engines are bound to their creating loop. Routing every
+    thread through this loop lets Celery overlap I/O without allowing separate
+    task threads to create incompatible engine pools. Coroutines must await
+    their child tasks because per-call cleanup would cancel other chat jobs.
+    """
+    global _shared_loop, _shared_loop_thread
+
+    with _shared_loop_lock:
+        if _shared_loop_thread is not None and _shared_loop_thread.is_alive():
+            return
+
+        loop = asyncio.new_event_loop()
+        started = threading.Event()
+        thread = threading.Thread(
+            target=_serve_shared_loop,
+            args=(loop, started),
+            name="worker-asyncio-loop",
+            daemon=True,
+        )
+        _shared_loop = loop
+        _shared_loop_thread = thread
+        thread.start()
+
+    if not started.wait(timeout=5):
+        stop_shared_loop()
+        raise RuntimeError("Shared asyncio loop did not start")
+
+
+def stop_shared_loop() -> None:
+    """Stop and release the threaded worker's shared asyncio loop."""
+    global _shared_loop, _shared_loop_thread
+
+    with _shared_loop_lock:
+        loop = _shared_loop
+        thread = _shared_loop_thread
+        _shared_loop = None
+        _shared_loop_thread = None
+
+    if loop is None or thread is None:
+        return
+
+    if not loop.is_closed():
+        loop.call_soon_threadsafe(loop.stop)
+    if thread is not threading.current_thread():
+        thread.join(timeout=5)
 
 
 def _clear_async_db_provider_cache(
@@ -83,6 +154,14 @@ def reset_after_fork() -> None:
     DB engines. Discarding them here makes the first task in the child create
     fresh asyncpg connections on a child-owned loop.
     """
+    global _shared_loop, _shared_loop_thread, _shared_loop_lock
+
+    # Fork copies the parent's "running" loop state but not its owner thread.
+    # Drop those references without touching parent-owned resources.
+    _shared_loop = None
+    _shared_loop_thread = None
+    _shared_loop_lock = threading.Lock()
+
     _reset_async_db_provider_after_fork()
     _clear_sync_db_provider_cache()
 
@@ -130,14 +209,19 @@ def _get_or_create_loop() -> asyncio.AbstractEventLoop:
 
 
 def run_async(coro: Coroutine[Any, Any, T]) -> T:
-    """Run an async coroutine on a persistent thread-local event loop.
+    """Run an async coroutine on the configured worker event loop.
 
-    This approach keeps the event loop alive between Celery tasks to prevent
-    "Event loop is closed" errors when SQLAlchemy tries to clean up connections
-    from previous tasks.
-
-    The loop persists for the lifetime of the worker thread (solo pool mode).
+    Threaded workers submit to one explicitly started shared loop so async
+    connection pools keep one owner. Other callers retain the persistent
+    thread-local loop used by solo and prefork workers.
     """
+    shared_loop = _shared_loop
+    if shared_loop is not None and shared_loop.is_running():
+        if threading.current_thread() is _shared_loop_thread:
+            coro.close()
+            raise RuntimeError("run_async() cannot block the shared event-loop thread")
+        return asyncio.run_coroutine_threadsafe(coro, shared_loop).result()
+
     loop = _get_or_create_loop()
 
     if loop.is_running():
@@ -178,6 +262,8 @@ def run_async(coro: Coroutine[Any, Any, T]) -> T:
 
 __all__ = [
     "run_async",
+    "start_shared_loop",
+    "stop_shared_loop",
     "reset_after_fork",
     "_clear_async_db_provider_cache",
     "_clear_sync_db_provider_cache",

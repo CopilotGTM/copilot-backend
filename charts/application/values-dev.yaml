@@ -119,11 +119,8 @@ knowledge-beat:
       memory: "512Mi"
 
 chat-worker:
-  # copilotgtm: Keep prefork at 2 until load tests justify more within the 1.5 CPU limit.
   config:
-    concurrency: 2
-    maxTasksPerChild: 25
-    maxMemoryPerChildKb: 700000
+    concurrency: 10
   autoscaling:
     minReplicas: 1
     maxReplicas: 2

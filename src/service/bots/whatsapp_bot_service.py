@@ -43,11 +43,16 @@ from src.service.bots.identity_service import ExternalIdentityService
 logger = get_logger(__name__)
 
 WHATSAPP_GRAPH_API_BASE = "https://graph.facebook.com"
-WHATSAPP_MAX_ENQUEUE_ATTEMPTS = 5
+# WhatsApp is interactive: one Redis publication attempt either starts the
+# response now or terminates the job and asks the user to retry explicitly.
+WHATSAPP_MAX_ENQUEUE_ATTEMPTS = 1
 _WHATSAPP_QUEUE_PUBLISH_TIMEOUT_SECONDS = 4
 _WHATSAPP_SEND_TIMEOUT_SECONDS = 30
 _WHATSAPP_TYPING_TIMEOUT_SECONDS = 3
 _PERSISTED_ERROR_LIMIT = 1000
+_WHATSAPP_PROCESSING_FAILURE_MESSAGE = (
+    "Sorry, I couldn't start processing that message. Please try again."
+)
 _WHATSAPP_CAPTION_WRITE_PATTERN = re.compile(
     r"\b(add|attach|create|update|edit|send|invite|save|log|note)\b",
     re.IGNORECASE,
@@ -60,7 +65,7 @@ class WhatsAppInboundDurabilityError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class WhatsAppSendResult:
-    """Classified Meta response used by durable outbound recovery."""
+    """Classified Meta response persisted with the terminal delivery outcome."""
 
     accepted: bool
     provider_message_id: str | None = None
@@ -71,7 +76,7 @@ class WhatsAppSendResult:
 
 
 async def enqueue_whatsapp_job(*, job_id: UUID, envelope: dict[str, Any]) -> str:
-    """Publish the immutable dispatch envelope used by intake and recovery."""
+    """Publish the immutable dispatch envelope for the initial intake attempt."""
     from src.workers.chat_worker.client import send_chat_task_async
 
     return await asyncio.wait_for(
@@ -429,10 +434,19 @@ class WhatsAppBotService:
         except Exception as exc:
             raise WhatsAppInboundDurabilityError("Failed to persist WhatsApp inbound job") from exc
 
-        # Queue publication happens only after commit. Failure is recorded on the
-        # pending job, which lets the scheduled recovery sweep reconstruct it.
+        # Queue publication happens once after commit. An immediate failure is
+        # terminal because an old WhatsApp answer is no longer useful to the user.
         if (job.job_metadata or {}).get("enqueue_status") != "waiting_for_predecessor":
-            await self._enqueue_durable_job(user.organisation_id, job.job_id)
+            enqueued = await self._enqueue_durable_job(user.organisation_id, job.job_id)
+            if enqueued is False:
+                await self.send_text_message(
+                    phone_number_id=message.phone_number_id,
+                    recipient_wa_id=message.recipient_wa_id,
+                    text=_WHATSAPP_PROCESSING_FAILURE_MESSAGE,
+                )
+                session_id = self._optional_uuid((job.job_metadata or {}).get("session_id"))
+                if session_id:
+                    await self.enqueue_next_session_job(user.organisation_id, session_id)
 
     @staticmethod
     def _build_reply_context(
@@ -854,11 +868,16 @@ class WhatsAppBotService:
             return (await db.execute(statement)).scalars().first()
         return None
 
-    async def _enqueue_durable_job(self, organisation_id: UUID, job_id: UUID) -> bool:
+    async def _enqueue_durable_job(self, organisation_id: UUID, job_id: UUID) -> bool | None:
+        """Publish one pending job, returning ``None`` when no claim is available.
+
+        ``False`` means this call attempted Redis publication and terminally
+        failed it; callers may then notify the WhatsApp user exactly once.
+        """
         try:
             claim = await self._claim_job_for_enqueue(organisation_id, job_id)
             if not claim:
-                return False
+                return None
             envelope, attempt = claim
             try:
                 task_id = await enqueue_whatsapp_job(job_id=job_id, envelope=envelope)
@@ -884,8 +903,8 @@ class WhatsAppBotService:
             record_whatsapp_enqueue("enqueued")
             return True
         except Exception:
-            # The job already exists. A later database sweep owns recovery if this
-            # metadata or broker operation cannot complete in the webhook request.
+            # No background sweep retries this instant message. The caller sends
+            # a best-effort terminal reply so failure is visible to the user.
             logger.error("Failed to publish durable WhatsApp job=%s", job_id, exc_info=True)
             record_whatsapp_enqueue("failed")
             return False
@@ -963,14 +982,13 @@ class WhatsAppBotService:
             metadata = dict(job.job_metadata or {})
             if metadata.get("enqueue_status") not in {
                 "pending",
-                "failed",
                 "waiting_for_predecessor",
             }:
                 return None
             attempt = int(metadata.get("enqueue_attempts") or 0) + 1
             if attempt > WHATSAPP_MAX_ENQUEUE_ATTEMPTS:
                 job.status = JobStatus.FAILED
-                job.error_message = "WhatsApp enqueue retry budget exhausted"
+                job.error_message = "WhatsApp task publication already attempted"
                 metadata["enqueue_status"] = "exhausted"
                 job.job_metadata = metadata
                 db.add(job)
@@ -1024,7 +1042,7 @@ class WhatsAppBotService:
         task_id: str | None,
         error: str | None,
     ) -> None:
-        from src.domain.models.organisation_tables.job_models import ChatMessageJob
+        from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
         from src.infra.database.sessions import acquire_org_async_session
 
         async for db in acquire_org_async_session(organisation_id):
@@ -1042,6 +1060,9 @@ class WhatsAppBotService:
                 }
             )
             job.job_metadata = metadata
+            if task_id is None:
+                job.status = JobStatus.FAILED
+                job.error_message = "WhatsApp task publication failed"
             db.add(job)
             await db.commit()
             return
@@ -1130,7 +1151,7 @@ class WhatsAppBotService:
     async def send_text_message_result(
         self, phone_number_id: str, recipient_wa_id: str, text: str
     ) -> WhatsAppSendResult:
-        """Send text and preserve enough provider evidence for retry decisions."""
+        """Send text and preserve provider evidence for the terminal job outcome."""
         access_token = await whatsapp_config.get_access_token()
         if not access_token:
             logger.error("WhatsApp access token not available")

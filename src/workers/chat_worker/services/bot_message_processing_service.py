@@ -7,8 +7,8 @@ Personal chat messages are persisted in chat_sessions/chat_messages under their
 channel chat type and history is loaded from the database for context.
 Group chat messages are NOT persisted; the agent calls fetch_teams_chat_messages.
 
-WhatsApp responses cross a second durable boundary before Meta delivery so a
-send-only task can recover accepted webhook work without rerunning the agent.
+WhatsApp responses are persisted before one immediate Meta delivery attempt so
+provider evidence and the terminal outcome survive worker completion.
 
 Follows the fresh session pattern: no DB sessions are held during LLM calls.
 """
@@ -64,7 +64,7 @@ _GOOGLE_CHAT_SYSTEM_PROMPT = (
 
 _WHATSAPP_TEXT_CHUNK_LIMIT = 3900
 _WHATSAPP_SEND_LEASE_MINUTES = 2
-_WHATSAPP_MAX_SEND_ATTEMPTS = 3
+_WHATSAPP_MAX_SEND_ATTEMPTS = 1
 _PERSISTED_ERROR_LIMIT = 1000
 
 # A continuation is intentionally short-lived: it covers the common "I'll send
@@ -85,10 +85,6 @@ _CANCEL_PENDING_ACTION_PATTERN = re.compile(
     r"^\s*(?:cancel|stop|discard|forget|never\s*mind|don['’]?t\s+do)(?:\s+it|\s+that)?[.!]?\s*$",
     re.IGNORECASE,
 )
-
-
-class WhatsAppDeliveryRetryableError(RuntimeError):
-    """A durable WhatsApp response remains eligible for send-only retry."""
 
 
 @dataclass
@@ -126,6 +122,7 @@ class BotMessageProcessingService:
         bot_context: dict | None = None,
         user_email: str | None = None,
         job_id: UUID | None = None,
+        celery_task=None,
     ) -> bool:
         """Process a bot message and send reply.
 
@@ -146,7 +143,8 @@ class BotMessageProcessingService:
         # If not, the finally block sends a static error so it never lingers.
         thinking_replaced = False
 
-        if job_id and not self._mark_job_in_progress(job_id):
+        claim_kwargs = {"celery_task": celery_task} if celery_task else {}
+        if job_id and not self._mark_job_in_progress(job_id, **claim_kwargs):
             logger.info(
                 "Skipping non-pending bot job org=%s user=%s provider=%s job=%s",
                 self.organisation_id,
@@ -306,10 +304,7 @@ class BotMessageProcessingService:
                     error_message=result.error_message,
                     pending_action_id=bot_context.get("whatsapp_associated_action_id"),
                 )
-                try:
-                    delivered = self.resume_whatsapp_delivery(job_id)
-                except WhatsAppDeliveryRetryableError:
-                    delivered = False
+                delivered = self.deliver_whatsapp_response(job_id)
 
                 if delivered:
                     thinking_replaced = True
@@ -379,10 +374,7 @@ class BotMessageProcessingService:
                         error_message=str(e),
                         only_if_agent_running=True,
                     )
-                    try:
-                        thinking_replaced = self.resume_whatsapp_delivery(job_id)
-                    except WhatsAppDeliveryRetryableError:
-                        thinking_replaced = False
+                    thinking_replaced = self.deliver_whatsapp_response(job_id)
                 except Exception:
                     logger.warning("Failed to persist WhatsApp error delivery", exc_info=True)
             else:
@@ -397,8 +389,8 @@ class BotMessageProcessingService:
             return False
 
         finally:
-            # Durable WhatsApp jobs already own a persisted response and retry state;
-            # a direct cleanup send here would bypass their provider-message ledger.
+            # Durable WhatsApp jobs already own a persisted response and provider
+            # ledger; a second cleanup send could duplicate a Meta message.
             if not thinking_replaced and not (provider == "whatsapp" and job_id):
                 try:
                     run_async(self._cleanup_thinking_indicator(provider, reply_context))
@@ -896,7 +888,7 @@ class BotMessageProcessingService:
     # Job tracking (token usage / cost)
     # ------------------------------------------------------------------
 
-    def _mark_job_in_progress(self, job_id: UUID) -> bool:
+    def _mark_job_in_progress(self, job_id: UUID, celery_task=None) -> bool:
         """Atomically claim a pending bot job for processing."""
         from sqlalchemy import update
         from sqlmodel import col
@@ -939,6 +931,54 @@ class BotMessageProcessingService:
                 return False
 
             status = getattr(job.status, "value", job.status)
+            metadata = dict(getattr(job, "job_metadata", None) or {})
+            if status == JobStatus.PENDING.value and metadata.get("enqueue_status") == "enqueuing":
+                retries = int(celery_task.request.retries) if celery_task else 0
+                max_retries = getattr(celery_task, "max_retries", None)
+                if isinstance(max_retries, int) and retries >= max_retries:
+                    job.status = JobStatus.FAILED
+                    job.error_message = "Chat task publication did not finish"
+                    metadata.update(
+                        {
+                            "enqueue_status": "failed",
+                            "processing_stage": "failed",
+                            "failure_stage": "enqueue_handshake",
+                        }
+                    )
+                    job.job_metadata = metadata
+                    session.add(job)
+                    session.commit()
+                    session_id = self._optional_uuid(metadata.get("session_id"))
+                    if getattr(job, "chat_type", None) == "WHATSAPP_CHAT" and session_id:
+                        self._enqueue_next_whatsapp_session_job(session_id)
+                    return False
+                if celery_task:
+                    countdown = min(2**retries, 8)
+                    raise celery_task.retry(
+                        exc=RuntimeError(f"Job {job_id} publication is not committed"),
+                        countdown=countdown,
+                    )
+                return False
+
+            delivery_info = getattr(getattr(celery_task, "request", None), "delivery_info", {})
+            if (
+                status == JobStatus.IN_PROGRESS.value
+                and isinstance(delivery_info, dict)
+                and delivery_info.get("redelivered")
+            ):
+                # Tool calls are not generally idempotent; a worker-loss
+                # redelivery is terminal rather than a second agent execution.
+                job.status = JobStatus.FAILED
+                job.error_message = "Chat worker stopped before completion"
+                metadata.update({"processing_stage": "failed", "failure_stage": "worker_lost"})
+                job.job_metadata = metadata
+                session.add(job)
+                session.commit()
+                session_id = self._optional_uuid(metadata.get("session_id"))
+                if getattr(job, "chat_type", None) == "WHATSAPP_CHAT" and session_id:
+                    self._enqueue_next_whatsapp_session_job(session_id)
+                return False
+
             logger.info("Skipping bot job %s with non-pending status=%s", job_id, status)
             return False
 
@@ -973,7 +1013,7 @@ class BotMessageProcessingService:
             job = session.get(ChatMessageJob, job_id)
             return job.message_id if job else None
 
-    def _finalize_job(self, job_id: UUID, frames: list, success: bool) -> None:
+    def _finalize_job(self, job_id: UUID, frames: list, success: bool) -> bool:
         """Extract token usage from frames and persist to the job."""
         from decimal import Decimal
 
@@ -984,10 +1024,13 @@ class BotMessageProcessingService:
         token_usage, model_name, cost, duration = extract_token_usage_from_frames(frames)
 
         with org_session_scope(self.organisation_id) as session:
-            job = session.get(ChatMessageJob, job_id)
+            job = session.get(ChatMessageJob, job_id, with_for_update=True)
             if not job:
                 logger.warning("Bot job %s not found for finalization", job_id)
-                return
+                return False
+            if getattr(job.status, "value", job.status) != JobStatus.IN_PROGRESS.value:
+                logger.warning("Discarded late finalization for terminal bot job %s", job_id)
+                return False
 
             job.status = JobStatus.COMPLETED if success else JobStatus.FAILED
             if token_usage:
@@ -1010,6 +1053,7 @@ class BotMessageProcessingService:
                 job.cost,
                 job.latency_ms,
             )
+            return True
 
     def _persist_whatsapp_response(
         self,
@@ -1022,7 +1066,7 @@ class BotMessageProcessingService:
         error_message: str | None,
         only_if_agent_running: bool = False,
         pending_action_id: str | None = None,
-    ) -> None:
+    ) -> bool:
         """Commit response chunks before any call to Meta can accept them."""
         from decimal import Decimal
 
@@ -1047,16 +1091,18 @@ class BotMessageProcessingService:
         ]
 
         with org_session_scope(self.organisation_id) as session:
-            job = session.get(ChatMessageJob, job_id)
+            job = session.get(ChatMessageJob, job_id, with_for_update=True)
             if not job:
                 raise RuntimeError(f"WhatsApp job {job_id} not found")
 
             metadata = dict(job.job_metadata or {})
+            if getattr(job.status, "value", job.status) != JobStatus.IN_PROGRESS.value:
+                return False
             if only_if_agent_running and metadata.get("processing_stage") not in {
                 "pending",
                 "agent_running",
             }:
-                return
+                return False
 
             session_id = metadata.get("session_id")
             persisted_assistant_text = assistant_text or text
@@ -1105,9 +1151,10 @@ class BotMessageProcessingService:
 
             session.add(job)
             session.commit()
+            return True
 
-    def resume_whatsapp_delivery(self, job_id: UUID) -> bool:
-        """Send only durable chunks that do not yet have a Meta message ID."""
+    def deliver_whatsapp_response(self, job_id: UUID) -> bool:
+        """Send the response once from chunks persisted by the current worker."""
         from src.service.bots.whatsapp_bot_service import (
             WhatsAppBotService,
             WhatsAppSendResult,
@@ -1157,10 +1204,6 @@ class BotMessageProcessingService:
                 result.failure_kind or "terminal",
                 attempts=int(lease["attempt"]),
             )
-            if result.failure_kind in {"retryable", "ambiguous"}:
-                raise WhatsAppDeliveryRetryableError(
-                    result.error_message or "WhatsApp delivery should be retried"
-                )
             return False
 
         completed = bool(self._complete_whatsapp_delivery(job_id))
@@ -1304,7 +1347,6 @@ class BotMessageProcessingService:
         from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
         from src.infra.database.sessions import org_session_scope
 
-        now = datetime.now(UTC)
         terminal_session_id: UUID | None = None
         with org_session_scope(self.organisation_id) as session:
             job = session.get(ChatMessageJob, job_id)
@@ -1322,26 +1364,18 @@ class BotMessageProcessingService:
                     "send_lease_at": None,
                 }
             )
-            if failure_kind in {"retryable", "ambiguous"}:
-                attempt = int(metadata.get("send_attempts") or 1)
-                delay_seconds = min(30 * (2 ** max(attempt - 1, 0)), 600)
-                metadata["next_send_attempt_at"] = (
-                    now + timedelta(seconds=delay_seconds)
-                ).isoformat()
-                metadata["processing_stage"] = "response_ready"
-            else:
-                metadata.update(
-                    {
-                        "next_send_attempt_at": None,
-                        "processing_stage": "failed",
-                        "failure_stage": "sending",
-                    }
-                )
-                job.status = JobStatus.FAILED
-                job.error_message = (result.error_message or "WhatsApp send failed")[
-                    :_PERSISTED_ERROR_LIMIT
-                ]
-                terminal_session_id = self._optional_uuid(metadata.get("session_id"))
+            metadata.update(
+                {
+                    "next_send_attempt_at": None,
+                    "processing_stage": "failed",
+                    "failure_stage": "sending",
+                }
+            )
+            job.status = JobStatus.FAILED
+            job.error_message = (result.error_message or "WhatsApp send failed")[
+                :_PERSISTED_ERROR_LIMIT
+            ]
+            terminal_session_id = self._optional_uuid(metadata.get("session_id"))
 
             job.job_metadata = metadata
             session.add(job)
@@ -1395,8 +1429,8 @@ class BotMessageProcessingService:
                 )
             )
         except Exception:
-            # The durable waiting job remains recoverable if the broker is down;
-            # terminal delivery must not be rolled back after Meta accepted it.
+            # The completed head cannot be rolled back after Meta accepted it.
+            # Log queue-advance failure; no delayed sweep republishes the next job.
             logger.exception("Failed to advance WhatsApp session queue %s", session_id)
 
     @staticmethod

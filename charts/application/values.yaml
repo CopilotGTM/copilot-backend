@@ -326,7 +326,10 @@ chat-worker:
   config:
     queueName: "attachments"
     additionalQueues: ["chat_processing", "chat_messages", "voice_realtime"]
-    concurrency: 5
+    # copilotgtm: Threads share one loop for I/O-heavy chat tasks. Provider timeouts
+    # are mandatory because Celery cannot kill threads; isolate CPU work if it starves the loop.
+    concurrency: 10
+    pool: threads
   probes:
     # The chat task graph is too expensive for a liveness process; use the
     # worker parent's local heartbeat and reserve Redis ping for readiness.

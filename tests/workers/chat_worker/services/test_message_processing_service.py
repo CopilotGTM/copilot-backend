@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
+from celery.exceptions import Retry
 from src.domain.models.organisation_tables.chat_message_models import (
     ChatMessage,
     ChatMessageRole,
@@ -153,6 +154,55 @@ def service(org_id):
 
 
 class TestLoadJobData:
+    def test_process_propagates_celery_retry_without_failing_job(self, service, monkeypatch):
+        """A queue-handshake retry must stay under Celery control, not become terminal."""
+        job_id = uuid4()
+        mark_failed = MagicMock()
+        monkeypatch.setattr(service, "_load_job_data", MagicMock(side_effect=Retry("wait")))
+        monkeypatch.setattr(service, "_mark_job_failed", mark_failed)
+
+        with pytest.raises(Retry):
+            service.process(job_id, celery_task=MagicMock())
+
+        mark_failed.assert_not_called()
+
+    @patch("src.workers.chat_worker.services.message_processing_service.acquire_org_session")
+    def test_enqueuing_job_retries_before_agent_claim(self, mock_acquire_org, service):
+        """A task delivered before publication commit waits without starting the agent."""
+        job = _make_job(job_id=uuid4())
+        job.job_metadata["enqueue_status"] = "enqueuing"
+        mock_session = MagicMock()
+        mock_session.get.return_value = job
+        mock_acquire_org.return_value = iter([mock_session])
+        celery_task = MagicMock()
+        celery_task.request.retries = 0
+        celery_task.retry.side_effect = Retry("wait for publication commit")
+
+        with pytest.raises(Retry):
+            service._load_job_data(job.job_id, celery_task=celery_task)
+
+        assert job.status == JobStatus.PENDING
+        celery_task.retry.assert_called_once()
+
+    @patch("src.workers.chat_worker.services.message_processing_service.acquire_org_session")
+    def test_exhausted_enqueue_handshake_becomes_terminal(self, mock_acquire_org, service):
+        """A lost intake commit closes the command after the short handoff budget."""
+        job = _make_job(job_id=uuid4())
+        job.job_metadata["enqueue_status"] = "enqueuing"
+        mock_session = MagicMock()
+        mock_session.get.return_value = job
+        mock_acquire_org.return_value = iter([mock_session])
+        celery_task = MagicMock()
+        celery_task.request.retries = 5
+        celery_task.max_retries = 5
+
+        loaded = service._load_job_data(job.job_id, celery_task=celery_task)
+
+        assert loaded is None
+        assert job.status == JobStatus.FAILED
+        assert job.job_metadata["failure_stage"] == "enqueue_handshake"
+        celery_task.retry.assert_not_called()
+
     @patch("src.workers.chat_worker.services.message_processing_service.acquire_master_session")
     @patch("src.workers.chat_worker.services.message_processing_service.acquire_org_session")
     def test_marks_job_in_progress(self, mock_acquire_org, mock_acquire_master, service):
@@ -221,6 +271,23 @@ class TestLoadJobData:
         assert result is None
         assert job.status == JobStatus.COMPLETED
         mock_session.refresh.assert_called_once_with(job, with_for_update=True)
+
+    @patch("src.workers.chat_worker.services.message_processing_service.acquire_org_session")
+    def test_redelivered_in_progress_job_becomes_terminal(self, mock_acquire_org, service):
+        """Worker-loss redelivery must fail the claimed command instead of rerunning the agent."""
+        job = _make_job(job_id=uuid4(), status=JobStatus.IN_PROGRESS)
+        mock_session = MagicMock()
+        mock_session.get.return_value = job
+        mock_acquire_org.return_value = iter([mock_session])
+        celery_task = MagicMock()
+        celery_task.request.delivery_info = {"redelivered": True}
+
+        result = service._load_job_data(job.job_id, celery_task=celery_task)
+
+        assert result is None
+        assert job.status == JobStatus.FAILED
+        assert "worker" in job.error_message.lower()
+        mock_session.commit.assert_called_once()
 
     @patch("src.workers.chat_worker.services.message_processing_service.acquire_org_session")
     def test_returns_none_when_job_not_found_without_celery(self, mock_acquire_org, service):
@@ -565,13 +632,30 @@ class TestExecuteAgentWorkflow:
 
 class TestSaveResults:
     @patch("src.workers.chat_worker.services.message_processing_service.acquire_org_session")
+    def test_terminal_job_cannot_be_completed_by_a_late_result(self, mock_acquire_org, service):
+        """Cleanup or worker-loss terminalization wins over a late model result."""
+        data = _make_conversation_data()
+        job = _make_job(job_id=data.job_id, status=JobStatus.FAILED)
+        mock_session = MagicMock()
+        mock_session.get.return_value = job
+        mock_acquire_org.return_value = iter([mock_session])
+        service.publisher = MagicMock()
+
+        saved = service._save_results(data, _make_result())
+
+        assert saved is False
+        assert job.status == JobStatus.FAILED
+        mock_session.add.assert_not_called()
+        service.publisher.publish.assert_not_called()
+
+    @patch("src.workers.chat_worker.services.message_processing_service.acquire_org_session")
     def test_creates_assistant_message_with_correct_fields(self, mock_acquire_org, service):
         """Assistant message created with all required fields."""
         data = _make_conversation_data()
         result = _make_result()
 
         mock_session = MagicMock()
-        mock_session.get.return_value = _make_job()  # Returns a job for finalization
+        mock_session.get.return_value = _make_job(status=JobStatus.IN_PROGRESS)
         mock_acquire_org.return_value = iter([mock_session])
         service.publisher = MagicMock()
 
@@ -593,7 +677,7 @@ class TestSaveResults:
         result = _make_result()
 
         mock_session = MagicMock()
-        mock_session.get.return_value = _make_job()
+        mock_session.get.return_value = _make_job(status=JobStatus.IN_PROGRESS)
         mock_acquire_org.return_value = iter([mock_session])
         service.publisher = MagicMock()
 
@@ -609,7 +693,7 @@ class TestSaveResults:
         data = _make_conversation_data()
         result = _make_result()
 
-        job = _make_job()
+        job = _make_job(status=JobStatus.IN_PROGRESS)
         mock_session = MagicMock()
         mock_session.get.return_value = job
         mock_acquire_org.return_value = iter([mock_session])
@@ -631,7 +715,7 @@ class TestSaveResults:
             duration_seconds=3.2,
         )
 
-        job = _make_job()
+        job = _make_job(status=JobStatus.IN_PROGRESS)
         mock_session = MagicMock()
         mock_session.get.return_value = job
         mock_acquire_org.return_value = iter([mock_session])
@@ -651,7 +735,7 @@ class TestSaveResults:
         result = _make_result()
 
         mock_session = MagicMock()
-        mock_session.get.return_value = _make_job()
+        mock_session.get.return_value = _make_job(status=JobStatus.IN_PROGRESS)
         mock_acquire_org.return_value = iter([mock_session])
         service.publisher = MagicMock()
 

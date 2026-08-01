@@ -277,8 +277,12 @@ def test_chat_worker_scaledobject_watches_all_consumed_queues() -> None:
     }
 
 
-def test_chat_worker_renders_bounded_concurrency_and_memory_guardrails() -> None:
-    """Keep the measured chat capacity and child recycling in every environment."""
+def test_chat_worker_renders_ten_async_compatible_slots() -> None:
+    """The complete chat worker must overlap I/O without ten prefork children."""
+    base_values = yaml.safe_load((REPO_ROOT / "charts/application/values.yaml").read_text())
+    assert base_values["chat-worker"]["config"]["concurrency"] == 10
+    assert base_values["chat-worker"]["config"]["pool"] == "threads"
+
     for values_file in (
         "charts/application/values-dev.yaml",
         "charts/application/values-prod.yaml",
@@ -293,9 +297,9 @@ def test_chat_worker_renders_bounded_concurrency_and_memory_guardrails() -> None
 
         container = deployment["spec"]["template"]["spec"]["containers"][0]
 
-        assert "--concurrency=2" in container["command"]
-        assert "--max-tasks-per-child=25" in container["command"]
-        assert "--max-memory-per-child=700000" in container["command"]
+        assert "--concurrency=10" in container["command"]
+        assert "--pool=threads" in container["command"]
+        assert not any("per-child" in argument for argument in container["command"])
 
 
 def test_prod_integrations_and_deal_workers_render_measured_limits() -> None:

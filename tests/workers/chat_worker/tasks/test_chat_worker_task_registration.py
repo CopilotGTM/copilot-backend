@@ -8,6 +8,8 @@ import subprocess
 import sys
 
 EXPECTED_TASK_MODULES = [
+    "src.workers.chat_worker.tasks.agent_run_tasks",
+    "src.workers.chat_worker.tasks.automation_event_tasks",
     "src.workers.chat_worker.tasks.bot_message_processing",
     "src.workers.chat_worker.tasks.message_processing",
     "src.workers.chat_worker.tasks.post_upload",
@@ -19,15 +21,17 @@ EXPECTED_TASK_MODULES = [
 
 EXPECTED_TASK_NAMES = {
     "attachments.post_upload",
+    "chat.activate_automation_event",
     "chat.cleanup_stale_jobs_all_orgs",
     "chat.cleanup_stale_jobs_org",
     "chat.execute_reminder",
+    "chat.execute_agent_run",
     "chat.ping",
     "chat.poll_due_reminders",
     "chat.process_bot_message",
-    "chat.resume_whatsapp_delivery",
     "chat.process_message",
     "chat.recovery_sweep_reminders",
+    "chat.recover_agent_runs",
     "chat.test_task",
     "chat.voice_realtime_sideband",
 }
