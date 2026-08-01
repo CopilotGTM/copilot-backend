@@ -428,7 +428,7 @@ def test_deal_and_insight_queues_have_separate_workers() -> None:
 
 
 def test_worker_deployments_render_celery_events_and_health_probes() -> None:
-    """Workers must be observable and restarted when Celery stops answering control traffic."""
+    """Only chat liveness is local while every worker retains broker readiness."""
     manifests = _render_all_manifests()
     deployments = [
         doc
@@ -456,11 +456,7 @@ def test_worker_deployments_render_celery_events_and_health_probes() -> None:
         joined_readiness = " ".join(container["readinessProbe"]["exec"]["command"])
 
         assert "-E" in command, name
-        assert "celery -A" in joined_liveness, name
-        assert "inspect ping" in joined_liveness, name
-        assert "celery@$HOSTNAME" in joined_liveness, name
         assert container["livenessProbe"]["initialDelaySeconds"] >= 60, name
-        assert container["livenessProbe"]["timeoutSeconds"] >= 20, name
         assert container["livenessProbe"]["failureThreshold"] >= 4, name
         assert "celery -A" in joined_readiness, name
         assert "inspect ping" in joined_readiness, name
@@ -468,6 +464,18 @@ def test_worker_deployments_render_celery_events_and_health_probes() -> None:
         assert container["readinessProbe"]["initialDelaySeconds"] >= 30, name
         assert container["readinessProbe"]["timeoutSeconds"] >= 20, name
         assert container["readinessProbe"]["failureThreshold"] >= 3, name
+
+        if name == "copilot-backend-chat-worker":
+            assert "celery-worker-heartbeat" in joined_liveness
+            assert "inspect ping" not in joined_liveness
+            assert container["livenessProbe"]["timeoutSeconds"] == 5
+            assert "src.workers.base.healthcheck_app:app" in joined_readiness
+        else:
+            assert "celery -A" in joined_liveness, name
+            assert "inspect ping" in joined_liveness, name
+            assert "celery@$HOSTNAME" in joined_liveness, name
+            assert container["livenessProbe"]["timeoutSeconds"] >= 20, name
+            assert "src.workers.base.healthcheck_app:app" not in joined_readiness, name
 
 
 def test_chat_worker_prestop_drains_all_consumed_queues() -> None:

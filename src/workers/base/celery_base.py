@@ -9,12 +9,15 @@ import logging
 import os
 import time
 from collections.abc import Callable
+from pathlib import Path
+from tempfile import gettempdir
 from typing import Any
 
 from celery import Celery, current_app
 from celery.signals import (
     beat_embedded_init,
     beat_init,
+    heartbeat_sent,
     task_failure,
     task_postrun,
     task_prerun,
@@ -49,6 +52,30 @@ _signals_registered = False
 
 _DEFAULT_CELERY_TASK_TIME_LIMIT_SECONDS = 300
 _DEFAULT_CELERY_TASK_SOFT_TIME_LIMIT_SECONDS = 240
+_WORKER_HEARTBEAT_PATH = Path(gettempdir()) / "celery-worker-heartbeat"
+_heartbeat_write_failed = False
+
+
+def _touch_worker_heartbeat() -> None:
+    """Record that the Celery parent event loop is still advancing.
+
+    Kubernetes liveness reads this process-local timestamp instead of starting
+    another worker app and depending on Redis. A write failure is logged once
+    but never raised into Celery's timer, which must remain alive to run tasks.
+    """
+    global _heartbeat_write_failed
+
+    try:
+        _WORKER_HEARTBEAT_PATH.touch()
+    except OSError:
+        if not _heartbeat_write_failed:
+            get_logger(__name__).exception(
+                "Failed to refresh Celery worker heartbeat",
+                extra={"event": "celery_worker_heartbeat_write_failed"},
+            )
+        _heartbeat_write_failed = True
+    else:
+        _heartbeat_write_failed = False
 
 
 def _validate_tenant_runtime_config_startup() -> None:
@@ -152,6 +179,11 @@ def _register_observability_signals() -> None:
 
     _signals_registered = True
 
+    @heartbeat_sent.connect(weak=False)
+    def _refresh_worker_heartbeat(**kwargs):  # noqa: ARG001
+        """Refresh the local liveness timestamp from Celery's parent timer."""
+        _touch_worker_heartbeat()
+
     @worker_process_init.connect(weak=False)
     def _reset_db_after_fork(**kwargs):  # noqa: ARG001
         """Reset DB provider singletons after prefork child process starts.
@@ -187,6 +219,9 @@ def _register_observability_signals() -> None:
 
     @worker_ready.connect(weak=False)
     def _init_otel_in_main_process(sender=None, **kwargs):  # noqa: ARG001
+        # Seed the file before the first two-second Celery heartbeat so a newly
+        # ready worker cannot fail its first Kubernetes liveness check.
+        _touch_worker_heartbeat()
         from src.infra.observability.otel import init_otel
 
         init_otel(service_name_suffix=_resolve_runtime_service_name_suffix(sender))

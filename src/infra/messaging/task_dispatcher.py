@@ -29,7 +29,10 @@ _generation_inflight: dict[int, int] = {}
 _retired_generations: set[int] = set()
 
 DEFAULT_TASK_PUBLISH_TIMEOUT_SECONDS = 3.0
-_PRODUCER_POOL_LIMIT = 4
+# Kombu applies this limit to every producer pool in the process, not just this
+# Celery app. Match Celery's default so another API producer cannot resize an
+# in-use pool between 10 and 4 while a mobile call is attaching.
+_PRODUCER_POOL_LIMIT = 10
 _PRODUCER_HEALTH_CHECK_SECONDS = 30
 
 
@@ -111,8 +114,9 @@ def _create_task_client() -> Celery:
         client.conf.broker_use_ssl = config.ssl_config
         client.conf.redis_backend_use_ssl = config.ssl_config
 
-    # Durable jobs own retries, while a small health-checked pool avoids paying
-    # for a new Azure Redis TLS connection on every API publication.
+    # Durable jobs own retries, while a health-checked pool avoids paying for a
+    # new Azure Redis TLS connection on every API publication. The executor
+    # still bounds this dispatcher's normal concurrency to four connections.
     client.conf.update(
         task_serializer="json",
         accept_content=["json"],

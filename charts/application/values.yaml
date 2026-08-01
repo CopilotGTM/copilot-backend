@@ -323,6 +323,10 @@ chat-worker:
     queueName: "attachments"
     additionalQueues: ["chat_processing", "chat_messages", "voice_realtime"]
     concurrency: 5
+  probes:
+    # The chat task graph is too expensive for a liveness process; use the
+    # worker parent's local heartbeat and reserve Redis ping for readiness.
+    livenessMode: heartbeat
   priorityClassName: copilot-api-critical
   # Use shared ServiceAccount (created by knowledge-extract-worker)
   serviceAccount:
