@@ -1,3 +1,5 @@
+"""Separate answer text, metadata, and safe tool telemetry from Agno streams."""
+
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
@@ -12,6 +14,7 @@ TOOL_COMPLETION_EVENTS = frozenset(
     {
         "ToolCallStarted",
         "ToolCallCompleted",
+        "ToolCallError",
         "ToolCallPaused",
     }
 )
@@ -45,8 +48,10 @@ class StreamingAnswerBuffer:
         self.separators = separators
         self.logger = logger or get_logger()
         self.max_sep_len = max((len(s) for s in separators), default=0)
+        self.had_tool_failure = False
 
     async def stream(self, chat_response) -> AsyncIterator[tuple[str, Any, bool]]:
+        """Yield answer, metadata, and content-free telemetry from one Agno stream."""
         state: dict[str, Any] = {
             "buffer": "",
             "json_part_started": False,
@@ -55,6 +60,11 @@ class StreamingAnswerBuffer:
         }
 
         async for chunk in chat_response:
+            tool_failure = self._extract_tool_failure_event(chunk)
+            if tool_failure:
+                self.had_tool_failure = True
+                yield ("tool_failure", tool_failure, False)
+
             # Surface skill tool events so the caller can emit ToolUsage frames.
             skill_event = self._extract_skill_tool_event(chunk)
             if skill_event:
@@ -117,11 +127,40 @@ class StreamingAnswerBuffer:
             status = "starting"
         elif chunk_event == "ToolCallCompleted":
             status = "completed"
+        elif chunk_event == "ToolCallError":
+            status = "failed"
         else:
             status = "in_progress"
 
         self.logger.info("Skill tool %s: %s(%s)", status, tool_name, tool_args)
         return {"tool_name": tool_name, "tool_args": tool_args, "status": status}
+
+    def _extract_tool_failure_event(self, chunk: Any) -> dict[str, str] | None:
+        """Return content-free failure metadata for an Agno tool execution error."""
+
+        chunk_event = _get_chunk_attr(chunk, "event")
+        tool = _get_chunk_attr(chunk, "tool")
+        if not tool:
+            return None
+        if chunk_event != "ToolCallError" and not _get_chunk_attr(tool, "tool_call_error", False):
+            return None
+
+        error_text = str(
+            _get_chunk_attr(chunk, "error")
+            or _get_chunk_attr(tool, "result")
+            or _get_chunk_attr(chunk, "content")
+            or ""
+        ).lower()
+        validation_markers = ("validation error", "pydantic", "invalid arguments")
+        failure_kind = (
+            "argument_validation"
+            if any(marker in error_text for marker in validation_markers)
+            else "tool_execution"
+        )
+        return {
+            "tool_name": str(_get_chunk_attr(tool, "tool_name") or "unknown"),
+            "failure_kind": failure_kind,
+        }
 
     def _is_valid_chunk(self, chunk) -> bool:
         """Check if chunk should be processed.

@@ -13,7 +13,10 @@ from zoneinfo import ZoneInfo
 from src.agents.tools.base import execute_with_capabilities
 from src.infra.utils.agent_datetime import parse_agent_datetime
 from src.infra.utils.timezone import resolve_timezone_name
-from src.service.calendar_invites.attendee_resolver import CalendarInviteAttendeeResolver
+from src.service.calendar_invites.attendee_resolver import (
+    CalendarAttendeeInput,
+    CalendarInviteAttendeeResolver,
+)
 from src.service.calendar_invites.models import (
     CalendarInviteCreateRequest,
     CalendarInviteError,
@@ -155,11 +158,11 @@ async def _current_turn_clarification_email(
 
 
 def _replace_one_unresolved_attendee(
-    attendees: list[str] | list[dict[str, Any]],
+    attendees: list[CalendarAttendeeInput],
     *,
     unresolved_input: Any,
     email: str,
-) -> list[str] | list[dict[str, Any]] | None:
+) -> list[CalendarAttendeeInput] | None:
     """Replace one unresolved model argument while preserving its attendee role."""
     unresolved = str(unresolved_input or "").strip().lower()
     replacement: list[Any] = []
@@ -187,10 +190,10 @@ def _replace_one_unresolved_attendee(
             replaced = True
         else:
             replacement.append(attendee)
-    return cast(list[str] | list[dict[str, Any]], replacement) if replaced else None
+    return cast(list[CalendarAttendeeInput], replacement) if replaced else None
 
 
-def _attendees_are_only_direct_emails(attendees: list[str] | list[dict[str, Any]]) -> bool:
+def _attendees_are_only_direct_emails(attendees: list[CalendarAttendeeInput]) -> bool:
     if not attendees:
         return False
 
@@ -211,7 +214,7 @@ def _attendees_are_only_direct_emails(attendees: list[str] | list[dict[str, Any]
 def _title_needs_clarification(
     *,
     title: str,
-    attendees: list[str] | list[dict[str, Any]],
+    attendees: list[CalendarAttendeeInput],
 ) -> bool:
     cleaned = str(title or "").strip()
     if not cleaned:
@@ -300,7 +303,7 @@ def _derive_invite_title(
     title: str | None,
     *,
     resolved_attendees: list[dict[str, Any]],
-    raw_attendees: list[str] | list[dict[str, Any]],
+    raw_attendees: list[CalendarAttendeeInput],
 ) -> tuple[str, bool]:
     """Return a safe meeting title and whether the tool inferred or replaced it."""
     supplied = str(title or "").strip()
@@ -500,7 +503,7 @@ def _build_receipt_channel_payload(
 async def send_calendar_invite(
     *,
     context: AgentContext,
-    attendees: list[str] | list[dict[str, Any]],
+    attendees: list[CalendarAttendeeInput],
     title: str | None = None,
     start_time: str | None = None,
     end_time: str | None = None,
@@ -808,7 +811,7 @@ def create_send_calendar_invite(
     """Factory to create the send_calendar_invite tool bound to a context."""
 
     async def send_calendar_invite_tool(
-        attendees: list[str] | list[dict[str, Any]],
+        attendees: list[CalendarAttendeeInput],
         title: str | None = None,
         start_time: str | None = None,
         end_time: str | None = None,

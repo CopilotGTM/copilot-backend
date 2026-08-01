@@ -1,3 +1,5 @@
+"""Regression tests for GeneralAgent streaming, telemetry, and attachment grounding."""
+
 from __future__ import annotations
 
 import asyncio
@@ -13,12 +15,14 @@ from src.service.chat.chat_attachment_reader import AttachmentReadResult
 
 class _FakeBuffer:
     async def stream(self, _chat_response):
+        """Emit one answer followed by the buffer terminator."""
         yield ("answer", "Hi", False)
         yield ("final", "", False)
 
 
 @pytest.mark.asyncio
 async def test_run_stream_logs_general_agent_latency_stages(monkeypatch) -> None:
+    """Successful runs should emit content-free latency for every executed stage."""
     agent = object.__new__(GeneralAgent)
     agent.context = SimpleNamespace(channel="web", message_id="message-123")
     agent._frame_message_id = "message-123"
@@ -52,6 +56,7 @@ async def test_run_stream_logs_general_agent_latency_stages(monkeypatch) -> None
         "attachment_grounding",
         "message_preparation",
         "provider_time_to_first_frame",
+        "provider_run",
     ]
     assert all(event["channel"] == "web" for event in events)
     assert all(event["message_id"] == "message-123" for event in events)
@@ -60,7 +65,105 @@ async def test_run_stream_logs_general_agent_latency_stages(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("buffer_failed", "capability_failed"),
+    [(True, False), (False, True)],
+)
+async def test_run_stream_marks_tool_failure_as_degraded(
+    monkeypatch,
+    buffer_failed: bool,
+    capability_failed: bool,
+) -> None:
+    """A handled tool failure must not leave the overall provider run marked successful."""
+
+    agent = object.__new__(GeneralAgent)
+    agent.context = SimpleNamespace(channel="web", message_id="message-123")
+    agent._frame_message_id = "message-123"
+    agent.separators = ["separator"]
+    latency_logger = MagicMock()
+
+    class FailedBuffer:
+        """Represent a completed Agno stream that contained one failed tool call."""
+
+        had_tool_failure = buffer_failed
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    async def _ground(**_kwargs):
+        return None, None
+
+    async def _stream(*_args, **_kwargs):
+        yield AnswerDelta(content="The meeting was not changed.")
+
+    agent._ground_automatic_attachments = _ground
+    agent._process_streaming_response = _stream
+    agent._setup_capabilities = lambda *_args: SimpleNamespace(had_tool_failure=capability_failed)
+    agent.general_agent = SimpleNamespace(arun=lambda **_kwargs: object())
+    monkeypatch.setattr("src.agents.workflows.general.agent.logger", latency_logger)
+    monkeypatch.setattr(
+        "src.agents.workflows.general.agent.StreamingAnswerBuffer",
+        FailedBuffer,
+    )
+    monkeypatch.setattr(
+        "src.agents.workflows.general.agent.prepare_messages",
+        lambda *_args, **_kwargs: [],
+    )
+
+    _frames = [frame async for frame in agent.run_stream([{"content": "confirm"}])]
+
+    provider_run = next(
+        call.kwargs["extra"]
+        for call in latency_logger.info.call_args_list
+        if call.kwargs.get("extra", {}).get("stage") == "provider_run"
+    )
+    assert provider_run["outcome"] == "degraded"
+
+
+@pytest.mark.asyncio
+async def test_tool_failure_emits_structured_log_without_user_frame(monkeypatch) -> None:
+    """A failed Agno tool call must be observable but absent from answer frames."""
+
+    agent = object.__new__(GeneralAgent)
+    agent.context = SimpleNamespace(
+        channel="whatsapp",
+        message_id="message-123",
+        organisation_id="org-123",
+        user_id="user-123",
+    )
+    agent._frame_message_id = "message-123"
+    failure_logger = MagicMock()
+    monkeypatch.setattr("src.agents.workflows.general.agent.logger", failure_logger)
+    output_queue: asyncio.Queue = asyncio.Queue()
+
+    await agent._handle_stream_chunk(
+        kind="tool_failure",
+        content={
+            "tool_name": "update_calendar_meeting_tool",
+            "failure_kind": "argument_validation",
+        },
+        json_started=False,
+        tasks_extractor=MagicMock(),
+        answer_state=MagicMock(),
+        output_queue=output_queue,
+    )
+
+    assert output_queue.empty()
+    event = failure_logger.error.call_args.kwargs["extra"]
+    assert event == {
+        "event": "agent_tool_failure",
+        "channel": "whatsapp",
+        "message_id": "message-123",
+        "organisation_id": "org-123",
+        "user_id": "user-123",
+        "tool_name": "update_calendar_meeting_tool",
+        "failure_kind": "argument_validation",
+    }
+
+
+@pytest.mark.asyncio
 async def test_process_streaming_response_finishes_without_tool_frames() -> None:
+    """Answer streaming must terminate when no transparent tool frames were queued."""
     agent = object.__new__(GeneralAgent)
     agent.capabilities = SimpleNamespace(message_id="msg-1")
     agent._frame_message_id = "msg-1"
@@ -82,12 +185,14 @@ async def test_process_streaming_response_finishes_without_tool_frames() -> None
 
 class _FakeBufferWithDuplicateFinalAnswer:
     async def stream(self, _chat_response):
+        """Repeat the complete answer in the final chunk as some Agno versions do."""
         yield ("answer", "Hi - how can I help?", False)
         yield ("final", "\n\nHi - how can I help?", False)
 
 
 @pytest.mark.asyncio
 async def test_process_streaming_response_skips_replayed_final_answer() -> None:
+    """A final full-answer replay must not duplicate text already sent to the client."""
     agent = object.__new__(GeneralAgent)
     agent.capabilities = SimpleNamespace(message_id="msg-1")
     agent._frame_message_id = "msg-1"
@@ -111,6 +216,7 @@ async def test_process_streaming_response_skips_replayed_final_answer() -> None:
 
 class _FakeBufferWithRunCompleted:
     async def stream(self, _chat_response):
+        """Emit answer text and representative provider token metrics."""
         model_metric = SimpleNamespace(
             input_tokens=100,
             output_tokens=50,
@@ -143,6 +249,7 @@ class _FakeBufferWithRunCompleted:
 
 @pytest.mark.asyncio
 async def test_run_completed_emits_token_usage_frame() -> None:
+    """Provider completion metrics should become one client token-usage frame."""
     agent = object.__new__(GeneralAgent)
     agent.capabilities = SimpleNamespace(message_id="msg-1")
     agent._frame_message_id = "msg-1"
@@ -173,6 +280,7 @@ async def test_run_completed_emits_token_usage_frame() -> None:
 
 
 def test_get_frame_message_id_prefers_context_value() -> None:
+    """Worker-provided assistant message IDs must remain the frame correlation key."""
     agent = object.__new__(GeneralAgent)
     agent.context = SimpleNamespace(message_id="assistant-123")
     agent._frame_message_id = "assistant-123"
@@ -181,6 +289,7 @@ def test_get_frame_message_id_prefers_context_value() -> None:
 
 
 def test_get_frame_message_id_is_stable_without_context_value() -> None:
+    """A generated frame ID must remain stable throughout one agent instance."""
     agent = object.__new__(GeneralAgent)
     agent.context = SimpleNamespace(message_id=None)
     agent._frame_message_id = None
@@ -193,10 +302,12 @@ def test_get_frame_message_id_is_stable_without_context_value() -> None:
 
 @pytest.mark.asyncio
 async def test_ground_automatic_attachments_adds_extracted_text(monkeypatch) -> None:
+    """A referenced text attachment should be grounded into the next model request."""
     agent = object.__new__(GeneralAgent)
     agent.context = SimpleNamespace(metadata={})
 
     async def fake_read_chat_attachment(attachment_id, *, context, max_chars=12000):
+        """Return bounded text for the selected attachment."""
         assert attachment_id == "doc-id"
         assert context is agent.context
         return AttachmentReadResult(
@@ -234,10 +345,12 @@ async def test_ground_automatic_attachments_adds_extracted_text(monkeypatch) -> 
 
 @pytest.mark.asyncio
 async def test_ground_automatic_attachments_adds_native_images(monkeypatch) -> None:
+    """Image attachments should remain native model inputs rather than text placeholders."""
     agent = object.__new__(GeneralAgent)
     agent.context = SimpleNamespace(metadata={})
 
     async def fake_read_chat_attachment(_attachment_id, *, context, max_chars=12000):
+        """Return one image payload for native grounding."""
         return AttachmentReadResult(
             attachment_id=_attachment_id,
             filename="chart.png",
@@ -275,10 +388,12 @@ async def test_ground_automatic_attachments_adds_native_images(monkeypatch) -> N
 
 @pytest.mark.asyncio
 async def test_ground_automatic_attachments_skips_audio(monkeypatch) -> None:
+    """Already-transcribed WhatsApp audio must not be read a second time."""
     agent = object.__new__(GeneralAgent)
     agent.context = SimpleNamespace(metadata={})
 
     async def fail_read(*_args, **_kwargs):
+        """Fail if audio grounding attempts a duplicate transcription read."""
         raise AssertionError("WhatsApp audio must not be transcribed twice")
 
     monkeypatch.setattr(
@@ -308,11 +423,13 @@ async def test_ground_automatic_attachments_skips_audio(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_ground_automatic_attachments_shares_one_text_budget(monkeypatch) -> None:
+    """Multiple text files must share one bounded model-context budget."""
     agent = object.__new__(GeneralAgent)
     agent.context = SimpleNamespace(metadata={})
     reads: list[str] = []
 
     async def fake_read(attachment_id, *, context, max_chars=12000):
+        """Return oversized text so the shared budget stops later reads."""
         reads.append(attachment_id)
         return AttachmentReadResult(
             attachment_id=attachment_id,
@@ -364,11 +481,13 @@ async def test_ground_automatic_attachments_shares_one_text_budget(monkeypatch) 
 
 @pytest.mark.asyncio
 async def test_ground_automatic_attachments_deduplicates_preloaded_image(monkeypatch) -> None:
+    """A caller-preloaded image must not be read again from attachment storage."""
     agent = object.__new__(GeneralAgent)
     agent.context = SimpleNamespace(metadata={})
     image = Image(id="image-id", content=b"image", format="png")
 
     async def fail_read(*_args, **_kwargs):
+        """Fail if grounding re-reads the already supplied image."""
         raise AssertionError("image was already supplied by the caller")
 
     monkeypatch.setattr(

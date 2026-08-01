@@ -20,6 +20,7 @@ class TransparentToolManager:
     def __init__(self, message_id: str):
         self.message_id = message_id
         self._active_tools: dict[str, dict] = {}
+        self.had_tool_failure = False
 
     async def _emit_frame(self, frame_emitter: Callable | None, frame: Any) -> None:
         """Emit a frame, handling both sync and async emitters."""
@@ -35,7 +36,7 @@ class TransparentToolManager:
 
         Removes or converts non-serializable objects like database sessions.
         """
-        sanitized = {}
+        sanitized: dict[str, Any] = {}
         for key, value in parameters.items():
             # Skip known non-serializable types
             if (
@@ -71,7 +72,7 @@ class TransparentToolManager:
         if not isinstance(result, dict):
             return True
         if isinstance(result.get("success"), bool):
-            return result["success"]
+            return bool(result["success"])
         status = str(result.get("status") or "").lower()
         if status in {"error", "failed", "failure"}:
             return False
@@ -131,6 +132,9 @@ class TransparentToolManager:
 
             duration_ms = int((time.time() - start_time) * 1000)
             public_result = self._public_tool_result(result)
+            succeeded = self._tool_result_succeeded(result)
+            if not succeeded:
+                self.had_tool_failure = True
             channel_payload = (
                 result.get("_bot_channel_payload") if isinstance(result, dict) else None
             )
@@ -142,7 +146,7 @@ class TransparentToolManager:
                     message_id=self.message_id,
                     tool_name=tool_name,
                     status="completed",
-                    succeeded=self._tool_result_succeeded(result),
+                    succeeded=succeeded,
                     result_summary=(
                         str(public_result)[:200] + "..."
                         if len(str(public_result)) > 200
@@ -155,7 +159,8 @@ class TransparentToolManager:
 
             return result
 
-        except Exception as e:
+        except Exception:
+            self.had_tool_failure = True
             duration_ms = int((time.time() - start_time) * 1000)
 
             # Emit failure frame
@@ -166,7 +171,7 @@ class TransparentToolManager:
                     tool_name=tool_name,
                     status="failed",
                     succeeded=False,
-                    result_summary=f"Error: {str(e)}",
+                    result_summary="Tool execution failed.",
                     duration_ms=duration_ms,
                 ),
             )
@@ -223,6 +228,11 @@ class AgentCapabilities:
     def set_frame_emitter(self, emitter: Callable):
         """Set the frame emitter for transparent operations."""
         self._frame_emitter = emitter
+
+    @property
+    def had_tool_failure(self) -> bool:
+        """Return whether any transparently executed tool failed in this run."""
+        return self.tool_manager.had_tool_failure
 
     async def think_aloud(self, thought: str, stage: str | None = None):
         """Share agent thinking process."""

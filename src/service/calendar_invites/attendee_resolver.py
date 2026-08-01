@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import String, cast, func, or_, select
 from sqlmodel import col
 from src.domain.models.master_tables.super_admin_models import AdminUserStatus
@@ -56,6 +57,28 @@ _DEAL_STAKEHOLDER_PHRASES = {
 # Fuzzy matching walks several user-context tiers. Exact matching is batched,
 # while this small remainder keeps worst-case database work bounded.
 MAX_FUZZY_ATTENDEE_NAMES = 10
+
+
+class CalendarAttendeeIntent(BaseModel):
+    """Advertise and validate structured attendee fields for agent tools."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: str | None = None
+    email: str | None = None
+    name: str | None = None
+    type: str | None = None
+    kind: str | None = None
+    optional: bool = False
+    deal_id: str | UUID | None = None
+    scope: str | None = None
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Keep resolver code compatible with direct dictionary callers."""
+        return getattr(self, key, default)
+
+
+CalendarAttendeeInput = str | CalendarAttendeeIntent
 
 
 @dataclass(frozen=True)
@@ -171,7 +194,7 @@ class CalendarInviteAttendeeResolver:
 
     async def resolve(
         self,
-        attendees: list[str] | list[dict[str, Any]],
+        attendees: list[CalendarAttendeeInput],
         *,
         deal_id: str | UUID | None = None,
     ) -> AttendeeResolutionResult:
@@ -1043,7 +1066,7 @@ class CalendarInviteAttendeeResolver:
         return {contact.contact_id: contact for contact in result.scalars().all()}
 
     @staticmethod
-    def _coerce_attendee_intent(raw_attendee: str | dict[str, Any]) -> dict[str, Any]:
+    def _coerce_attendee_intent(raw_attendee: CalendarAttendeeInput) -> dict[str, Any]:
         if isinstance(raw_attendee, str):
             value = raw_attendee.strip()
             normalized = re.sub(r"\s+", " ", value.lower()).strip(" .!?")

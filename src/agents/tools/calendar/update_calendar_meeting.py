@@ -17,9 +17,13 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from src.agents.tools.base import execute_with_capabilities
+from src.infra.config.configs import security_secrets_config
 from src.infra.utils.agent_datetime import parse_agent_datetime
 from src.infra.utils.timezone import resolve_timezone_name
-from src.service.calendar_invites.attendee_resolver import CalendarInviteAttendeeResolver
+from src.service.calendar_invites.attendee_resolver import (
+    CalendarAttendeeInput,
+    CalendarInviteAttendeeResolver,
+)
 from src.service.calendar_invites.models import (
     CalendarAttendeeAction,
     CalendarInviteAttendee,
@@ -70,19 +74,43 @@ def _meeting_payload(
 def _confirmation_token(
     payload: dict[str, Any],
     final_attendees: list[CalendarInviteAttendee],
+    *,
+    secret: str,
+    organisation_id: UUID,
+    user_id: UUID,
 ) -> str:
-    """Fingerprint replay inputs plus the resolved final roster shown in the preview."""
+    """Authenticate a tenant-bound review without treating roster order as a change."""
+
+    tool_payload = dict(payload)
+    tool_payload["attendees"] = sorted(
+        tool_payload.get("attendees") or [],
+        key=lambda item: (
+            str(item.get("email") or "").lower(),
+            bool(item.get("optional")),
+            str(item.get("name") or ""),
+        ),
+    )
+    normalized_final_attendees = sorted(
+        (item.model_dump() for item in final_attendees),
+        key=lambda item: (
+            item["email"],
+            item["optional"],
+            item.get("name") or "",
+        ),
+    )
 
     canonical = json.dumps(
         {
-            "tool_payload": payload,
-            "final_attendees": [item.model_dump() for item in final_attendees],
+            "organisation_id": str(organisation_id),
+            "user_id": str(user_id),
+            "tool_payload": tool_payload,
+            "final_attendees": normalized_final_attendees,
         },
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=True,
     )
-    return hashlib.sha256(canonical.encode()).hexdigest()
+    return hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).hexdigest()
 
 
 def _snapshot_attendees(snapshot: CalendarMutationSnapshot) -> list[CalendarInviteAttendee]:
@@ -428,7 +456,7 @@ async def update_calendar_meeting(
     title: str | None = None,
     start_time: str | None = None,
     end_time: str | None = None,
-    attendees: list[str] | list[dict[str, Any]] | None = None,
+    attendees: list[CalendarAttendeeInput] | None = None,
     body: str | None = None,
     location: str | None = None,
     timezone: str | None = None,
@@ -626,7 +654,14 @@ async def update_calendar_meeting(
             attendee_action=action,
             action_attendees=requested_attendees,
         )
-        preview_token = _confirmation_token(payload, request.attendees)
+        confirmation_secret = await security_secrets_config.get_oauth_state_secret()
+        preview_token = _confirmation_token(
+            payload,
+            request.attendees,
+            secret=confirmation_secret,
+            organisation_id=context.organisation_id,
+            user_id=context.user_id,
+        )
         payload["confirmation_token"] = preview_token
         review_text, channel_payload = _review_payload(context, snapshot, request, changes)
         confirmation_matches = bool(
@@ -747,6 +782,9 @@ async def update_calendar_meeting(
                     refreshed_payload["confirmation_token"] = _confirmation_token(
                         refreshed_payload,
                         refreshed.attendees,
+                        secret=confirmation_secret,
+                        organisation_id=context.organisation_id,
+                        user_id=context.user_id,
                     )
                     refreshed_result = {
                         "status": "confirmation_required",
@@ -897,7 +935,7 @@ def create_update_calendar_meeting(
         title: str | None = None,
         start_time: str | None = None,
         end_time: str | None = None,
-        attendees: list[str] | list[dict[str, Any]] | None = None,
+        attendees: list[CalendarAttendeeInput] | None = None,
         body: str | None = None,
         location: str | None = None,
         timezone: str | None = None,

@@ -10,10 +10,14 @@ from uuid import UUID
 
 import pytest
 from src.agents.tools.calendar.update_calendar_meeting import (
+    _confirmation_token,
     cancel_calendar_meeting,
     update_calendar_meeting,
 )
-from src.service.calendar_invites.models import CalendarMeetingMutationResult
+from src.service.calendar_invites.models import (
+    CalendarInviteAttendee,
+    CalendarMeetingMutationResult,
+)
 from src.service.calendar_invites.mutations import CalendarMutationSnapshot
 from src.service.integrations.calendar.normalizer import CalendarEventNormalizer
 
@@ -30,6 +34,50 @@ class _FakeContext:
     async def acquire_session(self):
         """Yield the inert session expected by the agent tool."""
         yield object()
+
+
+@pytest.fixture(autouse=True)
+def _calendar_confirmation_secret(monkeypatch) -> None:
+    """Keep update confirmation tests independent of deployment secret storage."""
+
+    async def get_secret() -> str:
+        """Return the stable test-only signing secret."""
+        return "test-calendar-confirmation-secret"
+
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.update_calendar_meeting."
+        "security_secrets_config.get_oauth_state_secret",
+        get_secret,
+    )
+
+
+def test_confirmation_token_is_bound_to_tenant_and_user() -> None:
+    """A reviewed payload from one security boundary cannot authorize another."""
+
+    payload = {"event_id": str(UUID(int=4)), "attendees": []}
+    attendees = [CalendarInviteAttendee(email="bhavesh@example.com")]
+    token = _confirmation_token(
+        payload,
+        attendees,
+        secret="secret",
+        organisation_id=UUID(int=1),
+        user_id=UUID(int=2),
+    )
+
+    assert token != _confirmation_token(
+        payload,
+        attendees,
+        secret="secret",
+        organisation_id=UUID(int=3),
+        user_id=UUID(int=2),
+    )
+    assert token != _confirmation_token(
+        payload,
+        attendees,
+        secret="secret",
+        organisation_id=UUID(int=1),
+        user_id=UUID(int=3),
+    )
 
 
 def _target(*, provider: str = "microsoft") -> SimpleNamespace:
@@ -469,6 +517,58 @@ async def test_confirmation_token_rejects_payload_drift(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_confirmation_token_ignores_attendee_order(monkeypatch) -> None:
+    """Reordered attendee operands must not force another confirmation turn."""
+
+    requests: list[object] = []
+
+    class FakeService:
+        """Expose a stable event and capture the order-insensitive confirmation."""
+
+        def __init__(self, session, *, organisation_id, requested_by_user_id):
+            pass
+
+        async def resolve_snapshot(self, event_id, *, sender_email=None):
+            """Return the same organizer version for preview and confirmation."""
+            return _snapshot()
+
+        async def update_meeting(self, request, *, sender_email=None):
+            """Capture the provider request after canonical token validation."""
+            requests.append(request)
+            return CalendarMeetingMutationResult(
+                event_id=request.event_id,
+                provider_event_id="provider-event-1",
+                status="updated",
+            )
+
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.update_calendar_meeting.CalendarMeetingMutationService",
+        FakeService,
+    )
+
+    preview = await update_calendar_meeting(
+        context=_FakeContext(UUID(int=1), UUID(int=2)),
+        event_id=str(UUID(int=4)),
+        attendees=["bhavesh@example.com", "nikhil@example.com"],
+        attendee_action="add",
+    )
+    confirmation = preview["confirmation_payload"]
+    result = await update_calendar_meeting(
+        context=_FakeContext(UUID(int=1), UUID(int=2)),
+        event_id=str(UUID(int=4)),
+        attendees=list(reversed(confirmation["attendees"])),
+        attendee_action=confirmation["attendee_action"],
+        expected_version=confirmation["expected_version"],
+        notification_scope=confirmation["notification_scope"],
+        confirmation_token=confirmation["confirmation_token"],
+        confirmed=True,
+    )
+
+    assert result["status"] == "updated"
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
 async def test_google_preview_defaults_to_all_attendees(monkeypatch) -> None:
     """Google uses its supported all-attendee default without a second prompt."""
 
@@ -526,6 +626,54 @@ async def test_outlook_subject_change_defaults_to_all_attendees(monkeypatch) -> 
     assert result["confirmation_payload"]["notification_scope"] == "all_attendees"
     assert "Customer review → Partnership discussion" in result["review_text"]
     assert result["review_text"].count("Reply *confirm* to apply.") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("changes", "expected_review"),
+    [
+        (
+            {
+                "start_time": "2026-08-01T16:00:00+05:30",
+                "end_time": "2026-08-01T16:45:00+05:30",
+                "timezone": "Asia/Kolkata",
+            },
+            "4:00 PM–4:45 PM Asia/Kolkata",
+        ),
+        ({"body": "Review the production rollout"}, "Description updated"),
+        ({"location": "Conference Room 2"}, "Teams → Conference Room 2"),
+    ],
+)
+async def test_scalar_updates_reach_canonical_preview(
+    monkeypatch,
+    changes: dict[str, str],
+    expected_review: str,
+) -> None:
+    """Every supported scalar edit must use the same reviewed update path."""
+
+    class FakeService:
+        """Expose one stable Outlook meeting without allowing a write."""
+
+        def __init__(self, session, *, organisation_id, requested_by_user_id):
+            pass
+
+        async def resolve_snapshot(self, event_id, *, sender_email=None):
+            """Return the organizer copy used to calculate the requested difference."""
+            return _snapshot()
+
+    monkeypatch.setattr(
+        "src.agents.tools.calendar.update_calendar_meeting.CalendarMeetingMutationService",
+        FakeService,
+    )
+
+    result = await update_calendar_meeting(
+        context=_FakeContext(UUID(int=1), UUID(int=2)),
+        event_id=str(UUID(int=4)),
+        **changes,
+    )
+
+    assert result["status"] == "confirmation_required"
+    assert expected_review in result["review_text"]
 
 
 @pytest.mark.asyncio

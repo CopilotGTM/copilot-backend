@@ -524,14 +524,18 @@ Do not skip the final preview and confirmation for an external calendar action.
 
 ### 1. Determine the action type
 
-Identify whether the user wants to create a new meeting, send an invite, list or
-inspect meetings, or send a meeting bot.
+Identify whether the user wants to create, update, reschedule, cancel, list, or
+inspect a meeting, or send a meeting bot.
 
 Words such as "move", "change", "reschedule", "remove", or "cancel" refer to an
-existing event. Current agent tools can list and inspect meetings, but they do not
-update or cancel calendar events. Explain that limitation and do not imitate an update
-by creating another event unless the user explicitly asks for a separate replacement
-meeting.
+existing event. Resolve exactly one organizer-owned event, then use
+`update_calendar_meeting` or `cancel_calendar_meeting`; never imitate an edit by
+creating another event unless the user explicitly asks for a separate replacement.
+
+For an update, pass only the fields the user wants to change. The tool loads and
+preserves the remaining provider state. Translate attendee intent into add, remove, or
+replace, and allow explicit email strings and structured scoped attendees in the same
+request. Always show the tool's canonical update review before applying it.
 
 ### 2. Collect details
 
@@ -808,8 +812,14 @@ Do not regenerate the agenda or title after confirmation.
 If the tool returns a clarification request, do not report success. Surface the
 clarification and preserve the safe parts of the previewed payload.
 
-If `send_email` or `send_calendar_invite` returns `status: error`, do not say the email or invite was sent. Surface the failure as a provider rejection or tool error,
-include the tool's safe message and code, and explain that the send did not complete.
+If an email or calendar mutation tool returns `status: error`, do not report the action
+as completed. Surface its safe message and code and state that the provider mutation
+did not complete.
+
+If the tool call itself fails argument validation before returning a structured result,
+correct the arguments once in the same turn because no provider call occurred. If that
+correction also fails, state that internal validation prevented the calendar action and
+that the meeting remains unchanged; never attribute this failure to Google or Outlook.
 
 If the tool times out or returns unknown or partial status:
 
@@ -869,7 +879,8 @@ Do not expose raw event IDs unless requested.
 | "Schedule Exiter review with Saksham Bhutani Saturday 8–9 PM" | Resolve the exact local Saturday, attendee, timezone, and organizer. Show the exact date and attendee address in the final preview before sending. |
 | "Send meeting to all stakeholders tomorrow at 4 PM" | Resolve the active deal, expand and deduplicate stakeholders, derive the title, apply the 30-minute default, and show the final expanded list before confirmation. |
 | "Set up a call with legal and the champion" | Resolve deal stakeholders using role evidence. If multiple matches exist, ask one question covering ambiguous people and all missing scheduling fields. |
-| "Move tomorrow's Acme meeting to Friday at 3 PM" | Explain that calendar event rescheduling is not available from the agent tools. Never create a second meeting as a substitute unless the user explicitly asks for a replacement invite. |
+| "Move tomorrow's Acme meeting to Friday at 3 PM" | Resolve one organizer-owned event, call `update_calendar_meeting` with the new time, show its canonical review, then apply it after confirmation. |
+| "Also add Nikhil from our team" | Preserve the existing roster, pass Nikhil as a team-scoped attendee with `attendee_action=add`, and show the resolved email in the update review. |
 | "Send it" after the user changes the time | The earlier confirmation is invalid. Show a revised preview with the new time and wait for confirmation again. |
 
 ## Bulk Meeting Actions
