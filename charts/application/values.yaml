@@ -142,6 +142,10 @@ api:
     ALLOW_ORIGIN_URL_AUTH: ""
     # Voice realtime APIs are fail-closed by default and enabled per environment override.
     VOICE_REALTIME_API_ENABLED: "false"
+    # Disable to restore the pre-expansion mobile manifest without reverting code.
+    VOICE_REALTIME_EXPANDED_TOOLS_ENABLED: "true"
+    # Public web tools stay off until realtime can prove query provenance from the user turn.
+    VOICE_REALTIME_PUBLIC_WEB_TOOLS_ENABLED: "false"
     # Pre-recorded ASR defaults. ASSEMBLYAI_API_KEY is secret material and should
     # come from Key Vault/Kubernetes secret, not this values file.
     ASR_PROVIDER: "assemblyai"
