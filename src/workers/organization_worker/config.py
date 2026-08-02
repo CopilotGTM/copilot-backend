@@ -33,6 +33,10 @@ class OrganizationWorkerConfig(BaseWorkerConfig):
                 "queue": "organization",
                 "routing_key": "organization",
             },
+            "organization.signup.provision": {
+                "queue": "organization",
+                "routing_key": "organization",
+            },
             "organization.research_kai_training": {
                 "queue": "organization",
                 "routing_key": "organization",

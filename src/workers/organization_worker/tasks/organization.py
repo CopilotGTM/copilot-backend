@@ -92,6 +92,7 @@ async def _update_job_in_db(
 )
 def create_organization_task(
     self,
+    organisation_id: str,
     admin_id: str,
     organisation_name: str,
     org_details: dict[str, Any],
@@ -103,6 +104,7 @@ def create_organization_task(
     Publishes status updates to Redis for SSE streaming if job_id is provided.
 
     Args:
+        organisation_id: Preallocated organisation UUID persisted on the job
         admin_id: UUID of admin creating the organisation
         organisation_name: Name for the new organisation
         org_details: Additional organisation details
@@ -142,6 +144,7 @@ def create_organization_task(
 
             # create_organization manages its own sessions internally
             result = await organization_management_service.create_organization(
+                organisation_id=UUID(organisation_id),
                 admin_id=UUID(admin_id),
                 organisation_name=organisation_name,
                 **org_details,

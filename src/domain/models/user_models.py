@@ -33,11 +33,11 @@ class UserLoginResponse(BaseModel):
     email_verified: bool | None = None
     last_login_at: datetime | None = None
     timezone: str | None = None
+    profile_image_url: str | None = None
     organisation_id: UUID | None = None
     organisation_preferences: dict[str, Any] | None = None
     user_preferences: dict[str, Any] | None = None
     tokens: dict[str, Any] | None = None
-    password_reset_link: str | None = None
 
 
 class UserChangePasswordRequest(BaseModel):
@@ -59,7 +59,13 @@ class UserResetPasswordRequest(BaseModel):
     token_hash: str
     new_password: str
     confirm_password: str | None = None
-    action: str  # 'force_change' or 'forgot'
+
+
+class UserCompletePasswordSetupRequest(BaseModel):
+    """Set the permanent password from a verified temporary-password session."""
+
+    new_password: str
+    confirm_password: str
 
 
 class UserRefreshTokenRequest(BaseModel):
@@ -79,7 +85,6 @@ class UserLogoutRequest(BaseModel):
     """Request model for user logout."""
 
     global_logout: bool = False
-    email: EmailStr | None = None
 
 
 class RealtimeDevicePlatform(str, Enum):

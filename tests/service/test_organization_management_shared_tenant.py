@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -124,9 +124,7 @@ async def test_create_organization_uses_master_and_existing_org_boundaries(
     first_session, final_session = tuple(sessions)
     service = OrganizationManagementService()
     _forbid_legacy_database_provisioning(monkeypatch, service)
-    setup_internal_crm = AsyncMock()
-    provision_storage = Mock()
-    monkeypatch.setattr(service, "_setup_internal_crm", setup_internal_crm)
+    provision_storage = AsyncMock()
     monkeypatch.setattr(
         service,
         "_provision_org_storage_container",
@@ -134,7 +132,9 @@ async def test_create_organization_uses_master_and_existing_org_boundaries(
     )
     admin_id = uuid4()
 
+    organisation_id = uuid4()
     result = await service.create_organization(
+        organisation_id=organisation_id,
         admin_id=admin_id,
         organisation_name="Acme",
         country="US",
@@ -144,15 +144,12 @@ async def test_create_organization_uses_master_and_existing_org_boundaries(
 
     organisation = state["organisation"]
     assert result == {"organization": organisation}
+    assert organisation.organisation_id == organisation_id
     assert organisation.status is OrganisationStatus.PENDING
     assert organisation.created_by_auth_user_id == str(admin_id)
     assert organisation.linked_urls == ["https://www.linkedin.com/company/acme"]
     assert organisation.website_urls == ["https://acme.example"]
-    setup_internal_crm.assert_awaited_once_with(
-        organisation.organisation_id,
-        admin_id,
-    )
-    provision_storage.assert_called_once_with(organisation.organisation_id)
+    provision_storage.assert_awaited_once_with(organisation.organisation_id)
     assert first_session.commits == 1
     assert final_session.commits == 1
     assert any(isinstance(value, OrganisationActionHistory) for value in final_session.added)
@@ -176,15 +173,15 @@ async def test_create_organization_retry_reuses_provisioning_record(monkeypatch)
     )
     service = OrganizationManagementService()
     _forbid_legacy_database_provisioning(monkeypatch, service)
-    setup_internal_crm = AsyncMock()
-    monkeypatch.setattr(service, "_setup_internal_crm", setup_internal_crm)
+    provision_storage = AsyncMock()
     monkeypatch.setattr(
         service,
         "_provision_org_storage_container",
-        Mock(),
+        provision_storage,
     )
 
     result = await service.create_organization(
+        organisation_id=existing.organisation_id,
         admin_id=admin_id,
         organisation_name="Acme",
         country="US",
@@ -194,31 +191,7 @@ async def test_create_organization_retry_reuses_provisioning_record(monkeypatch)
     assert state["organisation"].organisation_id == existing.organisation_id
     assert existing.country == "US"
     assert existing.status is OrganisationStatus.PENDING
-    setup_internal_crm.assert_awaited_once_with(existing.organisation_id, admin_id)
-
-
-@pytest.mark.asyncio
-async def test_public_tenant_default_boundary_reuses_crm_and_storage_setup(
-    monkeypatch,
-) -> None:
-    """Signup must call the same idempotent defaults as admin org creation."""
-
-    service = OrganizationManagementService()
-    setup_internal_crm = AsyncMock()
-    provision_storage = Mock()
-    monkeypatch.setattr(service, "_setup_internal_crm", setup_internal_crm)
-    monkeypatch.setattr(
-        service,
-        "_provision_org_storage_container",
-        provision_storage,
-    )
-    organisation_id = uuid4()
-    user_id = uuid4()
-
-    await service.setup_tenant_defaults(organisation_id, user_id)
-
-    setup_internal_crm.assert_awaited_once_with(organisation_id, user_id)
-    provision_storage.assert_called_once_with(organisation_id)
+    provision_storage.assert_awaited_once_with(existing.organisation_id)
 
 
 def test_organization_service_has_no_per_org_database_provisioning_api() -> None:
@@ -234,5 +207,6 @@ def test_organization_service_has_no_per_org_database_provisioning_api() -> None
         "_delete_password_from_key_vault",
         "rotate_organization_password",
         "delete_organization",
+        "setup_tenant_defaults",
     ):
         assert not hasattr(service, removed_name)

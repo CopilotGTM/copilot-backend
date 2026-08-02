@@ -61,7 +61,10 @@ class OrganisationEventType(str, Enum):
 
 class Organisation(TimestampMixin, table=True):
     __tablename__ = "organisations"
-    __table_args__ = {"schema": "public"}
+    __table_args__ = (
+        UniqueConstraint("primary_domain", name="uq_organisations_primary_domain"),
+        {"schema": "public"},
+    )
 
     organisation_id: UUID = Field(
         default_factory=uuid4,
@@ -69,13 +72,28 @@ class Organisation(TimestampMixin, table=True):
         description="Unique UUID for the organisation.",
     )
     organisation_name: str = Field(
-        sa_column=Column(String(255), nullable=False, unique=True),
-        description="Organisation/company name. Unique.",
+        sa_column=Column(String(255), nullable=False),
+        description="Organisation/company display name.",
     )
     domain: list[str] | None = Field(
         default=None,
         sa_column=Column(JSON, nullable=True),
         description="List of primary domains of the organisation (e.g. ['acme.com', 'acme.io']).",
+    )
+    primary_domain: str | None = Field(
+        default=None,
+        sa_column=Column(String(253), nullable=True),
+        description="Normalized verified domain used for organisation identity.",
+    )
+    domain_verification_method: str | None = Field(
+        default=None,
+        sa_column=Column(String(32), nullable=True),
+        description="Trusted provider claim used to verify the primary domain.",
+    )
+    domain_verified_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="When the primary domain was verified.",
     )
     agent_name: str | None = Field(
         default=None,

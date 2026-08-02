@@ -45,6 +45,11 @@ from .public_ingress_key_models import (
     PublicIngressKeyType,
     PublicIngressResourceType,
 )
+from .signup_request_models import (
+    ExternalSignupProvider,
+    SignupRequest,
+    SignupRequestStatus,
+)
 from .super_admin_models import (
     AdminRole,
     AdminUserStatus,
@@ -56,6 +61,7 @@ from .user_models import (
     User,
     UserActionHistory,
     UserAppRole,
+    UserAuthenticationMethod,
     UserEventType,
 )
 
@@ -77,9 +83,13 @@ __all__ = [
     "OrganisationJob",
     "OrganisationJobStatus",
     "OrganisationJobType",
+    "SignupRequest",
+    "SignupRequestStatus",
+    "ExternalSignupProvider",
     # User Models
     "User",
     "UserAppRole",
+    "UserAuthenticationMethod",
     "SupabaseUserStatus",
     "AdminUserStatus",
     "UserActionHistory",

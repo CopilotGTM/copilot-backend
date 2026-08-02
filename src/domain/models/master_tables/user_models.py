@@ -45,6 +45,14 @@ class SupabaseUserStatus(str, Enum):
     PENDING_SETUP = "PASSWORD_CHANGE_REQUIRED"
 
 
+class UserAuthenticationMethod(str, Enum):
+    """Application-owned sign-in method for a user."""
+
+    PASSWORD = "password"
+    GOOGLE_WORKSPACE = "google_workspace"
+    MICROSOFT_ENTRA = "microsoft_entra"
+
+
 class UserEventType(str, Enum):
     """Enumerates user history events."""
 
@@ -57,6 +65,10 @@ class UserEventType(str, Enum):
     PASSWORD_RESET = "password_reset"
     EMAIL_VERIFIED = "email_verified"
     FIELD_CHANGED = "field_changed"
+    IDENTITY_LINKED = "identity_linked"
+    AUTH_METHOD_REJECTED = "auth_method_rejected"
+    SESSION_REVOKED = "session_revoked"
+    RECOVERY_SUPPRESSED = "recovery_suppressed"
 
 
 class User(TimestampMixin, table=True):
@@ -105,6 +117,16 @@ class User(TimestampMixin, table=True):
         default=None,
         max_length=64,
         description="Preferred IANA timezone for local scheduling and date interpretation.",
+    )
+    profile_image_url: str | None = Field(
+        default=None,
+        max_length=1000,
+        description="Provider-supplied profile image URL for the app user.",
+    )
+    authentication_method: UserAuthenticationMethod = Field(
+        default=UserAuthenticationMethod.PASSWORD,
+        sa_column=Column(String(32), nullable=False, server_default="password"),
+        description="Application-owned sign-in method for this user.",
     )
     preferences: dict[str, Any] = Field(
         default_factory=dict,

@@ -703,6 +703,15 @@ resource "azuredevops_variable_group" "secrets" {
   }
 
   variable {
+    name  = "SUPABASE_URL"
+    value = "https://mdpbmdnwwdkjcxefbbbk.supabase.co"
+  }
+  variable {
+    name  = "SUPABASE_ANON_KEY"
+    value = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kcGJtZG53d2RramN4ZWZiYmJrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTI4NjMwMDYsImV4cCI6MjA2ODQzOTAwNn0.DKzayhlTsttxR-uIgL2zUZwH0vJf2NgjNJsaq3lANNE"
+  }
+
+  variable {
     name  = "AZURE_SUBSCRIPTION_ID"
     value = var.subscription_id
   }
@@ -1302,6 +1311,20 @@ module "microsoft_app_registration" {
     module.resource_group,
     module.master_key_vault
   ]
+}
+
+# Keep login separate so sign-in can never inherit Microsoft data-integration permissions.
+module "microsoft_login_app_registration" {
+  source = "../modules/microsoft_login_app"
+
+  env             = var.env
+  key_vault_id    = module.master_key_vault.key_vault_id
+  owner_object_id = module.service_principal.object_id
+
+  tags = {
+    environment = var.env
+    project     = var.project_name
+  }
 }
 
 output "teams_bot_app_id" {

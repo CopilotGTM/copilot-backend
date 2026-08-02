@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from azure.core.exceptions import ResourceExistsError
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 
 
@@ -60,3 +61,35 @@ async def test_container_setup_failure_is_not_retried_for_every_sas():
         await storage.generate_read_sas("second.pdf")
 
     container_client.create_container.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_provision_container_treats_existing_container_as_success():
+    storage = AzureOrganisationBlobStorage(uuid4())
+    container_client = MagicMock()
+    container_client.create_container = AsyncMock(
+        side_effect=ResourceExistsError(
+            "already exists",
+            error_code="ContainerAlreadyExists",
+        )
+    )
+    blob_service = MagicMock()
+    blob_service.get_container_client.return_value = container_client
+    storage._get_blob_service_client = AsyncMock(return_value=blob_service)
+
+    await storage.provision_container()
+
+    assert storage._container_ready is True
+
+
+@pytest.mark.asyncio
+async def test_provision_container_raises_other_azure_errors():
+    storage = AzureOrganisationBlobStorage(uuid4())
+    container_client = MagicMock()
+    container_client.create_container = AsyncMock(side_effect=RuntimeError("forbidden"))
+    blob_service = MagicMock()
+    blob_service.get_container_client.return_value = container_client
+    storage._get_blob_service_client = AsyncMock(return_value=blob_service)
+
+    with pytest.raises(RuntimeError, match="forbidden"):
+        await storage.provision_container()

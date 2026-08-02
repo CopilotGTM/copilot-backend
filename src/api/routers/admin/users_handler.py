@@ -22,6 +22,7 @@ from src.domain.models.master_tables import (
     AdminRole,
     SuperAdmin,
     UserAppRole,
+    UserAuthenticationMethod,
 )
 from src.infra.auth.admin_auth import admin_auth
 from src.infra.auth.email_service import email_service
@@ -115,18 +116,46 @@ async def create_user(
         # Release DB session before the email API call
         await service.close()
 
-        email_sent = await email_service.send_user_creation_email(
-            to_email=result.email,
-            first_name=result.first_name,
-            temp_password=result.temp_password,
-        )
-        if email_sent:
-            logger.info(f"Successfully sent creation email to {result.email}")
-        else:
-            logger.warning(
-                f"Failed to send creation email to {result.email}. "
-                "Please send credentials manually."
+        if result.temp_password:
+            email_sent = await email_service.send_user_creation_email(
+                to_email=result.email,
+                first_name=result.first_name,
+                temp_password=result.temp_password,
             )
+            if email_sent:
+                logger.info(f"Successfully sent creation email to {result.email}")
+            else:
+                logger.warning(
+                    f"Failed to send creation email to {result.email}. "
+                    "Please send credentials manually."
+                )
+        else:
+            authentication_method = UserAuthenticationMethod(
+                getattr(
+                    result,
+                    "authentication_method",
+                    UserAuthenticationMethod.PASSWORD,
+                )
+            )
+            provider_name = {
+                UserAuthenticationMethod.GOOGLE_WORKSPACE: "Google",
+                UserAuthenticationMethod.MICROSOFT_ENTRA: "Microsoft",
+            }.get(authentication_method)
+            if provider_name:
+                email_sent = await email_service.send_external_auth_invitation_email(
+                    to_email=result.email,
+                    first_name=result.first_name,
+                    provider_name=provider_name,
+                )
+                if not email_sent:
+                    logger.warning(
+                        "Failed to send external authentication invitation",
+                        extra={
+                            "event": "auth_invitation_delivery_failed",
+                            "user_id": str(result.user_id),
+                            "authentication_method": authentication_method.value,
+                        },
+                    )
 
         logger.info(f"Successfully created user: {result.email} with ID: {result.user_id}")
         return Response.success_response(message="User created successfully", data=response_data)

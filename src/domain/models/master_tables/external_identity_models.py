@@ -1,10 +1,10 @@
 """External Identity Mapping Models.
 
 This module defines the ExternalIdentityMapping table for linking external identities
-(Teams, Slack, SSO providers) to CopilotGTM users.
+(chat channels, OAuth providers, and enterprise SSO) to CopilotGTM users.
 
 This enables authenticated experiences through chat bots and SSO providers by
-maintaining a mapping between external provider user IDs and internal user records.
+maintaining a mapping between immutable provider subjects and internal user records.
 """
 
 from datetime import datetime
@@ -57,7 +57,7 @@ class ExternalIdentityMapping(TimestampMixin, table=True):
     This table enables:
     - Teams bot authentication (user sends message -> bot looks up linked account)
     - Slack bot authentication (future)
-    - SSO silent auth (future - if user has Azure AD SSO, can auto-link Teams)
+    - Google Workspace and Microsoft Entra sign-in connections
 
     The mapping is unique per (provider, external_user_id, external_tenant_id) to
     prevent duplicate links while allowing the same user to link multiple providers.
@@ -110,7 +110,7 @@ class ExternalIdentityMapping(TimestampMixin, table=True):
     )
     provider_type: ExternalIdentityProviderType = Field(
         sa_column=Column(String(32), nullable=False),
-        description="Type of provider (chat_bot, sso, oauth).",
+        description="Connection protocol (chat_bot, sso, oauth).",
     )
 
     # External identity fields

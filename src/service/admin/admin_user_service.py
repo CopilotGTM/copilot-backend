@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import cast as typing_cast
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import col
@@ -29,16 +29,21 @@ from src.domain.models.master_tables import (
     SuperAdmin,
     User,
     UserActionHistory,
+    UserAuthenticationMethod,
     UserEventType,
 )
 from src.domain.models.organisation_tables.sync.crm.users import CRMUser
+from src.infra.auth.supabase_user_client import supabase_user_client
 from src.infra.auth.user_auth import user_auth
 from src.infra.config.constant import AdminUserErrors
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
-from src.service.crm.access.crm_user_service import build_user_display_name
-from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
+from src.service.users.external_auth_service import ExternalAuthService
+from src.service.users.user_tenant_setup_service import (
+    TenantUserSnapshot,
+    UserTenantSetupService,
+)
 
 logger = get_logger(__name__)
 
@@ -96,12 +101,13 @@ class UserIdentityConflictError(AdminUserServiceError):
 class CreateUserResult:
     """Result for user creation."""
 
-    def __init__(self, user: User, temp_password: str):
+    def __init__(self, user: User, temp_password: str | None):
         self.user_id = user.user_id
         self.email = user.email
         self.first_name = user.first_name
         self.created_at = user.created_at
         self.temp_password = temp_password
+        self.authentication_method = user.authentication_method
 
 
 class UpdateUserStatusResult:
@@ -180,6 +186,16 @@ class AdminUserService:
                 AdminUserErrors.ORGANISATION_NOT_FOUND,
                 error_code="ORGANISATION_NOT_FOUND",
             )
+        if (
+            user_data.authentication_method != UserAuthenticationMethod.PASSWORD
+            and not ExternalAuthService().email_matches_organisation_domain(
+                email=str(user_data.email), organisation_domains=organisation.domain
+            )
+        ):
+            raise InvalidUserDataError(
+                "Use a company email that matches the organisation domain.",
+                error_code="INVALID_COMPANY_EMAIL_DOMAIN",
+            )
 
         # Check if user already exists in local DB
         result = await self._session.execute(
@@ -206,26 +222,29 @@ class AdminUserService:
                     error_code="CRM_USER_ID_ALREADY_LINKED",
                 )
 
-        # Create user in Supabase
-        temp_password = user_auth.generate_temporary_password()
-
-        supabase_user_id = user_auth.create_supabase_user(
-            email=normalized_email,
-            password=temp_password,
-            first_name=user_data.first_name,
-            last_name=user_data.last_name,
-            user_role=user_data.user_role.value,
-        )
-
-        if not supabase_user_id:
-            raise AdminUserServiceError(
-                "Failed to create user in authentication system",
-                error_code="SUPABASE_CREATE_FAILED",
+        temp_password = None
+        supabase_user_id = None
+        if user_data.authentication_method == UserAuthenticationMethod.PASSWORD:
+            temp_password = user_auth.generate_temporary_password()
+            supabase_user_id = user_auth.create_supabase_user(
+                email=normalized_email,
+                password=temp_password,
+                first_name=user_data.first_name,
+                last_name=user_data.last_name,
+                user_role=user_data.user_role.value,
             )
+
+            if not supabase_user_id:
+                raise AdminUserServiceError(
+                    "Failed to create user in authentication system",
+                    error_code="SUPABASE_CREATE_FAILED",
+                )
 
         # Create local user record
         create_payload = user_data.model_dump(exclude_none=True)
         create_payload["email"] = normalized_email
+        if user_data.authentication_method != UserAuthenticationMethod.PASSWORD:
+            create_payload["status"] = SupabaseUserStatus.ACTIVE
         if crm_user_id is not None:
             create_payload["user_id"] = crm_user_id
         new_user = User(
@@ -245,13 +264,38 @@ class AdminUserService:
         )
         self._session.add(history_entry)
 
-        await self._ensure_internal_crm_for_new_app_user(
-            new_user,
-            create_crm_user=crm_user_id is None,
-        )
-
-        await self._session.commit()
-        await self._session.refresh(new_user)
+        crm_user_created = False
+        try:
+            crm_user_created = await self._ensure_internal_crm_for_new_app_user(
+                new_user,
+                create_crm_user=crm_user_id is None,
+            )
+            await self._session.commit()
+            await self._session.refresh(new_user)
+        except Exception:
+            await self._session.rollback()
+            if crm_user_created:
+                try:
+                    await self._delete_internal_crm_user(new_user)
+                except Exception:
+                    logger.critical(
+                        "CRM user provisioning compensation failed",
+                        extra={"event": "crm_user_provisioning_compensation_failed"},
+                        exc_info=True,
+                    )
+            if supabase_user_id:
+                try:
+                    user_auth.delete_supabase_user(supabase_user_id)
+                except Exception:
+                    logger.critical(
+                        "Supabase provisioning compensation failed",
+                        extra={
+                            "event": "auth_provisioning_compensation_failed",
+                            "supabase_user_id": supabase_user_id,
+                        },
+                        exc_info=True,
+                    )
+            raise
 
         logger.info(f"Successfully created user {new_user.email} with ID {new_user.user_id}")
         return CreateUserResult(new_user, temp_password=temp_password)
@@ -300,39 +344,40 @@ class AdminUserService:
         app_user: User,
         *,
         create_crm_user: bool,
-    ) -> None:
+    ) -> bool:
         async for org_session in acquire_org_async_session(app_user.organisation_id):
-            setup = await InternalCRMSetupService(
-                org_session,
-                app_user.organisation_id,
-                app_user.user_id,
-            ).setup_internal_crm(commit=False)
-            if not create_crm_user:
-                commit = getattr(org_session, "commit", None)
-                if commit is not None:
-                    await commit()
-                return
-
-            crm_user = CRMUser(
+            snapshot = TenantUserSnapshot(
                 user_id=app_user.user_id,
                 organisation_id=app_user.organisation_id,
-                integration_id=setup.integration.integration_id,
-                email=str(app_user.email) if app_user.email else None,
+                email=str(app_user.email),
                 first_name=app_user.first_name,
                 last_name=app_user.last_name,
-                full_name=build_user_display_name(app_user),
                 user_role=(
-                    app_user.user_role.value if hasattr(app_user.user_role, "value") else None
+                    app_user.user_role.value
+                    if hasattr(app_user.user_role, "value")
+                    else str(app_user.user_role)
                 ),
                 job_title=app_user.job_title,
                 is_active=app_user.status == SupabaseUserStatus.ACTIVE,
-                is_deleted=False,
             )
-            org_session.add(crm_user)
-            await org_session.flush()
-            commit = getattr(org_session, "commit", None)
-            if commit is not None:
-                await commit()
+            result = await UserTenantSetupService(org_session).ensure_user(
+                snapshot,
+                create_crm_user=create_crm_user,
+            )
+            return result.created
+
+        return False
+
+    async def _delete_internal_crm_user(self, app_user: User) -> None:
+        """Compensate a tenant CRM user when the master user transaction fails."""
+        async for org_session in acquire_org_async_session(app_user.organisation_id):
+            await org_session.execute(
+                delete(CRMUser).where(
+                    col(CRMUser.user_id) == app_user.user_id,
+                    col(CRMUser.organisation_id) == app_user.organisation_id,
+                )
+            )
+            await org_session.commit()
             return
 
     async def get_user(self, user_id: UUID) -> UserResponse:
@@ -518,6 +563,27 @@ class AdminUserService:
 
         await self._session.commit()
         await self._session.refresh(user)
+
+        if user.supabase_user_id and new_admin_status in {
+            AdminUserStatus.APPROVED,
+            AdminUserStatus.REJECTED,
+            AdminUserStatus.SUSPENDED,
+        }:
+            try:
+                supabase_user_client.set_user_banned(
+                    user.supabase_user_id,
+                    banned=new_admin_status != AdminUserStatus.APPROVED,
+                )
+            except Exception:
+                logger.error(
+                    "Supabase user ban update failed after local status commit",
+                    extra={
+                        "event": "auth_session_revocation_failed",
+                        "user_id": str(user.user_id),
+                        "admin_status": new_admin_status.value,
+                    },
+                    exc_info=True,
+                )
 
         return UpdateUserStatusResult(user)
 

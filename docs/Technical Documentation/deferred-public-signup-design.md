@@ -1,5 +1,10 @@
 # Deferred Public Signup Design
 
+> **Partially superseded:** the durable retry and reconciliation principles in this document remain
+> relevant, but its password endpoint and request body are not the V1 target. The approved proposal
+> is defined in `self-service-signup-and-organisation-invitations.md`: Google Workspace and
+> Microsoft Entra signup, founding-admin assignment, and organisation invitations.
+
 ## Status and scope
 
 This feature is intentionally deferred. It is not part of the shared-row

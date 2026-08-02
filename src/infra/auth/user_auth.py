@@ -3,11 +3,12 @@ import string
 
 from fastapi import HTTPException, Request, status
 from sqlalchemy import select
-from src.domain.models.master_tables import AdminUserStatus, SupabaseUserStatus, User
+from src.domain.models.master_tables import Organisation, User
 from src.infra.auth.supabase_user_client import SupabaseAuthError, supabase_user_client
 from src.infra.config.constant import UserAuthErrors
 from src.infra.database.sessions import master_async_session_scope
 from src.infra.utils.logger import get_logger
+from src.service.users.auth_access_service import AuthAccessError, AuthAccessService
 
 logger = get_logger(__name__)
 
@@ -78,6 +79,10 @@ class UserAuth:
             logger.error(f"Failed to create user in Supabase for email {email}: {e}")
             return None
 
+    def delete_supabase_user(self, user_id: str) -> None:
+        """Compensate a password account whose local provisioning failed."""
+        self.supabase_user_client.delete_user(user_id)
+
     async def get_current_user(self, request: Request) -> User:
         """
         Get the current authenticated user.
@@ -107,23 +112,20 @@ class UserAuth:
             token = auth_header.split(" ")[1]
 
             # Verify token with Supabase (external call — no DB session held)
-            user_data = self.supabase_user_client.verify_token(token)
-
-            # Get user ID from token
-            user_id = user_data.get("user", {}).get("id")
-            if not user_id:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=UserAuthErrors.INVALID_TOKEN_NO_ID,
-                )
+            verified_session = self.supabase_user_client.verify_session(token)
 
             # Acquire master session, look up user, detach, release
             async with master_async_session_scope() as session:
-                statement = select(User).where(User.supabase_user_id == user_id)
+                statement = select(User).where(
+                    User.supabase_user_id == verified_session.supabase_user_id
+                )
                 result = await session.execute(statement)
                 user = result.scalars().first()
                 if user:
+                    organisation = await session.get(Organisation, user.organisation_id)
                     session.expunge(user)
+                else:
+                    organisation = None
 
             if not user:
                 raise HTTPException(
@@ -131,15 +133,23 @@ class UserAuth:
                     detail=UserAuthErrors.USER_NOT_FOUND,
                 )
 
-            # Check if user is active
-            if (
-                user.status != SupabaseUserStatus.ACTIVE
-                or user.admin_status != AdminUserStatus.APPROVED
-            ):
+            if not organisation:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=UserAuthErrors.ACCOUNT_INACTIVE,
+                    detail="ORGANISATION_INACTIVE",
                 )
+
+            try:
+                AuthAccessService.ensure_access_allowed(
+                    user,
+                    organisation,
+                    verified_session.authentication_method,
+                )
+            except AuthAccessError as error:
+                raise HTTPException(
+                    status_code=error.status_code,
+                    detail=error.code,
+                ) from error
 
             return user
 

@@ -15,6 +15,7 @@ from src.domain.models.master_tables import (
     Organisation,
     OrganisationActionHistory,
     OrganisationIntegrationDetails,
+    SignupRequest,
     SuperAdmin,
     User,
     UserActionHistory,
@@ -62,6 +63,7 @@ SuperAdmin.metadata = master_metadata
 OrganisationActionHistory.metadata = master_metadata
 UserActionHistory.metadata = master_metadata
 OrganisationIntegrationDetails.metadata = master_metadata
+SignupRequest.metadata = master_metadata
 # Recreate the tables in the new metadata
 Organisation.__table__.tometadata(master_metadata)
 User.__table__.tometadata(master_metadata)
@@ -69,6 +71,7 @@ SuperAdmin.__table__.tometadata(master_metadata)
 OrganisationActionHistory.__table__.tometadata(master_metadata)
 UserActionHistory.__table__.tometadata(master_metadata)
 OrganisationIntegrationDetails.__table__.tometadata(master_metadata)
+SignupRequest.__table__.tometadata(master_metadata)
 
 target_metadata = master_metadata
 

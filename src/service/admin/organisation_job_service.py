@@ -46,6 +46,10 @@ class OrganisationJobService:
         Returns:
             Created OrganisationJob record
         """
+        # CREATE retries must share the same target UUID; display names are no
+        # longer unique and cannot safely identify partially provisioned rows.
+        if job_type == OrganisationJobType.CREATE and organisation_id is None:
+            organisation_id = uuid4()
         job = OrganisationJob(
             job_id=uuid4(),
             job_type=job_type,

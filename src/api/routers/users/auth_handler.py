@@ -1,15 +1,40 @@
+"""User authentication endpoints for password and provider-backed sessions.
+
+The frontend calls these routes for login, external identity completion,
+recovery, refresh, profile bootstrap, and logout. Local user and organisation
+policy is checked around Supabase operations so provider authentication alone
+never grants application access.
+"""
+
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
 from fastapi import APIRouter, Depends, Request
 from fastapi import Response as FastAPIResponse
-from sqlalchemy import select
-from src.api.dependencies.rate_limit import rate_limit_login, rate_limit_password_reset
+from sqlalchemy import and_, func, select
+from src.api.dependencies.rate_limit import (
+    rate_limit_login,
+    rate_limit_password_reset,
+    rate_limit_token_refresh,
+)
 from src.api.schemas.base_models import GenericResponse
 from src.api.utils.http_response import Response
-from src.domain.models.admin_models import PasswordResetAction
-from src.domain.models.master_tables import Organisation, SupabaseUserStatus, User
+from src.domain.models.master_tables import (
+    AdminUserStatus,
+    Organisation,
+    OrganisationStatus,
+    SupabaseUserStatus,
+    User,
+    UserActionHistory,
+    UserAuthenticationMethod,
+    UserEventType,
+)
+from src.domain.models.master_tables.external_identity_models import (
+    ExternalIdentityMapping,
+    ExternalIdentityProviderType,
+)
 from src.domain.models.user_models import (
+    UserCompletePasswordSetupRequest,
     UserForgotPasswordRequest,
     UserLoginRequest,
     UserLoginResponse,
@@ -27,6 +52,8 @@ from src.infra.database.sessions import master_async_session_scope
 from src.infra.utils.logger import get_logger
 from src.infra.utils.timezone import USER_TIMEZONE_HEADER, validate_timezone_name
 from src.service.orgnisation.organisation_preferences import normalize_organisation_preferences
+from src.service.users.auth_access_service import AuthAccessError, AuthAccessService
+from src.service.users.external_auth_service import ExternalAuthError, ExternalAuthService
 from src.service.users.user_preferences import normalize_user_preferences
 
 logger = get_logger("user_auth_handler")
@@ -39,6 +66,10 @@ _user_table = getattr(User, "__table__", None)
 if _user_table is None:
     raise RuntimeError("User table metadata is not initialized")
 UserTable = cast("Table", _user_table)
+_external_identity_table = getattr(ExternalIdentityMapping, "__table__", None)
+if _external_identity_table is None:
+    raise RuntimeError("External identity table metadata is not initialized")
+ExternalIdentityTable = cast("Table", _external_identity_table)
 
 
 async def _load_organisation_preferences(organisation_id):
@@ -47,6 +78,58 @@ async def _load_organisation_preferences(organisation_id):
         return normalize_organisation_preferences(
             organisation.preferences if organisation else None
         )
+
+
+def _bearer_token_from_request(request: Request) -> str | None:
+    authorization = request.headers.get("Authorization")
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    return authorization[7:].strip() or None
+
+
+def _organisation_is_approved_and_active(organisation: Organisation) -> bool:
+    status = getattr(organisation.status, "value", organisation.status)
+    return bool(organisation.is_active) and status == OrganisationStatus.APPROVED.value
+
+
+async def _record_successful_login(user_id, timezone: str | None) -> datetime:
+    """Persist login metadata without turning an analytics write into an auth outage."""
+    last_login_at = datetime.now(UTC)
+    try:
+        async with master_async_session_scope() as session:
+            user = (
+                (await session.execute(select(User).where(UserTable.c.user_id == user_id)))
+                .scalars()
+                .first()
+            )
+            if user:
+                user.last_login_at = last_login_at
+                if timezone:
+                    user.timezone = timezone
+                session.add(user)
+                await session.commit()
+    except Exception:
+        logger.warning("Failed to persist successful login metadata", exc_info=True)
+    return last_login_at
+
+
+async def _record_auth_event(
+    user_id, action: UserEventType, note: str, details: dict | None = None
+) -> None:
+    """Keep operational audit failures from changing an authentication result."""
+    try:
+        async with master_async_session_scope() as session:
+            session.add(
+                UserActionHistory(
+                    user_id=user_id,
+                    action=action,
+                    note=note,
+                    details=details,
+                )
+            )
+            await session.commit()
+    except Exception:
+        logger.error("Failed to persist authentication audit event", exc_info=True)
 
 
 @router.post("/login", response_model=GenericResponse[UserLoginResponse], tags=["user_auth"])
@@ -73,15 +156,37 @@ async def user_login(
                 user_created_at = user.created_at
                 user_id = user.user_id
                 user_organisation_id = user.organisation_id
+                user_profile_image_url = user.profile_image_url
+                user_authentication_method = UserAuthenticationMethod(user.authentication_method)
                 user_preferences = normalize_user_preferences(user.preferences)
+                organisation = await session.get(Organisation, user.organisation_id)
             else:
                 user_email = None
                 user_preferences = None
+                organisation = None
 
-        if not user_email:
+        if user is None or not user_email:
             logger.warning(f"User not found for email: {login_request.email}")
-            return Response.unauthorized_error_response(
-                UserAuthErrors.USER_NOT_FOUND, response=response
+            return Response.error_response(
+                status_code=401,
+                message="Invalid email or password",
+                code="INVALID_CREDENTIALS",
+                response=response,
+            )
+
+        if user_authentication_method != UserAuthenticationMethod.PASSWORD:
+            method_error = AuthAccessService.sign_in_required_error(user_authentication_method)
+            await _record_auth_event(
+                user_id,
+                UserEventType.AUTH_METHOD_REJECTED,
+                "Password sign-in rejected for external-auth account",
+                {"configured_method": user_authentication_method.value},
+            )
+            return Response.error_response(
+                status_code=method_error.status_code,
+                message=method_error.message,
+                code=method_error.code,
+                response=response,
             )
 
         logger.debug("User found in database")
@@ -96,8 +201,11 @@ async def user_login(
             )
         except Exception:
             logger.warning(f"Invalid credentials for user: {login_request.email}")
-            return Response.unauthorized_error_response(
-                UserAuthErrors.INVALID_CREDENTIALS, response=response
+            return Response.error_response(
+                status_code=401,
+                message="Invalid email or password",
+                code="INVALID_CREDENTIALS",
+                response=response,
             )
 
         user_data = supabase_response.get("user", {})
@@ -108,8 +216,11 @@ async def user_login(
 
         if not access_token:
             logger.warning(f"Invalid credentials for user: {login_request.email}")
-            return Response.unauthorized_error_response(
-                UserAuthErrors.INVALID_CREDENTIALS, response=response
+            return Response.error_response(
+                status_code=401,
+                message="Invalid email or password",
+                code="INVALID_CREDENTIALS",
+                response=response,
             )
 
         requires_password_change = user_data.get("user_metadata", {}).get(
@@ -117,67 +228,60 @@ async def user_login(
         )
         email_verified = user_data.get("user_metadata", {}).get("email_verified", False)
 
+        if user_data.get("id") != user.supabase_user_id or not organisation:
+            return Response.error_response(
+                status_code=401,
+                message="Invalid email or password",
+                code="INVALID_CREDENTIALS",
+                response=response,
+            )
+        try:
+            if requires_password_change:
+                if (
+                    user.admin_status != AdminUserStatus.APPROVED
+                    or not _organisation_is_approved_and_active(organisation)
+                    or user.status
+                    not in {SupabaseUserStatus.PENDING_SETUP, SupabaseUserStatus.ACTIVE}
+                ):
+                    raise AuthAccessError(
+                        "ACCOUNT_INACTIVE",
+                        "User account is not active",
+                    )
+            else:
+                AuthAccessService.ensure_access_allowed(
+                    user,
+                    organisation,
+                    UserAuthenticationMethod.PASSWORD,
+                )
+        except AuthAccessError as error:
+            return Response.error_response(
+                status_code=error.status_code,
+                message=error.message,
+                code=error.code,
+                response=response,
+            )
+
         if requires_password_change:
-            # External call to Supabase — no DB session held
-            try:
-                last_login_at = datetime.now(UTC)
-                if request_timezone:
-                    async with master_async_session_scope() as session:
-                        statement = select(User).where(UserTable.c.user_id == user_id)
-                        result = await session.execute(statement)
-                        user_obj = result.scalars().first()
-                        if user_obj:
-                            user_obj.last_login_at = last_login_at
-                            user_obj.timezone = request_timezone
-                            session.add(user_obj)
-                            await session.commit()
-                else:
-                    async with master_async_session_scope() as session:
-                        statement = select(User).where(UserTable.c.user_id == user_id)
-                        result = await session.execute(statement)
-                        user_obj = result.scalars().first()
-                        if user_obj:
-                            user_obj.last_login_at = last_login_at
-                            session.add(user_obj)
-                            await session.commit()
-
-                password_reset_link = supabase_user_client.generate_password_reset_link(
-                    email=login_request.email
-                )
-
-                response_data = UserLoginResponse(
-                    state=UserLoginState.PENDING_SETUP,
-                    last_login_at=last_login_at,
-                    timezone=effective_timezone,
-                    organisation_id=user_organisation_id,
-                    organisation_preferences=user_organisation_preferences,
-                    user_preferences=user_preferences,
-                    password_reset_link=password_reset_link,
-                )
-                return Response.success_response(
-                    message="Login successful, password change required",
-                    data=response_data,
-                )
-            except Exception as e:
-                logger.error(f"Failed to generate recovery token for user {user_email}: {str(e)}")
-                return Response.internal_server_error_response(
-                    message=UserAuthErrors.PASSWORD_CHANGE_TOKEN_FAILED,
-                    data=None,
-                    response=response,
-                )
+            last_login_at = await _record_successful_login(user_id, request_timezone)
+            response_data = UserLoginResponse(
+                state=UserLoginState.PENDING_SETUP,
+                last_login_at=last_login_at,
+                timezone=effective_timezone,
+                profile_image_url=user_profile_image_url,
+                organisation_id=user_organisation_id,
+                organisation_preferences=user_organisation_preferences,
+                user_preferences=user_preferences,
+                tokens={
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                },
+            )
+            return Response.success_response(
+                message="Login successful, password change required",
+                data=response_data,
+            )
         else:
-            # Re-acquire session briefly to update last_login_at
-            last_login_at = datetime.now(UTC)
-            async with master_async_session_scope() as session:
-                statement = select(User).where(UserTable.c.user_id == user_id)
-                result = await session.execute(statement)
-                user_obj = result.scalars().first()
-                if user_obj:
-                    user_obj.last_login_at = last_login_at
-                    if request_timezone:
-                        user_obj.timezone = request_timezone
-                    session.add(user_obj)
-                    await session.commit()
+            last_login_at = await _record_successful_login(user_id, request_timezone)
 
             response_data = UserLoginResponse(
                 email=user_email,
@@ -189,6 +293,7 @@ async def user_login(
                 email_verified=email_verified,
                 last_login_at=last_login_at,
                 timezone=effective_timezone,
+                profile_image_url=user_profile_image_url,
                 organisation_id=user_organisation_id,
                 organisation_preferences=user_organisation_preferences,
                 user_preferences=user_preferences,
@@ -211,11 +316,225 @@ async def user_login(
         )
 
 
+@router.post(
+    "/{provider}/complete",
+    response_model=GenericResponse[UserLoginResponse],
+    tags=["user_auth"],
+)
+async def user_external_auth_complete(
+    provider: str,
+    request: Request,
+    response: FastAPIResponse,
+    _rl_login: None = Depends(rate_limit_login),
+) -> GenericResponse[UserLoginResponse]:
+    """Complete an invited Google Workspace or Microsoft Entra sign-in."""
+    token = _bearer_token_from_request(request)
+    if not token:
+        return Response.error_response(
+            status_code=401,
+            message=UserAuthErrors.MISSING_AUTH_HEADER,
+            code="AUTHENTICATION_FAILED",
+            response=response,
+        )
+
+    try:
+        verified = supabase_user_client.verify_session(token)
+        claims = ExternalAuthService().extract_claims(
+            verified.user,
+            requested_provider=provider,
+        )
+        if verified.authentication_method != claims.authentication_method:
+            raise ExternalAuthError("The session provider does not match the requested provider")
+    except ExternalAuthError as error:
+        return Response.error_response(
+            status_code=error.status_code,
+            message=error.message,
+            code=error.code,
+            response=response,
+        )
+    except Exception:
+        logger.warning("External authentication token verification failed", exc_info=True)
+        return Response.error_response(
+            status_code=401,
+            message=UserAuthErrors.AUTHENTICATION_FAILED,
+            code="AUTHENTICATION_FAILED",
+            response=response,
+        )
+
+    try:
+        async with master_async_session_scope() as session:
+            existing_mapping = (
+                (
+                    await session.execute(
+                        select(ExternalIdentityMapping).where(
+                            and_(
+                                ExternalIdentityTable.c.provider == claims.mapping_provider,
+                                ExternalIdentityTable.c.external_user_id == claims.provider_user_id,
+                                ExternalIdentityTable.c.external_tenant_id
+                                == claims.provider_tenant_id,
+                            )
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+
+            if existing_mapping:
+                user = await session.get(User, existing_mapping.user_id)
+            else:
+                user = (
+                    (
+                        await session.execute(
+                            select(User)
+                            .where(func.lower(UserTable.c.email) == claims.email)
+                            .with_for_update()
+                        )
+                    )
+                    .scalars()
+                    .first()
+                )
+
+            if not user:
+                return Response.error_response(
+                    status_code=403,
+                    message="Your account has not been invited. Contact your administrator.",
+                    code=(
+                        "GOOGLE_INVITE_REQUIRED"
+                        if claims.authentication_method == UserAuthenticationMethod.GOOGLE_WORKSPACE
+                        else "MICROSOFT_INVITE_REQUIRED"
+                    ),
+                    response=response,
+                )
+
+            organisation = await session.get(Organisation, user.organisation_id)
+            try:
+                if not organisation:
+                    raise AuthAccessError(
+                        "ORGANISATION_INACTIVE",
+                        "Organisation is not active",
+                    )
+                AuthAccessService.ensure_access_allowed(
+                    user,
+                    organisation,
+                    verified.authentication_method,
+                )
+                ExternalAuthService().validate_provider_policy(
+                    claims, organisation_domains=organisation.domain
+                )
+            except (AuthAccessError, ExternalAuthError) as error:
+                return Response.error_response(
+                    status_code=error.status_code,
+                    message=error.message,
+                    code=error.code,
+                    response=response,
+                )
+
+            supabase_owner = (
+                (
+                    await session.execute(
+                        select(User).where(UserTable.c.supabase_user_id == claims.supabase_user_id)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if supabase_owner and supabase_owner.user_id != user.user_id:
+                return Response.error_response(
+                    status_code=409,
+                    message="This external account is already linked to another user",
+                    code="IDENTITY_CONFLICT",
+                    response=response,
+                )
+            if user.supabase_user_id and user.supabase_user_id != claims.supabase_user_id:
+                return Response.error_response(
+                    status_code=409,
+                    message="This user is already linked to another sign-in identity",
+                    code="IDENTITY_CONFLICT",
+                    response=response,
+                )
+
+            if existing_mapping and existing_mapping.user_id != user.user_id:
+                return Response.error_response(
+                    status_code=409,
+                    message="This external account is already linked to another user",
+                    code="IDENTITY_CONFLICT",
+                    response=response,
+                )
+
+            now = datetime.now(UTC)
+            user.supabase_user_id = claims.supabase_user_id
+            user.email_verified = True
+            user.last_login_at = now
+            user.timezone = (
+                validate_timezone_name(request.headers.get(USER_TIMEZONE_HEADER)) or user.timezone
+            )
+            user.profile_image_url = claims.profile_image_url or user.profile_image_url
+            session.add(user)
+            if existing_mapping:
+                existing_mapping.is_active = True
+                existing_mapping.last_used_at = now
+                session.add(existing_mapping)
+            else:
+                session.add(
+                    ExternalIdentityMapping(
+                        user_id=user.user_id,
+                        organisation_id=user.organisation_id,
+                        provider=claims.mapping_provider,
+                        provider_type=ExternalIdentityProviderType.OAUTH,
+                        external_user_id=claims.provider_user_id,
+                        external_tenant_id=claims.provider_tenant_id,
+                        external_user_email=claims.email,
+                        external_user_name=claims.full_name,
+                        is_active=True,
+                        linked_at=now,
+                        last_used_at=now,
+                    )
+                )
+                session.add(
+                    UserActionHistory(
+                        user_id=user.user_id,
+                        action=UserEventType.IDENTITY_LINKED,
+                        note="External sign-in identity linked",
+                        details={"provider": claims.mapping_provider.value},
+                    )
+                )
+            await session.commit()
+
+            return Response.success_response(
+                message="Login successful",
+                data=UserLoginResponse(
+                    email=user.email,
+                    first_name=user.first_name,
+                    last_name=user.last_name,
+                    role=user.user_role,
+                    state=UserLoginState.ACTIVE,
+                    created_at=user.created_at,
+                    email_verified=user.email_verified,
+                    last_login_at=user.last_login_at,
+                    timezone=user.timezone,
+                    profile_image_url=user.profile_image_url,
+                    organisation_id=user.organisation_id,
+                    organisation_preferences=normalize_organisation_preferences(
+                        organisation.preferences
+                    ),
+                    user_preferences=normalize_user_preferences(user.preferences),
+                ),
+            )
+    except Exception:
+        logger.error("Error during external authentication completion", exc_info=True)
+        return Response.internal_server_error_response(
+            message=UserAuthErrors.LOGIN_FAILED, data=None, response=response
+        )
+
+
 @router.post("/reset-password", response_model=GenericResponse[None], tags=["user_auth"])
 async def reset_password(
     password_request: UserResetPasswordRequest,
     response: FastAPIResponse,
+    _rl_password_reset: None = Depends(rate_limit_password_reset),
 ) -> GenericResponse[None]:
+    """Replace a password only when recovery and local account policy both pass."""
     try:
         if not password_request.token_hash:
             return Response.bad_request_error_response(
@@ -235,94 +554,53 @@ async def reset_password(
                 UserAuthErrors.PASSWORD_MISMATCH, response=response
             )
 
-        if password_request.action not in [
-            PasswordResetAction.FORCE_CHANGE,
-            PasswordResetAction.FORGOT,
-        ]:
-            return Response.bad_request_error_response(
-                UserAuthErrors.INVALID_ACTION, response=response
-            )
-
-        # External call to Supabase — no DB session held
         try:
-            user_id = supabase_user_client.reset_password_with_token(
-                token_hash=password_request.token_hash,
-                new_password=password_request.new_password,
-            )
+            user_id = supabase_user_client.verify_recovery_token(password_request.token_hash)
         except Exception as e:
             logger.error(f"Failed to reset password with recovery token: {str(e)}")
-            return Response.bad_request_error_response(
-                UserAuthErrors.INVALID_RECOVERY_TOKEN, response=response
+            return Response.error_response(
+                status_code=400,
+                message=UserAuthErrors.INVALID_RECOVERY_TOKEN,
+                code="INVALID_RECOVERY_TOKEN",
+                response=response,
             )
 
-        if password_request.action != PasswordResetAction.FORCE_CHANGE:
-            logger.info(
-                "Password reset completed for user_id %s (forgot action - no metadata update)",
-                user_id,
-            )
-            return Response.success_response(
-                message="Password changed successfully. You can now log in with your new password."
-            )
-
-        # Look up user and extract fields needed for Supabase metadata update
         async with master_async_session_scope() as session:
             statement = select(User).where(UserTable.c.supabase_user_id == user_id)
             result = await session.execute(statement)
             current_user = result.scalars().first()
-            if current_user:
-                cu_email = current_user.email
-                cu_first_name = current_user.first_name
-                cu_last_name = current_user.last_name
-                cu_user_role = current_user.user_role
-                cu_supabase_user_id = current_user.supabase_user_id
-                cu_id = current_user.user_id
-            else:
-                cu_email = None
-
-        if not cu_email:
-            logger.warning(f"User not found for user_id: {user_id}")
-            return Response.unauthorized_error_response(
-                UserAuthErrors.UNAUTHORIZED, response=response
+            organisation = (
+                await session.get(Organisation, current_user.organisation_id)
+                if current_user
+                else None
             )
 
-        # External call to Supabase — no DB session held
-        if cu_supabase_user_id:
-            updated_metadata = {
-                "requires_password_change": False,
-                "email_verified": True,
-                "first_name": cu_first_name,
-                "last_name": cu_last_name,
-                "role": cu_user_role,
-            }
-            try:
-                supabase_user_client.update_user_metadata(
-                    user_id=cu_supabase_user_id,
-                    metadata=updated_metadata,
-                )
-            except Exception:
-                logger.error(
-                    "Failed to update user metadata in Supabase for user: %s",
-                    cu_email,
-                )
-                return Response.internal_server_error_response(
-                    message=UserAuthErrors.UPDATE_METADATA_FAILED,
-                    data=None,
-                    response=response,
-                )
+        if (
+            not current_user
+            or not organisation
+            or UserAuthenticationMethod(current_user.authentication_method)
+            != UserAuthenticationMethod.PASSWORD
+            or current_user.admin_status != AdminUserStatus.APPROVED
+            or not _organisation_is_approved_and_active(organisation)
+        ):
+            logger.warning("Recovery rejected by local authentication policy")
+            return Response.error_response(
+                status_code=400,
+                message=UserAuthErrors.INVALID_RECOVERY_TOKEN,
+                code="INVALID_RECOVERY_TOKEN",
+                response=response,
+            )
 
-        # Re-acquire session briefly to update local DB
-        logger.info(f"Updating local DB for user_id: {user_id}")
-        async with master_async_session_scope() as session:
-            statement = select(User).where(UserTable.c.user_id == cu_id)
-            result = await session.execute(statement)
-            user_obj = result.scalars().first()
-            if user_obj:
-                user_obj.email_verified = True
-                user_obj.status = SupabaseUserStatus.ACTIVE
-                user_obj.last_login_at = datetime.now(UTC)
-                session.add(user_obj)
-                await session.commit()
-        logger.info(f"Local DB updated for user_id: {user_id}")
+        try:
+            supabase_user_client.update_password(user_id, password_request.new_password)
+        except Exception:
+            logger.warning("Recovery password update failed", exc_info=True)
+            return Response.error_response(
+                status_code=400,
+                message=UserAuthErrors.INVALID_RECOVERY_TOKEN,
+                code="INVALID_RECOVERY_TOKEN",
+                response=response,
+            )
 
         return Response.success_response(
             message="Password changed successfully. You can now log in with your new password."
@@ -340,6 +618,90 @@ async def reset_password(
 
 
 @router.post(
+    "/complete-password-setup",
+    response_model=GenericResponse[None],
+    tags=["user_auth"],
+)
+async def complete_password_setup(
+    request: Request,
+    setup_request: UserCompletePasswordSetupRequest,
+    response: FastAPIResponse,
+    _rl_password_reset: None = Depends(rate_limit_password_reset),
+) -> GenericResponse[None]:
+    """Replace a temporary password from its authenticated password session."""
+    token = _bearer_token_from_request(request)
+    if not token:
+        return Response.error_response(
+            status_code=401,
+            message=UserAuthErrors.MISSING_AUTH_HEADER,
+            code="AUTHENTICATION_FAILED",
+            response=response,
+        )
+    if setup_request.new_password != setup_request.confirm_password:
+        return Response.bad_request_error_response(
+            UserAuthErrors.PASSWORD_MISMATCH,
+            response=response,
+        )
+
+    try:
+        verified = supabase_user_client.verify_session(token)
+        async with master_async_session_scope() as session:
+            result = await session.execute(
+                select(User).where(UserTable.c.supabase_user_id == verified.supabase_user_id)
+            )
+            user = result.scalars().first()
+            organisation = await session.get(Organisation, user.organisation_id) if user else None
+
+            if (
+                not user
+                or not organisation
+                or verified.authentication_method != UserAuthenticationMethod.PASSWORD
+                or UserAuthenticationMethod(user.authentication_method)
+                != UserAuthenticationMethod.PASSWORD
+                or user.status != SupabaseUserStatus.PENDING_SETUP
+                or user.admin_status != AdminUserStatus.APPROVED
+                or not _organisation_is_approved_and_active(organisation)
+            ):
+                return Response.error_response(
+                    status_code=403,
+                    message="Password setup is not available for this account",
+                    code="AUTHENTICATION_FAILED",
+                    response=response,
+                )
+
+            supabase_user_client.update_password(
+                verified.supabase_user_id,
+                setup_request.new_password,
+            )
+            supabase_user_client.update_user_metadata(
+                user_id=verified.supabase_user_id,
+                metadata={
+                    "requires_password_change": False,
+                    "email_verified": True,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name,
+                    "role": getattr(user.user_role, "value", user.user_role),
+                },
+            )
+            user.status = SupabaseUserStatus.ACTIVE
+            user.email_verified = True
+            user.last_login_at = datetime.now(UTC)
+            session.add(user)
+            await session.commit()
+
+        supabase_user_client.revoke_session(token)
+        return Response.success_response(message="Password setup completed. Please sign in again.")
+    except Exception:
+        logger.warning("Authenticated password setup failed", exc_info=True)
+        return Response.error_response(
+            status_code=400,
+            message="Password setup failed",
+            code="AUTHENTICATION_FAILED",
+            response=response,
+        )
+
+
+@router.post(
     "/refresh-token",
     response_model=GenericResponse[UserRefreshTokenResponse],
     tags=["user_auth"],
@@ -347,15 +709,37 @@ async def reset_password(
 async def refresh_token(
     refresh_request: UserRefreshTokenRequest,
     response: FastAPIResponse,
+    _rl_refresh: None = Depends(rate_limit_token_refresh),
 ) -> GenericResponse[UserRefreshTokenResponse]:
+    """Refresh Supabase credentials and recheck current local access policy."""
     try:
         session_data = supabase_user_client.refresh_access_token(refresh_request.refresh_token)
 
-        if session_data.get("session", {}).get("access_token"):
+        access_token = session_data.get("session", {}).get("access_token")
+        if access_token:
+            verified = supabase_user_client.verify_session(access_token)
+            async with master_async_session_scope() as session:
+                result = await session.execute(
+                    select(User).where(UserTable.c.supabase_user_id == verified.supabase_user_id)
+                )
+                user = result.scalars().first()
+                organisation = (
+                    await session.get(Organisation, user.organisation_id) if user else None
+                )
+            if not user or not organisation:
+                raise AuthAccessError(
+                    "ACCOUNT_INACTIVE",
+                    "User account is not active",
+                )
+            AuthAccessService.ensure_access_allowed(
+                user,
+                organisation,
+                verified.authentication_method,
+            )
             return Response.success_response(
                 message="Token refreshed successfully",
                 data=UserRefreshTokenResponse(
-                    access_token=session_data["session"]["access_token"],
+                    access_token=access_token,
                     refresh_token=session_data["session"]["refresh_token"],
                 ),
             )
@@ -371,6 +755,13 @@ async def refresh_token(
             return Response.unauthorized_error_response(
                 UserAuthErrors.REFRESH_TOKEN_INVALID, response=response
             )
+    except AuthAccessError as error:
+        return Response.error_response(
+            status_code=error.status_code,
+            message=error.message,
+            code=error.code,
+            response=response,
+        )
     except SupabaseAuthError as e:
         log_method = logger.warning if e.status_code in {400, 401} else logger.error
         log_method(
@@ -425,17 +816,23 @@ async def forgot_password(
             if user:
                 user_email = user.email
                 user_first_name = user.first_name
+                user_authentication_method = UserAuthenticationMethod(user.authentication_method)
             else:
                 user_email = None
 
-        if not user_email:
-            logger.warning(
-                f"Password reset requested for non-existent user: {forgot_password_request.email}"
-            )
+        if user is None or user_authentication_method != UserAuthenticationMethod.PASSWORD:
+            logger.warning("Password recovery suppressed for unknown or non-password account")
+            if user is not None:
+                await _record_auth_event(
+                    user.user_id,
+                    UserEventType.RECOVERY_SUPPRESSED,
+                    "Password recovery suppressed for external-auth account",
+                )
             return Response.success_response(
                 message="If an account with this email exists, a password reset link has been sent."
             )
 
+        user_email = user.email
         # External call to Supabase — no DB session held
         password_reset_link = supabase_user_client.generate_password_reset_link(email=user_email)
         logger.info(f"Generated password reset link for: {forgot_password_request.email}")
@@ -501,6 +898,7 @@ async def get_current_user_profile(
                 email_verified=current_user.email_verified,
                 last_login_at=current_user.last_login_at,
                 timezone=current_user.timezone,
+                profile_image_url=current_user.profile_image_url,
                 organisation_id=current_user.organisation_id,
                 organisation_preferences=organisation_preferences,
                 user_preferences=normalize_user_preferences(current_user.preferences),
@@ -515,17 +913,31 @@ async def get_current_user_profile(
 
 @router.post("/logout", response_model=GenericResponse[None], tags=["user_auth"])
 async def user_logout(
+    request: Request,
     logout_request: UserLogoutRequest,
     response: FastAPIResponse,
     current_user: User = Depends(user_auth),
 ) -> GenericResponse[None]:
     """Logout the current user. If `global_logout` is true, sign out from all sessions."""
     try:
-        if current_user.supabase_user_id:
-            supabase_user_client.sign_out_user(
-                user_id=current_user.supabase_user_id,
-                global_signout=logout_request.global_logout,
+        token = _bearer_token_from_request(request)
+        if not token:
+            return Response.error_response(
+                status_code=401,
+                message=UserAuthErrors.MISSING_AUTH_HEADER,
+                code="AUTHENTICATION_FAILED",
+                response=response,
             )
+        supabase_user_client.revoke_session(
+            token,
+            global_signout=logout_request.global_logout,
+        )
+        await _record_auth_event(
+            current_user.user_id,
+            UserEventType.SESSION_REVOKED,
+            "All sessions revoked" if logout_request.global_logout else "Current session revoked",
+            {"scope": "global" if logout_request.global_logout else "local"},
+        )
 
         message = (
             "Successfully logged out from all sessions."

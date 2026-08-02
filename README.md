@@ -61,6 +61,15 @@ SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 SUPABASE_JWT_SECRET=your-jwt-secret
 
+# Local/dev may temporarily reuse the Google integration OAuth client for login.
+GOOGLE_CLIENT_ID=your-google-integration-client-id
+GOOGLE_CLIENT_SECRET=your-google-integration-client-secret
+GOOGLE_LOGIN_USE_INTEGRATION_CREDENTIALS=true
+
+# When using a dedicated login client outside production, these override the alias.
+# GOOGLE_LOGIN_CLIENT_ID=your-google-login-client-id
+# GOOGLE_LOGIN_CLIENT_SECRET=your-google-login-client-secret
+
 RESEND_API_KEY=your-resend-api-key
 FROM_EMAIL=noreply@yourdomain.com
 

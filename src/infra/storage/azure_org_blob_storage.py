@@ -15,6 +15,7 @@ from collections.abc import AsyncIterable
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+from azure.core.exceptions import ResourceExistsError
 from azure.identity.aio import (
     DefaultAzureCredential,
     ManagedIdentityCredential,
@@ -127,21 +128,32 @@ class AzureOrganisationBlobStorage:
         async with self._container_lock:
             if self._container_ready:
                 return
-            bs = await self._get_blob_service_client()
-            container_client = bs.get_container_client(self.container)
             try:
-                await container_client.create_container()
-                logger.info("Created container %s in account %s", self.container, self.account_name)
+                await self.provision_container()
+            except Exception as exc:
+                logger.debug("Container create skipped/failed: %s", exc)
+                # copilotgtm: ordinary blob access keeps legacy best-effort
+                # bootstrap; provisioning gates call provision_container directly.
                 self._container_ready = True
-            except Exception as e:
-                # Ignore if already exists; Azure error code check kept simple.
-                if "ContainerAlreadyExists" in str(e):
-                    self._container_ready = True
-                else:
-                    logger.debug("Container create skipped/failed: %s", e)
-                    # copilotgtm: container bootstrap stays best-effort; retry on a
-                    # new storage instance instead of once per generated file URL.
-                    self._container_ready = True
+
+    async def provision_container(self) -> None:
+        """Create the deterministic organisation container or confirm it exists."""
+        if self._container_ready:
+            return
+        blob_service = await self._get_blob_service_client()
+        container_client = blob_service.get_container_client(self.container)
+        try:
+            await container_client.create_container()
+            logger.info(
+                "Created container %s in account %s",
+                self.container,
+                self.account_name,
+            )
+        except ResourceExistsError:
+            # Concurrent provisioning may win the create race; the required
+            # post-condition is the container's existence, not who created it.
+            logger.info("Container %s already exists", self.container)
+        self._container_ready = True
 
     async def _get_user_delegation_key(self, minutes: int):
         """Reuse one delegation key while it safely covers the requested SAS lifetime."""

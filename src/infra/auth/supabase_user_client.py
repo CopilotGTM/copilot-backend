@@ -1,7 +1,10 @@
 import re
+from dataclasses import dataclass
 from typing import Any, TypedDict, cast
 
+import jwt
 from httpx import Client as HttpxClient
+from src.domain.models.master_tables import UserAuthenticationMethod
 from src.infra.config.configs import supabase_config
 from src.infra.config.constant import SupabaseErrors
 from src.infra.utils.logger import get_logger
@@ -9,6 +12,16 @@ from supabase import Client, create_client
 from supabase.lib.client_options import SyncClientOptions
 
 logger = get_logger()
+
+
+@dataclass(frozen=True)
+class VerifiedSupabaseSession:
+    """Remote-verified Supabase user plus method claims from the same token."""
+
+    user: dict[str, Any]
+    claims: dict[str, Any]
+    supabase_user_id: str
+    authentication_method: UserAuthenticationMethod
 
 
 class AdminUserAttributes(TypedDict, total=False):
@@ -347,41 +360,47 @@ class SupabaseUserClient:
                 SupabaseErrors.USER_CREATION_FAILED.format(str(e)), status_code=500
             ) from e
 
-    def sign_out_user(self, user_id: str, global_signout: bool = False) -> bool:
-        """
-        Sign out user from all sessions.
-
-        Args:
-            user_id: Supabase user ID
-            global_signout: If True, sign out from all sessions globally. If False, sign out from current session only.
-
-        Returns:
-            True if sign out was successful
-
-        Raises:
-            SupabaseAuthError: If sign out fails
-        """
+    def delete_user(self, user_id: str) -> None:
+        """Delete a just-created Supabase user during provisioning compensation."""
         try:
-            # Input validation
             if not self._validate_user_id(user_id):
                 raise SupabaseAuthError(SupabaseErrors.INVALID_USER_ID, status_code=400)
-
-            if global_signout:
-                # Sign out from all sessions globally
-                self._new_user_client().auth.sign_out({"scope": "global"})
-                logger.info(f"User {user_id} signed out globally from all sessions")
-            else:
-                # Sign out from current session only
-                self._new_user_client().auth.sign_out({"scope": "local"})
-                logger.info(f"User {user_id} signed out from current session")
-
-            return True
-
-        except Exception as e:
-            logger.error(f"Sign out failed for user {user_id}: {str(e)}")
+            self._require_admin_client().auth.admin.delete_user(user_id)
+        except Exception as exc:
             raise SupabaseAuthError(
-                SupabaseErrors.SIGN_OUT_FAILED.format(str(e)), status_code=500
-            ) from e
+                f"Failed to compensate Supabase user creation: {exc}",
+                status_code=500,
+            ) from exc
+
+    def revoke_session(self, access_token: str, *, global_signout: bool = False) -> None:
+        """Revoke refresh tokens represented by an authenticated access token."""
+        try:
+            if not self._validate_token(access_token):
+                raise SupabaseAuthError(SupabaseErrors.INVALID_TOKEN, status_code=400)
+            self._require_admin_client().auth.admin.sign_out(
+                access_token,
+                scope="global" if global_signout else "local",
+            )
+        except Exception as exc:
+            raise SupabaseAuthError(
+                SupabaseErrors.SIGN_OUT_FAILED.format(str(exc)),
+                status_code=500,
+            ) from exc
+
+    def set_user_banned(self, user_id: str, *, banned: bool) -> None:
+        """Block or restore Supabase sign-in and refresh for an app user."""
+        try:
+            if not self._validate_user_id(user_id):
+                raise SupabaseAuthError(SupabaseErrors.INVALID_USER_ID, status_code=400)
+            self._require_admin_client().auth.admin.update_user_by_id(
+                user_id,
+                {"ban_duration": "876000h" if banned else "none"},
+            )
+        except Exception as exc:
+            raise SupabaseAuthError(
+                SupabaseErrors.SIGN_OUT_FAILED.format(str(exc)),
+                status_code=500,
+            ) from exc
 
     def verify_token(self, token: str) -> dict[str, Any]:
         """
@@ -418,6 +437,66 @@ class SupabaseUserClient:
             raise SupabaseAuthError(
                 SupabaseErrors.TOKEN_VERIFICATION_FAILED.format(str(e)), status_code=401
             ) from e
+
+    def verify_session(self, token: str) -> VerifiedSupabaseSession:
+        """Verify remotely, then read the method claims from that same JWT."""
+        verified = self.verify_token(token)
+        user = cast(dict[str, Any], verified.get("user") or {})
+        supabase_user_id = str(user.get("id") or "")
+        try:
+            claims = cast(
+                dict[str, Any],
+                jwt.decode(
+                    token,
+                    options={
+                        "verify_signature": False,
+                        "verify_exp": False,
+                        "verify_aud": False,
+                    },
+                ),
+            )
+            if not supabase_user_id or claims.get("sub") != supabase_user_id:
+                raise ValueError("Verified user and token subject differ")
+            method = self._authentication_method_from_claims(user, claims)
+        except (ValueError, TypeError, jwt.PyJWTError) as exc:
+            raise SupabaseAuthError("Unsupported authentication session", status_code=401) from exc
+
+        return VerifiedSupabaseSession(
+            user=user,
+            claims=claims,
+            supabase_user_id=supabase_user_id,
+            authentication_method=method,
+        )
+
+    @staticmethod
+    def _authentication_method_from_claims(
+        user: dict[str, Any], claims: dict[str, Any]
+    ) -> UserAuthenticationMethod:
+        custom_method = claims.get("authentication_method")
+        if custom_method:
+            return UserAuthenticationMethod(str(custom_method))
+
+        amr = claims.get("amr") or []
+        methods = {
+            str(entry.get("method")) if isinstance(entry, dict) else str(entry) for entry in amr
+        }
+        if "oauth" in methods:
+            app_metadata = user.get("app_metadata") or {}
+            provider = str(app_metadata.get("provider") or claims.get("provider") or "").lower()
+            providers = {
+                str(value).lower() for value in app_metadata.get("providers") or [provider]
+            }
+            if len(providers) != 1:
+                raise ValueError(
+                    "Linked OAuth identities require a signed authentication_method claim"
+                )
+            if provider == "google":
+                return UserAuthenticationMethod.GOOGLE_WORKSPACE
+            if provider in {"azure", "azure_ad", "microsoft"}:
+                return UserAuthenticationMethod.MICROSOFT_ENTRA
+        if "password" in methods:
+            return UserAuthenticationMethod.PASSWORD
+        raise ValueError("Missing supported authentication method")
 
     def refresh_access_token(self, refresh_token: str) -> dict[str, Any]:
         """
@@ -510,6 +589,44 @@ class SupabaseUserClient:
             raise SupabaseAuthError(
                 SupabaseErrors.PASSWORD_RESET_FAILED.format(str(e)), status_code=500
             ) from e
+
+    def verify_recovery_token(self, token_hash: str) -> str:
+        """Verify a recovery token without changing credentials."""
+        try:
+            if not self._validate_hashed_token(token_hash):
+                raise SupabaseAuthError(SupabaseErrors.INVALID_HASHED_TOKEN, status_code=400)
+            response = self._new_user_client().auth.verify_otp(
+                {"token_hash": token_hash, "type": "recovery"}
+            )
+            user_id = (response.model_dump().get("user") or {}).get("id") if response else None
+            if not isinstance(user_id, str) or not self._validate_user_id(user_id):
+                raise SupabaseAuthError(
+                    SupabaseErrors.TOKEN_VERIFICATION_FAILED_NO_ID,
+                    status_code=400,
+                )
+            return user_id
+        except Exception as exc:
+            raise SupabaseAuthError(
+                SupabaseErrors.TOKEN_VERIFICATION_FAILED_GENERIC,
+                status_code=400,
+            ) from exc
+
+    def update_password(self, user_id: str, new_password: str) -> None:
+        """Update a verified local password account through the admin client."""
+        try:
+            if not self._validate_user_id(user_id):
+                raise SupabaseAuthError(SupabaseErrors.INVALID_USER_ID, status_code=400)
+            if not self._validate_password(new_password):
+                raise SupabaseAuthError(SupabaseErrors.INVALID_PASSWORD, status_code=400)
+            self._require_admin_client().auth.admin.update_user_by_id(
+                user_id,
+                {"password": new_password},
+            )
+        except Exception as exc:
+            raise SupabaseAuthError(
+                SupabaseErrors.PASSWORD_RESET_FAILED.format(str(exc)),
+                status_code=400,
+            ) from exc
 
     def update_user_metadata(self, user_id: str, metadata: dict[str, Any]) -> dict[str, Any]:
         """

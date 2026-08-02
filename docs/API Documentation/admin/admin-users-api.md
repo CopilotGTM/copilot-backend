@@ -31,13 +31,14 @@ Admin-facing user management: create users, update roles/status, and review hist
 | `UserAppRole`        | `member`, `admin`                                                                                                                |
 | `SupabaseUserStatus` | `ACTIVE`, `INACTIVE`, `PASSWORD_CHANGE_REQUIRED`                                                                                 |
 | `AdminUserStatus`    | `pending`, `approved`, `rejected`, `suspended`, `deactivated`                                                                    |
-| `UserEventType`      | `created`, `updated`, `status_changed`, `role_changed`, `deleted`, `login`, `password_reset`, `email_verified`, `field_changed`  |
+| `UserAuthenticationMethod` | `password`, `google_workspace`, `microsoft_entra` |
+| `UserEventType`      | Existing lifecycle values plus `identity_linked`, `auth_method_rejected`, `session_revoked`, `recovery_suppressed` |
 
 ---
 
 ## 1) Create User
 
-Creates a Supabase user and sends a temporary password email.
+Creates an invite-only password, Google Workspace, or Microsoft Entra user. Password is the default.
 
 ### Endpoint — Create User
 
@@ -60,6 +61,7 @@ POST /create_user
 | `user_role`         | `member` or `admin` | Yes      | App role                         |
 | `organisation_role` | string              | Yes      | Job/role title inside the org    |
 | `job_title`         | string              | No       | Optional job title               |
+| `authentication_method` | `password`, `google_workspace`, or `microsoft_entra` | No | Defaults to `password`. External methods do not create a password and send the matching provider invitation. The email must match an organisation domain. |
 
 #### Success — Create User
 
@@ -76,6 +78,9 @@ POST /create_user
 ```
 
 Errors: `400` for missing fields/invalid role, `403` if role is insufficient, `404` if organisation not found, `409` if user already exists.
+
+For frontend sign-in, recovery, and provider-linking behavior, see
+[User Authentication API](../users-auth-api.md).
 
 ---
 
@@ -109,6 +114,7 @@ GET /{user_id}/profile
     "job_title": "AE",
     "status": "ACTIVE",
     "admin_status": "approved",
+    "authentication_method": "google_workspace",
     "created_at": "2025-11-20T10:00:00Z",
     "updated_at": "2025-11-25T09:30:00Z"
   }

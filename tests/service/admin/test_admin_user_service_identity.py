@@ -2,11 +2,19 @@ from uuid import UUID, uuid4
 
 import pytest
 from src.domain.models.admin_user_models import CreateUserRequest
-from src.domain.models.master_tables import Organisation, User, UserAppRole
+from src.domain.models.master_tables import (
+    AdminUserStatus,
+    Organisation,
+    SupabaseUserStatus,
+    User,
+    UserAppRole,
+    UserAuthenticationMethod,
+)
 from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
 from src.service.admin import admin_user_service as service_module
 from src.service.admin.admin_user_service import AdminUserService, UserIdentityConflictError
+from src.service.users import user_tenant_setup_service as tenant_setup_module
 
 
 class _RowsResult:
@@ -15,6 +23,15 @@ class _RowsResult:
 
     def all(self) -> list[tuple[UUID]]:
         return self._rows
+
+    def scalars(self):
+        return self
+
+    def first(self):
+        return next(
+            (row for row in self._rows if isinstance(row, CRMUser)),
+            None,
+        )
 
 
 class _ScalarResult:
@@ -66,6 +83,7 @@ class _FakeMasterSession:
                 owner_email="owner@example.com",
                 owner_first_name="Owner",
                 owner_last_name="User",
+                domain=["acme.com"],
             )
         if model is User:
             if identity in self.user_by_id:
@@ -86,6 +104,9 @@ class _FakeMasterSession:
         return None
 
     async def close(self):
+        return None
+
+    async def rollback(self):
         return None
 
 
@@ -120,7 +141,7 @@ def _patch_internal_setup(monkeypatch, integration_id: UUID) -> None:
             )()
 
     monkeypatch.setattr(
-        service_module,
+        tenant_setup_module,
         "InternalCRMSetupService",
         FakeInternalCRMSetupService,
     )
@@ -288,3 +309,170 @@ async def test_create_user_allows_public_email_provider_when_no_crm_match(monkey
     created_crm_user = next(item for item in org_session.added if isinstance(item, CRMUser))
     assert created_user.email == "gmail.user@gmail.com"
     assert created_crm_user.email == "gmail.user@gmail.com"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "authentication_method",
+    [
+        UserAuthenticationMethod.GOOGLE_WORKSPACE,
+        UserAuthenticationMethod.MICROSOFT_ENTRA,
+    ],
+)
+async def test_create_provider_user_is_invited_without_creating_a_password_account(
+    monkeypatch, authentication_method
+):
+    organisation_id = uuid4()
+    master_session = _FakeMasterSession(organisation_id)
+    _patch_org_session(monkeypatch, [])
+    _patch_internal_setup(monkeypatch, uuid4())
+    create_supabase_user = monkeypatch.setattr(
+        service_module.user_auth,
+        "create_supabase_user",
+        lambda **_kwargs: pytest.fail("SSO invites must not create password accounts"),
+    )
+
+    result = await AdminUserService(master_session).create_user(
+        admin_id=uuid4(),
+        user_data=CreateUserRequest(
+            first_name="SSO",
+            last_name="User",
+            email="sso.user@acme.com",
+            organisation_id=organisation_id,
+            user_role=UserAppRole.MEMBER,
+            organisation_role="member",
+            authentication_method=authentication_method,
+        ),
+    )
+
+    created_user = next(item for item in master_session.added if isinstance(item, User))
+    assert create_supabase_user is None
+    assert result.temp_password is None
+    assert result.authentication_method == authentication_method
+    assert created_user.supabase_user_id is None
+    assert created_user.status == SupabaseUserStatus.ACTIVE
+    assert created_user.authentication_method == authentication_method
+
+
+@pytest.mark.asyncio
+async def test_suspension_commits_before_banning_supabase_user(monkeypatch):
+    organisation_id = uuid4()
+    user_id = uuid4()
+    supabase_user_id = str(uuid4())
+    user = User(
+        user_id=user_id,
+        email="suspended@acme.com",
+        first_name="Suspended",
+        last_name="User",
+        organisation_id=organisation_id,
+        organisation_role="member",
+        user_role=UserAppRole.MEMBER,
+        supabase_user_id=supabase_user_id,
+    )
+    master_session = _FakeMasterSession(organisation_id, user_by_id={user_id: user})
+    calls = []
+    monkeypatch.setattr(
+        service_module.supabase_user_client,
+        "set_user_banned",
+        lambda value, *, banned: calls.append((value, banned, master_session.committed)),
+    )
+
+    await AdminUserService(master_session).update_user_admin_status(
+        user_id=user_id,
+        admin_id=uuid4(),
+        new_admin_status=AdminUserStatus.SUSPENDED,
+        note=None,
+    )
+
+    assert calls == [(supabase_user_id, True, True)]
+
+
+@pytest.mark.asyncio
+async def test_suspension_remains_committed_when_supabase_ban_fails(monkeypatch):
+    organisation_id = uuid4()
+    user_id = uuid4()
+    user = User(
+        user_id=user_id,
+        email="suspended@acme.com",
+        first_name="Suspended",
+        last_name="User",
+        organisation_id=organisation_id,
+        organisation_role="member",
+        user_role=UserAppRole.MEMBER,
+        supabase_user_id=str(uuid4()),
+    )
+    master_session = _FakeMasterSession(organisation_id, user_by_id={user_id: user})
+
+    def fail_ban(*_args, **_kwargs):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(service_module.supabase_user_client, "set_user_banned", fail_ban)
+
+    result = await AdminUserService(master_session).update_user_admin_status(
+        user_id=user_id,
+        admin_id=uuid4(),
+        new_admin_status=AdminUserStatus.SUSPENDED,
+        note=None,
+    )
+
+    assert result.admin_status == AdminUserStatus.SUSPENDED
+    assert master_session.committed is True
+
+
+@pytest.mark.asyncio
+async def test_password_provisioning_deletes_orphan_when_local_commit_fails(monkeypatch):
+    organisation_id = uuid4()
+
+    class _FailingCommitSession(_FakeMasterSession):
+        async def commit(self):
+            raise RuntimeError("database unavailable")
+
+    master_session = _FailingCommitSession(organisation_id)
+    _patch_org_session(monkeypatch, [])
+    _patch_internal_setup(monkeypatch, uuid4())
+    monkeypatch.setattr(service_module.user_auth, "generate_temporary_password", lambda: "Temp123!")
+    monkeypatch.setattr(
+        service_module.user_auth,
+        "create_supabase_user",
+        lambda **_kwargs: "supabase-user-id",
+    )
+    deleted = []
+    deleted_crm = []
+    monkeypatch.setattr(
+        service_module.user_auth,
+        "delete_supabase_user",
+        lambda user_id: deleted.append(user_id),
+    )
+
+    async def create_crm_user(*_args, **_kwargs):
+        return True
+
+    async def delete_crm_user(_self, user):
+        deleted_crm.append(user.user_id)
+
+    monkeypatch.setattr(
+        AdminUserService,
+        "_ensure_internal_crm_for_new_app_user",
+        create_crm_user,
+    )
+    monkeypatch.setattr(
+        AdminUserService,
+        "_delete_internal_crm_user",
+        delete_crm_user,
+    )
+
+    with pytest.raises(Exception, match="database unavailable"):
+        await AdminUserService(master_session).create_user(
+            admin_id=uuid4(),
+            user_data=CreateUserRequest(
+                first_name="Password",
+                last_name="User",
+                email="password.user@acme.com",
+                organisation_id=organisation_id,
+                user_role=UserAppRole.MEMBER,
+                organisation_role="member",
+            ),
+        )
+
+    assert deleted == ["supabase-user-id"]
+    assert len(deleted_crm) == 1

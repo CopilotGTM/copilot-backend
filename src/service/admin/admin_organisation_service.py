@@ -111,6 +111,7 @@ class CreateJobResult:
         self.job_id = job.job_id
         self.job_type = job.job_type
         self.status = job.status
+        self.organisation_id = job.organisation_id
 
 
 # -----------------------------------------------------------------------------

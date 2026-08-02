@@ -11,7 +11,14 @@ from uuid import UUID, uuid4
 import fakeredis
 import pytest
 from fastapi.testclient import TestClient
-from src.domain.models.master_tables import SupabaseUserStatus, UserAppRole
+from src.domain.models.master_tables import (
+    AdminUserStatus,
+    OrganisationStatus,
+    SupabaseUserStatus,
+    UserAppRole,
+    UserAuthenticationMethod,
+)
+from src.infra.auth.supabase_user_client import VerifiedSupabaseSession
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +44,10 @@ class FakeUser:
         created_at: datetime | None = None,
         organisation_id: UUID | None = None,
         timezone: str | None = None,
+        profile_image_url: str | None = None,
         preferences: dict[str, Any] | None = None,
+        authentication_method: UserAuthenticationMethod = UserAuthenticationMethod.PASSWORD,
+        admin_status: AdminUserStatus = AdminUserStatus.APPROVED,
     ):
         self.user_id = user_id or uuid4()
         self.email = email
@@ -51,7 +61,10 @@ class FakeUser:
         self.created_at = created_at or datetime.now(UTC)
         self.organisation_id = organisation_id or uuid4()
         self.timezone = timezone
+        self.profile_image_url = profile_image_url
         self.preferences = preferences or {}
+        self.authentication_method = authentication_method
+        self.admin_status = admin_status
 
 
 # =============================================================================
@@ -68,6 +81,10 @@ class FakeSupabaseUserClient:
         self._refresh_tokens: dict[str, str] = {}  # refresh_token -> user_id
         self._raise_on_sign_in = False
         self._raise_on_refresh = False
+        self._updated_passwords: list[tuple[str, str]] = []
+        self._generated_reset_links: list[str] = []
+        self._access_tokens: dict[str, str] = {}
+        self._revoked_access_tokens: list[tuple[str, bool]] = []
 
     def add_user(
         self,
@@ -102,6 +119,8 @@ class FakeSupabaseUserClient:
         if not user_data or user_data["password"] != password:
             raise Exception("Invalid credentials")
 
+        access_token = f"access_token_{uuid4()}"
+        self._access_tokens[access_token] = user_data["user_id"]
         return {
             "user": {
                 "id": user_data["user_id"],
@@ -112,7 +131,7 @@ class FakeSupabaseUserClient:
                 },
             },
             "session": {
-                "access_token": f"access_token_{uuid4()}",
+                "access_token": access_token,
                 "refresh_token": f"refresh_token_{uuid4()}",
             },
         }
@@ -123,6 +142,27 @@ class FakeSupabaseUserClient:
         if not user_id:
             raise Exception("Invalid recovery token")
         return user_id
+
+    def verify_recovery_token(self, token_hash: str) -> str:
+        user_id = self._tokens.get(token_hash)
+        if not user_id:
+            raise Exception("Invalid recovery token")
+        return user_id
+
+    def update_password(self, user_id: str, new_password: str) -> None:
+        self._updated_passwords.append((user_id, new_password))
+
+    def verify_session(self, token: str) -> VerifiedSupabaseSession:
+        user_id = self._access_tokens[token]
+        return VerifiedSupabaseSession(
+            user={"id": user_id},
+            claims={"sub": user_id},
+            supabase_user_id=user_id,
+            authentication_method=UserAuthenticationMethod.PASSWORD,
+        )
+
+    def revoke_session(self, access_token: str, *, global_signout: bool = False) -> None:
+        self._revoked_access_tokens.append((access_token, global_signout))
 
     def refresh_access_token(self, refresh_token: str) -> dict:
         """Simulate token refresh."""
@@ -135,15 +175,18 @@ class FakeSupabaseUserClient:
         if not user_id:
             return {"session": {}}  # No access token = invalid
 
+        access_token = f"new_access_token_{uuid4()}"
+        self._access_tokens[access_token] = user_id
         return {
             "session": {
-                "access_token": f"new_access_token_{uuid4()}",
+                "access_token": access_token,
                 "refresh_token": f"new_refresh_token_{uuid4()}",
             },
         }
 
     def generate_password_reset_link(self, email: str) -> str:
         """Generate a password reset link."""
+        self._generated_reset_links.append(email)
         return f"https://example.com/reset?token={uuid4()}"
 
     def sign_out_user(self, user_id: str, global_signout: bool = False):
@@ -182,6 +225,7 @@ class FakeMasterSession:
         self._users_by_supabase_id: dict[str, FakeUser] = {}  # supabase_user_id -> user
         self._last_query_email: str | None = None
         self._last_query_supabase_id: str | None = None
+        self.organisation_active = True
 
     def add_user(self, user: FakeUser):
         """Add a user to the fake DB."""
@@ -216,8 +260,20 @@ class FakeMasterSession:
         )
 
     async def get(self, _model, _identity):
-        """Return no organisation override so auth uses normalized defaults."""
-        return None
+        """Return an active organisation for authentication-policy checks."""
+        return type(
+            "FakeOrganisation",
+            (),
+            {
+                "status": (
+                    OrganisationStatus.APPROVED
+                    if self.organisation_active
+                    else OrganisationStatus.SUSPENDED
+                ),
+                "preferences": {},
+                "is_active": self.organisation_active,
+            },
+        )()
 
     def add(self, obj):
         """Add object to session."""
@@ -272,6 +328,7 @@ def create_user(
     requires_password_change: bool = False,
     supabase_user_id: str | None = None,
     timezone: str | None = None,
+    status: SupabaseUserStatus = SupabaseUserStatus.ACTIVE,
 ) -> tuple[FakeUser, str]:
     """Create a test user with matching Supabase data.
 
@@ -285,6 +342,7 @@ def create_user(
         user_role=user_role,
         supabase_user_id=supabase_id,
         timezone=timezone,
+        status=status,
     )
     return user, supabase_id
 
@@ -401,6 +459,7 @@ def client_with_user_auth(mocker, user_auth_test_data):
     from src.api.dependencies.rate_limit import (
         rate_limit_login,
         rate_limit_password_reset,
+        rate_limit_token_refresh,
     )
     from src.infra.auth.user_auth import user_auth
     from src.infra.utils.app_state import fastapp as _fastapp
@@ -425,6 +484,7 @@ def client_with_user_auth(mocker, user_auth_test_data):
     _fastapp.dependency_overrides[get_master_async_session] = override_master_session
     _fastapp.dependency_overrides[rate_limit_login] = override_rate_limit_login
     _fastapp.dependency_overrides[rate_limit_password_reset] = override_rate_limit_password_reset
+    _fastapp.dependency_overrides[rate_limit_token_refresh] = override_rate_limit_login
     _fastapp.dependency_overrides[user_auth] = override_user_auth
 
     with TestClient(asgi_app) as c:

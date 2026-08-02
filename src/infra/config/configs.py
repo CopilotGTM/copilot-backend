@@ -1117,6 +1117,71 @@ class GoogleIntegrationConfig:
             )
 
 
+class GoogleLoginConfig(GoogleIntegrationConfig):
+    """Credentials for the Google provider configured in Supabase Auth.
+
+    Login and Gmail/Calendar integrations intentionally have separate config
+    names so production can rotate or replace either OAuth client independently.
+    During rollout, ``GOOGLE_LOGIN_USE_INTEGRATION_CREDENTIALS=true`` aliases
+    the values without making the integration secret names the login contract.
+    """
+
+    SECRET_NAME_CLIENT_ID = "google-login-client-id"
+    SECRET_NAME_CLIENT_SECRET = "google-login-client-secret"
+
+    def __init__(
+        self,
+        integration_config: GoogleIntegrationConfig,
+        *,
+        use_integration_credentials: bool | None = None,
+    ) -> None:
+        self._integration_config = integration_config
+        self._client_id = (os.getenv("GOOGLE_LOGIN_CLIENT_ID") or "").strip() or None
+        self._client_secret = (os.getenv("GOOGLE_LOGIN_CLIENT_SECRET") or "").strip() or None
+        self._credentials_from_env = bool(self._client_id and self._client_secret)
+        self._credentials_ttl_hours = float(os.getenv("GOOGLE_LOGIN_CREDENTIALS_TTL_HOURS", "6"))
+        self._credentials_loaded_at = None
+        self._refresh_lock = None
+        environment = os.getenv("ENV", "dev").strip().lower()
+        fallback_default = "false" if environment in {"prod", "production"} else "true"
+        self._use_integration_credentials = (
+            use_integration_credentials
+            if use_integration_credentials is not None
+            else os.getenv("GOOGLE_LOGIN_USE_INTEGRATION_CREDENTIALS", fallback_default).lower()
+            == "true"
+        )
+        if environment in {"prod", "production"} and self._use_integration_credentials:
+            raise RuntimeError("Production Google login must use dedicated credentials")
+
+    async def get_credentials(self) -> tuple[str, str]:
+        """Return the Google login OAuth pair for Supabase provider setup.
+
+        Dedicated environment credentials always win. A partially configured
+        pair is rejected instead of silently mixing login and integration apps.
+        """
+        self._validate_dedicated_env_pair()
+        if self._credentials_from_env:
+            return self._client_id or "", self._client_secret or ""
+        if self._use_integration_credentials:
+            return await self._integration_config.get_credentials()
+        return await super().get_credentials()
+
+    async def refresh_credentials(self) -> tuple[str, str]:
+        """Refresh the configured source without crossing the credential boundary."""
+        self._validate_dedicated_env_pair()
+        if self._credentials_from_env:
+            return self._client_id or "", self._client_secret or ""
+        if self._use_integration_credentials:
+            return await self._integration_config.refresh_credentials()
+        return await super().refresh_credentials()
+
+    def _validate_dedicated_env_pair(self) -> None:
+        if bool(self._client_id) != bool(self._client_secret):
+            raise RuntimeError(
+                "GOOGLE_LOGIN_CLIENT_ID and GOOGLE_LOGIN_CLIENT_SECRET must be set together"
+            )
+
+
 class GoogleGmailPubSubConfig:
     """Configuration for Gmail Pub/Sub webhook authentication.
 
@@ -1791,6 +1856,29 @@ class RateLimitConfig:
     AUTH_LOGIN_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_AUTH_LOGIN_PER_MINUTE", "50"))
     AUTH_LOGIN_PER_HOUR: int = int(os.getenv("RATE_LIMIT_AUTH_LOGIN_PER_HOUR", "100"))
 
+    # Organisation signup grants admin authority; writes are strict while status
+    # reads permit ordinary frontend polling during asynchronous provisioning.
+    AUTH_SIGNUP_IP_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_AUTH_SIGNUP_IP_PER_MINUTE", "20"))
+    AUTH_SIGNUP_IP_PER_HOUR: int = int(os.getenv("RATE_LIMIT_AUTH_SIGNUP_IP_PER_HOUR", "100"))
+    AUTH_SIGNUP_IDENTITY_PER_MINUTE: int = int(
+        os.getenv("RATE_LIMIT_AUTH_SIGNUP_IDENTITY_PER_MINUTE", "5")
+    )
+    AUTH_SIGNUP_IDENTITY_PER_HOUR: int = int(
+        os.getenv("RATE_LIMIT_AUTH_SIGNUP_IDENTITY_PER_HOUR", "20")
+    )
+    AUTH_SIGNUP_STATUS_IP_PER_MINUTE: int = int(
+        os.getenv("RATE_LIMIT_AUTH_SIGNUP_STATUS_IP_PER_MINUTE", "120")
+    )
+    AUTH_SIGNUP_STATUS_IP_PER_HOUR: int = int(
+        os.getenv("RATE_LIMIT_AUTH_SIGNUP_STATUS_IP_PER_HOUR", "2000")
+    )
+    AUTH_SIGNUP_STATUS_PER_MINUTE: int = int(
+        os.getenv("RATE_LIMIT_AUTH_SIGNUP_STATUS_PER_MINUTE", "60")
+    )
+    AUTH_SIGNUP_STATUS_PER_HOUR: int = int(
+        os.getenv("RATE_LIMIT_AUTH_SIGNUP_STATUS_PER_HOUR", "600")
+    )
+
     # IP-only total limit for login (prevents credential stuffing across many emails)
     LOGIN_IP_TOTAL_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_LOGIN_IP_TOTAL_PER_MINUTE", "100"))
     LOGIN_IP_TOTAL_PER_HOUR: int = int(os.getenv("RATE_LIMIT_LOGIN_IP_TOTAL_PER_HOUR", "300"))
@@ -1815,6 +1903,7 @@ knowledge_file_upload_config = KnowledgeFileUploadConfig()
 rate_limit_config = RateLimitConfig()
 integration_sync_config = IntegrationSyncConfig()
 google_integration_config = GoogleIntegrationConfig()
+google_login_config = GoogleLoginConfig(google_integration_config)
 google_gmail_pubsub_config = GoogleGmailPubSubConfig()
 microsoft_integration_config = MicrosoftIntegrationConfig()
 hubspot_integration_config = HubSpotIntegrationConfig()
