@@ -29,12 +29,11 @@ resource "azurerm_role_assignment" "cert_manager_dns_contributor" {
 
 # Federated Identity Credential for cert-manager to use the managed identity via Workload Identity
 resource "azurerm_federated_identity_credential" "cert_manager" {
-  name                = "cert-manager-federation"
-  resource_group_name = module.resource_group.resource_group_name
-  parent_id           = azurerm_user_assigned_identity.cert_manager_dns.id
-  audience            = ["api://AzureADTokenExchange"]
-  issuer              = module.aks.oidc_issuer_url
-  subject             = "system:serviceaccount:cert-manager:cert-manager"
+  name      = "cert-manager-federation"
+  parent_id = azurerm_user_assigned_identity.cert_manager_dns.id
+  audience  = ["api://AzureADTokenExchange"]
+  issuer    = module.aks.oidc_issuer_url
+  subject   = "system:serviceaccount:cert-manager:cert-manager"
 
   depends_on = [module.aks]
 }
