@@ -249,6 +249,7 @@ class Response:
         data: T | None = None,
         *,
         response: fastapi.Response | None = None,
+        code: str | None = None,
     ) -> GenericResponse[T]:
         cls._set_status_code(response, status_code)
-        return GenericResponse(status="ERROR", message=message, data=data)
+        return GenericResponse(status="ERROR", message=message, code=code, data=data)

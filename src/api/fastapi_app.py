@@ -96,6 +96,7 @@ from src.api.routers.private import private_lead_ingestion_router
 from src.api.routers.reminders import agents_router, reminders_router
 from src.api.routers.users.auth_handler import router as user_auth_router
 from src.api.routers.users.realtime_handler import router as user_realtime_router
+from src.api.routers.users.signup_handler import router as user_signup_router
 from src.infra.config.configs import app_config, security_secrets_config
 from src.infra.database.factory import close_database_providers
 from src.infra.database.tenant_runtime_config import (
@@ -255,6 +256,7 @@ def create_fastapi_app():
     fastapp.include_router(attachment_access_router, prefix="/chats", tags=["downloads"])
     # User auth
     fastapp.include_router(user_auth_router, prefix="/users/auth", tags=["user", "authentication"])
+    fastapp.include_router(user_signup_router, prefix="/users/auth", tags=["user", "signup"])
     fastapp.include_router(
         agent_action_approval_router,
         prefix="/users/preference",

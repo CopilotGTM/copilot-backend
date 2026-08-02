@@ -6,6 +6,57 @@ import pytest
 from src.infra.auth.email_service import EmailService
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_name", "button_text"),
+    [("Google", "Continue with Google"), ("Microsoft", "Continue with Microsoft")],
+)
+async def test_external_auth_invitation_names_the_required_provider(
+    monkeypatch, provider_name, button_text
+) -> None:
+    service = EmailService()
+    sent = {}
+
+    async def capture_email(to_email, subject, html_content, text_content=None, cc=None):
+        sent.update(
+            subject=subject,
+            html=html_content,
+            text=text_content,
+        )
+        return True
+
+    monkeypatch.setattr(service, "send_email", capture_email)
+
+    assert await service.send_external_auth_invitation_email(
+        to_email="person@acme.com",
+        first_name="Person",
+        provider_name=provider_name,
+    )
+    assert button_text in sent["html"]
+    assert provider_name in sent["subject"]
+
+
+@pytest.mark.asyncio
+async def test_signup_welcome_links_to_signin_without_verification_or_credentials(
+    monkeypatch,
+) -> None:
+    service = EmailService()
+    sent = {}
+
+    async def capture_email(to_email, subject, html_content, text_content=None, cc=None):
+        sent.update(to=to_email, subject=subject, html=html_content, text=text_content)
+        return True
+
+    monkeypatch.setattr(service, "send_email", capture_email)
+
+    assert await service.send_signup_welcome_email("founder@acme.com", "Ada")
+    content = f"{sent['subject']} {sent['html']} {sent['text']}".lower()
+    assert sent["to"] == "founder@acme.com"
+    assert f"{service.app_url}/signin" in content
+    assert "verify" not in content
+    assert "password" not in content
+
+
 class TestEmailServiceLazyInit:
     """EmailService should not resolve API key at init time."""
 

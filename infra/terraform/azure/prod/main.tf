@@ -701,6 +701,15 @@ resource "azuredevops_variable_group" "secrets" {
   }
 
   variable {
+    name  = "SUPABASE_URL"
+    value = "https://zgdizeaxfsvqfwmdwtrp.supabase.co"
+  }
+  variable {
+    name  = "SUPABASE_ANON_KEY"
+    value = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpnZGl6ZWF4ZnN2cWZ3bWR3dHJwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjczMDE2MjIsImV4cCI6MjA4Mjg3NzYyMn0.I2eJMCxyEBxbRm4gH6RyhYtau6Pwko06vvmPHnb6jQo"
+  }
+
+  variable {
     name  = "AZURE_SUBSCRIPTION_ID"
     value = var.subscription_id
   }
@@ -1242,6 +1251,21 @@ module "microsoft_app_registration" {
     project     = var.project_name
   }
 
+}
+
+# Keep login separate so sign-in can never inherit Microsoft data-integration permissions.
+module "microsoft_login_app_registration" {
+  source = "../modules/microsoft_login_app"
+
+  env                   = var.env
+  display_name_override = "CopilotGTM Login"
+  key_vault_id          = module.master_key_vault.key_vault_id
+  owner_object_id       = var.azure_resource_owner_object_id
+
+  tags = {
+    environment = var.env
+    project     = var.project_name
+  }
 }
 
 # -----------------------------------------------------------------

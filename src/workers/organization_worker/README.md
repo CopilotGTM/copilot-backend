@@ -14,6 +14,16 @@ This worker handles organization-related background tasks, specifically administ
   - Orchestrates creation workflows for new organizations.
   - Can trigger provisioning of DB schemas, roles, or integrations.
 
+### organization.signup.provision
+
+- **Queue**: `organization`
+- **Purpose**: Resume a durable provider-backed signup from its last committed milestone.
+- **Args**: `signup_request_id: str` only; provider tokens and profile payloads never enter Celery.
+- **Retries**: Three idempotent retries with exponential backoff.
+- **Activation gates**: control-plane founder, tenant defaults, and deterministic Azure container.
+- **Follow-up**: welcome email and Kai Training research run only after durable `active`; failures
+  are best-effort and do not deactivate the organisation.
+
 ### organization.test_task
 
 - **Queue**: `organization`
@@ -65,6 +75,7 @@ The worker uses a dedicated `organization` exchange with proper routing keys to 
 ```python
 {
     "organization.create": {"queue": "organization", "routing_key": "organization"},
+    "organization.signup.provision": {"queue": "organization", "routing_key": "organization"},
     "organization.test_task": {"queue": "organization", "routing_key": "organization"},
     "organization.ping": {"queue": "organization", "routing_key": "organization"},
 }

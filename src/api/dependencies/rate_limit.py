@@ -9,6 +9,7 @@ predictable across endpoints.
 from __future__ import annotations
 
 import time
+from hashlib import sha256
 from typing import cast
 
 from fastapi import Depends, HTTPException, Request, status
@@ -341,7 +342,6 @@ async def rate_limit_login(request: Request) -> None:
             detail="Too many login attempts from this location. Please try again later.",
             headers={"Retry-After": str(retry_after)},
         )
-
     if ip_total_hour_count and ip_total_hour_count > ip_total_per_hr:
         retry_after = _ttl_seconds(ip_total_hour_key) or hour_window
         logger.warning(f"Login IP total rate limit exceeded (per-hour) for ip={ip}")
@@ -380,6 +380,89 @@ async def rate_limit_login(request: Request) -> None:
             detail="Too many login attempts. Please try again later.",
             headers={"Retry-After": str(retry_after)},
         )
+
+
+def _enforce_signup_rate_limit(
+    request: Request,
+    *,
+    category: str,
+    ip_per_minute: int,
+    ip_per_hour: int,
+    identity_per_minute: int,
+    identity_per_hour: int,
+) -> None:
+    """Apply fail-closed limits without retaining a raw bearer credential."""
+    authorization = request.headers.get("authorization", "")
+    token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+    identity_hash = sha256(token.encode()).hexdigest() if token else "missing"
+    ip = client_ip_for_external_ingress(request)
+    now = int(time.time())
+    client = get_redis_client()
+
+    # Signup grants founding-admin authority, so a limiter outage fails closed
+    # instead of bypassing abuse protection as ordinary authenticated routes do.
+    limits = (
+        ("ip", ip, ip_per_minute, 60),
+        ("ip", ip, ip_per_hour, 3600),
+        ("identity", identity_hash, identity_per_minute, 60),
+        ("identity", identity_hash, identity_per_hour, 3600),
+    )
+    try:
+        for kind, subject, limit, window in limits:
+            key = f"rl:signup:{category}:{kind}:{subject}:w:{window}:{now // window}"
+            count = cast(int, client.incr(key))
+            if count == 1:
+                client.expire(key, window)
+            if count > limit:
+                retry_after = cast(int, client.ttl(key))
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Too many signup requests. Please try again later.",
+                    headers={"Retry-After": str(retry_after if retry_after > 0 else window)},
+                )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Signup rate limiter unavailable", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Signup is temporarily unavailable",
+        ) from exc
+
+
+async def rate_limit_signup(request: Request) -> None:
+    """Protect the authority-granting signup write endpoint."""
+    _enforce_signup_rate_limit(
+        request,
+        category="write",
+        ip_per_minute=rate_limit_config.AUTH_SIGNUP_IP_PER_MINUTE,
+        ip_per_hour=rate_limit_config.AUTH_SIGNUP_IP_PER_HOUR,
+        identity_per_minute=rate_limit_config.AUTH_SIGNUP_IDENTITY_PER_MINUTE,
+        identity_per_hour=rate_limit_config.AUTH_SIGNUP_IDENTITY_PER_HOUR,
+    )
+
+
+async def rate_limit_signup_status(request: Request) -> None:
+    """Allow normal provisioning polling under a separate read budget."""
+    _enforce_signup_rate_limit(
+        request,
+        category="status",
+        ip_per_minute=rate_limit_config.AUTH_SIGNUP_STATUS_IP_PER_MINUTE,
+        ip_per_hour=rate_limit_config.AUTH_SIGNUP_STATUS_IP_PER_HOUR,
+        identity_per_minute=rate_limit_config.AUTH_SIGNUP_STATUS_PER_MINUTE,
+        identity_per_hour=rate_limit_config.AUTH_SIGNUP_STATUS_PER_HOUR,
+    )
+
+
+async def rate_limit_token_refresh(request: Request) -> None:
+    """Limit anonymous refresh attempts by client IP."""
+    _enforce_rate_limit_for_limits(
+        "refresh",
+        client_ip_for_external_ingress(request),
+        "token",
+        per_minute_limit=getattr(rate_limit_config, "AUTH_REFRESH_PER_MINUTE", 30),
+        per_hour_limit=getattr(rate_limit_config, "AUTH_REFRESH_PER_HOUR", 300),
+    )
 
 
 async def rate_limit_admin_login(request: Request) -> None:
@@ -527,6 +610,9 @@ __all__ = [
     "rate_limit_login",
     "rate_limit_admin_login",
     "rate_limit_password_reset",
+    "rate_limit_token_refresh",
+    "rate_limit_signup",
+    "rate_limit_signup_status",
     "rate_limit_user_read",
     "enforce_contact_research_rate_limit",
     "rate_limit_admin_read",

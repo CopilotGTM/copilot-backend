@@ -8,6 +8,7 @@ from src.domain.models.master_tables import (
     SupabaseUserStatus,
     User,
     UserAppRole,
+    UserAuthenticationMethod,
 )
 
 T = TypeVar("T")
@@ -21,6 +22,7 @@ class CreateUserRequest(BaseModel):
     user_role: UserAppRole
     job_title: str | None = None
     organisation_role: str
+    authentication_method: UserAuthenticationMethod = UserAuthenticationMethod.PASSWORD
 
 
 class UpdateUserRequest(BaseModel):
@@ -45,6 +47,7 @@ class UserResponse(BaseModel):
     job_title: str | None = None
     status: SupabaseUserStatus
     admin_status: AdminUserStatus
+    authentication_method: UserAuthenticationMethod
     created_at: datetime
     updated_at: datetime
 
@@ -64,6 +67,7 @@ class UserResponse(BaseModel):
             job_title=user.job_title,
             status=user.status,
             admin_status=user.admin_status,
+            authentication_method=user.authentication_method,
             created_at=user.created_at,
             updated_at=user.updated_at,
         )

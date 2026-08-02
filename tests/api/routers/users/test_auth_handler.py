@@ -9,11 +9,245 @@ Focuses on:
 """
 
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from fastapi import Response as FastAPIResponse
 from starlette.requests import Request
 from tests.api.routers.users.conftest import create_user
+
+
+class _SSOResult:
+    def __init__(self, value):
+        self.value = value
+
+    def scalars(self):
+        return self
+
+    def first(self):
+        return self.value
+
+
+class _SSOSession:
+    def __init__(self, user, organisation, mapping=None):
+        self.user = user
+        self.organisation = organisation
+        self.mapping = mapping
+        self.added = []
+        self.email_queried = False
+
+    async def execute(self, statement):
+        query = str(statement)
+        if "external_identity_mappings" in query:
+            return _SSOResult(self.mapping)
+        if "lower(public.users.email)" in query:
+            self.email_queried = True
+            return _SSOResult(self.user)
+        if "supabase_user_id" in query:
+            return _SSOResult(self.user if self.user.supabase_user_id else None)
+        return _SSOResult(self.user)
+
+    async def get(self, model, _identity):
+        return self.user if getattr(model, "__name__", "") == "User" else self.organisation
+
+    def add(self, value):
+        self.added.append(value)
+
+    async def commit(self):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_login_metadata_failure_is_best_effort(mocker):
+    import src.api.routers.users.auth_handler as auth_handler
+
+    class FailingSession:
+        async def execute(self, _statement):
+            raise RuntimeError("database unavailable")
+
+    @asynccontextmanager
+    async def session_scope():
+        yield FailingSession()
+
+    mocker.patch.object(auth_handler, "master_async_session_scope", session_scope)
+
+    recorded_at = await auth_handler._record_successful_login(uuid4(), "Asia/Kolkata")
+
+    assert recorded_at.tzinfo is UTC
+
+
+@pytest.mark.asyncio
+async def test_google_sso_login_links_an_invited_approved_user(mocker):
+    """A verified Workspace identity links only after app-side access checks."""
+    import src.api.routers.users.auth_handler as auth_handler
+    from src.domain.models.master_tables import (
+        AdminUserStatus,
+        OrganisationStatus,
+        SupabaseUserStatus,
+        UserAuthenticationMethod,
+    )
+    from src.infra.auth.supabase_user_client import VerifiedSupabaseSession
+
+    user = SimpleNamespace(
+        user_id=uuid4(),
+        email="person@acme.com",
+        first_name="Person",
+        last_name="Acme",
+        user_role="member",
+        created_at=datetime.now(UTC),
+        preferences={},
+        organisation_id=uuid4(),
+        status=SupabaseUserStatus.ACTIVE,
+        admin_status=AdminUserStatus.APPROVED,
+        supabase_user_id=None,
+        email_verified=False,
+        last_login_at=None,
+        timezone=None,
+        profile_image_url=None,
+        authentication_method=UserAuthenticationMethod.GOOGLE_WORKSPACE,
+    )
+    organisation = SimpleNamespace(
+        organisation_id=user.organisation_id,
+        domain=["acme.com"],
+        is_active=True,
+        status=OrganisationStatus.APPROVED,
+        preferences={},
+    )
+    session = _SSOSession(user, organisation)
+
+    @asynccontextmanager
+    async def session_scope():
+        yield session
+
+    mocker.patch.object(auth_handler, "master_async_session_scope", session_scope)
+    mocker.patch.object(
+        auth_handler.supabase_user_client,
+        "verify_session",
+        return_value=VerifiedSupabaseSession(
+            user={
+                "id": "supabase-google-user",
+                "email": user.email,
+                "email_confirmed_at": "2026-08-01T00:00:00Z",
+                "identities": [
+                    {
+                        "provider": "google",
+                        "identity_data": {
+                            "sub": "google-subject-1",
+                            "email": user.email,
+                            "email_verified": True,
+                            "hd": "acme.com",
+                            "picture": "https://lh3.googleusercontent.com/avatar.png",
+                        },
+                    }
+                ],
+            },
+            claims={"sub": "supabase-google-user"},
+            supabase_user_id="supabase-google-user",
+            authentication_method=UserAuthenticationMethod.GOOGLE_WORKSPACE,
+        ),
+    )
+
+    result = await auth_handler.user_external_auth_complete(
+        provider="google",
+        request=Request({"type": "http", "headers": [(b"authorization", b"Bearer token")]}),
+        response=FastAPIResponse(),
+        _rl_login=None,
+    )
+
+    assert result.data is not None
+    assert result.data.email == user.email
+    assert user.supabase_user_id == "supabase-google-user"
+    assert user.profile_image_url == "https://lh3.googleusercontent.com/avatar.png"
+
+
+@pytest.mark.asyncio
+async def test_returning_external_user_resolves_connection_before_changed_email(mocker):
+    import src.api.routers.users.auth_handler as auth_handler
+    from src.domain.models.master_tables import (
+        AdminUserStatus,
+        OrganisationStatus,
+        SupabaseUserStatus,
+        UserAuthenticationMethod,
+    )
+    from src.infra.auth.supabase_user_client import VerifiedSupabaseSession
+
+    user = SimpleNamespace(
+        user_id=uuid4(),
+        email="old-name@acme.com",
+        first_name="Person",
+        last_name="Acme",
+        user_role="member",
+        created_at=datetime.now(UTC),
+        preferences={},
+        organisation_id=uuid4(),
+        status=SupabaseUserStatus.ACTIVE,
+        admin_status=AdminUserStatus.APPROVED,
+        supabase_user_id="supabase-microsoft-user",
+        email_verified=True,
+        last_login_at=None,
+        timezone=None,
+        profile_image_url=None,
+        authentication_method=UserAuthenticationMethod.MICROSOFT_ENTRA,
+    )
+    organisation = SimpleNamespace(
+        organisation_id=user.organisation_id,
+        domain=["acme.com"],
+        is_active=True,
+        status=OrganisationStatus.APPROVED,
+        preferences={},
+    )
+    tenant_id = str(uuid4())
+    mapping = SimpleNamespace(
+        user_id=user.user_id,
+        is_active=True,
+        last_used_at=None,
+    )
+    session = _SSOSession(user, organisation, mapping)
+
+    @asynccontextmanager
+    async def session_scope():
+        yield session
+
+    mocker.patch.object(auth_handler, "master_async_session_scope", session_scope)
+    mocker.patch.object(
+        auth_handler.supabase_user_client,
+        "verify_session",
+        return_value=VerifiedSupabaseSession(
+            user={
+                "id": "supabase-microsoft-user",
+                "email": "new-name@acme.com",
+                "email_confirmed_at": "2026-08-01T00:00:00Z",
+                "identities": [
+                    {
+                        "provider": "azure",
+                        "identity_data": {
+                            "sub": "entra-subject",
+                            "tid": tenant_id,
+                            "email": "new-name@acme.com",
+                            "email_verified": True,
+                        },
+                    }
+                ],
+            },
+            claims={"sub": "supabase-microsoft-user"},
+            supabase_user_id="supabase-microsoft-user",
+            authentication_method=UserAuthenticationMethod.MICROSOFT_ENTRA,
+        ),
+    )
+
+    result = await auth_handler.user_external_auth_complete(
+        provider="microsoft",
+        request=Request({"type": "http", "headers": [(b"authorization", b"Bearer token")]}),
+        response=FastAPIResponse(),
+        _rl_login=None,
+    )
+
+    assert result.data is not None
+    assert result.data.email == "old-name@acme.com"
+    assert session.email_queried is False
+
 
 # =============================================================================
 # POST /users/auth/login - Login Tests
@@ -36,6 +270,43 @@ def test_login_success(client_with_user_auth):
     assert body["data"]["tokens"] is not None
     assert "access_token" in body["data"]["tokens"]
     assert "refresh_token" in body["data"]["tokens"]
+
+
+def test_unknown_password_user_has_generic_stable_error(client_with_user_auth):
+    response = client_with_user_auth["client"].post(
+        "/users/auth/login",
+        json={"email": "missing@example.com", "password": "invalid-value"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "INVALID_CREDENTIALS"
+    assert response.json()["message"] == "Invalid email or password"
+
+
+def test_provider_account_password_login_returns_provider_guidance(client_with_user_auth):
+    from src.domain.models.master_tables import UserAuthenticationMethod
+
+    client_with_user_auth["user"].authentication_method = UserAuthenticationMethod.MICROSOFT_ENTRA
+
+    response = client_with_user_auth["client"].post(
+        "/users/auth/login",
+        json={"email": "testuser@example.com", "password": "correctpassword"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "MICROSOFT_SIGN_IN_REQUIRED"
+
+
+def test_me_returns_google_profile_image(client_with_user_auth):
+    """The identity image stored at SSO link time is available to the app shell."""
+    client = client_with_user_auth["client"]
+    user = client_with_user_auth["user"]
+    user.profile_image_url = "https://example.com/avatar.png"
+
+    response = client.get("/users/auth/me", headers={"Authorization": "Bearer valid-token"})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["profile_image_url"] == user.profile_image_url
 
 
 @pytest.mark.asyncio
@@ -174,7 +445,8 @@ def test_login_user_not_found(client_with_user_auth):
     assert resp.status_code == 401, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"
-    assert "User not found" in body["message"]
+    assert body["message"] == "Invalid email or password"
+    assert body["code"] == "INVALID_CREDENTIALS"
 
 
 def test_login_invalid_password(client_with_user_auth):
@@ -188,7 +460,24 @@ def test_login_invalid_password(client_with_user_auth):
     assert resp.status_code == 401, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"
-    assert "Invalid credentials" in body["message"]
+    assert body["message"] == "Invalid email or password"
+    assert body["code"] == "INVALID_CREDENTIALS"
+
+
+def test_suspended_password_user_is_rejected_after_valid_credentials(
+    client_with_user_auth,
+):
+    from src.domain.models.master_tables import AdminUserStatus
+
+    client_with_user_auth["user"].admin_status = AdminUserStatus.SUSPENDED
+
+    response = client_with_user_auth["client"].post(
+        "/users/auth/login",
+        json={"email": "testuser@example.com", "password": "correctpassword"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "ACCOUNT_INACTIVE"
 
 
 def test_login_password_change_required(client_with_user_auth):
@@ -218,7 +507,8 @@ def test_login_password_change_required(client_with_user_auth):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["data"]["state"] == "PASSWORD_CHANGE_REQUIRED"
-    assert body["data"]["password_reset_link"] is not None
+    assert body["data"]["tokens"] is not None
+    assert "password_reset_link" not in body["data"]
 
 
 def test_login_password_change_required_updates_last_login_at(client_with_user_auth):
@@ -286,6 +576,45 @@ def test_login_password_change_required_persists_timezone_header(client_with_use
     assert user.timezone == "America/New_York"
 
 
+def test_complete_password_setup_uses_authenticated_temporary_session(
+    client_with_user_auth,
+):
+    client = client_with_user_auth["client"]
+    supabase_client = client_with_user_auth["supabase_client"]
+    master_session = client_with_user_auth["master_session"]
+    from src.domain.models.master_tables import SupabaseUserStatus
+
+    user, supabase_id = create_user(
+        email="setup@example.com",
+        password="temporary-password",
+        requires_password_change=True,
+        status=SupabaseUserStatus.PENDING_SETUP,
+    )
+    master_session.add_user(user)
+    supabase_client.add_user(
+        email="setup@example.com",
+        password="temporary-password",
+        user_id=supabase_id,
+        requires_password_change=True,
+    )
+    login = client.post(
+        "/users/auth/login",
+        json={"email": "setup@example.com", "password": "temporary-password"},
+    ).json()
+    access_token = login["data"]["tokens"]["access_token"]
+
+    response = client.post(
+        "/users/auth/complete-password-setup",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"new_password": "permanent-password", "confirm_password": "permanent-password"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert (supabase_id, "permanent-password") in supabase_client._updated_passwords
+    assert (access_token, False) in supabase_client._revoked_access_tokens
+    assert user.status == SupabaseUserStatus.ACTIVE
+
+
 def test_login_invalid_email_format(client_with_user_auth):
     """Test login with invalid email format returns 422."""
     client = client_with_user_auth["client"]
@@ -322,7 +651,6 @@ def test_reset_password_success(client_with_user_auth):
         json={
             "token_hash": "valid_recovery_token",
             "new_password": "newpassword123",
-            "action": "forgot",
         },
     )
     assert resp.status_code == 200, resp.text
@@ -340,7 +668,6 @@ def test_reset_password_missing_token(client_with_user_auth):
         json={
             "token_hash": "",
             "new_password": "newpassword123",
-            "action": "forgot",
         },
     )
     assert resp.status_code == 400, resp.text
@@ -358,7 +685,6 @@ def test_reset_password_missing_password(client_with_user_auth):
         json={
             "token_hash": "valid_recovery_token",
             "new_password": "",
-            "action": "forgot",
         },
     )
     assert resp.status_code == 400, resp.text
@@ -377,7 +703,6 @@ def test_reset_password_mismatch(client_with_user_auth):
             "token_hash": "valid_recovery_token",
             "new_password": "newpassword123",
             "confirm_password": "differentpassword",
-            "action": "forgot",
         },
     )
     assert resp.status_code == 400, resp.text
@@ -395,48 +720,12 @@ def test_reset_password_invalid_token(client_with_user_auth):
         json={
             "token_hash": "invalid_token",
             "new_password": "newpassword123",
-            "action": "forgot",
         },
     )
     assert resp.status_code == 400, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"
     assert "Invalid" in body["message"] or "expired" in body["message"]
-
-
-def test_reset_password_invalid_action(client_with_user_auth):
-    """Test reset password with invalid action returns bad request."""
-    client = client_with_user_auth["client"]
-
-    resp = client.post(
-        "/users/auth/reset-password",
-        json={
-            "token_hash": "valid_recovery_token",
-            "new_password": "newpassword123",
-            "action": "invalid_action",
-        },
-    )
-    assert resp.status_code == 400, resp.text
-    body = resp.json()
-    assert body["status"] == "ERROR"
-    assert "Invalid action" in body["message"] or "force_change" in body["message"]
-
-
-def test_reset_password_force_change_success(client_with_user_auth):
-    """Test force_change action updates user metadata."""
-    client = client_with_user_auth["client"]
-
-    resp = client.post(
-        "/users/auth/reset-password",
-        json={
-            "token_hash": "valid_recovery_token",
-            "new_password": "newpassword123",
-            "action": "force_change",
-        },
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["status"] == "SUCCESS"
 
 
 # =============================================================================
@@ -541,6 +830,53 @@ def test_forgot_password_invalid_email(client_with_user_auth):
     assert resp.status_code == 422, resp.text
 
 
+def test_suspended_user_cannot_refresh_session(client_with_user_auth):
+    from src.domain.models.master_tables import AdminUserStatus
+
+    client_with_user_auth["user"].admin_status = AdminUserStatus.SUSPENDED
+
+    response = client_with_user_auth["client"].post(
+        "/users/auth/refresh-token",
+        json={"refresh_token": "valid_refresh_token"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "ACCOUNT_INACTIVE"
+
+
+def test_provider_account_forgot_password_is_suppressed(client_with_user_auth):
+    from src.domain.models.master_tables import UserAuthenticationMethod
+
+    client_with_user_auth["user"].authentication_method = UserAuthenticationMethod.GOOGLE_WORKSPACE
+
+    response = client_with_user_auth["client"].post(
+        "/users/auth/forgot-password",
+        json={"email": "testuser@example.com"},
+    )
+
+    assert response.status_code == 200
+    assert client_with_user_auth["supabase_client"]._generated_reset_links == []
+    assert client_with_user_auth["email_service"]._sent_emails == []
+
+
+def test_provider_account_recovery_token_cannot_set_password(client_with_user_auth):
+    from src.domain.models.master_tables import UserAuthenticationMethod
+
+    client_with_user_auth["user"].authentication_method = UserAuthenticationMethod.MICROSOFT_ENTRA
+
+    response = client_with_user_auth["client"].post(
+        "/users/auth/reset-password",
+        json={
+            "token_hash": "valid_recovery_token",
+            "new_password": "newpassword123",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "INVALID_RECOVERY_TOKEN"
+    assert client_with_user_auth["supabase_client"]._updated_passwords == []
+
+
 # =============================================================================
 # POST /users/auth/logout - Logout Tests
 # =============================================================================
@@ -553,12 +889,16 @@ def test_logout_success(client_with_user_auth):
     resp = client.post(
         "/users/auth/logout",
         json={"global_logout": False},
+        headers={"Authorization": "Bearer logout-token"},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["status"] == "SUCCESS"
     assert "Successfully logged out" in body["message"]
     assert "all sessions" not in body["message"]
+    assert ("logout-token", False) in client_with_user_auth[
+        "supabase_client"
+    ]._revoked_access_tokens
 
 
 def test_logout_global(client_with_user_auth):
@@ -568,11 +908,13 @@ def test_logout_global(client_with_user_auth):
     resp = client.post(
         "/users/auth/logout",
         json={"global_logout": True},
+        headers={"Authorization": "Bearer logout-token"},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["status"] == "SUCCESS"
     assert "all sessions" in body["message"]
+    assert ("logout-token", True) in client_with_user_auth["supabase_client"]._revoked_access_tokens
 
 
 def test_logout_default_not_global(client_with_user_auth):
@@ -582,6 +924,7 @@ def test_logout_default_not_global(client_with_user_auth):
     resp = client.post(
         "/users/auth/logout",
         json={},
+        headers={"Authorization": "Bearer logout-token"},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()

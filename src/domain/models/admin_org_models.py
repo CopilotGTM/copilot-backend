@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any, Generic, Literal, TypeVar
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field, model_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 from src.domain.models.master_tables import OrganisationStatus
 from src.domain.models.master_tables.organisation_job_models import (
     OrganisationJobStatus,
@@ -113,6 +113,11 @@ class CreateOrganizationRequest(BaseModel):
     summary: str | None = None
     logo_url: str | None = None
 
+    @field_validator("domain")
+    @classmethod
+    def normalize_domains(cls, value: list[str] | None) -> list[str] | None:
+        return _normalize_domains(value)
+
     class Config:
         extra = "ignore"
 
@@ -174,8 +179,22 @@ class UpdateOrganizationRequest(BaseModel):
     logo_url: str | None = None
     is_active: bool | None = None
 
+    @field_validator("domain")
+    @classmethod
+    def normalize_domains(cls, value: list[str] | None) -> list[str] | None:
+        return _normalize_domains(value)
+
     class Config:
         extra = "ignore"
+
+
+def _normalize_domains(value: list[str] | None) -> list[str] | None:
+    if value is None:
+        return None
+    normalized = [domain.strip().lower().rstrip(".") for domain in value]
+    if any(not domain or "@" in domain or "." not in domain for domain in normalized):
+        raise ValueError("domain entries must be valid domain names")
+    return list(dict.fromkeys(normalized))
 
 
 class RunMasterMigrationsResponse(BaseModel):

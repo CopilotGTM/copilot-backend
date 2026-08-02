@@ -15,6 +15,7 @@ Usage (New Async Pattern - Preferred):
 
     task_id = await send_organization_create_task(
         job_id="job-uuid",
+        organisation_id="organisation-uuid",
         admin_id="admin-uuid",
         organisation_name="Acme Corp",
         org_details={"country": "US"},
@@ -36,6 +37,7 @@ import contextvars
 import threading
 import warnings
 from concurrent.futures import ThreadPoolExecutor
+from uuid import UUID
 
 from celery import Celery
 
@@ -267,6 +269,7 @@ async def send_organization_task_and_wait_async(
 
 async def send_organization_create_task(
     job_id: str,
+    organisation_id: str,
     admin_id: str,
     organisation_name: str,
     org_details: dict,
@@ -281,6 +284,7 @@ async def send_organization_create_task(
 
     Args:
         job_id: UUID of the OrganisationJob record (created before calling)
+        organisation_id: Preallocated UUID reused by every task retry
         admin_id: UUID of the admin creating the organisation
         organisation_name: Name for the new organisation
         org_details: Additional organisation configuration
@@ -294,6 +298,7 @@ async def send_organization_create_task(
         task_name="organization.create",
         kwargs={
             "job_id": job_id,
+            "organisation_id": organisation_id,
             "admin_id": admin_id,
             "organisation_name": organisation_name,
             "org_details": org_details,
@@ -313,6 +318,20 @@ async def send_organization_research_task(
     return await send_organization_task_async(
         task_name="organization.research_kai_training",
         kwargs={"organisation_id": organisation_id, "run_id": run_id},
+        queue=queue,
+        headers=headers,
+    )
+
+
+async def send_signup_provisioning_task(
+    signup_request_id: UUID,
+    queue: str = "organization",
+    headers: dict | None = None,
+) -> str:
+    """Queue provider signup using only its server-trusted durable UUID."""
+    return await send_organization_task_async(
+        task_name="organization.signup.provision",
+        kwargs={"signup_request_id": str(signup_request_id)},
         queue=queue,
         headers=headers,
     )

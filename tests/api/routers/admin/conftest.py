@@ -67,8 +67,11 @@ class FakeUserData:
         last_name: str = "User",
         organisation_id: UUID | None = None,
         user_role: str = "member",
+        organisation_role: str = "member",
         status: str = "ACTIVE",  # SupabaseUserStatus is UPPERCASE
         admin_status: str = "approved",  # AdminUserStatus is lowercase
+        authentication_method: str = "password",
+        temp_password: str | None = None,
     ):
         self.user_id = user_id or uuid4()
         self.email = email
@@ -76,8 +79,12 @@ class FakeUserData:
         self.last_name = last_name
         self.organisation_id = organisation_id or uuid4()
         self.user_role = user_role
+        self.organisation_role = organisation_role
+        self.job_title = None
         self.status = status
         self.admin_status = admin_status
+        self.authentication_method = authentication_method
+        self.temp_password = temp_password
         self.created_at = datetime.now(UTC)
         self.updated_at = datetime.now(UTC)
         self.approved_at = None
@@ -280,6 +287,7 @@ class FakeAdminOrganisationService:
         from src.api.schemas.admin_job_models import OrganisationJobStatus, OrganisationJobType
 
         job_id = uuid4()
+        organisation_id = organisation_id or uuid4()
         # Keep enum object if passed, otherwise convert to enum
         job_type_enum = (
             job_type if isinstance(job_type, OrganisationJobType) else OrganisationJobType(job_type)
@@ -297,6 +305,7 @@ class FakeAdminOrganisationService:
                 "job_id": job_id,
                 "job_type": job_type_enum,
                 "status": OrganisationJobStatus.PENDING,
+                "organisation_id": organisation_id,
             },
         )()
 
@@ -340,12 +349,13 @@ class FakeAdminUserService:
             last_name=user.last_name,
             email=user.email,
             organisation_id=user.organisation_id,
-            organisation_role=user.user_role,
+            organisation_role=user.organisation_role,
             user_role=user.user_role,
             status=SupabaseUserStatus(user.status) if isinstance(user.status, str) else user.status,
             admin_status=AdminUserStatus(user.admin_status)
             if isinstance(user.admin_status, str)
             else user.admin_status,
+            authentication_method=user.authentication_method,
             created_at=user.created_at,
             updated_at=user.updated_at,
         )
@@ -366,6 +376,16 @@ class FakeAdminUserService:
             user_role=user_data.user_role.value
             if hasattr(user_data.user_role, "value")
             else user_data.user_role,
+            organisation_role=user_data.organisation_role,
+            authentication_method=user_data.authentication_method,
+            temp_password=(
+                "TemporaryPassword123!"
+                if getattr(
+                    user_data.authentication_method, "value", user_data.authentication_method
+                )
+                == "password"
+                else None
+            ),
         )
         self._users[user.user_id] = user
         return user  # create_user handler creates its own CreateUserResponse

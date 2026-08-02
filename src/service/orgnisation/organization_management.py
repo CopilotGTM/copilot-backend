@@ -5,19 +5,11 @@ job. Database infrastructure is deployment-owned; this module only writes the
 master record and seeds organisation-scoped defaults through the org session.
 """
 
-import asyncio
-import os
 import time
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
-from uuid import UUID, uuid4
+from uuid import UUID
 
-from azure.identity import (
-    DefaultAzureCredential,
-    ManagedIdentityCredential,
-    WorkloadIdentityCredential,
-)
-from azure.storage.blob import BlobServiceClient
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.master_tables import (
@@ -26,18 +18,12 @@ from src.domain.models.master_tables import (
     OrganisationEventType,
     OrganisationStatus,
 )
-from src.infra.config.configs import (
-    cloud_infra_config,
-    cloud_storage_config,
-)
 from src.infra.database.sessions import (
-    acquire_org_async_session,
     master_async_session_scope,
 )
+from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
-from src.infra.utils.resource_naming import get_org_container_name
-from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
 
 logger = get_logger("organization_management_service")
 
@@ -59,6 +45,7 @@ class OrganizationManagementService:
 
     async def create_organization(
         self,
+        organisation_id: UUID,
         admin_id: UUID,
         organisation_name: str,
         **org_details,
@@ -85,12 +72,7 @@ class OrganizationManagementService:
 
         # ── Phase 1: create/update org record, then release session ──
         async with master_async_session_scope() as session:
-            org_table = cast(_HasTable, Organisation).__table__
-            org_name_col = cast(Any, org_table.c.organisation_name)
-            result = await session.execute(
-                select(Organisation).where(org_name_col == organisation_name)
-            )
-            existing_org = result.scalars().first()
+            existing_org = await session.get(Organisation, organisation_id)
 
             if existing_org:
                 # Allow retry from FAILED or PROVISIONING (task retry / idempotency)
@@ -122,7 +104,7 @@ class OrganizationManagementService:
                 )
 
                 organization = Organisation(
-                    organisation_id=uuid4(),
+                    organisation_id=organisation_id,
                     organisation_name=organisation_name,
                     status=OrganisationStatus.PROVISIONING,
                     created_by_auth_user_id=str(admin_id),
@@ -146,11 +128,8 @@ class OrganizationManagementService:
         try:
             provision_metrics: dict[str, float] = {}
 
-            crm_start = time.perf_counter()
-            await self._setup_internal_crm(organisation_id, admin_id)
-            provision_metrics["internal_crm_setup"] = round(time.perf_counter() - crm_start, 4)
             storage_start = time.perf_counter()
-            self._provision_org_storage_container(organisation_id)
+            await self._provision_org_storage_container(organisation_id)
             provision_metrics["storage_container"] = round(
                 time.perf_counter() - storage_start,
                 4,
@@ -226,72 +205,10 @@ class OrganizationManagementService:
         except Exception:
             logger.error("Failed to mark org %s as FAILED in DB", organisation_id, exc_info=True)
 
-    async def _setup_internal_crm(self, organisation_id: UUID, admin_id: UUID) -> None:
-        """Ensure internal CRM integration + default pipeline exist for the organisation."""
-        try:
-            async for org_session in acquire_org_async_session(organisation_id):
-                service = InternalCRMSetupService(org_session, organisation_id, admin_id)
-                await service.setup_internal_crm()
-                return
-        except Exception as exc:
-            logger.error(
-                "Internal CRM setup failed for org %s: %s",
-                organisation_id,
-                exc,
-                exc_info=True,
-            )
-            raise ProvisioningError(
-                "Internal CRM setup failed",
-                organisation_id=organisation_id,
-            ) from exc
-
-    async def setup_tenant_defaults(
-        self,
-        organisation_id: UUID,
-        user_id: UUID,
-    ) -> None:
-        """Seed the existing shared-tenant defaults for any creation workflow.
-
-        Admin organisation creation and public signup both converge on the
-        internal CRM and shared-storage setup owned by this service. Each
-        operation is idempotent, so a reconciliation retry can safely repeat it.
-        """
-
-        await self._setup_internal_crm(organisation_id, user_id)
-        # CRM commits and releases its org session before Azure is contacted.
-        # Blob provisioning is synchronous network I/O, so keep it off the API
-        # event loop while preserving the existing idempotent container owner.
-        await asyncio.to_thread(
-            self._provision_org_storage_container,
-            organisation_id,
-        )
-
-    def _provision_org_storage_container(self, organisation_id: UUID):
-        """Ensure the per-organisation container exists in the shared storage account (idempotent)."""
-        account = (
-            cloud_storage_config.ORGANISATION_STORAGE_NAME
-            or cloud_storage_config.APPLICATION_STORAGE_NAME
-        )
-        if not account:
-            logger.warning(
-                "No shared storage account name configured (ORGANISATION_STORAGE_NAME / APPLICATION_STORAGE_NAME). Skipping container creation."
-            )
-            return
-        container = get_org_container_name(organisation_id)
-        try:
-            credential = self._get_azure_credential()
-            service = BlobServiceClient(
-                f"https://{account}.blob.core.windows.net", credential=credential
-            )
-            client = service.get_container_client(container)
-            client.create_container()
-            logger.info(f"Created container '{container}' in account '{account}'.")
-        except Exception as e:
-            if "ContainerAlreadyExists" in str(e):
-                logger.info(f"Container '{container}' already exists (idempotent).")
-            else:
-                logger.error(f"Failed to create container '{container}' in '{account}': {e}")
-                raise ProvisioningError(f"Container provisioning failed: {e}") from e
+    async def _provision_org_storage_container(self, organisation_id: UUID) -> None:
+        """Create the required deterministic organisation container."""
+        async with AzureOrganisationBlobStorage(organisation_id) as storage:
+            await storage.provision_container()
 
     async def update_organisation_status(
         self,
@@ -514,44 +431,6 @@ class OrganizationManagementService:
         result = await session.execute(stmt)
         history = result.scalars().all()
         return list(history)
-
-    # ------------------ Helper / pagination utilities ------------------ #
-    def _get_azure_credential(self):
-        """Resolve Azure credential with explicit, deterministic ordering.
-
-        For local development (when ENV=local), it uses DefaultAzureCredential.
-        Otherwise, it follows a specific production order.
-        """
-        # Use DefaultAzureCredential for local development for convenience
-        if os.getenv("ENV") == "local":
-            logger.info("Auth strategy: DefaultAzureCredential (local development).")
-            return DefaultAzureCredential()
-
-        # Production credential order
-        tenant_id = cloud_infra_config.AZURE_TENANT_ID
-        client_id = cloud_infra_config.AZURE_CLIENT_ID
-
-        # Workload Identity (Kubernetes federated token). Requires tenant & client id.
-        if tenant_id and client_id:
-            logger.info("Auth strategy: Workload Identity (federated token)")
-            allowed_tenants = [
-                t.strip()
-                for t in (cloud_infra_config.AZURE_ADDITIONALLY_ALLOWED_TENANTS or "").split(",")
-                if t.strip()
-            ] or None
-            return WorkloadIdentityCredential(
-                tenant_id=tenant_id,
-                client_id=client_id,
-                additionally_allowed_tenants=allowed_tenants or ["*"],
-            )
-        if client_id and not tenant_id:
-            logger.warning(
-                "Workload identity client id present but AZURE_TENANT_ID missing; using Managed Identity fallback (may cause cross-tenant issues)."
-            )
-
-        # 3. Managed Identity (e.g., VM / AzureService / no explicit client id)
-        logger.info("Auth strategy: Managed Identity (no client id provided)")
-        return ManagedIdentityCredential()
 
     # Override history fetchers to return cursor metadata without breaking original callers
     async def get_organization_history_with_cursor(

@@ -5,7 +5,7 @@ shared-tenant defaults. Shared database infrastructure is deployment-owned.
 """
 
 from collections.abc import AsyncGenerator
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Query
 from fastapi import Response as FastAPIResponse
@@ -150,6 +150,7 @@ async def create_organization(
         # Fire task (no wait)
         await send_organization_create_task(
             job_id=str(job_result.job_id),
+            organisation_id=str(job_result.organisation_id),
             admin_id=str(current_user),
             organisation_name=request.organisation_name,
             org_details=org_details,
@@ -221,6 +222,7 @@ async def create_organization_sync(
             task_result = await send_organization_task_and_wait_async(
                 "organization.create",
                 kwargs={
+                    "organisation_id": str(uuid4()),
                     "admin_id": str(current_user),
                     "organisation_name": request.organisation_name,
                     "org_details": org_details,

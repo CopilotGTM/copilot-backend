@@ -220,6 +220,54 @@ class EmailService:
 
         return await self.send_email(to_email, subject, html_content, text_content)
 
+    async def send_external_auth_invitation_email(
+        self,
+        to_email: str,
+        first_name: str,
+        provider_name: str,
+    ) -> bool:
+        """Invite an approved user through their configured OAuth provider."""
+        safe_name = html_escape(first_name)
+        safe_provider = html_escape(provider_name)
+        subject = f"Welcome to {self.app_name} - Continue with {safe_provider}"
+        content = f"""
+            <h2>Welcome, {safe_name}!</h2>
+            <p>Your {self.app_name} account is ready.</p>
+            <p>Use your company {safe_provider} account. A password is not enabled for this account.</p>
+            <div class="button-container">
+                <a href="{self.app_url}/signin" class="button">Continue with {safe_provider}</a>
+            </div>
+        """
+        text = (
+            f"Welcome to {self.app_name}, {first_name}. "
+            f"Sign in at {self.app_url}/signin using Continue with {provider_name}."
+        )
+        return await self.send_email(
+            to_email,
+            subject,
+            self._create_styled_html(subject, f"Continue with {safe_provider}.", content),
+            text,
+        )
+
+    async def send_signup_welcome_email(self, to_email: str, first_name: str) -> bool:
+        """Welcome a provider-backed founder after their organisation is active."""
+        safe_name = html_escape(first_name)
+        subject = f"Welcome to {self.app_name}"
+        content = f"""
+            <h2>Welcome, {safe_name}!</h2>
+            <p>Your {self.app_name} workspace is ready.</p>
+            <div class="button-container">
+                <a href="{self.app_url}/signin" class="button">Open Your Workspace</a>
+            </div>
+        """
+        text = f"Welcome to {self.app_name}, {first_name}. Open {self.app_url}/signin to continue."
+        return await self.send_email(
+            to_email,
+            subject,
+            self._create_styled_html(subject, "Your workspace is ready.", content),
+            text,
+        )
+
     async def send_task_assignment_email(
         self,
         to_email: str,
