@@ -219,11 +219,6 @@ output "azuread_provider_tenant_id" {
 # Key Vault Validation Outputs (to confirm correct tenant vaults)
 # -----------------------------------------------------------------
 
-output "database_key_vault_uri" {
-  description = "URI of the database Key Vault (should belong to active tenant)."
-  value       = module.database_key_vault.key_vault_uri
-}
-
 output "master_key_vault_uri" {
   description = "URI of the master Key Vault (should belong to active tenant)."
   value       = module.master_key_vault.key_vault_uri
