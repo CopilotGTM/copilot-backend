@@ -13,7 +13,10 @@ from src.domain.models.organisation_tables.sync.integration_models import (
     SyncStatus,
 )
 from src.service.integrations.calendar.normalizer import CalendarEventNormalizer
-from src.service.integrations.calendar.writer import _ASYNC_PG_BIND_PARAMETER_LIMIT
+from src.service.integrations.calendar.writer import (
+    _ASYNC_PG_BIND_PARAMETER_LIMIT,
+    CalendarSyncWriter,
+)
 from src.service.integrations.calendar_sync_service import (
     CalendarEventUpsertBatchItem,
     CalendarSyncService,
@@ -33,6 +36,15 @@ class _FakeScalarResult:
     def all(self):
         return self._rows
 
+    def one(self):
+        """Return the only mapped row from the in-memory result stub."""
+        assert len(self._rows) == 1
+        return self._rows[0]
+
+    def first(self):
+        """Return the first mapped row, if present."""
+        return self._rows[0] if self._rows else None
+
 
 class _FakeExecuteResult:
     def __init__(self, rows=None):
@@ -40,6 +52,11 @@ class _FakeExecuteResult:
 
     def scalars(self):
         return _FakeScalarResult(self._rows)
+
+    def scalar_one_or_none(self):
+        """Return the optional mapped row from the in-memory result stub."""
+        assert len(self._rows) <= 1
+        return self._rows[0] if self._rows else None
 
 
 def _make_integration(**overrides):
@@ -131,6 +148,64 @@ class TestCalendarIncrementalBatchWrites:
     """
 
     @pytest.mark.asyncio
+    async def test_single_event_upsert_uses_tenant_identity(self) -> None:
+        """Full-sync event writes must target the tenant-scoped unique constraint."""
+        organisation_id = uuid4()
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=_FakeExecuteResult([_event_row("ical-1")]))
+        writer = CalendarSyncWriter(session, organisation_id)
+
+        await writer.upsert_event(
+            _make_integration(organisation_id=organisation_id),
+            _normalize_event(_google_event(provider_id="evt-1", external_id="ical-1")),
+        )
+
+        sql = str(session.execute.call_args.args[0].compile(dialect=postgresql.dialect()))
+        assert "ON CONFLICT (organisation_id, external_id, occurrence_anchor)" in sql
+
+    @pytest.mark.asyncio
+    async def test_single_user_state_upsert_uses_tenant_identity(self) -> None:
+        """Full-sync mailbox state must target the tenant-scoped unique constraint."""
+        organisation_id = uuid4()
+        integration = _make_integration(organisation_id=organisation_id)
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=_FakeExecuteResult([SimpleNamespace()]))
+        writer = CalendarSyncWriter(session, organisation_id)
+
+        await writer.upsert_user_state(
+            _event_row("ical-1"),
+            integration,
+            "provider-event-1",
+        )
+
+        sql = str(session.execute.call_args.args[0].compile(dialect=postgresql.dialect()))
+        assert "ON CONFLICT (organisation_id, event_id, integration_id)" in sql
+
+    @pytest.mark.asyncio
+    async def test_soft_delete_user_state_is_organisation_scoped(self) -> None:
+        """Mailbox cancellation must not read state outside the writer's organisation."""
+        organisation_id = uuid4()
+        integration_id = uuid4()
+        state = SimpleNamespace(state_id=uuid4(), is_deleted=False, updated_at=None)
+        session = AsyncMock()
+        session.add = MagicMock()
+        session.execute = AsyncMock(side_effect=[_FakeExecuteResult([state]), _FakeExecuteResult()])
+        writer = CalendarSyncWriter(session, organisation_id)
+
+        assert await writer.soft_delete_user_state(
+            _event_row("ical-1"),
+            integration_id=integration_id,
+            external_id="provider-event-1",
+        )
+
+        assert session.execute.await_count == 2
+        for call in session.execute.await_args_list:
+            statement = call.args[0]
+            sql = str(statement.compile(dialect=postgresql.dialect()))
+            assert "calendar_event_user_states.organisation_id" in sql
+            assert organisation_id in statement.compile().params.values()
+
+    @pytest.mark.asyncio
     async def test_batch_upsert_events_uses_one_statement_and_returns_identity_map(self) -> None:
         """Multiple changed events collapse into one INSERT ... ON CONFLICT statement.
 
@@ -165,7 +240,7 @@ class TestCalendarIncrementalBatchWrites:
         assert session.execute.await_count == 1
         assert result == {("ical-1", ""): rows[0], ("ical-2", ""): rows[1]}
         sql = str(session.execute.call_args.args[0].compile(dialect=postgresql.dialect()))
-        assert "ON CONFLICT" in sql
+        assert "ON CONFLICT (organisation_id, external_id, occurrence_anchor)" in sql
         assert "RETURNING" in sql
 
     @pytest.mark.asyncio
@@ -316,7 +391,9 @@ class TestCalendarIncrementalBatchWrites:
         assert session.execute.await_count == 2
         delete_sql = str(session.execute.await_args_list[0].args[0])
         insert_params = session.execute.await_args_list[1].args[0].compile().params
+        assert "calendar_event_attendees.organisation_id" in delete_sql
         assert "calendar_event_attendees.event_id IN" in delete_sql
+        assert list(insert_params.values()).count(organisation_id) == 2
         assert "buyer@example.com" in str(insert_params.values())
         assert "host@example.com" in str(insert_params.values())
         assert "No Email" not in str(insert_params.values())
@@ -389,7 +466,9 @@ class TestCalendarIncrementalBatchWrites:
             ),
         )
 
+        delete_sql = str(session.execute.await_args_list[0].args[0])
         insert_params = session.execute.await_args_list[1].args[0].compile().params
+        assert "calendar_event_attendees.organisation_id" in delete_sql
         assert list(insert_params.values()).count("buyer@example.com") == 1
         assert "Latest" in insert_params.values()
         assert True in insert_params.values()
@@ -398,7 +477,7 @@ class TestCalendarIncrementalBatchWrites:
     async def test_batch_upsert_user_states_resets_deleted_state_in_one_statement(self) -> None:
         """User-state rows are upserted in one statement and resurrect on conflict.
 
-        Re-seeing an event for the same (event_id, integration_id) pair flips
+        Re-seeing an event for the same tenant, event, and integration flips
         is_deleted back to False — that's how a previously-deleted event
         becomes active again from this integration's perspective. The whole
         batch must be one INSERT ... ON CONFLICT, not one per event.
@@ -418,7 +497,9 @@ class TestCalendarIncrementalBatchWrites:
 
         assert session.execute.await_count == 1
         sql = str(session.execute.call_args.args[0].compile(dialect=postgresql.dialect()))
-        assert "ON CONFLICT" in sql
+        params = session.execute.call_args.args[0].compile().params
+        assert "ON CONFLICT (organisation_id, event_id, integration_id)" in sql
+        assert list(params.values()).count(organisation_id) == 2
         assert "is_deleted" in sql
         assert "external_id" in sql
         assert "series_external_id" in sql
@@ -1074,17 +1155,38 @@ class TestCalendarIncrementalBatchWrites:
     @pytest.mark.asyncio
     async def test_all_user_states_deleted_uses_bounded_existence_lookup(self) -> None:
         """Several remaining mailbox copies must not trigger MultipleResultsFound."""
+        organisation_id = uuid4()
         session = AsyncMock()
         session.execute = AsyncMock(
             return_value=SimpleNamespace(
                 scalars=lambda: SimpleNamespace(first=lambda: SimpleNamespace())
             )
         )
-        service = CalendarSyncService(session, uuid4())
+        service = CalendarSyncService(session, organisation_id)
 
         assert await service._all_user_states_deleted(uuid4()) is False
-        sql = str(session.execute.await_args.args[0].compile(dialect=postgresql.dialect()))
+        statement = session.execute.await_args.args[0]
+        sql = str(statement.compile(dialect=postgresql.dialect()))
         assert "LIMIT" in sql
+        assert "calendar_event_user_states.organisation_id" in sql
+        assert organisation_id in statement.compile().params.values()
+
+    @pytest.mark.asyncio
+    async def test_mark_user_state_deleted_is_organisation_scoped(self) -> None:
+        """Duplicate cleanup must apply the same tenant boundary as normal cancellation."""
+        organisation_id = uuid4()
+        state = SimpleNamespace(is_deleted=False, updated_at=None)
+        session = AsyncMock()
+        session.add = MagicMock()
+        session.execute = AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: state))
+        service = CalendarSyncService(session, organisation_id)
+
+        assert await service._mark_user_state_deleted(uuid4(), uuid4(), "provider-event-1")
+
+        statement = session.execute.await_args.args[0]
+        sql = str(statement.compile(dialect=postgresql.dialect()))
+        assert "calendar_event_user_states.organisation_id" in sql
+        assert organisation_id in statement.compile().params.values()
 
     @pytest.mark.asyncio
     async def test_incremental_sync_does_not_enqueue_ineligible_meeting_bot_events(

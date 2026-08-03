@@ -90,8 +90,8 @@ class CalendarSyncWriter:
     ) -> CalendarEvent:
         """Single-event upsert used by the full-sync path.
 
-        Runs one INSERT ... ON CONFLICT DO UPDATE keyed on
-        (external_id, occurrence_anchor) and returns the row that was written.
+        Runs one INSERT ... ON CONFLICT DO UPDATE keyed on the tenant-aware
+        (organisation_id, external_id, occurrence_anchor) identity.
         Incremental sync uses `batch_upsert_events` instead; this method is
         deliberately kept for the slower per-event flow because full sync still
         wants per-event error isolation.
@@ -102,7 +102,7 @@ class CalendarSyncWriter:
         values = self._build_event_upsert_values(event)
         stmt: Any = insert(CalendarEvent).values(**values)
         stmt = stmt.on_conflict_do_update(
-            index_elements=["external_id", "occurrence_anchor"],
+            index_elements=["organisation_id", "external_id", "occurrence_anchor"],
             set_=self._event_upsert_update_dict(stmt, values),
         ).returning(CalendarEvent)
 
@@ -134,9 +134,8 @@ class CalendarSyncWriter:
     @staticmethod
     def _event_upsert_update_dict(stmt: Any, values: dict[str, Any]) -> dict[str, Any]:
         # On conflict we update every column *except* the identity columns and
-        # created_at. event_id is the PK, the (external_id, occurrence_anchor)
-        # pair is the conflict target, organisation_id never changes per row,
-        # and we want created_at preserved so audit reports stay accurate.
+        # created_at. event_id is the PK, the tenant-aware external occurrence
+        # identity is the conflict target, and created_at remains stable for audits.
         update_values: dict[str, Any] = {}
         for key in values:
             if key in (
@@ -184,7 +183,7 @@ class CalendarSyncWriter:
     ) -> list[CalendarEvent]:
         stmt: Any = insert(CalendarEvent).values(values)
         stmt = stmt.on_conflict_do_update(
-            index_elements=["external_id", "occurrence_anchor"],
+            index_elements=["organisation_id", "external_id", "occurrence_anchor"],
             set_=self._event_upsert_update_dict(stmt, values[0]),
         ).returning(CalendarEvent)
 
@@ -264,8 +263,8 @@ class CalendarSyncWriter:
         """Build the tuple shape sync_service batches for user-state upserts."""
         return (event_id, integration_id, external_id, series_external_id)
 
-    @staticmethod
     def build_user_state_values(
+        self,
         rows: list[tuple[UUID, UUID, str, str | None]],
     ) -> list[dict[str, Any]]:
         """Collapse user-state tuples into the column-keyed dicts the bulk insert expects.
@@ -286,6 +285,7 @@ class CalendarSyncWriter:
 
         return [
             {
+                "organisation_id": self.organisation_id,
                 "event_id": event_id,
                 "integration_id": integration_id,
                 "external_id": external_id,
@@ -317,7 +317,7 @@ class CalendarSyncWriter:
         """Upsert per-integration event state in one statement.
 
         User-state rows track which integrations can currently see which event
-        (one row per (event, integration) pair). They are written for *every*
+        (one row per tenant, event, and integration). They are written for *every*
         synced event, even unchanged ones, so a deletion delivered against this
         integration's external_id can later be attributed correctly.
         """
@@ -327,7 +327,7 @@ class CalendarSyncWriter:
         values = self.build_user_state_values(rows)
         stmt = insert(CalendarEventUserState).values(values)
         stmt = stmt.on_conflict_do_update(
-            index_elements=["event_id", "integration_id"],
+            index_elements=["organisation_id", "event_id", "integration_id"],
             set_=self._user_state_update_dict(stmt),
         )
         await self.session.execute(stmt)
@@ -353,7 +353,7 @@ class CalendarSyncWriter:
 
         stmt: Any = insert(CalendarEventUserState).values(**values)
         stmt = stmt.on_conflict_do_update(
-            index_elements=["event_id", "integration_id"],
+            index_elements=["organisation_id", "event_id", "integration_id"],
             set_=self._user_state_update_dict(stmt),
         ).returning(CalendarEventUserState)
 
@@ -374,7 +374,10 @@ class CalendarSyncWriter:
         another active integration in the organisation.
         """
 
+        # Event and integration UUIDs are not ownership proofs; the explicit org
+        # predicate keeps this writer safe even under a privileged DB session.
         stmt = select(CalendarEventUserState).where(
+            col(CalendarEventUserState.organisation_id) == self.organisation_id,
             col(CalendarEventUserState.event_id) == event.event_id,
             col(CalendarEventUserState.integration_id) == integration_id,
             col(CalendarEventUserState.external_id) == external_id,
@@ -389,6 +392,7 @@ class CalendarSyncWriter:
 
         remaining = await self.session.execute(
             select(CalendarEventUserState).where(
+                col(CalendarEventUserState.organisation_id) == self.organisation_id,
                 col(CalendarEventUserState.event_id) == event.event_id,
                 col(CalendarEventUserState.is_deleted).is_(False),
                 col(CalendarEventUserState.state_id) != state.state_id,
@@ -427,9 +431,13 @@ class CalendarSyncWriter:
         # insert the new one. The unique index on (event_id, email) would
         # otherwise force an upsert that either skips new attendees or has to
         # reconcile row by row. Two bulk statements is one round trip per
-        # operation and preserves the atomic-replacement contract.
+        # operation and preserves the atomic-replacement contract. The org
+        # predicate keeps event UUIDs from becoming an ownership check.
         await self.session.execute(
-            delete(CalendarAttendee).where(col(CalendarAttendee.event_id).in_(event_ids))
+            delete(CalendarAttendee).where(
+                col(CalendarAttendee.organisation_id) == self.organisation_id,
+                col(CalendarAttendee.event_id).in_(event_ids),
+            )
         )
 
         values: list[dict[str, Any]] = []
@@ -452,17 +460,21 @@ class CalendarSyncWriter:
             return
 
         # Same atomic-replacement contract as `batch_sync_attendees`: delete
-        # the existing roster for this event, then insert the new one.
+        # the existing roster for this event, then insert the new one. Keep the
+        # explicit org boundary even though forced RLS also filters this table.
         await self.session.execute(
-            delete(CalendarAttendee).where(col(CalendarAttendee.event_id) == event.event_id)
+            delete(CalendarAttendee).where(
+                col(CalendarAttendee.organisation_id) == self.organisation_id,
+                col(CalendarAttendee.event_id) == event.event_id,
+            )
         )
 
         values = self._build_attendee_values(event, normalized)
         if values:
             await self.session.execute(insert(CalendarAttendee).values(values))
 
-    @staticmethod
     def _build_attendee_values(
+        self,
         event: CalendarEvent,
         normalized: NormalizedCalendarEvent,
     ) -> list[dict[str, Any]]:
@@ -479,6 +491,7 @@ class CalendarSyncWriter:
             )
         return [
             {
+                "organisation_id": self.organisation_id,
                 "attendee_id": uuid4(),
                 "event_id": event.event_id,
                 "email": normalized_email,

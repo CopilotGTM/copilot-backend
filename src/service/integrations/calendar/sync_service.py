@@ -1002,6 +1002,7 @@ class CalendarSyncService:
         `deleted_no_state` / `cancelled_no_record` counter.
         """
         stmt = select(CalendarEventUserState).where(
+            col(CalendarEventUserState.organisation_id) == self.organisation_id,
             col(CalendarEventUserState.event_id) == event_id,
             col(CalendarEventUserState.integration_id) == integration_id,
             col(CalendarEventUserState.external_id) == user_external_id,
@@ -1025,6 +1026,7 @@ class CalendarSyncService:
         copy would silently cancel the meeting for the rest of the org.
         """
         stmt = select(CalendarEventUserState).where(
+            col(CalendarEventUserState.organisation_id) == self.organisation_id,
             col(CalendarEventUserState.event_id) == event_id,
             col(CalendarEventUserState.is_deleted).is_(False),
         )

@@ -801,7 +801,7 @@ class CommunicationDealAssociationService:
         )
         result = await self.session.execute(
             insert_stmt.on_conflict_do_update(
-                constraint="uq_deal_email",
+                constraint="uq_deal_email_org",
                 set_={
                     "status": AssociationStatus.ACTIVE.value,
                     "match_score": insert_stmt.excluded.match_score,
@@ -877,7 +877,7 @@ class CommunicationDealAssociationService:
         )
         result = await self.session.execute(
             insert_stmt.on_conflict_do_update(
-                constraint="uq_calendar_event_deal",
+                constraint="uq_calendar_event_deal_org",
                 set_={
                     "status": AssociationStatus.ACTIVE.value,
                     "match_score": insert_stmt.excluded.match_score,

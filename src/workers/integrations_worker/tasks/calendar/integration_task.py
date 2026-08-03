@@ -250,11 +250,13 @@ def sync_calendar_integration_task(
             extra={"organisation_id": organisation_id, "integration_id": integration_id},
         )
 
-        # Phase 1: Query integration and extract data needed for fetching
+        # Phase 1: Bound the queue-provided integration ID to the organisation,
+        # then extract only the data needed for the provider call.
         fetch_data: IntegrationFetchData | None = None
 
         async for session in acquire_org_async_session(org_id):
             stmt = select(KnowledgeIntegration).where(
+                col(KnowledgeIntegration.organisation_id) == org_id,
                 col(KnowledgeIntegration.integration_id) == int_id,
                 col(KnowledgeIntegration.integration_type).in_(
                     CALENDAR_INTEGRATION_TYPES + CALENDAR_PARENT_TYPES
@@ -306,6 +308,7 @@ def sync_calendar_integration_task(
             capability = _CALENDAR_CAPABILITY_FOR_PARENT.get(int_type)
             if capability:
                 state_stmt = select(IntegrationSyncState).where(
+                    col(IntegrationSyncState.organisation_id) == org_id,
                     col(IntegrationSyncState.integration_id) == integration_row.integration_id,
                     col(IntegrationSyncState.capability) == capability,
                     col(IntegrationSyncState.enabled).is_(True),
@@ -432,8 +435,10 @@ def sync_calendar_integration_task(
         # Phase 3: Persist to database (acquire fresh session)
         # ─────────────────────────────────────────────────────────────────────
         async for session in acquire_org_async_session(org_id):
-            # Re-query integration to get fresh instance attached to session
+            # Re-query by organisation and integration so the queued UUID cannot
+            # select a row outside the task's tenant boundary.
             stmt = select(KnowledgeIntegration).where(
+                col(KnowledgeIntegration.organisation_id) == org_id,
                 col(KnowledgeIntegration.integration_id) == int_id,
             )
             result = await session.execute(stmt)
@@ -461,6 +466,8 @@ def sync_calendar_integration_task(
             state = None
             if fetch_data.sync_state_id:
                 state_stmt = select(IntegrationSyncState).where(
+                    col(IntegrationSyncState.organisation_id) == org_id,
+                    col(IntegrationSyncState.integration_id) == int_id,
                     col(IntegrationSyncState.sync_state_id) == fetch_data.sync_state_id,
                 )
                 state_result = await session.execute(state_stmt)

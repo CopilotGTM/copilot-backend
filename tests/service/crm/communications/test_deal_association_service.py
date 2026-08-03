@@ -1154,6 +1154,7 @@ async def test_removed_email_association_reactivates_with_persisted_id(monkeypat
     projected = projection.upsert_email_association.await_args.args[0]
     assert projected.association_id == persisted_association_id
     sql = str(statements[0])
+    assert "ON CONSTRAINT uq_deal_email_org" in sql
     assert "DO UPDATE" in sql
     assert "status" in sql
     assert "RETURNING" in sql
@@ -1248,6 +1249,7 @@ async def test_cancelled_event_association_reactivates_with_persisted_id(monkeyp
     projected = projection.upsert_meeting_association.await_args.args[0]
     assert projected.association_id == persisted_association_id
     sql = str(statements[0])
+    assert "ON CONSTRAINT uq_calendar_event_deal_org" in sql
     assert "DO UPDATE" in sql
     assert "status" in sql
     assert "RETURNING" in sql

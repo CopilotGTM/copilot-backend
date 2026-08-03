@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import inspect
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync import IntegrationType
+from src.service.integrations import email_delta_sync_service
 from src.service.integrations.api_error_utils import IntegrationPermissionError
 from src.service.integrations.email_delta_sync_service import (
     EMAIL_DELTA_LINKS_KEY,
@@ -15,6 +17,19 @@ from src.service.integrations.email_delta_sync_service import (
     FolderSyncData,
     IntegrationSyncData,
 )
+
+
+def test_email_delta_tenant_queries_are_explicitly_organisation_scoped() -> None:
+    """RLS-backed delta orchestration must also carry explicit tenant predicates."""
+    source = inspect.getsource(email_delta_sync_service)
+
+    assert source.count("select(KnowledgeIntegration)") == source.count(
+        "col(KnowledgeIntegration.organisation_id)"
+    )
+    assert source.count("select(IntegrationSyncState)") == source.count(
+        "col(IntegrationSyncState.organisation_id)"
+    )
+    assert source.count("select(EmailFolder)") == source.count("col(EmailFolder.organisation_id)")
 
 
 @pytest.mark.asyncio

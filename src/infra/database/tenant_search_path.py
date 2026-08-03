@@ -98,6 +98,17 @@ def apply_tenant_transaction_context(session: Session, _transaction, connection)
     if not search_path_schemas:
         return
 
+    if TENANT_DATA_SCHEMA in search_path_schemas and organisation_id is None:
+        logger.error(
+            "Tenant transaction missing organisation context",
+            extra={
+                "event": "shared_tenancy_context",
+                "operation": "require_organisation_id",
+                "outcome": "failed",
+            },
+        )
+        raise RuntimeError("tenant_data transactions require an organisation context")
+
     search_path = ", ".join(_quote_identifier(str(name)) for name in search_path_schemas)
     connection.exec_driver_sql(f"SET LOCAL search_path TO {search_path}")
     if organisation_id is not None:
