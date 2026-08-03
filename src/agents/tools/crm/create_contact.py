@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, require_agent_deal_access
 from src.service.crm.contacts.contracts import (
     ContactCreateCommand,
     ContactDealLinkServiceError,
@@ -236,8 +237,14 @@ async def create_contact_direct(
     async with context.acquire_session() as org_session:
         contact_reader = ContactReadService(org_session, organisation_id)
         contact_writer = ContactWriteService(org_session, organisation_id)
-        deal_linker = ContactDealLinkService(org_session, organisation_id)
         try:
+            deal_linker = None
+            if parsed_deal_id:
+                access_actor = await require_agent_deal_access(
+                    context, org_session, parsed_deal_id, "control"
+                )
+                deal_linker = ContactDealLinkService(org_session, organisation_id, access_actor)
+
             contact = (
                 await contact_reader.find_contact_by_email(normalized_email)
                 if normalized_email
@@ -266,7 +273,7 @@ async def create_contact_direct(
 
             result = _contact_result(contact, status=status)
 
-            if parsed_deal_id:
+            if parsed_deal_id and deal_linker:
                 link_result = await deal_linker.add_contact_to_deal(
                     contact_id=contact.contact_id,
                     deal_id=parsed_deal_id,
@@ -305,6 +312,9 @@ async def create_contact_direct(
                     await _dispatch_stakeholder_sync(organisation_id, parsed_deal_id)
                 except Exception:
                     logger.exception("create_contact_direct: stakeholder sync dispatch failed")
+        except AgentCRMAccessError:
+            await _rollback_if_available(org_session)
+            return {"status": "error", "message": "Deal not found."}
         except (ContactWriteServiceError, ContactDealLinkServiceError) as exc:
             await _rollback_if_available(org_session)
             return {"status": "error", "message": f"Could not create contact: {exc.message}"}

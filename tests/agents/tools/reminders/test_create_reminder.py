@@ -4,6 +4,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -12,10 +13,12 @@ from src.agents.tools.reminders.create_reminder import (
     _resolve_reminder_delivery_target,
     create_reminder,
 )
+from src.domain.models.master_tables.user_models import UserAppRole
 from src.domain.models.organisation_tables.reminder_models import (
     ReminderStatus,
     ReminderType,
 )
+from src.service.crm.access.record_access_policy import CRMAccessActor, DealAccessPolicy
 
 
 @dataclass
@@ -346,6 +349,18 @@ async def test_create_reminder_creates_active_agentic_whatsapp_reminder(
     )
 
     deal_id = uuid4()
+    actor = CRMAccessActor(context.user_id, UserAppRole.MEMBER)
+    resolve_actor = AsyncMock(return_value=actor)
+    access_checks = []
+
+    async def require_deal(policy, checked_deal_id, level):
+        access_checks.append((policy.actor, checked_deal_id, level))
+
+    monkeypatch.setattr(
+        "src.agents.tools.reminders.create_reminder.resolve_agent_access_actor",
+        resolve_actor,
+    )
+    monkeypatch.setattr(DealAccessPolicy, "require_deal", require_deal)
     result = await create_reminder(
         context=context,
         title="Acme health check",
@@ -378,6 +393,8 @@ async def test_create_reminder_creates_active_agentic_whatsapp_reminder(
         "phone_number_id": "phone-123",
         "recipient_wa_id": "15551234567",
     }
+    resolve_actor.assert_awaited_once_with(context)
+    assert access_checks == [(actor, deal_id, "collaborate")]
 
 
 @pytest.mark.asyncio

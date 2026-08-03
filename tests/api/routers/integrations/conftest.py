@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from src.api.dependencies.crm_record_access import require_deal_collaborate
 from src.api.dependencies.organisation_dependencies import UserIDs, get_current_user
 from src.api.dependencies.rate_limit import rate_limit_user_write
 from src.api.routers.integrations.copilot_oauth_routes import (
@@ -20,6 +21,7 @@ from src.api.routers.integrations.copilot_oauth_routes import (
 from src.api.routers.integrations.deal_integration_routes import (
     get_integration_service as get_deal_integration_service,
 )
+from src.api.routers.integrations.deal_integration_routes import require_deals_update_scope
 from src.api.routers.integrations.integration_routes import (
     get_integration_service as get_list_integration_service,
 )
@@ -504,6 +506,8 @@ def integrations_dependency_overrides(
     app.dependency_overrides[get_copilot_oauth_service] = _override_copilot_oauth_service
     app.dependency_overrides[get_copilot_callback_service] = _override_copilot_callback_service
     app.dependency_overrides[rate_limit_user_write] = _override_rate_limit_user_write
+    app.dependency_overrides[require_deal_collaborate] = _override_rate_limit_user_write
+    app.dependency_overrides[require_deals_update_scope] = _override_rate_limit_user_write
 
     yield {
         "user_ids": user_ids,

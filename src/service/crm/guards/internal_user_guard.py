@@ -105,7 +105,10 @@ async def _load_internal_user_data(
         # Tier 2: If no org domains found, derive from USER participant emails
         if not internal_domains and context.deal_id:
             try:
+                # Deal IDs are externally derived context; retain the immutable
+                # organisation boundary even when RLS is also active.
                 participant_stmt = select(col(CRMDealParticipant.related_email)).where(
+                    col(CRMDealParticipant.organisation_id) == context.organisation_id,
                     col(CRMDealParticipant.deal_id) == context.deal_id,
                     col(CRMDealParticipant.participant_type) == CRMParticipantType.USER,
                 )

@@ -10,6 +10,11 @@ Our testing strategy is based on the "Test Pyramid" concept, focusing primarily 
 -   **Integration Tests**: This is our primary focus. These tests verify the interaction between different components of our application, such as API endpoints, services, and the database. They are designed to test a complete feature flow from the API boundary down to the database.
 -   **End-to-End (E2E) Tests**: These are larger-scale tests that run against a fully deployed application, including live external services. They are not included in this test suite and should be managed separately.
 
+Deployed E2E tests live in `e2e/`. Follow
+[`docs/Technical Documentation/testing/deployed-end-to-end-testing-framework.md`](../docs/Technical%20Documentation/testing/deployed-end-to-end-testing-framework.md)
+when adding them; the framework deliberately favors a few durable business-flow
+scenarios over many mocked unit tests.
+
 ## Key Features of Our Test Setup
 
 -   **`pytest`**: The test runner and framework. Tests are simple Python functions.

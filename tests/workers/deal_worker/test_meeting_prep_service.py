@@ -9,6 +9,9 @@ from src.agents.workflows.briefing import BriefingData
 from src.workers.deal_worker.services.meeting_insight_services.meeting_prep_service import (
     MeetingPrepService,
 )
+from src.workers.deal_worker.services.meeting_insight_services.meeting_summary_service import (
+    NonRetryableJobError,
+)
 
 
 @pytest.mark.asyncio
@@ -22,6 +25,9 @@ async def test_generate_passes_seller_context_to_briefing_input(monkeypatch) -> 
     class FakeSession:
         async def commit(self) -> None:
             return None
+
+        async def get(self, _model, _identifier):
+            return SimpleNamespace()
 
     async def fake_master_sessions():
         yield FakeSession()
@@ -64,9 +70,21 @@ async def test_generate_passes_seller_context_to_briefing_input(monkeypatch) -> 
             )
         ),
     )
+    monkeypatch.setattr(
+        f"{module}.get_organisation_agent_context",
+        AsyncMock(return_value=(None, None)),
+    )
     monkeypatch.setattr(f"{module}.get_deal", AsyncMock(return_value=deal))
     monkeypatch.setattr(f"{module}.get_event", AsyncMock(return_value=event))
-    monkeypatch.setattr(f"{module}.get_association", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        f"{module}.get_association",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                association_id=uuid4(),
+                status="ACTIVE",
+            )
+        ),
+    )
     monkeypatch.setattr(f"{module}.count_prior_meetings_for_briefing", AsyncMock(return_value=0))
     monkeypatch.setattr(f"{module}.count_emails_for_briefing", AsyncMock(return_value=0))
     monkeypatch.setattr("src.agents.workflows.briefing.BriefingAgent", FakeBriefingAgent)
@@ -84,3 +102,52 @@ async def test_generate_passes_seller_context_to_briefing_input(monkeypatch) -> 
     )
     assert captured["agent_kwargs"]["org_name"] == "Example Seller"
     assert result["data"]["briefing_overview"] == "# Prep for Acme"
+
+
+@pytest.mark.asyncio
+async def test_generate_rejects_event_not_associated_with_deal(monkeypatch) -> None:
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    event_id = uuid4()
+
+    async def fake_sessions(_organisation_id=None):
+        yield SimpleNamespace()
+
+    module = "src.workers.deal_worker.services.meeting_insight_services.meeting_prep_service"
+    monkeypatch.setattr(f"{module}.acquire_master_async_session", fake_sessions)
+    monkeypatch.setattr(f"{module}.acquire_org_async_session", fake_sessions)
+    monkeypatch.setattr(
+        f"{module}.get_organisation_briefing_context",
+        AsyncMock(return_value=("Example Seller", [], None)),
+    )
+    monkeypatch.setattr(
+        f"{module}.get_organisation_agent_context",
+        AsyncMock(return_value=(None, None)),
+    )
+    monkeypatch.setattr(
+        f"{module}.get_deal",
+        AsyncMock(return_value=SimpleNamespace(name="Deal", company_name="Company")),
+    )
+    monkeypatch.setattr(
+        f"{module}.get_event",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                title="Meeting",
+                description=None,
+                start_at=None,
+                end_at=None,
+                organiser_name=None,
+                organiser_email=None,
+                attendee_count=0,
+                attendees=[],
+            )
+        ),
+    )
+    monkeypatch.setattr(f"{module}.get_association", AsyncMock(return_value=None))
+
+    with pytest.raises(NonRetryableJobError, match="not associated"):
+        await MeetingPrepService(
+            organisation_id=organisation_id,
+            deal_id=deal_id,
+            event_id=event_id,
+        ).generate()

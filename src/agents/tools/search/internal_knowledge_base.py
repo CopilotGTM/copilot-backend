@@ -104,6 +104,7 @@ async def internal_knowledge_base(
 
     # Build base filters
     stmt = select(OrganisationDocument).where(
+        c.organisation_id == organisation_id,
         c.is_searchable.is_(True),
         c.is_archived.is_(False),
     )

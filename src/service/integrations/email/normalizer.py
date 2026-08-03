@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
 
+from src.service.integrations.email.gmail_policy import GMAIL_MAILBOX_LABEL_ID
 from src.service.integrations.email.types import (
     NormalizedEmailFolder,
     NormalizedEmailMessage,
@@ -35,6 +36,7 @@ class EmailPayloadNormalizer:
         "SPAM": "junk",
         "STARRED": "starred",
         "IMPORTANT": "important",
+        GMAIL_MAILBOX_LABEL_ID: "archive",
     }
     _GMAIL_LABEL_TYPE_MAP = GMAIL_LABEL_TYPE_MAP
 
@@ -160,7 +162,7 @@ class EmailPayloadNormalizer:
         if label_id.startswith("CATEGORY_"):
             folder_type = "category"
 
-        is_monitored = "true" if folder_type in cls.MONITORED_FOLDER_TYPES else "false"
+        is_monitored = "true" if label_id == GMAIL_MAILBOX_LABEL_ID else "false"
 
         return {
             "folder_name": label_name,

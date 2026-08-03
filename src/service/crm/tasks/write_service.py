@@ -278,7 +278,12 @@ class TaskWriteService:
 
         if "deal_id" in payload:
             new_deal_id = payload.get("deal_id")
-            task.deal_id = (await self._load_deal(new_deal_id)).deal_id if new_deal_id else None
+            if new_deal_id:
+                deal = await self._load_deal(new_deal_id)
+                await self._require_deal_access(deal.deal_id, "collaborate")
+                task.deal_id = deal.deal_id
+            else:
+                task.deal_id = None
             updated = True
 
         status_in_payload = "status" in payload
@@ -354,12 +359,11 @@ class TaskWriteService:
     async def delete_task(self, task_id: UUID) -> CRMTask:
         """Soft-delete one editable task and cancel active reminders."""
         task = await self._load_user_task(task_id)
+        await self._require_task_control(task)
         if task.status in {"COMPLETED", "CANCELLED"} and not (
             self.access_actor and self.access_actor.is_admin
         ):
             raise TaskWriteServiceError("Completed or cancelled tasks are immutable", 409)
-        if task.deal_id:
-            await self._require_deal_access(task.deal_id, "control")
 
         await self._reminders.cancel_task_reminders(task.task_id)
 
@@ -426,28 +430,60 @@ class TaskWriteService:
             raise TaskWriteServiceError(exc.message, exc.status_code) from exc
 
     async def _require_task_update(self, task: CRMTask, payload: dict[str, Any]) -> None:
-        if task.status in {"COMPLETED", "CANCELLED"} and not (
-            self.access_actor and self.access_actor.is_admin
-        ):
-            raise TaskWriteServiceError("Completed or cancelled tasks are immutable", 409)
-        if task.deal_id is None or self.access_actor is None:
-            return
-        try:
-            _deal, decision = await self._access.require_deal(task.deal_id, "view")
-        except CRMRecordAccessError as exc:
-            raise TaskWriteServiceError(exc.message, exc.status_code) from exc
-        if decision.can_control:
-            return
+        actor = self.access_actor
+        if actor is None:
+            raise TaskWriteServiceError("Task not found", 404)
+
         metadata = task.task_metadata or {}
-        is_assignee = task.assigned_to_user_id == self.access_actor.user_id or metadata.get(
+        is_creator = task.created_by_user_id == actor.user_id or metadata.get(
+            "actor_user_id"
+        ) == str(actor.user_id)
+        is_assignee = task.assigned_to_user_id == actor.user_id or metadata.get(
             "assigned_to_public_user_id"
-        ) == str(self.access_actor.user_id)
-        if not is_assignee:
-            raise TaskWriteServiceError("Only the deal owner or task assignee may update it", 403)
-        if {"owner_user_id", "deal_id", "external_assignee_email", "external_assignee_name"} & set(
-            payload
-        ):
-            raise TaskWriteServiceError("Only the deal owner may reassign or relink a task", 403)
+        ) == str(actor.user_id)
+        control_fields = {
+            "owner_user_id",
+            "deal_id",
+            "external_assignee_email",
+            "external_assignee_name",
+        } & set(payload)
+
+        if task.deal_id is None:
+            if not (actor.is_admin or is_creator or is_assignee):
+                raise TaskWriteServiceError("Task not found", 404)
+            if control_fields and not (actor.is_admin or is_creator):
+                raise TaskWriteServiceError("Only the task creator may reassign or relink it", 403)
+        elif not actor.is_admin:
+            try:
+                _deal, decision = await self._access.require_deal(task.deal_id, "view")
+            except CRMRecordAccessError as exc:
+                raise TaskWriteServiceError(exc.message, exc.status_code) from exc
+            if not decision.can_control:
+                if not is_assignee:
+                    raise TaskWriteServiceError(
+                        "Only the deal owner or task assignee may update it", 403
+                    )
+                if control_fields:
+                    raise TaskWriteServiceError(
+                        "Only the deal owner may reassign or relink a task", 403
+                    )
+
+        if task.status in {"COMPLETED", "CANCELLED"} and not (actor.is_admin):
+            raise TaskWriteServiceError("Completed or cancelled tasks are immutable", 409)
+
+    async def _require_task_control(self, task: CRMTask) -> None:
+        actor = self.access_actor
+        if actor is None:
+            raise TaskWriteServiceError("Task not found", 404)
+        if actor.is_admin:
+            return
+        if task.deal_id:
+            await self._require_deal_access(task.deal_id, "control")
+            return
+        if task.created_by_user_id != actor.user_id and (task.task_metadata or {}).get(
+            "actor_user_id"
+        ) != str(actor.user_id):
+            raise TaskWriteServiceError("Task not found", 404)
 
     async def _ensure_deal_participant(self, deal_id: UUID, user_id: UUID) -> None:
         """Add an internal task assignee to the deal when not already participating."""

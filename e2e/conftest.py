@@ -21,14 +21,17 @@ def required_env(name: str) -> str:
 
 
 @cache
-def e2e_access_token() -> str:
-    """Log in once per run so a short-lived token never has to be stored."""
+def e2e_access_token_for(
+    email_environment_name: str,
+    password_environment_name: str,
+) -> str:
+    """Log in one configured actor and retain its token only in process memory."""
     url = f"{required_env('E2E_API_BASE_URL').rstrip('/')}/users/auth/login"
     response = httpx.post(
         url,
         json={
-            "email": required_env("E2E_USER_EMAIL"),
-            "password": required_env("E2E_USER_PASSWORD"),
+            "email": required_env(email_environment_name),
+            "password": required_env(password_environment_name),
         },
         timeout=15,
     )
@@ -43,3 +46,8 @@ def e2e_access_token() -> str:
     if not isinstance(access_token, str) or not access_token:
         pytest.fail("E2E user login returned an empty access token")
     return access_token
+
+
+def e2e_access_token() -> str:
+    """Return the default E2E actor token used by existing suites."""
+    return e2e_access_token_for("E2E_USER_EMAIL", "E2E_USER_PASSWORD")

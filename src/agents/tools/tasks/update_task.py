@@ -13,10 +13,12 @@ from uuid import UUID
 
 from src.agents.tools.base import execute_with_capabilities
 from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
+from src.agents.tools.crm.policy import ensure_crm_write_scope
 from src.agents.tools.tasks.create_task import _resolve_due_date, _resolve_user_by_name
 from src.infra.utils.timezone import resolve_timezone_name
 from src.service.crm.tasks.contracts import TaskWriteServiceError
 from src.service.crm.tasks.write_service import TaskWriteService
+from src.service.orgnisation.organisation_policy_service import OrganisationPolicyDeniedError
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -60,6 +62,11 @@ async def update_task(
         parsed_task_id = UUID(task_id)
     except ValueError:
         return {"status": "error", "message": f"Invalid task_id '{task_id}'."}
+
+    try:
+        await ensure_crm_write_scope(context.organisation_id, "tasks:update")
+    except OrganisationPolicyDeniedError as exc:
+        return {"status": "error", "message": exc.message}
 
     payload: dict[str, Any] = {}
     if title is not None:

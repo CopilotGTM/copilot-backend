@@ -24,9 +24,13 @@ from typing import Any
 import httpx
 
 from src.infra.utils.logger import get_logger
-from src.service.integrations.api_error_utils import (
-    is_insufficient_scope_error,
-    log_provider_api_error,
+from src.service.integrations.api_error_utils import log_provider_api_error
+from src.service.integrations.email.gmail_policy import (
+    GMAIL_EXCLUDED_CATEGORY_SEARCH_TERMS,
+    GMAIL_MAILBOX_LABEL_ID,
+    gmail_mailbox_folder_payload,
+    gmail_message_is_excluded,
+    gmail_storage_label,
 )
 from src.service.integrations.providers.token_resolution import (
     IntegrationTokenInfo,
@@ -38,21 +42,10 @@ from src.workers.integrations_worker.providers._google_api import (
 
 logger = get_logger(__name__)
 
-# Gmail category label IDs — used for post-fetch safety-net filtering
-CATEGORY_LABELS = frozenset(
-    {
-        "CATEGORY_PROMOTIONS",
-        "CATEGORY_SOCIAL",
-        "CATEGORY_UPDATES",
-        "CATEGORY_FORUMS",
-    }
-)
-
-# Gmail search operator names — used in the `q` parameter for query-level filtering
-_CATEGORY_SEARCH_TERMS = ("promotions", "social", "updates", "forums")
-
 # Concurrency limit for messages.get calls (Gmail API quota: 250 units/sec, get = 5 units)
 _MAX_CONCURRENT_GETS = 5
+_MAX_FULL_SYNC_PAGES = 20
+_MAX_HISTORY_PAGES = 50
 
 
 @dataclass
@@ -117,6 +110,7 @@ async def fetch_labels(
                 label_id = label.get("id", "")
                 detail = await gmail_api_request(client, f"/gmail/v1/users/me/labels/{label_id}")
                 detailed_labels.append(detail)
+            detailed_labels.append(gmail_mailbox_folder_payload())
 
         logger.info(
             "Gmail labels fetched: count=%d connection=%s",
@@ -144,7 +138,7 @@ async def fetch_messages(
     Fetch Gmail messages via direct Google API.
 
     Two modes:
-    - Initial (no history_id): messages.list + messages.get per ID, 90-day lookback
+    - Initial (no history_id): messages.list + messages.get per ID, 365-day lookback
     - Incremental (history_id present): history.list for changes since that point
 
     If historyId is expired (404), falls back to full sync automatically.
@@ -196,24 +190,26 @@ async def _fetch_full(
     label_id: str | None,
 ) -> FetchMessagesResult:
     """Full sync: list message IDs then batch-get details."""
+    initial_history_id: str | None = None
+    if label_id == GMAIL_MAILBOX_LABEL_ID:
+        profile = await gmail_api_request(client, "/gmail/v1/users/me/profile")
+        initial_history_id = profile.get("historyId")
+
     cutoff = datetime.now(UTC) - timedelta(days=365)
     cutoff_epoch = int(cutoff.timestamp())
 
-    # Build query — exclude category emails at the API level so we don't
-    # waste messages.get calls on promotions/social/updates/forums
     q = f"after:{cutoff_epoch}"
-    if label_id == "INBOX":
-        q += "".join(f" -category:{cat}" for cat in _CATEGORY_SEARCH_TERMS)
-    params: dict[str, Any] = {"maxResults": 500, "q": q}
-    if label_id:
+    if label_id == GMAIL_MAILBOX_LABEL_ID:
+        q += " in:anywhere -in:spam -in:trash -is:chat"
+        q += "".join(f" -category:{category}" for category in GMAIL_EXCLUDED_CATEGORY_SEARCH_TERMS)
+    params: dict[str, Any] = {"maxResults": 500, "q": q, "includeSpamTrash": False}
+    if label_id and label_id != GMAIL_MAILBOX_LABEL_ID:
         params["labelIds"] = label_id
 
     # Paginate message IDs
     message_ids: list[str] = []
     page_token: str | None = None
-    max_pages = 20
-
-    for _ in range(max_pages):
+    for _ in range(_MAX_FULL_SYNC_PAGES):
         if page_token:
             params["pageToken"] = page_token
 
@@ -226,9 +222,15 @@ async def _fetch_full(
         if not page_token:
             break
 
+    if page_token:
+        raise RuntimeError(
+            f"Gmail full sync exceeded {_MAX_FULL_SYNC_PAGES * 500} messages; "
+            "refusing to persist an incomplete cursor"
+        )
+
     if not message_ids:
         logger.info("Gmail full sync: no messages found for connection=%s", connection_id)
-        return FetchMessagesResult(messages=[], history_id=None)
+        return FetchMessagesResult(messages=[], history_id=initial_history_id)
 
     logger.info(
         "Gmail full sync: listed %d message IDs for connection=%s label=%s",
@@ -240,18 +242,19 @@ async def _fetch_full(
     # Batch get message details
     messages = await _batch_get_messages(client, message_ids)
 
-    # Safety net — category exclusion is done at query level, but catch any stragglers
-    if label_id == "INBOX":
-        messages, skipped = _filter_category_messages(messages)
+    # The API query reduces detail calls; labels remain the authoritative safety net.
+    if label_id == GMAIL_MAILBOX_LABEL_ID:
+        messages, skipped = _filter_excluded_messages(messages)
         if skipped:
-            logger.warning("Gmail: %d category messages slipped past query filter", skipped)
+            logger.warning("Gmail: %d excluded messages slipped past initial query", skipped)
 
-    # Extract highest historyId from fetched messages
-    latest_history_id = _extract_latest_history_id(messages)
+    latest_history_id = initial_history_id or _extract_latest_history_id(messages)
 
-    # Tag each message with the label context for folder resolution downstream
+    # A single Gmail message can have many labels, while storage requires one folder.
     for msg in messages:
-        msg["_gmail_label_id"] = label_id
+        msg["_gmail_label_id"] = (
+            gmail_storage_label(msg) if label_id == GMAIL_MAILBOX_LABEL_ID else label_id
+        )
 
     logger.info(
         "Gmail full sync complete: messages=%d connection=%s label=%s",
@@ -280,16 +283,14 @@ async def _fetch_incremental(
         "historyTypes": ["messageAdded", "messageDeleted", "labelAdded", "labelRemoved"],
         "maxResults": 500,
     }
-    if label_id:
+    if label_id and label_id != GMAIL_MAILBOX_LABEL_ID:
         params["labelId"] = label_id
 
-    added_ids: list[str] = []
+    changed_ids: list[str] = []
     deleted_ids: list[str] = []
     new_history_id: str | None = None
     page_token: str | None = None
-    max_pages = 50
-
-    for page_idx in range(max_pages):
+    for page_idx in range(_MAX_HISTORY_PAGES):
         if page_token:
             params["pageToken"] = page_token
 
@@ -324,8 +325,9 @@ async def _fetch_incremental(
         new_history_id = resp.get("historyId") or new_history_id
 
         for record in resp.get("history", []):
-            for added in record.get("messagesAdded", []):
-                added_ids.append(added["message"]["id"])
+            for change_type in ("messagesAdded", "labelsAdded", "labelsRemoved"):
+                for changed in record.get(change_type, []):
+                    changed_ids.append(changed["message"]["id"])
             for removed in record.get("messagesDeleted", []):
                 deleted_ids.append(removed["message"]["id"])
 
@@ -333,38 +335,52 @@ async def _fetch_incremental(
         if not page_token:
             break
 
-    # Fetch full details for added messages
+    if page_token:
+        raise RuntimeError(
+            f"Gmail incremental sync exceeded {_MAX_HISTORY_PAGES * 500} history records; "
+            "refusing to advance an incomplete cursor"
+        )
+
+    # Label transitions are content changes because they affect inclusion and folder state.
     messages: list[dict[str, Any]] = []
-    if added_ids:
-        unique_added = list(dict.fromkeys(added_ids))  # dedupe preserving order
-        messages = await _batch_get_messages(client, unique_added)
+    excluded_ids: list[str] = []
+    if changed_ids:
+        unique_changed = list(dict.fromkeys(changed_ids))
+        fetched_messages = await _batch_get_messages(client, unique_changed)
 
-        if label_id == "INBOX":
-            messages, skipped = _filter_category_messages(messages)
+        if label_id == GMAIL_MAILBOX_LABEL_ID:
+            excluded_ids = [
+                message["id"] for message in fetched_messages if gmail_message_is_excluded(message)
+            ]
+            messages, skipped = _filter_excluded_messages(fetched_messages)
             if skipped:
-                logger.info("Gmail incremental: filtered %d category messages", skipped)
+                logger.info("Gmail incremental: filtered %d excluded messages", skipped)
+        else:
+            messages = fetched_messages
 
-    # Mark deleted messages
-    for msg_id in deleted_ids:
+    # Removing a previously included message from policy is a soft delete locally.
+    for msg_id in dict.fromkeys([*deleted_ids, *excluded_ids]):
         messages.append(
             {
                 "id": msg_id,
                 "_sync_metadata": {
                     "sync_action": "DELETED",
                     "sync_type": "INCREMENTAL",
-                    "source": "history_deleted",
+                    "source": ("history_excluded" if msg_id in excluded_ids else "history_deleted"),
                 },
             }
         )
 
-    # Tag with label context
+    # Folder assignment is derived from current labels in the global mailbox pass.
     for msg in messages:
-        msg["_gmail_label_id"] = label_id
+        msg["_gmail_label_id"] = (
+            gmail_storage_label(msg) if label_id == GMAIL_MAILBOX_LABEL_ID else label_id
+        )
 
     logger.info(
         "Gmail incremental sync complete: added=%d deleted=%d connection=%s",
-        len(added_ids),
-        len(deleted_ids),
+        len(changed_ids),
+        len(deleted_ids) + len(excluded_ids),
         connection_id,
     )
     return FetchMessagesResult(messages=messages, history_id=new_history_id)
@@ -382,7 +398,7 @@ async def _batch_get_messages(
     """Fetch full message details concurrently with bounded parallelism."""
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT_GETS)
 
-    async def _get_one(msg_id: str) -> dict[str, Any] | None:
+    async def _get_one(msg_id: str) -> dict[str, Any]:
         async with semaphore:
             try:
                 return await gmail_api_request(
@@ -399,18 +415,15 @@ async def _batch_get_messages(
                     endpoint=f"/gmail/v1/users/me/messages/{msg_id}",
                     message_id=msg_id,
                 )
-                if is_insufficient_scope_error(exc):
-                    raise
-                return None
+                raise
 
-    results = await asyncio.gather(*[_get_one(mid) for mid in message_ids])
-    return [r for r in results if r is not None]
+    return await asyncio.gather(*[_get_one(mid) for mid in message_ids])
 
 
-def _filter_category_messages(
+def _filter_excluded_messages(
     messages: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], int]:
-    """Filter out promotional/social/updates/forums messages from inbox sync."""
+    """Remove messages outside the mailbox ingestion policy."""
     filtered: list[dict[str, Any]] = []
     skipped = 0
 
@@ -420,8 +433,7 @@ def _filter_category_messages(
             filtered.append(msg)
             continue
 
-        label_ids = set(msg.get("labelIds", []))
-        if label_ids & CATEGORY_LABELS:
+        if gmail_message_is_excluded(msg):
             skipped += 1
             continue
 

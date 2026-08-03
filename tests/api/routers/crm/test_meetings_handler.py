@@ -9,7 +9,9 @@ Focuses on:
 
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
+from src.api.routers.crm import meetings_handler
 from src.domain.models.organisation_tables.sync.calendar import AssociationStatus
 
 from tests.api.routers.crm.conftest import create_meeting
@@ -17,6 +19,45 @@ from tests.api.routers.crm.conftest import create_meeting
 # =============================================================================
 # GET /{deal_id}/meetings - List Meetings Tests
 # =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_meeting_job_stream_uses_shared_deal_authorization(monkeypatch) -> None:
+    """A meeting stream binds shared access to its deal, event, and supported types."""
+    deal_id = uuid4()
+    event_id = uuid4()
+    access_checks = []
+
+    class FakeDealJobSSEService:
+        """Capture the access mode selected by the meeting stream endpoint."""
+
+        def __init__(
+            self,
+            organisation_id,
+            job_id,
+            user_id,
+        ):
+            return None
+
+        async def ensure_deal_access(self, requested_deal_id, *, event_id, allowed_job_types):
+            access_checks.append((requested_deal_id, event_id, allowed_job_types))
+            return requested_deal_id == deal_id
+
+    monkeypatch.setattr(meetings_handler, "DealJobSSEService", FakeDealJobSSEService)
+
+    await meetings_handler.meeting_job_stream(
+        deal_id=deal_id,
+        event_id=event_id,
+        job_id=uuid4(),
+        request=type("Request", (), {"headers": {}})(),
+        user_ids=type(
+            "User",
+            (),
+            {"organisation_id": uuid4(), "user_id": uuid4()},
+        )(),
+    )
+
+    assert access_checks == [(deal_id, event_id, meetings_handler.MEETING_STREAM_JOB_TYPES)]
 
 
 def test_list_meetings_empty(client: TestClient, meetings_dependency_overrides):
@@ -111,18 +152,9 @@ def test_initiate_summary_job_success(client: TestClient, meetings_dependency_ov
     assert body["data"]["job_type"] == "meeting_summary"
 
 
-def test_initiate_followup_job_success(client: TestClient, meetings_dependency_overrides):
-    """Test initiating a followup job successfully."""
-    job_service = meetings_dependency_overrides["job_service"]
-    deal_id = uuid4()
-    event_id = uuid4()
-
-    job_service.add_valid_event(event_id, deal_id)
-
-    resp = client.post(f"/users/crm/deals/{deal_id}/meetings/{event_id}/jobs/followup")
-    assert resp.status_code == 202, resp.text
-    body = resp.json()
-    assert body["data"]["job_type"] == "meeting_followup"
+def test_initiate_followup_job_is_not_publicly_supported():
+    """The public API must not advertise a job type with no registered worker."""
+    assert "followup" not in meetings_handler.MEETING_JOB_TYPE_MAP
 
 
 def test_initiate_job_invalid_job_type(client: TestClient, meetings_dependency_overrides):
@@ -261,7 +293,7 @@ def test_meeting_job_stream_returns_sse(
             self.job_id = created_job_id
             self.user_id = user_id
 
-        async def ensure_user_access(self, deal_id=None):
+        async def ensure_deal_access(self, deal_id, *, event_id, allowed_job_types):
             return True
 
         async def stream_events(self, *, resume_from_id=None):

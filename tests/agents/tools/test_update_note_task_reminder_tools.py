@@ -13,10 +13,13 @@ from src.agents.tools.crm.update_deal_note import update_deal_note
 from src.agents.tools.registry import CHANNEL_ONLY_TOOLS, ToolName, ToolRegistry
 from src.agents.tools.reminders.update_reminder import update_reminder
 from src.agents.tools.tasks.update_task import update_task
+from src.domain.models.master_tables.user_models import UserAppRole
 from src.domain.models.organisation_tables.reminder_models import (
     ReminderRecurrence,
     ReminderType,
 )
+from src.service.crm.access.record_access_policy import CRMAccessActor
+from src.service.orgnisation.organisation_policy_service import OrganisationPolicyDeniedError
 
 
 class _AsyncSessionContext:
@@ -102,6 +105,15 @@ async def test_update_task_resolves_assignee_and_due_date_before_committing() ->
     service.send_pending_assignment_notifications = AsyncMock()
 
     with (
+        patch(
+            "src.agents.tools.tasks.update_task.ensure_crm_write_scope",
+            new_callable=AsyncMock,
+            create=True,
+        ),
+        patch(
+            "src.agents.tools.tasks.update_task.resolve_agent_access_actor",
+            AsyncMock(return_value=CRMAccessActor(context.user_id, UserAppRole.MEMBER)),
+        ),
         patch("src.agents.tools.tasks.update_task.TaskWriteService", return_value=service),
         patch(
             "src.agents.tools.tasks.update_task._resolve_user_by_name",
@@ -136,6 +148,44 @@ async def test_update_task_resolves_assignee_and_due_date_before_committing() ->
     assert result["deal_name"] == "Acme Expansion"
     assert str(task_id) in result["message"]
     assert str(deal_id) in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_update_task_honours_disabled_organisation_scope() -> None:
+    context, _session = _context()
+    task_id = uuid4()
+    denied = AsyncMock(
+        side_effect=OrganisationPolicyDeniedError(
+            "Internal CRM write scope 'tasks:update' is disabled for this organisation",
+            code="crm_write_scope_disabled",
+        )
+    )
+    service = MagicMock()
+
+    with (
+        patch(
+            "src.agents.tools.tasks.update_task.ensure_crm_write_scope",
+            denied,
+            create=True,
+        ),
+        patch(
+            "src.agents.tools.tasks.update_task.resolve_agent_access_actor",
+            AsyncMock(return_value=CRMAccessActor(context.user_id, UserAppRole.MEMBER)),
+        ),
+        patch("src.agents.tools.tasks.update_task.TaskWriteService", return_value=service),
+    ):
+        result = await update_task(
+            context=context,
+            task_id=str(task_id),
+            title="Updated title",
+        )
+
+    denied.assert_awaited_once_with(context.organisation_id, "tasks:update")
+    service.update_task.assert_not_called()
+    assert result == {
+        "status": "error",
+        "message": "Internal CRM write scope 'tasks:update' is disabled for this organisation",
+    }
 
 
 @pytest.mark.asyncio

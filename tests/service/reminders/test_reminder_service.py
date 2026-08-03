@@ -1,7 +1,9 @@
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from src.domain.models.master_tables.user_models import UserAppRole
 from src.domain.models.organisation_tables.reminder_models import (
     ReminderRecurrence,
     ReminderRunStatus,
@@ -9,6 +11,10 @@ from src.domain.models.organisation_tables.reminder_models import (
     ReminderType,
     UserReminder,
     UserReminderRun,
+)
+from src.service.crm.access.record_access_policy import (
+    CRMAccessActor,
+    CRMRecordAccessError,
 )
 from src.service.reminders.reminder_service import (
     ReminderNotFoundError,
@@ -148,3 +154,57 @@ async def test_get_with_expected_type_filters_lookup_by_reminder_type() -> None:
 
     assert session.statement is not None
     assert "user_reminders.reminder_type" in str(session.statement)
+
+
+def _deal_guarded_service():
+    session = MagicMock()
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+    actor = CRMAccessActor(uuid4(), UserAppRole.MEMBER)
+    service = ReminderService(session, uuid4(), actor.user_id)
+    service.access_actor = actor
+    service._access = MagicMock()
+    service._access.require_deal = AsyncMock(
+        side_effect=CRMRecordAccessError("Deal not found", 404)
+    )
+    service._safe_schedule = MagicMock()
+    return service, session
+
+
+@pytest.mark.asyncio
+async def test_create_agentic_reminder_rejects_inaccessible_deal() -> None:
+    service, session = _deal_guarded_service()
+
+    with pytest.raises(ReminderServiceError, match="Deal not found") as exc_info:
+        await service.create(
+            title="Deal health check",
+            reminder_type=ReminderType.AGENTIC,
+            message_content=None,
+            agent_prompt="Summarize risks",
+            deal_id=uuid4(),
+            trigger_time=datetime(2030, 1, 1, tzinfo=UTC),
+            timezone="UTC",
+            recurrence=ReminderRecurrence.NONE,
+            recurrence_end_at=None,
+            delivery_channel="teams",
+        )
+
+    assert exc_info.value.status_code == 404
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_agentic_reminder_rejects_inaccessible_deal() -> None:
+    service, session = _deal_guarded_service()
+    reminder = _build_reminder()
+    service._fetch_owned = AsyncMock(return_value=reminder)
+
+    with pytest.raises(ReminderServiceError, match="Deal not found") as exc_info:
+        await service.update(
+            reminder.reminder_id,
+            {"deal_id": uuid4()},
+            reminder_type=ReminderType.AGENTIC,
+        )
+
+    assert exc_info.value.status_code == 404
+    session.commit.assert_not_awaited()

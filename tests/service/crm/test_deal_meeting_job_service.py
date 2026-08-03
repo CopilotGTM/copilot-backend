@@ -202,6 +202,7 @@ class TestCreateMeetingJobTranscriptCheck:
         svc = DealMeetingJobService(session, org_id, user_id)
 
         existing_job = SimpleNamespace(job_id=uuid4())
+        svc._require_active_association = AsyncMock()
         svc.get_active_job = AsyncMock(return_value=existing_job)
         svc._verify_transcript_for_summary = AsyncMock()
 
@@ -211,11 +212,31 @@ class TestCreateMeetingJobTranscriptCheck:
         svc._verify_transcript_for_summary.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_association_is_required_before_active_job_reuse(
+        self, org_id, user_id, deal_id, event_id
+    ):
+        """A same-org event cannot be processed under an unrelated deal context."""
+        session = AsyncMock()
+        svc = DealMeetingJobService(session, org_id, user_id)
+        svc.get_active_job = AsyncMock(return_value=SimpleNamespace(job_id=uuid4()))
+        svc._require_active_association = AsyncMock(
+            side_effect=DealMeetingJobServiceError("Meeting not found", status_code=404)
+        )
+
+        with pytest.raises(DealMeetingJobServiceError) as exc_info:
+            await svc.create_meeting_job(deal_id, event_id, DealJobType.MEETING_BRIEFING)
+
+        assert exc_info.value.status_code == 404
+        svc._require_active_association.assert_awaited_once_with(deal_id, event_id)
+        svc.get_active_job.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_no_active_job_calls_verify_for_summary(self, org_id, user_id, deal_id, event_id):
         """No active job + summary type → verify transcript before creating."""
         session = AsyncMock()
         svc = DealMeetingJobService(session, org_id, user_id)
 
+        svc._require_active_association = AsyncMock()
         svc.get_active_job = AsyncMock(return_value=None)
         svc._verify_transcript_for_summary = AsyncMock()
         svc.create_job = AsyncMock(return_value=SimpleNamespace(job_id=uuid4()))
@@ -239,6 +260,7 @@ class TestCreateMeetingJobTranscriptCheck:
         session = AsyncMock()
         svc = DealMeetingJobService(session, org_id, user_id)
 
+        svc._require_active_association = AsyncMock()
         svc.get_active_job = AsyncMock(return_value=None)
         svc._verify_transcript_for_summary = AsyncMock()
         svc.create_job = AsyncMock(return_value=SimpleNamespace(job_id=uuid4()))
@@ -263,6 +285,7 @@ class TestCreateMeetingJobTranscriptCheck:
         session = AsyncMock()
         svc = DealMeetingJobService(session, org_id, user_id)
 
+        svc._require_active_association = AsyncMock()
         svc._verify_transcript_for_summary = AsyncMock()
         svc.get_active_job = AsyncMock(return_value=None)
         svc.create_job = AsyncMock(return_value=SimpleNamespace(job_id=uuid4()))

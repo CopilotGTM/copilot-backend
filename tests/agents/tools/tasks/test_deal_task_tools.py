@@ -8,7 +8,7 @@ service to verify tool wiring independently of database backends.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -322,7 +322,9 @@ async def test_list_deal_tasks_accepts_visible_explicit_deal_id(
 ) -> None:
     """A human-facing agent may list a searched deal without page deal context."""
     explicit_deal_id = uuid4()
-    context.deal_id = None
+    acquire_session = context.acquire_session
+    context = replace(context, deal_id=None)
+    context.acquire_session = acquire_session  # type: ignore[method-assign]
     context.user_id = uuid4()
     access_check = AsyncMock()
     monkeypatch.setattr(

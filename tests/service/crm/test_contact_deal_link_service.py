@@ -10,6 +10,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
     CRMParticipantType,
 )
+from src.service.crm.access.record_access_policy import CRMAccessActor
 from src.service.crm.contacts.contracts import ContactDealLinkServiceError
 from src.service.crm.contacts.deal_link_service import ContactDealLinkService
 from src.service.crm.participants.contracts import ParticipantWriteResult
@@ -30,7 +31,7 @@ class _FakeResult:
 async def test_add_contact_to_deal_rejects_missing_contact() -> None:
     session = MagicMock()
     session.execute = AsyncMock(return_value=_FakeResult())
-    service = ContactDealLinkService(session, uuid4())
+    service = ContactDealLinkService(session, uuid4(), CRMAccessActor(uuid4()))
 
     with pytest.raises(ContactDealLinkServiceError) as exc:
         await service.add_contact_to_deal(contact_id=uuid4(), deal_id=uuid4())
@@ -49,7 +50,7 @@ async def test_add_contact_to_deal_rejects_contact_without_email() -> None:
     )
     session = MagicMock()
     session.execute = AsyncMock(return_value=_FakeResult(scalars=[contact]))
-    service = ContactDealLinkService(session, org_id)
+    service = ContactDealLinkService(session, org_id, CRMAccessActor(uuid4()))
 
     with pytest.raises(ContactDealLinkServiceError) as exc:
         await service.add_contact_to_deal(contact_id=contact.contact_id, deal_id=uuid4())
@@ -63,6 +64,7 @@ async def test_add_contact_to_deal_delegates_to_deal_participant_service() -> No
     contact_id = uuid4()
     deal_id = uuid4()
     actor_user_id = uuid4()
+    access_actor = CRMAccessActor(actor_user_id)
     contact = CRMContact(
         organisation_id=org_id,
         integration_id=uuid4(),
@@ -101,7 +103,7 @@ async def test_add_contact_to_deal_delegates_to_deal_participant_service() -> No
         )
         participant_cls.return_value = participant_service
 
-        result = await ContactDealLinkService(session, org_id).add_contact_to_deal(
+        result = await ContactDealLinkService(session, org_id, access_actor).add_contact_to_deal(
             contact_id=contact_id,
             deal_id=deal_id,
             relationship_role="buyer",
@@ -112,6 +114,7 @@ async def test_add_contact_to_deal_delegates_to_deal_participant_service() -> No
         session=session,
         organisation_id=org_id,
         actor_user_id=actor_user_id,
+        access_actor=access_actor,
     )
     participant_service.add_participants.assert_awaited_once_with(
         deal_id,

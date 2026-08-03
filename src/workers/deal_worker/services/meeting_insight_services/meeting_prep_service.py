@@ -156,6 +156,10 @@ class MeetingPrepService:
 
             if not deal or not event:
                 raise NonRetryableJobError("Missing deal or event data", "invalid_data")
+            if not association or association.status != AssociationStatus.ACTIVE:
+                raise NonRetryableJobError(
+                    "Meeting is not associated with this deal", "invalid_data"
+                )
 
             deal_name = deal.name
             company_name = deal.company_name
@@ -176,8 +180,7 @@ class MeetingPrepService:
                     if (name := resolve_attendee_display_name(a.display_name, a.email) or a.email)
                 ][:8]
 
-            if association:
-                association_id = association.association_id
+            association_id = association.association_id
 
             # Counts only help the agent navigate history; a failed advisory
             # query must not block a briefing whose tools can confirm context.

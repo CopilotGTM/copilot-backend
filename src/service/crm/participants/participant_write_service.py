@@ -23,7 +23,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 )
 from src.infra.utils.logger import get_logger
 from src.service.crm.access.record_access_policy import (
-    CRMAccessActor,
+    CRMActor,
     CRMRecordAccessError,
     DealAccessPolicy,
 )
@@ -53,7 +53,7 @@ class ParticipantWriteService:
         organisation_id: UUID,
         actor_user_id: UUID,
         master_session: AsyncSession | None = None,
-        access_actor: CRMAccessActor | None = None,
+        access_actor: CRMActor | None = None,
     ):
         self.session = session
         self.organisation_id = organisation_id

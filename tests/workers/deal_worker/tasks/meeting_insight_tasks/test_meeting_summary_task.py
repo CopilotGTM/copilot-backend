@@ -545,8 +545,8 @@ class TestMeetingSummaryService:
         )
         monkeypatch.setattr(
             "src.workers.deal_worker.services.meeting_insight_services"
-            ".meeting_summary_service.get_organisation_name",
-            AsyncMock(return_value="Example Org"),
+            ".meeting_summary_service.get_organisation_agent_context",
+            AsyncMock(return_value=("Example Org", None)),
         )
         monkeypatch.setattr(
             "src.workers.deal_worker.services.meeting_insight_services"
@@ -655,9 +655,10 @@ class TestMeetingSummaryService:
         class FakeMeetingLevelSummaryAgent:
             last_token_usage = None
 
-            def __init__(self, *, organisation_id, org_name):
+            def __init__(self, *, organisation_id, org_name, organisation_profile):
                 assert organisation_id == org_id
                 assert org_name == "Example Org"
+                assert organisation_profile is None
 
             async def generate(self, input_data):
                 captured_inputs.append(input_data)
@@ -675,8 +676,8 @@ class TestMeetingSummaryService:
         )
         monkeypatch.setattr(
             "src.workers.deal_worker.services.meeting_insight_services"
-            ".meeting_summary_service.get_organisation_name",
-            AsyncMock(return_value="Example Org"),
+            ".meeting_summary_service.get_organisation_agent_context",
+            AsyncMock(return_value=("Example Org", None)),
         )
         monkeypatch.setattr(
             "src.workers.deal_worker.services.meeting_insight_services"
