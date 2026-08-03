@@ -21,6 +21,7 @@ from src.api.routers.crm.deal_notes_handler import get_deal_notes_service
 from src.api.routers.crm.deals_handler import (
     get_deal_job_service,
     get_deals_access_service,
+    require_deals_update_scope,
 )
 from src.api.routers.crm.meetings_handler import get_deal_meeting_job_service, get_meetings_service
 from src.api.routers.crm.risks_blockers_handler import get_risk_blocker_service
@@ -30,6 +31,9 @@ from src.api.routers.crm.stakeholders_handler import (
     get_stakeholder_read_service,
     get_stakeholder_write_service,
     get_stakeholders_service,
+    require_participants_create_scope,
+    require_participants_delete_scope,
+    require_participants_update_scope,
 )
 from src.api.routers.crm.tasks_handler import get_tasks_access_service
 from src.domain.models.organisation_tables.job_models import DealJobType, JobStatus
@@ -1583,6 +1587,10 @@ def stakeholders_dependency_overrides(
     app.dependency_overrides[get_stakeholder_deal_job_service] = _override_deal_job_service
     app.dependency_overrides[rate_limit_user_read] = _override_rate_limit
     app.dependency_overrides[rate_limit_user_write] = _override_rate_limit
+    app.dependency_overrides[require_deal_collaborate] = _override_rate_limit
+    app.dependency_overrides[require_participants_create_scope] = _override_rate_limit
+    app.dependency_overrides[require_participants_update_scope] = _override_rate_limit
+    app.dependency_overrides[require_participants_delete_scope] = _override_rate_limit
     yield
     app.dependency_overrides = {}
 
@@ -1665,6 +1673,9 @@ def deals_dependency_overrides(client, test_user_ids, fake_deals_service, fake_d
     app.dependency_overrides[get_deal_job_service] = _override_job_service
     app.dependency_overrides[rate_limit_user_read] = _override_rate_limit
     app.dependency_overrides[rate_limit_user_write] = _override_rate_limit
+    app.dependency_overrides[require_deal_view] = _override_rate_limit
+    app.dependency_overrides[require_deal_collaborate] = _override_rate_limit
+    app.dependency_overrides[require_deals_update_scope] = _override_rate_limit
     yield {
         "deals_service": fake_deals_service,
         "job_service": fake_deal_job_service,

@@ -28,6 +28,11 @@ from src.domain.models.organisation_tables.reminder_models import (
 )
 from src.infra.messaging.reminder_schedule import schedule_reminder, unschedule_reminder
 from src.infra.utils.logger import get_logger
+from src.service.crm.access.record_access_policy import (
+    CRMAccessActor,
+    CRMRecordAccessError,
+    DealAccessPolicy,
+)
 
 logger = get_logger("reminder_service")
 
@@ -76,10 +81,14 @@ class ReminderService:
         session: AsyncSession,
         organisation_id: UUID,
         user_id: UUID,
+        *,
+        access_actor: CRMAccessActor | None = None,
     ):
         self.session = session
         self.organisation_id = organisation_id
         self.user_id = user_id
+        self.access_actor = access_actor
+        self._access = DealAccessPolicy(session, organisation_id, access_actor)
 
     async def close(self) -> None:
         """Release the database session."""
@@ -107,6 +116,9 @@ class ReminderService:
 
         if trigger_time <= datetime.now(UTC):
             raise ReminderServiceError("trigger_time must be in the future")
+
+        if reminder_type == ReminderType.AGENTIC and deal_id:
+            await self._require_deal_access(deal_id)
 
         agent_config = None
         if reminder_type == ReminderType.AGENTIC and agent_prompt:
@@ -247,6 +259,9 @@ class ReminderService:
         if not is_static and "message_content" in updates:
             raise ReminderServiceError("message_content is not applicable to agentic reminders")
 
+        if updates.get("deal_id"):
+            await self._require_deal_access(updates["deal_id"])
+
         if "title" in updates:
             reminder.title = updates["title"]
 
@@ -295,6 +310,12 @@ class ReminderService:
             self._safe_schedule(reminder.reminder_id, reminder.next_trigger_at.timestamp())
 
         return self._to_detail(reminder)
+
+    async def _require_deal_access(self, deal_id: UUID) -> None:
+        try:
+            await self._access.require_deal(deal_id, "collaborate")
+        except CRMRecordAccessError as exc:
+            raise ReminderServiceError(exc.message, exc.status_code) from exc
 
     # ── STATE TRANSITIONS ───────────────────────────────────────────────
 

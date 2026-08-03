@@ -6,8 +6,19 @@ import json
 from uuid import uuid4
 
 import pytest
-from src.domain.models.organisation_tables.job_models import DealJobs, JobStatus
+from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 from src.service.crm.jobs.deal_job_sse_service import DealJobSSEService
+
+
+class _JobResult:
+    def __init__(self, job: DealJobs) -> None:
+        self.job = job
+
+    def scalars(self):
+        return self
+
+    def first(self):
+        return self.job
 
 
 @pytest.mark.asyncio
@@ -141,9 +152,10 @@ async def test_ensure_user_access_rejects_job_for_different_deal(monkeypatch) ->
     class FakeSession:
         """Async session returning a single synthetic job for access checks."""
 
-        async def get(self, model, job_id):
+        async def execute(self, statement):
             """Return the seeded job for access check logic."""
-            return job
+            assert organisation_id in statement.compile().params.values()
+            return _JobResult(job)
 
     class FakeSessionSource:
         """Async session source that yields one fake session object."""
@@ -158,3 +170,101 @@ async def test_ensure_user_access_rejects_job_for_different_deal(monkeypatch) ->
     )
 
     assert await service.ensure_user_access(deal_id=requested_deal_id) is False
+
+
+@pytest.mark.asyncio
+async def test_deal_access_allows_collaborator_to_reuse_shared_job(monkeypatch) -> None:
+    """A route-authorized collaborator can stream another user's deal-scoped job."""
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    job = DealJobs(
+        organisation_id=organisation_id,
+        user_id=uuid4(),
+        deal_id=deal_id,
+        job_type="deal_summary",
+        status=JobStatus.COMPLETED,
+        result_data={"summary": "shared"},
+    )
+    service = DealJobSSEService(organisation_id, job.job_id, uuid4())
+
+    class FakeSession:
+        """Return the shared job from the already tenant-scoped session."""
+
+        async def execute(self, statement):
+            assert organisation_id in statement.compile().params.values()
+            return _JobResult(job)
+
+    class FakeSessionSource:
+        """Yield one tenant session for access and durable-state checks."""
+
+        async def __aiter__(self):
+            yield FakeSession()
+
+    monkeypatch.setattr(
+        "src.service.crm.jobs.deal_job_sse_service.acquire_org_async_session",
+        lambda organisation_id: FakeSessionSource(),
+    )
+
+    assert (
+        await service.ensure_deal_access(
+            deal_id,
+            event_id=None,
+            allowed_job_types=frozenset({DealJobType.DEAL_SUMMARY}),
+        )
+        is True
+    )
+    events = [event async for event in service.stream_events()]
+    assert [event["event"] for event in events] == ["ready", "frame", "frame", "complete"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("requested_event_id", "allowed_job_types"),
+    [
+        (uuid4(), frozenset({DealJobType.MEETING_SUMMARY})),
+        (None, frozenset({DealJobType.STAKEHOLDER_SYNC})),
+    ],
+)
+async def test_deal_access_rejects_route_identity_substitution(
+    monkeypatch,
+    requested_event_id,
+    allowed_job_types,
+) -> None:
+    """A deal match alone cannot authorize a different event or job type."""
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    job = DealJobs(
+        organisation_id=organisation_id,
+        user_id=uuid4(),
+        deal_id=deal_id,
+        event_id=uuid4(),
+        job_type=DealJobType.MEETING_BRIEFING,
+        status=JobStatus.COMPLETED,
+        result_data={"briefing": "private to the requested meeting route"},
+    )
+    service = DealJobSSEService(organisation_id, job.job_id, uuid4())
+
+    class FakeSession:
+        async def execute(self, _statement):
+            return _JobResult(job)
+
+    class FakeSessionSource:
+        async def __aiter__(self):
+            yield FakeSession()
+
+    monkeypatch.setattr(
+        "src.service.crm.jobs.deal_job_sse_service.acquire_org_async_session",
+        lambda organisation_id: FakeSessionSource(),
+    )
+
+    assert (
+        await service.ensure_deal_access(
+            deal_id,
+            event_id=requested_event_id,
+            allowed_job_types=allowed_job_types,
+        )
+        is False
+    )
+    _status, result, denied = await service._get_job_status()
+    assert result is None
+    assert denied is True

@@ -111,7 +111,10 @@ class ContactReadService:
 
     async def resolve_source_for_contact(self, integration_id: UUID) -> str:
         """Look up the integration type for a single contact and return its source label."""
+        # The integration ID can originate from a loaded contact, but the bound
+        # organisation remains the trust boundary if this helper is reused.
         stmt = select(col(KnowledgeIntegration.integration_type)).where(
+            col(KnowledgeIntegration.organisation_id) == self.organisation_id,
             col(KnowledgeIntegration.integration_id) == integration_id,
         )
         res = await self.org_session.execute(stmt)

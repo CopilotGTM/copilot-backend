@@ -141,9 +141,10 @@ class DealMeetingJobService:
         """Return an active equivalent job or create a new meeting job.
 
         Active-job lookup runs before transcript gating to reuse already-visible
-        work across collaborators. It is not user-scoped or concurrency-safe,
-        while SSE remains owner-scoped. A completed summary is treated as manual
-        regeneration and skips the downstream deal-insight pipeline.
+        work across collaborators. It is not user-scoped or concurrency-safe;
+        SSE access is shared only after matching deal, event, and job type. A
+        completed summary is treated as manual regeneration and skips the
+        downstream deal-insight pipeline.
 
         Args:
             deal_id: The deal this job is for
@@ -156,6 +157,10 @@ class DealMeetingJobService:
         Raises:
             DealMeetingJobServiceError: If the event is missing or transcript work is in progress.
         """
+        # The event UUID and deal UUID are both client-controlled. Validate their
+        # active tenant-local association before even reusing an existing job.
+        await self._require_active_association(deal_id, event_id)
+
         # copilotgtm: this unlocked lookup is best-effort duplicate suppression.
         # Add a database uniqueness/lock boundary if concurrent duplicate work appears.
         active_job = await self.get_active_job(deal_id, job_type, event_id=event_id)
@@ -187,6 +192,18 @@ class DealMeetingJobService:
             event_id=event_id,
             metadata=metadata,
         )
+
+    async def _require_active_association(self, deal_id: UUID, event_id: UUID) -> None:
+        """Require the event to be actively associated with the supplied deal."""
+        stmt = select(CalendarEventDealAssociation.association_id).where(
+            col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
+            col(CalendarEventDealAssociation.deal_id) == deal_id,
+            col(CalendarEventDealAssociation.event_id) == event_id,
+            col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE,
+        )
+        association_id = (await self.session.execute(stmt)).scalar_one_or_none()
+        if association_id is None:
+            raise DealMeetingJobServiceError("Meeting not found.", status_code=404)
 
     async def _has_completed_meeting_summary(self, deal_id: UUID, event_id: UUID) -> bool:
         """Return True when the meeting already has a completed summary payload.

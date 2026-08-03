@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.service.crm.access.record_access_policy import CRMActor
 from src.service.crm.contacts.contracts import (
     ContactDealLinkResult,
     ContactDealLinkServiceError,
@@ -18,10 +19,16 @@ from src.service.crm.participants.participant_write_service import ParticipantWr
 class ContactDealLinkService:
     """Tenant-scoped service for adding existing contacts to deals as participants."""
 
-    def __init__(self, org_session: AsyncSession, organisation_id: UUID):
-        """Bind the service to one org-scoped session and immutable org boundary."""
+    def __init__(
+        self,
+        org_session: AsyncSession,
+        organisation_id: UUID,
+        access_actor: CRMActor,
+    ):
+        """Bind the service to one organisation and an explicit record-access actor."""
         self.org_session = org_session
         self.organisation_id = organisation_id
+        self.access_actor = access_actor
 
     async def close(self) -> None:
         """Close the owned org session when used as a FastAPI dependency."""
@@ -55,6 +62,7 @@ class ContactDealLinkService:
             session=self.org_session,
             organisation_id=self.organisation_id,
             actor_user_id=actor_user_id or uuid4(),
+            access_actor=self.access_actor,
         )
 
         result = await participant_service.add_participants(

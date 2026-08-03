@@ -189,6 +189,7 @@ class EmailSyncWriter:
             "integration_id": integration_id,
             "external_message_id": external_id,
             "folder_id": folder_id,
+            "is_deleted": False,
             "synced_at": now,
             "created_at": now,
             "updated_at": now,

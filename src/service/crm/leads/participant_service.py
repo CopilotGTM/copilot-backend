@@ -6,11 +6,19 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import select
+from sqlmodel import col
+from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
     CRMParticipantType,
 )
-from src.domain.models.organisation_tables.sync.crm.leads import CRMLeadParticipant
+from src.domain.models.organisation_tables.sync.crm.leads import (
+    CRMLeadParticipant,
+    CRMLeadParticipantType,
+)
+from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.service.crm.leads.contracts import LeadServiceError
 from src.service.crm.leads.read_service import LeadReadService
 
@@ -30,6 +38,32 @@ class LeadParticipantService(LeadReadService):
                 "Participant requires related_local_id or email",
                 status_code=400,
             )
+
+        related_local_id = payload.get("related_local_id")
+        if related_local_id:
+            try:
+                participant_type = CRMLeadParticipantType(payload.get("participant_type"))
+            except ValueError as exc:
+                raise LeadServiceError("Invalid participant type", status_code=400) from exc
+
+            related_model = {
+                CRMLeadParticipantType.CONTACT: (CRMContact, CRMContact.contact_id),
+                CRMLeadParticipantType.COMPANY: (CRMCompany, CRMCompany.company_id),
+                CRMLeadParticipantType.USER: (CRMUser, CRMUser.user_id),
+            }.get(participant_type)
+            if related_model is None:
+                raise LeadServiceError(
+                    "Custom participants cannot reference a local CRM record",
+                    status_code=400,
+                )
+            model, id_column = related_model
+            stmt = select(id_column).where(
+                col(model.organisation_id) == self.organisation_id,
+                col(id_column) == related_local_id,
+                col(model.is_deleted).is_(False),
+            )
+            if (await self.org_session.execute(stmt)).scalars().first() is None:
+                raise LeadServiceError("Related participant not found", status_code=404)
 
         participant = CRMLeadParticipant(
             **payload,

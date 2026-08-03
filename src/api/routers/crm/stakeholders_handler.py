@@ -15,11 +15,14 @@ from fastapi import APIRouter, Depends, Query
 from fastapi import Response as FastAPIResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.crm_record_access import require_deal_collaborate
+from src.api.dependencies.crm_write_guard import require_crm_write_scope
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
     get_org_async_session,
 )
+from src.api.dependencies.rate_limit import rate_limit_user_write
 from src.api.routers.crm.contacts_handler import get_contact_read_service
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.crm_models import (
@@ -57,6 +60,9 @@ _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your reques
 
 stakeholders_router = APIRouter()
 ApiModelT = TypeVar("ApiModelT", bound=BaseModel)
+require_participants_create_scope = require_crm_write_scope("deal_participants:create")
+require_participants_update_scope = require_crm_write_scope("deal_participants:update")
+require_participants_delete_scope = require_crm_write_scope("deal_participants:delete")
 
 
 def _to_api_model(model_type: type[ApiModelT], value: Any) -> ApiModelT:
@@ -285,6 +291,7 @@ async def list_available_contacts(
     "/{deal_id}/stakeholders",
     response_model=GenericResponse[CreateStakeholderResponse | StakeholderConflictResponse],
     summary="Manually add a new stakeholder",
+    dependencies=[Depends(require_deal_collaborate)],
 )
 async def create_stakeholder(
     deal_id: UUID,
@@ -293,6 +300,8 @@ async def create_stakeholder(
     user_ids: UserIDs = Depends(get_current_user),
     service: StakeholderWriteService = Depends(get_stakeholder_write_service),
     deal_job_service: DealJobService = Depends(get_stakeholder_deal_job_service),
+    _crm_write_guard: None = Depends(require_participants_create_scope),
+    _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[CreateStakeholderResponse | StakeholderConflictResponse]:
     """Manually add a new stakeholder to a deal.
 
@@ -444,6 +453,7 @@ async def get_stakeholder_detail(
     "/{deal_id}/stakeholders/{participant_id}",
     response_model=GenericResponse[StakeholderDetail],
     summary="Edit stakeholder details",
+    dependencies=[Depends(require_deal_collaborate)],
 )
 async def update_stakeholder(
     deal_id: UUID,
@@ -451,6 +461,8 @@ async def update_stakeholder(
     request: UpdateStakeholderRequest,
     response: FastAPIResponse,
     service: StakeholderWriteService = Depends(get_stakeholder_write_service),
+    _crm_write_guard: None = Depends(require_participants_update_scope),
+    _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[StakeholderDetail]:
     """Partially update editable stakeholder fields."""
     try:
@@ -491,6 +503,7 @@ async def update_stakeholder(
     "/{deal_id}/stakeholders/{participant_id}/research",
     response_model=GenericResponse[DealJobResponse],
     summary="Trigger contact research for a stakeholder",
+    dependencies=[Depends(require_deal_collaborate)],
 )
 async def trigger_stakeholder_contact_research(
     deal_id: UUID,
@@ -498,6 +511,8 @@ async def trigger_stakeholder_contact_research(
     response: FastAPIResponse,
     user_ids: UserIDs = Depends(get_current_user),
     service: StakeholderReadService = Depends(get_stakeholder_read_service),
+    _crm_write_guard: None = Depends(require_participants_update_scope),
+    _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealJobResponse]:
     """Manually trigger contact-owned research for a stakeholder.
 
@@ -573,12 +588,15 @@ async def trigger_stakeholder_contact_research(
     "/{deal_id}/stakeholders/{participant_id}",
     response_model=GenericResponse[StakeholderDetail],
     summary="Remove a stakeholder from the deal",
+    dependencies=[Depends(require_deal_collaborate)],
 )
 async def remove_stakeholder(
     deal_id: UUID,
     participant_id: UUID,
     response: FastAPIResponse,
     service: StakeholderWriteService = Depends(get_stakeholder_write_service),
+    _crm_write_guard: None = Depends(require_participants_delete_scope),
+    _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[StakeholderDetail]:
     """Remove a stakeholder from the deal.
 

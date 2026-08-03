@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -122,8 +123,7 @@ async def test_deal_read_tool_uses_context_deal_when_argument_is_omitted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Deal-scoped agents can call each read tool without repeating their deal ID."""
-    context = _context()
-    context.deal_id = uuid4()
+    context = replace(_context(), deal_id=uuid4())
     implementation = AsyncMock(return_value=result)
     monkeypatch.setattr(f"{module_path}.{module_path.rsplit('.', 1)[-1]}", implementation)
 

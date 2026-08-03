@@ -136,7 +136,7 @@ class SlackBotService:
 
         # Service-level dedupe using client_msg_id (survives container restarts
         # where the webhook-level event_id dedupe key may have been lost).
-        if self._is_duplicate_event(event):
+        if self._is_duplicate_event(event, event_payload.get("team_id", "")):
             return
 
         if event_type == "app_mention":
@@ -151,7 +151,7 @@ class SlackBotService:
         else:
             logger.debug("Unhandled Slack event type: %s", event_type)
 
-    def _is_duplicate_event(self, event: dict[str, Any]) -> bool:
+    def _is_duplicate_event(self, event: dict[str, Any], team_id: str) -> bool:
         """Check if this event was already processed using client_msg_id or ts+channel.
 
         Slack assigns client_msg_id per user message. On retries, the same
@@ -162,10 +162,12 @@ class SlackBotService:
         channel = event.get("channel") or ""
         ts = event.get("ts") or ""
 
-        if not msg_id and not (channel and ts):
+        if not team_id or (not msg_id and not (channel and ts)):
             return False
 
-        dedupe_key = f"slack:msg:{msg_id}" if msg_id else f"slack:msg:{channel}:{ts}"
+        dedupe_key = (
+            f"slack:msg:{team_id}:{msg_id}" if msg_id else f"slack:msg:{team_id}:{channel}:{ts}"
+        )
         try:
             from src.infra.messaging.redis_client import get_redis_client
 

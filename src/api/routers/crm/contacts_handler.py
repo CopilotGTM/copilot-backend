@@ -200,7 +200,11 @@ async def get_contact_deal_link_service(
     The service validates both sides of the association inside the org schema before it
     creates a participant row.
     """
-    service = ContactDealLinkService(org_session, user_ids.organisation_id)
+    service = ContactDealLinkService(
+        org_session,
+        user_ids.organisation_id,
+        CRMAccessActor(user_ids.user_id, user_ids.user_role, user_ids.user_email),
+    )
     try:
         yield service
     finally:

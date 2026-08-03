@@ -17,7 +17,10 @@ import json
 from collections.abc import AsyncGenerator
 from uuid import UUID
 
-from src.domain.models.organisation_tables.job_models import DealJobs, JobStatus
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
+from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.messaging.redis_channels import channel_for_deal_job
 from src.infra.messaging.redis_streams import AsyncRedisStreams
@@ -30,19 +33,25 @@ FRAME_TYPE_FINALIZE = "finalize"
 
 
 class DealJobSSEService:
-    """Stream one user's tenant-local job with database-backed recovery.
+    """Stream one tenant-local job with database-backed recovery.
 
-    Router-level authorization should call ``ensure_user_access`` before
-    ``stream_events``; that successful precheck is the Redis security boundary.
-    The stream repeats ownership enforcement before returning database results,
-    but falls back to Redis if the second database read is unavailable.
+    Contact research is user-owned. A deal or meeting router may grant shared
+    access only after matching the job's deal, event, and allowed job type. That
+    successful route precheck is repeated for durable result reads and forms the
+    Redis security boundary.
     """
 
-    def __init__(self, organisation_id: UUID, job_id: UUID, user_id: UUID) -> None:
-        """Bind the stream key plus the user identity used for database authorization."""
+    def __init__(
+        self,
+        organisation_id: UUID,
+        job_id: UUID,
+        user_id: UUID,
+    ) -> None:
+        """Bind the stream key and default to user-owned durable reads."""
         self.organisation_id = str(organisation_id)
         self.job_id = str(job_id)
         self.user_id = str(user_id)
+        self._shared_scope: tuple[UUID, UUID | None, frozenset[DealJobType]] | None = None
         self.stream_key = channel_for_deal_job(self.organisation_id, self.job_id)
         self._streams: AsyncRedisStreams | None = None
 
@@ -277,7 +286,7 @@ class DealJobSSEService:
         """
         try:
             async for session in acquire_org_async_session(UUID(self.organisation_id)):
-                job = await session.get(DealJobs, UUID(self.job_id))
+                job = await self._get_job(session)
                 if not job:
                     return None
                 if str(job.user_id) != self.user_id:
@@ -289,19 +298,50 @@ class DealJobSSEService:
             logger.debug("Failed to validate deal job access", exc_info=True)
         return None
 
-    async def _get_job_status(self) -> tuple[JobStatus | None, dict | None, bool]:
-        """Load durable status/result and repeat user ownership enforcement.
+    async def ensure_deal_access(
+        self,
+        deal_id: UUID,
+        *,
+        event_id: UUID | None,
+        allowed_job_types: frozenset[DealJobType],
+    ) -> bool | None:
+        """Match a shared job to the complete route-authorized identity.
 
-        Database errors degrade to unknown state so a route-authorized stream can
-        still attempt Redis. This method never returns another user's database
-        result, but Redis fallback relies on the router's earlier access check.
+        The router separately enforces the caller's current deal access. This
+        check prevents a valid collaborator from substituting another deal's,
+        meeting's, or job type's ID in the stream URL.
+        """
+        self._shared_scope = None
+        try:
+            async for session in acquire_org_async_session(UUID(self.organisation_id)):
+                job = await self._get_job(session)
+                if not job:
+                    return None
+                scope = (deal_id, event_id, allowed_job_types)
+                if not self._matches_deal_scope(job, scope):
+                    return False
+                self._shared_scope = scope
+                return True
+        except Exception:
+            logger.debug("Failed to validate deal-scoped job access", exc_info=True)
+        return None
+
+    async def _get_job_status(self) -> tuple[JobStatus | None, dict | None, bool]:
+        """Load durable status/result and repeat the configured ownership check.
+
+        User-owned streams fail closed on an owner mismatch. Deal-scoped streams
+        may return another collaborator's shared result only after the router has
+        enforced deal access and ``ensure_deal_access`` has matched the job URL.
         """
         try:
             async for session in acquire_org_async_session(UUID(self.organisation_id)):
-                job = await session.get(DealJobs, UUID(self.job_id))
+                job = await self._get_job(session)
                 if not job:
                     return None, None, False
-                if str(job.user_id) != self.user_id:
+                if self._shared_scope is not None:
+                    if not self._matches_deal_scope(job, self._shared_scope):
+                        return None, None, True
+                elif str(job.user_id) != self.user_id:
                     return None, None, True
                 result_data = job.result_data
                 # Workers persist the human-readable failure separately from normal
@@ -314,3 +354,22 @@ class DealJobSSEService:
             # Live progress may remain available during a transient DB read failure.
             logger.debug("Failed to check job status", exc_info=True)
             return None, None, False
+
+    async def _get_job(self, session: AsyncSession) -> DealJobs | None:
+        stmt = select(DealJobs).where(
+            col(DealJobs.organisation_id) == UUID(self.organisation_id),
+            col(DealJobs.job_id) == UUID(self.job_id),
+        )
+        return (await session.execute(stmt)).scalars().first()
+
+    @staticmethod
+    def _matches_deal_scope(
+        job: DealJobs,
+        scope: tuple[UUID, UUID | None, frozenset[DealJobType]],
+    ) -> bool:
+        deal_id, event_id, allowed_job_types = scope
+        return (
+            job.deal_id == deal_id
+            and job.event_id == event_id
+            and job.job_type in allowed_job_types
+        )

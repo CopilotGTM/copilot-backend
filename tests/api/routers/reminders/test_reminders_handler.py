@@ -1,4 +1,6 @@
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -12,15 +14,18 @@ from src.api.routers.reminders.reminders_handler import (
     create_reminder,
     get_available_channels,
     get_reminder,
+    get_reminder_service,
     list_reminders,
 )
 from src.contracts.reminders import StaticReminderCreateRequest
+from src.domain.models.master_tables.user_models import UserAppRole
 from src.domain.models.organisation_tables.reminder_models import (
     ReminderRecurrence,
     ReminderStatus,
     ReminderType,
 )
 from src.service.channels import OutboundChannelInfo
+from src.service.crm.access.record_access_policy import CRMAccessActor
 from src.service.reminders.reminder_service import ReminderNotFoundError
 
 
@@ -32,6 +37,26 @@ def test_normalize_delivery_context_adds_slack_team_id_from_external_tenant() ->
     )
 
     assert normalized == {"channel_id": "C123", "team_id": "T123"}
+
+
+@pytest.mark.asyncio
+async def test_reminder_dependency_binds_authenticated_crm_actor() -> None:
+    user = SimpleNamespace(
+        organisation_id=uuid4(),
+        user_id=uuid4(),
+        user_role=UserAppRole.MEMBER,
+        user_email="member@example.com",
+    )
+    dependency = get_reminder_service(user=user, session=SimpleNamespace(close=AsyncMock()))
+    service = await anext(dependency)
+    try:
+        assert getattr(service, "access_actor", None) == CRMAccessActor(
+            user.user_id,
+            user.user_role,
+            user.user_email,
+        )
+    finally:
+        await dependency.aclose()
 
 
 def test_delivery_context_is_ready_requires_complete_teams_context() -> None:

@@ -1,8 +1,29 @@
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from src.service.bots.slack_bot_service import SlackBotService
+
+
+def test_message_dedupe_is_scoped_to_slack_workspace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Matching Slack message IDs in separate workspaces are distinct events."""
+    redis = Mock()
+    redis.set.return_value = True
+    monkeypatch.setattr(
+        "src.infra.messaging.redis_client.get_redis_client",
+        lambda: redis,
+    )
+    bot = SlackBotService()
+    event = {"client_msg_id": "shared-message-id"}
+
+    assert bot._is_duplicate_event(event, "T1") is False
+    assert bot._is_duplicate_event(event, "T2") is False
+
+    assert [call.args[0] for call in redis.set.call_args_list] == [
+        "slack:msg:T1:shared-message-id",
+        "slack:msg:T2:shared-message-id",
+    ]
 
 
 def test_fallback_text_truncates_long_strings() -> None:

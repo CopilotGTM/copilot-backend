@@ -28,9 +28,11 @@ from uuid import UUID
 from src.adapters import ChannelPayload
 from src.agents.tools.base import execute_with_capabilities
 from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
+from src.agents.tools.crm.policy import ensure_crm_write_scope
 from src.infra.utils.agent_datetime import parse_agent_datetime
 from src.infra.utils.timezone import get_context_anchor_local, resolve_timezone_name
 from src.service.channels import OutboundChannelService, OutboundDeliveryTarget
+from src.service.orgnisation.organisation_policy_service import OrganisationPolicyDeniedError
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -715,6 +717,11 @@ async def create_task(
             "status": "error",
             "message": "A due date is required before creating a task-linked reminder.",
         }
+
+    try:
+        await ensure_crm_write_scope(organisation_id, "tasks:create")
+    except OrganisationPolicyDeniedError as exc:
+        return {"status": "error", "message": exc.message}
 
     metadata = context.metadata or {}
     metadata_timezone = metadata.get("user_timezone")

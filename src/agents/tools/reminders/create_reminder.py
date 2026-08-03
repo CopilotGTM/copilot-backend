@@ -26,6 +26,7 @@ from uuid import UUID
 
 from src.adapters import ChannelPayload
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
 from src.domain.models.organisation_tables.reminder_models import (
     ReminderRecurrence,
     ReminderStatus,
@@ -773,8 +774,20 @@ async def create_reminder(
         }
     delivery_channel, delivery_context = delivery_target
 
+    access_actor = None
+    if parsed_deal_id:
+        try:
+            access_actor = await resolve_agent_access_actor(context)
+        except AgentCRMAccessError as exc:
+            return {"status": "error", "message": str(exc)}
+
     async with context.acquire_session() as session:
-        service = ReminderService(session, organisation_id, user_id)
+        service = ReminderService(
+            session,
+            organisation_id,
+            user_id,
+            access_actor=access_actor,
+        )
         try:
             detail = await service.create(
                 title=clean_title,

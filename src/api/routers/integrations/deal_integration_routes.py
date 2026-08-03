@@ -13,11 +13,14 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.crm_record_access import require_deal_collaborate
+from src.api.dependencies.crm_write_guard import require_crm_write_scope
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
     get_org_async_session,
 )
+from src.api.dependencies.rate_limit import rate_limit_user_write
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.integrations import (
     AvailableIntegration,
@@ -40,6 +43,7 @@ from src.service.integrations import IntegrationService
 
 logger = get_logger(__name__)
 router = APIRouter(tags=["deal-integrations"])
+require_deals_update_scope = require_crm_write_scope("deals:update")
 
 
 async def get_integration_service(
@@ -164,6 +168,7 @@ async def list_available_deal_integrations(
     response_model=GenericResponse[ChannelLinkResponse],
     summary="Link channel to deal",
     description="Link a messaging channel (Slack/Teams) to a deal for syncing.",
+    dependencies=[Depends(require_deal_collaborate)],
 )
 async def link_channel_to_deal(
     deal_id: UUID,
@@ -171,6 +176,8 @@ async def link_channel_to_deal(
     response: FastAPIResponse,
     service: IntegrationService = Depends(get_integration_service),
     user_ids: UserIDs = Depends(get_current_user),
+    _crm_write_guard: None = Depends(require_deals_update_scope),
+    _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[ChannelLinkResponse]:
     """
     Link a channel to a deal.
@@ -221,6 +228,7 @@ async def link_channel_to_deal(
     response_model=GenericResponse[EmptyResponse],
     summary="Remove channel from deal",
     description="Unlink a messaging channel from a deal.",
+    dependencies=[Depends(require_deal_collaborate)],
 )
 async def remove_channel_from_deal(
     deal_id: UUID,
@@ -228,6 +236,8 @@ async def remove_channel_from_deal(
     response: FastAPIResponse,
     service: IntegrationService = Depends(get_integration_service),
     user_ids: UserIDs = Depends(get_current_user),
+    _crm_write_guard: None = Depends(require_deals_update_scope),
+    _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[EmptyResponse]:
     """
     Remove a channel link from a deal.

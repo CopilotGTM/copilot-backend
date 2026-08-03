@@ -3,10 +3,14 @@ Tests for integration listing routes in the integrations API.
 """
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from fastapi import Response as FastAPIResponse
 from fastapi.testclient import TestClient
+from src.api.dependencies.organisation_dependencies import UserIDs
+from src.api.routers.integrations.integration_routes import refresh_integration_channels
 
 # These endpoint tests focus on /users/integrations/available because listing logic
 # drives both connected/inactive state and action-required scope guidance.
@@ -740,6 +744,50 @@ def test_refresh_channels_accepts_slack(
     assert body["status"] == "SUCCESS"
     assert body["data"]["task_id"] == "task-123"
     assert body["data"]["integration_id"] == str(integration_id)
+
+
+@pytest.mark.asyncio
+async def test_refresh_channels_rejects_another_users_personal_integration(
+    monkeypatch,
+) -> None:
+    from src.domain.models.organisation_tables.sync import IntegrationScope
+
+    from tests.api.routers.integrations.conftest import FakeKnowledgeIntegration
+
+    current_user = UserIDs(
+        user_id=uuid4(),
+        organisation_id=uuid4(),
+        user_name="Current User",
+        user_email="current@example.com",
+    )
+    integration_id = uuid4()
+    integration_service = SimpleNamespace(
+        get_integration=AsyncMock(
+            return_value=FakeKnowledgeIntegration(
+                integration_id=integration_id,
+                organisation_id=current_user.organisation_id,
+                integration_type="slack",
+                integration_scope=IntegrationScope.USER,
+                created_by_user_id=uuid4(),
+            )
+        )
+    )
+    dispatch = AsyncMock()
+    monkeypatch.setattr(
+        "src.api.routers.integrations.integration_routes.send_integrations_task_async",
+        dispatch,
+    )
+
+    response = FastAPIResponse()
+    await refresh_integration_channels(
+        integration_id=integration_id,
+        response=response,
+        service=integration_service,
+        user_ids=current_user,
+    )
+
+    assert response.status_code == 404
+    dispatch.assert_not_awaited()
 
 
 def test_refresh_channels_rejects_non_messaging_integration(

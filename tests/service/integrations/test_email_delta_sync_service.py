@@ -11,11 +11,14 @@ import pytest
 from src.domain.models.organisation_tables.sync import IntegrationType
 from src.service.integrations import email_delta_sync_service
 from src.service.integrations.api_error_utils import IntegrationPermissionError
+from src.service.integrations.email.gmail_policy import GMAIL_MAILBOX_LABEL_ID
 from src.service.integrations.email_delta_sync_service import (
     EMAIL_DELTA_LINKS_KEY,
+    GMAIL_HISTORY_ID_KEY,
     EmailDeltaSyncService,
     FolderSyncData,
     IntegrationSyncData,
+    _get_cursor_for_folder,
 )
 
 
@@ -73,6 +76,39 @@ async def test_gmail_sync_skips_when_read_scope_is_missing() -> None:
         "skip_reason": "gmail_read_scope_missing",
     }
     fetch_folders.assert_not_awaited()
+
+
+def test_new_gmail_mailbox_coordinator_ignores_legacy_history_cursor() -> None:
+    sync_data = IntegrationSyncData(
+        integration_id=uuid4(),
+        integration_type=IntegrationType.GMAIL,
+        integration_type_value=IntegrationType.GMAIL.value,
+        connection_id="conn-1",
+        provider="gmail",
+        provider_key="gmail",
+        last_synced_at=datetime(2024, 1, 1),
+        connection_metadata={GMAIL_HISTORY_ID_KEY: "legacy-cursor"},
+        credentials={},
+        access_token_expires_at=None,
+        scopes=None,
+    )
+
+    assert (
+        _get_cursor_for_folder(
+            sync_data,
+            GMAIL_MAILBOX_LABEL_ID,
+            folder_last_synced_at=None,
+        )
+        is None
+    )
+    assert (
+        _get_cursor_for_folder(
+            sync_data,
+            GMAIL_MAILBOX_LABEL_ID,
+            folder_last_synced_at=datetime(2024, 1, 2),
+        )
+        == "legacy-cursor"
+    )
 
 
 @pytest.mark.asyncio

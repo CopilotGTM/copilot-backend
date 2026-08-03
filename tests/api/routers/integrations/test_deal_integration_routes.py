@@ -3,6 +3,27 @@
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from src.api.dependencies.crm_record_access import require_deal_collaborate
+from src.api.dependencies.rate_limit import rate_limit_user_write
+from src.api.routers.integrations import deal_integration_routes
+
+
+def test_channel_mutations_declare_deal_policy_scope_and_rate_guards() -> None:
+    mutation_routes = {
+        route.path: {dependency.call for dependency in route.dependant.dependencies}
+        for route in deal_integration_routes.router.routes
+        if route.path
+        in {
+            "/deals/{deal_id}/channels",
+            "/deals/{deal_id}/channels/{channel_id}",
+        }
+    }
+
+    assert len(mutation_routes) == 2
+    for dependencies in mutation_routes.values():
+        assert require_deal_collaborate in dependencies
+        assert deal_integration_routes.require_deals_update_scope in dependencies
+        assert rate_limit_user_write in dependencies
 
 
 def test_deal_available_no_connections(

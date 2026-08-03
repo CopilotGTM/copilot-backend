@@ -30,6 +30,7 @@ from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.reminder_models import ReminderStatus, ReminderType
 from src.infra.utils.logger import get_logger
 from src.service.channels import OutboundChannelService
+from src.service.crm.access.record_access_policy import CRMAccessActor
 from src.service.reminders.reminder_service import (
     InvalidStatusTransitionError,
     ReminderNotFoundError,
@@ -96,6 +97,7 @@ async def get_reminder_service(
         session=session,
         organisation_id=user.organisation_id,
         user_id=user.user_id,
+        access_actor=CRMAccessActor(user.user_id, user.user_role, user.user_email),
     )
     try:
         yield service

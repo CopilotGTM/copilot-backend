@@ -14,6 +14,7 @@ import pytest
 from src.agents.tools.tasks.create_task import create_create_task, create_task, create_task_form
 from src.domain.models.master_tables.user_models import UserAppRole
 from src.service.crm.access.record_access_policy import CRMAccessActor
+from src.service.orgnisation.organisation_policy_service import OrganisationPolicyDeniedError
 
 
 class _FakeTasksWriteServiceError(Exception):
@@ -80,6 +81,11 @@ def _stub_task_confirmation_nonce(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "src.service.bots.form_handlers.nonce.create_nonce",
         lambda _prefix: "nonce-for-test",
+    )
+    monkeypatch.setattr(
+        "src.agents.tools.tasks.create_task.ensure_crm_write_scope",
+        AsyncMock(),
+        raising=False,
     )
 
 
@@ -152,6 +158,34 @@ async def test_create_task_requires_user_id() -> None:
     result = await create_task(context=ctx, title="Do something")
     assert result["status"] == "error"
     assert "user not identified" in result["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_create_task_honours_disabled_organisation_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _direct_context()
+    denied = AsyncMock(
+        side_effect=OrganisationPolicyDeniedError(
+            "Internal CRM write scope 'tasks:create' is disabled for this organisation",
+            code="crm_write_scope_disabled",
+        )
+    )
+    monkeypatch.setattr(
+        "src.agents.tools.tasks.create_task.ensure_crm_write_scope",
+        denied,
+        raising=False,
+    )
+
+    with patch("src.agents.tools.tasks.create_task._load_tasks_write_service") as loader:
+        result = await create_task(context=context, title="Follow up with Acme")
+
+    denied.assert_awaited_once_with(context.organisation_id, "tasks:create")
+    loader.assert_not_called()
+    assert result == {
+        "status": "error",
+        "message": "Internal CRM write scope 'tasks:create' is disabled for this organisation",
+    }
 
 
 @pytest.mark.asyncio

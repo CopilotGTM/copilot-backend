@@ -19,7 +19,7 @@ class TestExtractGmailFolderFields:
     """Normalize Gmail folder label fields to repository folder contracts."""
 
     def test_inbox_label(self):
-        """INBOX is treated as a monitored folder type."""
+        """INBOX remains classified but is not a second Gmail sync coordinator."""
         label = {
             "id": "INBOX",
             "name": "INBOX",
@@ -31,17 +31,17 @@ class TestExtractGmailFolderFields:
 
         assert fields["folder_name"] == "INBOX"
         assert fields["folder_type"] == "inbox"
-        assert fields["is_monitored"] == "true"
+        assert fields["is_monitored"] == "false"
         assert fields["total_count"] == 150
         assert fields["unread_count"] == 10
 
     def test_sent_label(self):
-        """Sent label maps to inbox-equivalent monitored type."""
+        """Sent remains classified but is not a second Gmail sync coordinator."""
         label = {"id": "SENT", "name": "SENT", "type": "system", "messagesTotal": 80}
         fields = EmailSyncService._extract_gmail_folder_fields(label)
 
         assert fields["folder_type"] == "sent"
-        assert fields["is_monitored"] == "true"
+        assert fields["is_monitored"] == "false"
 
     def test_user_label(self):
         """User labels must remain un-monitored and preserve custom names."""

@@ -52,8 +52,14 @@ logger = get_logger(__name__)
 MEETING_JOB_TYPE_MAP = {
     "briefing": DealJobType.MEETING_BRIEFING,
     "summary": DealJobType.MEETING_SUMMARY,
-    "followup": DealJobType.MEETING_FOLLOWUP,
 }
+MEETING_STREAM_JOB_TYPES = frozenset(
+    {
+        DealJobType.MEETING_BRIEFING,
+        DealJobType.MEETING_SUMMARY,
+        DealJobType.TRANSCRIPT_UPLOAD,
+    }
+)
 
 
 async def get_meetings_service(
@@ -129,11 +135,10 @@ async def initiate_meeting_job(
     service: DealMeetingJobService = Depends(get_deal_meeting_job_service),
 ) -> GenericResponse[DealJobResponse]:
     """
-    Initiate a meeting job (briefing, summary, or followup).
+    Initiate a meeting job (briefing or summary).
 
     - **briefing**: Pre-meeting preparation and context
     - **summary**: Post-meeting summary generation
-    - **followup**: Action items and next steps
 
     If a job is already running, returns the existing job_id (idempotent).
     Use the returned job_id to subscribe to the SSE stream.
@@ -199,8 +204,16 @@ async def meeting_job_stream(
     Subscribe to this endpoint with the job_id from POST /jobs/{job_type}.
     Handles reconnection - if user disconnects and reconnects, the stream resumes.
     """
-    sse_service = DealJobSSEService(user_ids.organisation_id, job_id, user_ids.user_id)
-    can_access = await sse_service.ensure_user_access(deal_id=deal_id)
+    sse_service = DealJobSSEService(
+        user_ids.organisation_id,
+        job_id,
+        user_ids.user_id,
+    )
+    can_access = await sse_service.ensure_deal_access(
+        deal_id,
+        event_id=event_id,
+        allowed_job_types=MEETING_STREAM_JOB_TYPES,
+    )
     if can_access is None:
         raise HTTPException(status_code=404, detail="Job stream not found")
     if can_access is False:

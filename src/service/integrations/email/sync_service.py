@@ -69,7 +69,7 @@ class EmailSyncService:
         self._writer = EmailSyncWriter(session, organisation_id)
 
     @property
-    def _folder_cache(self) -> dict[str, UUID]:
+    def _folder_cache(self) -> dict[tuple[UUID, str], UUID]:
         """Compatibility view over the writer's folder cache."""
         return self._writer.folder_cache
 
@@ -311,6 +311,10 @@ class EmailSyncService:
             # Persist batched changes before emitting terminal run metadata.
             await self.db.commit()
             records_committed = records_processed
+            if records_failed:
+                raise RuntimeError(
+                    f"{records_failed} of {len(message_list)} email messages failed to persist"
+                )
 
             # Persist run outcome and action counts for operational visibility.
             await self._sync_history.complete(
@@ -882,6 +886,11 @@ class EmailSyncService:
                     is_new = record is None
 
                     if sync_action == SyncAction.DELETED:
+                        if record is not None and not record.is_deleted:
+                            record.is_deleted = True
+                            records_processed += 1
+                            updated_count += 1
+                            changed_email_ids.append(str(record.email_id))
                         continue
 
                     if is_new or record is None:
@@ -932,6 +941,10 @@ class EmailSyncService:
             # Persist all message upserts before final run bookkeeping.
             await self.db.commit()
             records_committed = records_processed
+            if records_failed:
+                raise RuntimeError(
+                    f"{records_failed} of {len(message_list)} email messages failed to persist"
+                )
 
             # Store run metadata so the scheduler can make recovery decisions.
             await self._sync_history.complete(

@@ -2,6 +2,7 @@
 Tests for CRM Deals API endpoints.
 """
 
+import inspect
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
@@ -2404,6 +2405,27 @@ def test_get_deal_age_calculation(client: TestClient, deals_dependency_overrides
 # =============================================================================
 
 
+def test_generate_summary_declares_record_policy_and_rate_guards() -> None:
+    """Expensive shared summary writes must pass every existing CRM guard."""
+    route = next(
+        route
+        for route in deals_handler_module.deals_router.routes
+        if getattr(route, "path", "") == "/deals/{deal_id}/deal-summary/generate"
+    )
+    dependency_calls = {dependency.call for dependency in route.dependant.dependencies}
+    signature = inspect.signature(deals_handler_module.generate_deal_summary)
+
+    assert deals_handler_module.require_deal_collaborate in dependency_calls
+    assert (
+        signature.parameters["_crm_write_guard"].default.dependency
+        is deals_handler_module.require_deals_update_scope
+    )
+    assert (
+        signature.parameters["_rl_write"].default.dependency
+        is deals_handler_module.rate_limit_user_write
+    )
+
+
 def test_generate_summary_new_job(client: TestClient, deals_dependency_overrides):
     """Test initiating a new summary job."""
     deals_service = deals_dependency_overrides["deals_service"]
@@ -2480,6 +2502,47 @@ def test_generate_summary_service_error(client: TestClient, deals_dependency_ove
 # The endpoint is verified to exist and be routable via integration tests.
 
 
+@pytest.mark.asyncio
+async def test_deal_job_stream_uses_shared_deal_authorization(monkeypatch) -> None:
+    """Generic deal streams allow only visible deal-level processing job types."""
+    deal_id = uuid4()
+    job_id = uuid4()
+    access_checks = []
+
+    class FakeDealJobSSEService:
+        """Capture the access mode selected by the deal-scoped endpoint."""
+
+        def __init__(
+            self,
+            organisation_id,
+            created_job_id,
+            user_id,
+        ):
+            return None
+
+        async def ensure_deal_access(self, requested_deal_id, *, event_id, allowed_job_types):
+            access_checks.append((requested_deal_id, event_id, allowed_job_types))
+            return requested_deal_id == deal_id
+
+    monkeypatch.setattr(deals_handler_module, "DealJobSSEService", FakeDealJobSSEService)
+    user = SimpleNamespace(organisation_id=uuid4(), user_id=uuid4())
+
+    await deals_handler_module.deal_job_stream(
+        deal_id=deal_id,
+        job_id=job_id,
+        request=SimpleNamespace(headers={}),
+        user_ids=user,
+    )
+
+    assert access_checks == [
+        (
+            deal_id,
+            None,
+            deals_handler_module.GENERIC_DEAL_STREAM_JOB_TYPES,
+        )
+    ]
+
+
 def test_generic_deal_job_stream_returns_sse(
     client: TestClient, deals_dependency_overrides, monkeypatch
 ):
@@ -2491,15 +2554,20 @@ def test_generic_deal_job_stream_returns_sse(
     class FakeDealJobSSEService:
         """Fake SSE service that exposes resume handling for list-stream assertions."""
 
-        def __init__(self, organisation_id, created_job_id, user_id):
+        def __init__(
+            self,
+            organisation_id,
+            created_job_id,
+            user_id,
+        ):
             self.organisation_id = organisation_id
             self.job_id = created_job_id
             self.user_id = user_id
             self.resume_from_id = None
             created_services.append(self)
 
-        async def ensure_user_access(self, deal_id=None):
-            """Allow stream access for this success-path test."""
+        async def ensure_deal_access(self, deal_id, *, event_id, allowed_job_types):
+            """Allow the already route-authorized collaborator to use this job."""
             return True
 
         async def stream_events(self, *, resume_from_id=None):
@@ -2527,7 +2595,7 @@ def test_generic_deal_job_stream_returns_sse(
     assert created_services[0].resume_from_id == "12-0"
 
 
-def test_generic_deal_job_stream_rejects_cross_user_job(
+def test_generic_deal_job_stream_rejects_unauthorized_job(
     client: TestClient, deals_dependency_overrides, monkeypatch
 ):
     """Generic deal job stream endpoint uses DealJobSSEService authorization."""
@@ -2542,7 +2610,7 @@ def test_generic_deal_job_stream_rejects_cross_user_job(
             self.job_id = created_job_id
             self.user_id = user_id
 
-        async def ensure_user_access(self, deal_id=None):
+        async def ensure_deal_access(self, deal_id, *, event_id, allowed_job_types):
             """Deny access so endpoint returns authorization error."""
             return False
 
@@ -2571,7 +2639,7 @@ def test_generic_deal_job_stream_returns_404_for_missing_job(
             self.job_id = created_job_id
             self.user_id = user_id
 
-        async def ensure_user_access(self, deal_id=None):
+        async def ensure_deal_access(self, deal_id, *, event_id, allowed_job_types):
             """Return None to represent a missing/unavailable job."""
             return None
 
@@ -2601,7 +2669,7 @@ def test_generic_deal_job_stream_rejects_job_from_different_deal(
             self.job_id = created_job_id
             self.user_id = user_id
 
-        async def ensure_user_access(self, deal_id=None):
+        async def ensure_deal_access(self, deal_id, *, event_id, allowed_job_types):
             """Track the requested deal_id and deny access for assertion branch."""
             checked_deal_ids.append(deal_id)
             return False

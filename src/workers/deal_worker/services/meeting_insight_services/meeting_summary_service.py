@@ -233,11 +233,15 @@ class MeetingSummaryService:
             association = await get_association(
                 session, self.organisation_id, self.deal_id, self.event_id
             )
-            if association:
-                association_id = association.association_id
-                # Mark as GENERATING
-                association.meeting_summary_status = GenerationStatus.GENERATING
-                await session.commit()
+            if not association or association.status != AssociationStatus.ACTIVE:
+                raise NonRetryableJobError(
+                    "Meeting is not associated with this deal", "invalid_data"
+                )
+
+            association_id = association.association_id
+            # Mark as GENERATING
+            association.meeting_summary_status = GenerationStatus.GENERATING
+            await session.commit()
         # Session released
 
         self._publish_progress("Verifying transcript availability...", "Analysing", 0.15)

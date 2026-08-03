@@ -28,6 +28,10 @@ class _FakeScalarResult:
         """Return the first configured ORM row when present."""
         return self._rows[0] if self._rows else None
 
+    def scalar(self):
+        """Return the first configured scalar value when present."""
+        return self._rows[0] if self._rows else None
+
 
 class _FakeAgentSearchResult:
     def __init__(self, rows: list[object]):
@@ -76,6 +80,21 @@ class _FakeAgentSearchSession(_FakeSession):
         """Capture agent search SQL and return match-metadata rows."""
         self.statements.append(statement)
         return _FakeAgentSearchResult(self._results.pop(0))
+
+
+@pytest.mark.asyncio
+async def test_contact_source_lookup_keeps_organisation_in_query_identity() -> None:
+    """A provider integration ID alone must not define the tenant boundary."""
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    session = _FakeSession([["salesforce"]])
+    service = ContactReadService(session, organisation_id)  # type: ignore[arg-type]
+
+    assert await service.resolve_source_for_contact(integration_id) == "salesforce"
+
+    compiled = session.statements[0].compile()
+    assert organisation_id in compiled.params.values()
+    assert integration_id in compiled.params.values()
 
 
 @pytest.mark.asyncio

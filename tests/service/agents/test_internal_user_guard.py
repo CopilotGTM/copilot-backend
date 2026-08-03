@@ -12,6 +12,7 @@ from src.service.crm.guards.internal_user_guard import (
     _KEY_EMAILS,
     _KEY_LOADED,
     FREE_EMAIL_DOMAINS,
+    _load_internal_user_data,
     is_internal_email,
 )
 
@@ -44,8 +45,10 @@ class _FakeSession:
     ):
         self.org_domains = org_domains
         self.user_participant_emails = user_participant_emails or []
+        self.statements: list[object] = []
 
     async def execute(self, stmt):
+        self.statements.append(stmt)
         compiled = str(stmt)
         # Detect which query is being run by inspecting compiled SQL text
         if "organisations" in compiled.lower() or "domain" in compiled.lower():
@@ -71,6 +74,38 @@ class _FakeContext:
     @asynccontextmanager
     async def acquire_session(self):
         yield self._session
+
+
+@pytest.mark.asyncio
+async def test_participant_fallback_keeps_organisation_in_query_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deal ID alone must not define the participant tenant boundary."""
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    master_session = _FakeSession(org_domains=None)
+    org_session = _FakeSession(user_participant_emails=[])
+    context = _FakeContext(
+        organisation_id=organisation_id,
+        deal_id=deal_id,
+        _session=org_session,
+    )
+
+    async def acquire_master_session():
+        """Yield the tenant-free master-session fake used by the org-domain lookup."""
+        yield master_session
+
+    monkeypatch.setattr(
+        "src.service.crm.guards.internal_user_guard.acquire_master_async_session",
+        acquire_master_session,
+    )
+
+    await _load_internal_user_data(context)  # type: ignore[arg-type]
+
+    participant_statement = org_session.statements[0]
+    compiled = participant_statement.compile()
+    assert organisation_id in compiled.params.values()
+    assert deal_id in compiled.params.values()
 
 
 # ---------------------------------------------------------------------------

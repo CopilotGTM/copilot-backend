@@ -7,9 +7,11 @@ from uuid import UUID, uuid4
 
 import pytest
 from src.agents.context import AgentContext
+from src.agents.tools.crm.access import AgentCRMAccessError
 from src.agents.tools.crm.create_account import create_account_direct, create_create_account
 from src.agents.tools.crm.create_contact import create_contact_direct, create_create_contact
 from src.agents.tools.crm.search_accounts import search_accounts
+from src.service.crm.access.record_access_policy import CRMAccessActor
 from src.service.crm.accounts.contracts import (
     AccountCreateCommand,
     AccountWriteContext,
@@ -575,6 +577,7 @@ async def test_create_contact_direct_can_link_contact_to_deal() -> None:
     org_session.commit = AsyncMock()
     context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
     deal_id = uuid4()
+    access_actor = CRMAccessActor(context.user_id)
     contact = SimpleNamespace(
         contact_id=uuid4(),
         email="jane@acme.com",
@@ -588,6 +591,11 @@ async def test_create_contact_direct_can_link_contact_to_deal() -> None:
         patch("src.agents.tools.crm.create_contact.ContactReadService") as contact_reader_cls,
         patch("src.agents.tools.crm.create_contact.ContactWriteService") as contact_writer_cls,
         patch("src.agents.tools.crm.create_contact.ContactDealLinkService") as linker_cls,
+        patch(
+            "src.agents.tools.crm.create_contact.require_agent_deal_access",
+            AsyncMock(return_value=access_actor),
+            create=True,
+        ) as require_access,
         patch("src.agents.tools.crm.create_contact.send_deal_task_async", AsyncMock()) as dispatch,
     ):
         contact_reader = MagicMock()
@@ -617,6 +625,8 @@ async def test_create_contact_direct_can_link_contact_to_deal() -> None:
         )
 
     # Contact creation and deal linking are one transaction; hydration starts only after it commits.
+    require_access.assert_awaited_once_with(context, org_session, deal_id, "control")
+    linker_cls.assert_called_once_with(org_session, context.organisation_id, access_actor)
     assert org_session.commit.await_count == 1
     dispatch.assert_awaited_once_with(
         "stakeholder.sync_deal_stakeholders",
@@ -631,6 +641,49 @@ async def test_create_contact_direct_can_link_contact_to_deal() -> None:
     )
     assert result["deal_link_status"] == "linked"
     assert result["deal_id"] == str(deal_id)
+
+
+@pytest.mark.asyncio
+async def test_create_contact_direct_rejects_deal_without_control_access() -> None:
+    """Contact creation must roll back when the actor cannot control the selected deal."""
+    context = _context()
+    org_session = MagicMock()
+    org_session.rollback = AsyncMock()
+    context.acquire_session = MagicMock(return_value=_AsyncSessionContext(org_session))
+    deal_id = uuid4()
+    contact = SimpleNamespace(
+        contact_id=uuid4(),
+        email="jane@acme.com",
+        full_name="Jane Doe",
+        job_title=None,
+        company_name=None,
+        company_id=None,
+    )
+
+    with (
+        patch("src.agents.tools.crm.create_contact.ContactReadService") as reader_cls,
+        patch("src.agents.tools.crm.create_contact.ContactDealLinkService") as linker_cls,
+        patch(
+            "src.agents.tools.crm.create_contact.require_agent_deal_access",
+            AsyncMock(side_effect=AgentCRMAccessError("forbidden")),
+            create=True,
+        ),
+    ):
+        reader = MagicMock()
+        reader.find_contact_by_email = AsyncMock(return_value=contact)
+        reader_cls.return_value = reader
+
+        result = await create_contact_direct(
+            context=context,
+            email=contact.email,
+            name=contact.full_name,
+            deal_id=str(deal_id),
+        )
+
+    assert result == {"status": "error", "message": "Deal not found."}
+    reader.find_contact_by_email.assert_not_awaited()
+    linker_cls.assert_not_called()
+    org_session.rollback.assert_awaited_once()
 
 
 @pytest.mark.asyncio

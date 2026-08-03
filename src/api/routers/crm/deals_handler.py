@@ -12,6 +12,10 @@ from fastapi import Response as FastAPIResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
+from src.api.dependencies.crm_record_access import (
+    require_deal_collaborate,
+    require_deal_view,
+)
 from src.api.dependencies.crm_write_guard import require_crm_write_scope
 from src.api.dependencies.master_dependencies import get_master_async_session
 from src.api.dependencies.organisation_dependencies import (
@@ -54,7 +58,7 @@ from src.api.schemas.crm_models import (
 )
 from src.api.schemas.crm_schema_models import CRMEntitySchemaResponse
 from src.api.utils.http_response import Response
-from src.domain.models.organisation_tables.job_models import JobStatus
+from src.domain.models.organisation_tables.job_models import DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync.crm.activities import CRMActivityObjectType
 from src.domain.models.organisation_tables.sync.crm.custom_fields import CRMCustomFieldEntity
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
@@ -83,6 +87,14 @@ from src.service.crm.schema.deal_schema_service import DealSchemaService
 from sse_starlette.sse import EventSourceResponse
 
 logger = get_logger("deals_handler")
+require_deals_update_scope = require_crm_write_scope("deals:update")
+GENERIC_DEAL_STREAM_JOB_TYPES = frozenset(
+    {
+        DealJobType.STAKEHOLDER_SYNC,
+        DealJobType.DEAL_COMMUNICATION_HYDRATION,
+    }
+)
+DEAL_SUMMARY_STREAM_JOB_TYPES = frozenset({DealJobType.DEAL_SUMMARY})
 
 # Common error message (Sonar S1192 compliance)
 _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your request"
@@ -1753,6 +1765,7 @@ async def assign_deal_owner(
     response_model=GenericResponse[DealJobResponse],
     tags=["crm", "deals", "ai"],
     summary="Generate AI summary for a deal",
+    dependencies=[Depends(require_deal_collaborate)],
     description="""
     Initiate an AI-powered summary generation for a deal.
 
@@ -1773,6 +1786,8 @@ async def generate_deal_summary(
     deal_id: UUID,
     response: FastAPIResponse,
     service: DealJobService = Depends(get_deal_job_service),
+    _crm_write_guard: None = Depends(require_deals_update_scope),
+    _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealJobResponse]:
     """
     Generate an AI-powered summary for a deal.
@@ -1819,6 +1834,7 @@ async def generate_deal_summary(
     "/deals/{deal_id}/jobs/{job_id}/stream",
     tags=["crm", "deals", "jobs"],
     summary="SSE stream for a deal job",
+    dependencies=[Depends(require_deal_view)],
     description="""
     Generic SSE stream for any user-visible deal job.
 
@@ -1833,8 +1849,16 @@ async def deal_job_stream(
     user_ids: UserIDs = Depends(get_current_user),
 ):
     """SSE stream for any user-visible deal job."""
-    sse_service = DealJobSSEService(user_ids.organisation_id, job_id, user_ids.user_id)
-    can_access = await sse_service.ensure_user_access(deal_id=deal_id)
+    sse_service = DealJobSSEService(
+        user_ids.organisation_id,
+        job_id,
+        user_ids.user_id,
+    )
+    can_access = await sse_service.ensure_deal_access(
+        deal_id,
+        event_id=None,
+        allowed_job_types=GENERIC_DEAL_STREAM_JOB_TYPES,
+    )
     if can_access is None:
         raise HTTPException(status_code=404, detail="Job stream not found")
     if can_access is False:
@@ -1882,6 +1906,7 @@ async def user_job_stream(
     "/deals/{deal_id}/deal-summary/stream/{job_id}",
     tags=["crm", "deals", "ai"],
     summary="SSE stream for deal summary job",
+    dependencies=[Depends(require_deal_view)],
     description="""
     SSE (Server-Sent Events) stream for deal summary job progress and results.
 
@@ -1903,8 +1928,16 @@ async def deal_summary_stream(
 
     Subscribe with the job_id from POST /deals/{deal_id}/deal-summary/generate.
     """
-    sse_service = DealJobSSEService(user_ids.organisation_id, job_id, user_ids.user_id)
-    can_access = await sse_service.ensure_user_access(deal_id=deal_id)
+    sse_service = DealJobSSEService(
+        user_ids.organisation_id,
+        job_id,
+        user_ids.user_id,
+    )
+    can_access = await sse_service.ensure_deal_access(
+        deal_id,
+        event_id=None,
+        allowed_job_types=DEAL_SUMMARY_STREAM_JOB_TYPES,
+    )
     if can_access is None:
         raise HTTPException(status_code=404, detail="Job stream not found")
     if can_access is False:

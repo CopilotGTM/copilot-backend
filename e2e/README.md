@@ -3,6 +3,10 @@
 These tests run against a deployed backend over HTTP. They are intentionally outside
 `tests/` so local unit and integration runs stay fast and isolated.
 
+The authoritative design, safety rules, fixture model, evidence requirements, and
+scenario catalogue are in
+[`docs/Technical Documentation/testing/deployed-end-to-end-testing-framework.md`](../docs/Technical%20Documentation/testing/deployed-end-to-end-testing-framework.md).
+
 ## Authentication Smoke Test
 
 Store the dedicated E2E user's credentials in the dev Key Vault as
@@ -15,6 +19,62 @@ Store the dedicated E2E user's credentials in the dev Key Vault as
 The runner reads both credentials from Key Vault without writing them to a local file.
 The suite logs in at runtime and keeps the short-lived access token only in process
 memory. CI sets `E2E_REQUIRE_CONFIG=1` so missing configuration fails instead of skips.
+
+## CRM Authorization and Shared Jobs
+
+After the exact backend revision has been deployed to dev, run:
+
+```powershell
+.\scripts\e2e\run-dev.ps1 crm-security
+```
+
+The runner loads four dedicated CRM actors, stable deal/meeting fixture IDs, and a
+read-only `tenant_data` database credential from `copilot-master-kv-dev`. Selecting
+this suite is the explicit live-mutation opt-in. The suite independently requires
+the `dev` target and allowlisted `devapi.copilotgtm.com` host, so changing an API URL
+cannot silently redirect mutations to production.
+
+The current scenarios prove:
+
+- deal-summary generation is shared only with an authorized collaborator and
+  reaches a durable terminal result;
+- same-organisation non-collaborators and foreign organisations cannot create or
+  stream the protected job;
+- meeting streams bind the complete deal, event, and supported-job-type identity;
+- unsupported follow-up work and mismatched meeting creation create no job; and
+- completed results remain available through the authenticated SSE recovery path.
+
+Required Key Vault secret names are declared in `scripts/e2e/run-dev.ps1`. Missing
+fixtures fail before the suite runs; they are never substituted with customer data.
+
+## Gmail Mailbox Policy
+
+After the revision is deployed to dev, run the lifecycle against a dedicated Gmail
+account and integration:
+
+```powershell
+.\scripts\e2e\run-dev.ps1 gmail-sync
+```
+
+The seeder OAuth client is separate from the read-only application integration and is
+consented for Gmail modification only on the dedicated mailbox. The scenario inserts
+inbox, archive, sent, draft,
+attachment, and excluded-trash fixtures; dispatches the real single-integration task;
+and verifies the exact organisation/integration rows through a read-only database
+credential. It then moves messages across the inclusion boundary, verifies the global
+history cursor and soft deletion, reruns for idempotency, and removes only the seeded
+provider messages.
+
+This is smoke coverage for a subset of `GMAIL-E2E-001` and `GMAIL-E2E-002`; it does
+not mark either scenario complete. The remaining mailbox classes and draft lifecycle,
+plus the expired-cursor, pagination, and safety-cap checks in `GMAIL-E2E-003`, are not
+implemented by this test.
+
+The suite independently allowlists the dev API and integrations-broker host. To use a
+fresh integration as explicit initial-sync evidence, set
+`E2E_GMAIL_REQUIRE_INITIAL=true`; the test fails if that fixture already has a Gmail
+cursor. Without that flag the same lifecycle remains repeatable as incremental-sync
+evidence. Required Key Vault secret names are listed in the runner.
 
 ## WhatsApp Delivery
 

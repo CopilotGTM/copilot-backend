@@ -28,7 +28,7 @@ from src.api.schemas.integrations import (
 )
 from src.api.schemas.integrations.response_builders import build_integration_response
 from src.api.utils.http_response import Response
-from src.domain.models.organisation_tables.sync import IntegrationType
+from src.domain.models.organisation_tables.sync import IntegrationScope, IntegrationType
 from src.infra.config.configs import salesforce_integration_config
 from src.infra.config.constant import IntegrationErrors
 from src.infra.config.integrations_metadata import AvailabilityStatus, get_all_integration_metadata
@@ -194,6 +194,15 @@ async def refresh_integration_channels(
         integration = await service.get_integration(integration_id)
 
         if not integration:
+            return Response.not_found_error_response(
+                message="Integration not found",
+                response=response,
+            )
+
+        if (
+            integration.integration_scope == IntegrationScope.USER
+            and integration.created_by_user_id != user_ids.user_id
+        ):
             return Response.not_found_error_response(
                 message="Integration not found",
                 response=response,

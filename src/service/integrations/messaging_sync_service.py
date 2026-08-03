@@ -65,8 +65,8 @@ class MessagingSyncService:
         self.db = session
         self.organisation_id = organisation_id
         self._sync_history = SyncHistoryManager(session)
-        # Cache external_channel_id -> channel primary key
-        self._channel_cache: dict[str, UUID] = {}
+        # Cache (provider, external_channel_id) -> channel primary key
+        self._channel_cache: dict[tuple[str, str], UUID] = {}
 
     async def sync_channels(
         self,
@@ -120,7 +120,7 @@ class MessagingSyncService:
                         continue
 
                     # Check if channel already exists
-                    existing_channel = await self._get_channel_by_external_id(external_id)
+                    existing_channel = await self._get_channel_by_external_id(external_id, provider)
 
                     if existing_channel:
                         # Update existing channel
@@ -673,10 +673,13 @@ class MessagingSyncService:
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 
-    async def _get_channel_by_external_id(self, external_id: str) -> MessagingChannel | None:
+    async def _get_channel_by_external_id(
+        self, external_id: str, provider: str
+    ) -> MessagingChannel | None:
         """Get existing messaging channel by external_id (org-scoped)."""
         stmt = select(MessagingChannel).where(
             col(MessagingChannel.organisation_id) == self.organisation_id,
+            col(MessagingChannel.provider) == provider,
             col(MessagingChannel.external_channel_id) == external_id,
         )
         result = await self.db.execute(stmt)
@@ -793,7 +796,7 @@ class MessagingSyncService:
         await self.db.refresh(channel)
 
         # Cache for later lookups
-        self._channel_cache[external_id] = channel.channel_id
+        self._channel_cache[(provider, external_id)] = channel.channel_id
 
         return channel
 
@@ -992,7 +995,7 @@ class MessagingSyncService:
             return existing_channel_id
 
         external_channel_id = self._extract_external_channel_id_from_message(message_data, provider)
-        resolved = await self._resolve_channel_id(external_channel_id)
+        resolved = await self._resolve_channel_id(external_channel_id, provider)
         if resolved:
             return resolved
 
@@ -1004,18 +1007,20 @@ class MessagingSyncService:
     async def _resolve_channel_id(
         self,
         external_channel_id: str | None,
+        provider: str,
     ) -> UUID | None:
         """Resolve channel UUID using provider-specific identifiers (org-scoped)."""
         if not external_channel_id:
             return None
 
-        cached_id = self._channel_cache.get(external_channel_id)
+        cache_key = (provider, external_channel_id)
+        cached_id = self._channel_cache.get(cache_key)
         if cached_id:
             return cached_id
 
-        channel = await self._get_channel_by_external_id(external_channel_id)
+        channel = await self._get_channel_by_external_id(external_channel_id, provider)
         if channel:
-            self._channel_cache[external_channel_id] = channel.channel_id
+            self._channel_cache[cache_key] = channel.channel_id
             return channel.channel_id
         return None
 

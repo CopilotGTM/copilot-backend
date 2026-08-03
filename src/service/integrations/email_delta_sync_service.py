@@ -52,6 +52,10 @@ from src.domain.models.organisation_tables.sync.email_models import EmailFolder
 from src.infra.config.google_integration_scopes import GOOGLE_SCOPE_GMAIL_READONLY
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.integrations.email.gmail_policy import (
+    GMAIL_MAILBOX_LABEL_ID,
+    gmail_mailbox_folder_payload,
+)
 from src.service.integrations.email_sync_service import EmailSyncService
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 from src.service.integrations.scope_validation import is_required_scope_satisfied
@@ -103,9 +107,8 @@ EMAIL_INTEGRATION_TYPES = (
 )
 EMAIL_PARENT_TYPES = (IntegrationType.GOOGLE, IntegrationType.MICROSOFT)
 
-# Note: Folder monitoring is controlled by is_monitored flag in email_folders table
-# By default, inbox and sent folders are set to is_monitored=True
-# Users can enable/disable monitoring for any folder
+# Outlook schedules each monitored folder independently. Gmail instead schedules
+# one synthetic mailbox folder because its history ID is global across all labels.
 
 # Cursor storage keys in connection_metadata
 EMAIL_DELTA_LINKS_KEY = "email_folder_delta_links"  # Outlook: per-folder delta links
@@ -137,6 +140,8 @@ def _can_sync_email_messages(sync_data: IntegrationSyncData) -> bool:
 def _get_cursor_for_folder(
     sync_data: IntegrationSyncData,
     external_folder_id: str,
+    *,
+    folder_last_synced_at: datetime | None,
 ) -> str | None:
     """Get the incremental sync cursor for a folder.
 
@@ -145,6 +150,9 @@ def _get_cursor_for_folder(
     """
     metadata = sync_data.connection_metadata or {}
     if sync_data.provider == "gmail":
+        if external_folder_id == GMAIL_MAILBOX_LABEL_ID and folder_last_synced_at is None:
+            # A legacy label cursor cannot prove the broader mailbox was backfilled.
+            return None
         history_id: str | None = metadata.get(GMAIL_HISTORY_ID_KEY)
         return history_id
     delta_links: dict[str, str] = metadata.get(EMAIL_DELTA_LINKS_KEY, {})
@@ -649,6 +657,10 @@ class EmailDeltaSyncService:
                 sync_data=sync_data,
                 token_info=token_info,
             )
+        elif sync_data.provider == "gmail":
+            # The synthetic coordinator must exist even before the next 24-hour
+            # provider-label refresh after this mailbox policy is deployed.
+            folders_data = [gmail_mailbox_folder_payload()]
 
         # ─────────────────────────────────────────────────────────────────
         # Phase 3: Write folders and resolve monitored folders within the
@@ -681,13 +693,22 @@ class EmailDeltaSyncService:
                 col(EmailFolder.organisation_id) == org_id,
                 col(EmailFolder.integration_id) == sync_data.integration_id,
                 col(EmailFolder.is_deleted).is_(False),
-                col(EmailFolder.is_monitored) == "true",
             )
+            if sync_data.provider == "gmail":
+                folder_stmt = folder_stmt.where(
+                    col(EmailFolder.external_folder_id) == GMAIL_MAILBOX_LABEL_ID
+                )
+            else:
+                folder_stmt = folder_stmt.where(col(EmailFolder.is_monitored) == "true")
             monitored_folder_result = await session.execute(folder_stmt)
             monitored_folders = monitored_folder_result.scalars().all()
 
             for folder in monitored_folders:
-                cursor = _get_cursor_for_folder(sync_data, folder.external_folder_id)
+                cursor = _get_cursor_for_folder(
+                    sync_data,
+                    folder.external_folder_id,
+                    folder_last_synced_at=folder.last_synced_at,
+                )
                 folders_to_sync.append(
                     FolderSyncData(
                         folder_id=folder.folder_id,

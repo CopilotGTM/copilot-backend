@@ -15,6 +15,9 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from src.api.dependencies.crm_record_access import require_deal_collaborate
+from src.api.dependencies.rate_limit import rate_limit_user_write
+from src.api.routers.crm import stakeholders_handler
 from src.api.routers.crm.contacts_handler import get_contact_read_service
 from src.api.routers.crm.stakeholders_handler import _to_deal_job_response
 from src.api.schemas.crm_models import (
@@ -41,6 +44,35 @@ from tests.api.routers.crm.conftest import (
     create_contact,
     create_stakeholder,
 )
+
+
+def test_stakeholder_mutations_declare_record_policy_scope_and_rate_guards() -> None:
+    expected_scopes = {
+        ("/{deal_id}/stakeholders", "POST"): stakeholders_handler.require_participants_create_scope,
+        (
+            "/{deal_id}/stakeholders/{participant_id}",
+            "PATCH",
+        ): stakeholders_handler.require_participants_update_scope,
+        (
+            "/{deal_id}/stakeholders/{participant_id}",
+            "DELETE",
+        ): stakeholders_handler.require_participants_delete_scope,
+        (
+            "/{deal_id}/stakeholders/{participant_id}/research",
+            "POST",
+        ): stakeholders_handler.require_participants_update_scope,
+    }
+
+    for (path, method), scope_dependency in expected_scopes.items():
+        route = next(
+            route
+            for route in stakeholders_handler.stakeholders_router.routes
+            if route.path == path and method in route.methods
+        )
+        dependencies = {dependency.call for dependency in route.dependant.dependencies}
+        assert require_deal_collaborate in dependencies
+        assert scope_dependency in dependencies
+        assert rate_limit_user_write in dependencies
 
 
 class TestCreateStakeholder:
