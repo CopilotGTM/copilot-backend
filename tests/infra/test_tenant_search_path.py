@@ -10,6 +10,7 @@ import src.infra.database.tenant_search_path as tenant_search_path
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
 from src.infra.database.tenant_search_path import (
+    TENANT_DATA_SCHEMA,
     TENANT_SCHEMA_SESSION_KEY,
     TENANT_SEARCH_PATH_SESSION_KEY,
     TRUSTED_EXTENSION_SCHEMA,
@@ -98,6 +99,20 @@ def test_rejects_malformed_organisation_context_before_executing_sql() -> None:
     connection = MagicMock()
 
     with pytest.raises(ValueError):
+        apply_tenant_transaction_context(session, None, connection)
+
+    connection.exec_driver_sql.assert_not_called()
+    connection.execute.assert_not_called()
+
+
+def test_rejects_tenant_data_transaction_without_organisation_context() -> None:
+    """Shared tenant transactions must not reach PostgreSQL without an org ID."""
+
+    session = Session()
+    session.info[TENANT_SCHEMA_SESSION_KEY] = TENANT_DATA_SCHEMA
+    connection = MagicMock()
+
+    with pytest.raises(RuntimeError, match="organisation context"):
         apply_tenant_transaction_context(session, None, connection)
 
     connection.exec_driver_sql.assert_not_called()

@@ -35,6 +35,11 @@ class _FakeExecuteResult:
         """Return a fake scalar result object for query assertions."""
         return _FakeScalarResult(self._rows)
 
+    def scalar_one_or_none(self):
+        """Return the optional mapped row from the in-memory result stub."""
+        assert len(self._rows) <= 1
+        return self._rows[0] if self._rows else None
+
 
 def _make_integration(**overrides):
     defaults = {
@@ -225,7 +230,12 @@ class TestEmailIncrementalBatchWrites:
             SimpleNamespace(external_message_id="msg-2"),
         ]
         session = AsyncMock()
-        session.execute = AsyncMock(return_value=_FakeExecuteResult(rows))
+        session.execute = AsyncMock(
+            side_effect=[
+                _FakeExecuteResult([SimpleNamespace(folder_id=folder_id)]),
+                _FakeExecuteResult(rows),
+            ]
+        )
         service = EmailSyncService(session, organisation_id)
 
         result = await service._batch_upsert_messages(
@@ -238,9 +248,9 @@ class TestEmailIncrementalBatchWrites:
             folder_id,
         )
 
-        assert session.execute.await_count == 1
+        assert session.execute.await_count == 2
         assert result == {"msg-1": rows[0], "msg-2": rows[1]}
-        sql = str(session.execute.call_args.args[0].compile(dialect=postgresql.dialect()))
+        sql = str(session.execute.await_args_list[1].args[0].compile(dialect=postgresql.dialect()))
         assert "ON CONFLICT" in sql
         assert "RETURNING" in sql
         assert "excluded.subject" in sql
@@ -267,7 +277,10 @@ class TestEmailIncrementalBatchWrites:
 
         assert session.execute.await_count == 1
         assert result == {"folder-1": folder_1, "folder-2": folder_2}
-        assert service._folder_cache == {"folder-1": folder_1, "folder-2": folder_2}
+        assert service._folder_cache == {
+            (integration_id, "folder-1"): folder_1,
+            (integration_id, "folder-2"): folder_2,
+        }
 
     @pytest.mark.asyncio
     async def test_incremental_sync_batches_created_and_updated_messages(self) -> None:

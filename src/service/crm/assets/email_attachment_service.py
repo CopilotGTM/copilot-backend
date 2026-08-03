@@ -849,7 +849,7 @@ class DealAssetEmailAttachmentService:
                         "integration_type": email_rec.integration_type.value,
                     },
                 )
-                .on_conflict_do_nothing(constraint="uq_deal_asset_source_dedup")
+                .on_conflict_do_nothing(constraint="uq_deal_asset_source_dedup_org")
                 .returning(col(DealAsset.asset_id))
             )
             result = await session.execute(stmt)

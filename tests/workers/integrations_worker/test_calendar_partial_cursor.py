@@ -163,3 +163,15 @@ def test_manual_and_scheduled_workers_use_shared_cursor_policy() -> None:
         / "src/workers/integrations_worker/tasks/deprecated/calendar/org_task.py"
     ).read_text()
     assert "apply_calendar_sync_outcome(" in retained_org_task
+
+
+def test_active_calendar_worker_queries_are_explicitly_organisation_scoped() -> None:
+    """Queue-provided IDs must be bounded by organisation in every tenant query."""
+    source = inspect.getsource(integration_task.sync_calendar_integration_task)
+
+    assert source.count("select(KnowledgeIntegration)") == source.count(
+        "col(KnowledgeIntegration.organisation_id)"
+    )
+    assert source.count("select(IntegrationSyncState)") == source.count(
+        "col(IntegrationSyncState.organisation_id)"
+    )

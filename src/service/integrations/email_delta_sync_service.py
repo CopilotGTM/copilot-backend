@@ -254,8 +254,11 @@ async def _persist_cursor_updates(
     if not cursor_updates:
         return
 
+    # Queue and provider IDs are not ownership proofs; every reload repeats the
+    # organisation boundary already enforced by the RLS-backed session.
     async for session in acquire_org_async_session(org_id):
         stmt = select(KnowledgeIntegration).where(
+            col(KnowledgeIntegration.organisation_id) == org_id,
             col(KnowledgeIntegration.integration_id) == sync_data.integration_id,
         )
         result = await session.execute(stmt)
@@ -273,6 +276,8 @@ async def _persist_cursor_updates(
 
         if sync_data.sync_state_id:
             state_stmt = select(IntegrationSyncState).where(
+                col(IntegrationSyncState.organisation_id) == org_id,
+                col(IntegrationSyncState.integration_id) == sync_data.integration_id,
                 col(IntegrationSyncState.sync_state_id) == sync_data.sync_state_id,
             )
             state_result = await session.execute(state_stmt)
@@ -291,6 +296,8 @@ async def _persist_cursor_updates(
 
         if folder_id is not None:
             folder_stmt = select(EmailFolder).where(
+                col(EmailFolder.organisation_id) == org_id,
+                col(EmailFolder.integration_id) == sync_data.integration_id,
                 col(EmailFolder.folder_id) == folder_id,
             )
             folder_result = await session.execute(folder_stmt)
@@ -448,13 +455,15 @@ class EmailDeltaSyncService:
         )
 
         # ─────────────────────────────────────────────────────────────────────
-        # Phase 1: Load integration data and validate
+        # Phase 1: Load the integration inside both the explicit org predicate
+        # and the RLS-backed org session, then validate it.
         # Session is released after this block
         # ─────────────────────────────────────────────────────────────────────
         sync_data: IntegrationSyncData | None = None
 
         async for session in acquire_org_async_session(organisation_id):
             stmt = select(KnowledgeIntegration).where(
+                col(KnowledgeIntegration.organisation_id) == organisation_id,
                 col(KnowledgeIntegration.integration_id) == integration_id,
                 col(KnowledgeIntegration.integration_type).in_(
                     EMAIL_INTEGRATION_TYPES + EMAIL_PARENT_TYPES
@@ -493,6 +502,7 @@ class EmailDeltaSyncService:
             capability = _EMAIL_CAPABILITY_FOR_PARENT.get(int_type)
             if capability:
                 state_stmt = select(IntegrationSyncState).where(
+                    col(IntegrationSyncState.organisation_id) == organisation_id,
                     col(IntegrationSyncState.integration_id) == integration.integration_id,
                     col(IntegrationSyncState.capability) == capability,
                     col(IntegrationSyncState.enabled).is_(True),
@@ -641,7 +651,8 @@ class EmailDeltaSyncService:
             )
 
         # ─────────────────────────────────────────────────────────────────
-        # Phase 3: Write folders to DB + get monitored folders
+        # Phase 3: Write folders and resolve monitored folders within the
+        # explicit organisation and integration boundary.
         # Fresh session acquired and released in this block
         # ─────────────────────────────────────────────────────────────────
         folders_synced = 0
@@ -652,6 +663,7 @@ class EmailDeltaSyncService:
             if folders_data:
                 email_service = EmailSyncService(session=session, organisation_id=org_id)
                 stmt = select(KnowledgeIntegration).where(
+                    col(KnowledgeIntegration.organisation_id) == org_id,
                     col(KnowledgeIntegration.integration_id) == sync_data.integration_id,
                 )
                 result = await session.execute(stmt)
@@ -666,6 +678,7 @@ class EmailDeltaSyncService:
                     folders_synced = folders_result.get("records_processed", 0)
 
             folder_stmt = select(EmailFolder).where(
+                col(EmailFolder.organisation_id) == org_id,
                 col(EmailFolder.integration_id) == sync_data.integration_id,
                 col(EmailFolder.is_deleted).is_(False),
                 col(EmailFolder.is_monitored) == "true",
@@ -738,10 +751,12 @@ class EmailDeltaSyncService:
             changed_email_ids.extend(folder_result.get("changed_email_ids", []))
 
         # ─────────────────────────────────────────────────────────────────
-        # Phase 5: Update integration metadata (delta links + last_synced_at)
+        # Phase 5: Reload tenant-owned integration/state rows, then update
+        # delta links and last_synced_at.
         # ─────────────────────────────────────────────────────────────────
         async for session in acquire_org_async_session(org_id):
             stmt = select(KnowledgeIntegration).where(
+                col(KnowledgeIntegration.organisation_id) == org_id,
                 col(KnowledgeIntegration.integration_id) == sync_data.integration_id,
             )
             result = await session.execute(stmt)
@@ -760,6 +775,8 @@ class EmailDeltaSyncService:
                     )
                     if sync_data.sync_state_id:
                         state_stmt = select(IntegrationSyncState).where(
+                            col(IntegrationSyncState.organisation_id) == org_id,
+                            col(IntegrationSyncState.integration_id) == sync_data.integration_id,
                             col(IntegrationSyncState.sync_state_id) == sync_data.sync_state_id,
                         )
                         state_result = await session.execute(state_stmt)
@@ -882,8 +899,10 @@ class EmailDeltaSyncService:
             async for session in acquire_org_async_session(org_id):
                 email_service = EmailSyncService(session=session, organisation_id=org_id)
 
-                # Reload integration for the service
+                # Reload by organisation and integration; either UUID alone is
+                # insufficient proof that the queued work owns this row.
                 stmt = select(KnowledgeIntegration).where(
+                    col(KnowledgeIntegration.organisation_id) == org_id,
                     col(KnowledgeIntegration.integration_id) == sync_data.integration_id,
                 )
                 result = await session.execute(stmt)
@@ -924,8 +943,9 @@ class EmailDeltaSyncService:
                 messages_synced = sync_result.get("records_processed", 0)
                 changed_email_ids = list(sync_result.get("changed_email_ids", []))
 
-                # Update folder last_synced_at
                 folder_stmt = select(EmailFolder).where(
+                    col(EmailFolder.organisation_id) == org_id,
+                    col(EmailFolder.integration_id) == sync_data.integration_id,
                     col(EmailFolder.folder_id) == folder_data.folder_id,
                 )
                 folder_result = await session.execute(folder_stmt)

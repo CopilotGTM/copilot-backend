@@ -31,7 +31,7 @@ class EmailSyncWriter:
         self.session = session
         self.organisation_id = organisation_id
         self.normalizer = EmailPayloadNormalizer()
-        self.folder_cache: dict[str, UUID] = {}
+        self.folder_cache: dict[tuple[UUID, str], UUID] = {}
         self.message_upsert_chunk_size = max(1, message_upsert_chunk_size)
 
     async def upsert_folder(
@@ -41,7 +41,7 @@ class EmailSyncWriter:
         provider: str,
         external_id: str,
     ) -> EmailFolder:
-        """Insert a folder row or update mutable fields on existing `(integration_id, external_folder_id)`.
+        """Insert or update one `(organisation_id, integration_id, external_folder_id)` folder.
 
         The folder cache is refreshed here so later message upserts can avoid
         additional lookups in the same batch.
@@ -55,13 +55,13 @@ class EmailSyncWriter:
 
         stmt: Any = insert(EmailFolder).values(**values)
         stmt = stmt.on_conflict_do_update(
-            index_elements=["integration_id", "external_folder_id"],
+            index_elements=["organisation_id", "integration_id", "external_folder_id"],
             set_=self.folder_upsert_update_dict(stmt, values),
         ).returning(EmailFolder)
 
         result = await self.session.execute(stmt)
         folder = cast(EmailFolder, result.scalars().one())
-        self.folder_cache[external_id] = folder.folder_id
+        self.folder_cache[(integration_id, external_id)] = folder.folder_id
         return folder
 
     def build_folder_upsert_values(
@@ -128,7 +128,7 @@ class EmailSyncWriter:
         ]
         stmt: Any = insert(EmailFolder).values(values)
         stmt = stmt.on_conflict_do_update(
-            index_elements=["integration_id", "external_folder_id"],
+            index_elements=["organisation_id", "integration_id", "external_folder_id"],
             set_=self.folder_upsert_update_dict(stmt, values[0]),
         ).returning(EmailFolder)
 
@@ -137,7 +137,7 @@ class EmailSyncWriter:
 
         folder_map = {folder.external_folder_id: folder for folder in folders}
         for external_id, folder in folder_map.items():
-            self.folder_cache[external_id] = folder.folder_id
+            self.folder_cache[(integration_id, external_id)] = folder.folder_id
         return folder_map
 
     async def upsert_message(
@@ -148,7 +148,7 @@ class EmailSyncWriter:
         external_id: str,
         folder_id: UUID | None,
     ) -> Email:
-        """Insert a message row or update mutable fields on existing `(integration_id, external_message_id)`."""
+        """Insert or update one `(organisation_id, integration_id, external_message_id)` email."""
         resolved_folder_id = await self.ensure_folder_id(
             integration_id,
             message_data,
@@ -166,7 +166,7 @@ class EmailSyncWriter:
 
         stmt: Any = insert(Email).values(**values)
         stmt = stmt.on_conflict_do_update(
-            index_elements=["integration_id", "external_message_id"],
+            index_elements=["organisation_id", "integration_id", "external_message_id"],
             set_=self.message_upsert_update_dict(stmt, values),
         ).returning(Email)
 
@@ -256,7 +256,7 @@ class EmailSyncWriter:
         for value_chunk in self._chunk_values(values, self.message_upsert_chunk_size):
             stmt: Any = insert(Email).values(value_chunk)
             stmt = stmt.on_conflict_do_update(
-                index_elements=["integration_id", "external_message_id"],
+                index_elements=["organisation_id", "integration_id", "external_message_id"],
                 set_=self.message_upsert_update_dict(stmt, value_chunk[0]),
             ).returning(Email)
 
@@ -279,8 +279,9 @@ class EmailSyncWriter:
         integration_id: UUID,
         external_id: str,
     ) -> EmailFolder | None:
-        """Load one folder by `(integration_id, external_folder_id)` for validation."""
+        """Load one folder by its tenant, integration, and provider identity."""
         stmt = select(EmailFolder).where(
+            col(EmailFolder.organisation_id) == self.organisation_id,
             col(EmailFolder.integration_id) == integration_id,
             col(EmailFolder.external_folder_id) == external_id,
         )
@@ -301,7 +302,7 @@ class EmailSyncWriter:
         failure when provider payloads are inconsistent.
         """
         if existing_folder_id:
-            return existing_folder_id
+            return await self._validate_folder_id(integration_id, existing_folder_id)
 
         external_folder_id = self.normalizer.extract_external_folder_id_from_message(
             message_data,
@@ -316,6 +317,20 @@ class EmailSyncWriter:
             f"{external_message_id} (provider={provider}, external_folder_id={external_folder_id})"
         )
 
+    async def _validate_folder_id(self, integration_id: UUID, folder_id: UUID) -> UUID:
+        """Require a supplied folder to belong to this tenant-bound integration."""
+        # A UUID is not an ownership proof; keep the explicit tenant predicate even
+        # though forced RLS provides the database-level isolation boundary.
+        stmt = select(EmailFolder.folder_id).where(
+            col(EmailFolder.organisation_id) == self.organisation_id,
+            col(EmailFolder.integration_id) == integration_id,
+            col(EmailFolder.folder_id) == folder_id,
+        )
+        result = await self.session.execute(stmt)
+        if result.scalar_one_or_none() is None:
+            raise ValueError(f"Folder {folder_id} does not belong to integration {integration_id}")
+        return folder_id
+
     async def resolve_folder_id(
         self,
         integration_id: UUID,
@@ -329,13 +344,14 @@ class EmailSyncWriter:
         if not external_folder_id:
             return None
 
-        cached_id = self.folder_cache.get(external_folder_id)
+        cache_key = (integration_id, external_folder_id)
+        cached_id = self.folder_cache.get(cache_key)
         if cached_id:
             return cached_id
 
         folder = await self.get_folder_by_external_id(integration_id, external_folder_id)
         if folder:
-            self.folder_cache[external_folder_id] = folder.folder_id
+            self.folder_cache[cache_key] = folder.folder_id
             return folder.folder_id
         return None
 
@@ -347,24 +363,26 @@ class EmailSyncWriter:
         """Load a folder-id map for many external folder identifiers in one query."""
         unique_external_ids = list(dict.fromkeys(external_folder_ids))
         resolved = {
-            external_id: self.folder_cache[external_id]
+            external_id: self.folder_cache[(integration_id, external_id)]
             for external_id in unique_external_ids
-            if external_id in self.folder_cache
+            if (integration_id, external_id) in self.folder_cache
         }
         missing_external_ids = [
             external_id for external_id in unique_external_ids if external_id not in resolved
         ]
 
         if missing_external_ids:
-            # One SELECT for all missing folders keeps message upserts batched.
+            # One tenant-scoped SELECT keeps message upserts batched without
+            # trusting provider folder IDs as an ownership boundary.
             stmt = select(EmailFolder).where(
+                col(EmailFolder.organisation_id) == self.organisation_id,
                 col(EmailFolder.integration_id) == integration_id,
                 col(EmailFolder.external_folder_id).in_(missing_external_ids),
             )
             result = await self.session.execute(stmt)
             for folder in result.scalars().all():
                 resolved[folder.external_folder_id] = folder.folder_id
-                self.folder_cache[folder.external_folder_id] = folder.folder_id
+                self.folder_cache[(integration_id, folder.external_folder_id)] = folder.folder_id
 
         return resolved
 
@@ -381,7 +399,8 @@ class EmailSyncWriter:
         messages to avoid per-item folder lookups.
         """
         if folder_id:
-            return dict.fromkeys(messages_by_external_id, folder_id)
+            validated_folder_id = await self._validate_folder_id(integration_id, folder_id)
+            return dict.fromkeys(messages_by_external_id, validated_folder_id)
 
         external_folder_by_message = {
             external_id: self.normalizer.extract_external_folder_id_from_message(
@@ -422,11 +441,12 @@ class EmailSyncWriter:
         integration_id: UUID,
         external_ids: list[str],
     ) -> dict[str, EmailFolder]:
-        """Load folders from DB for IDs already in a sync batch."""
+        """Load tenant-owned folders for IDs already in a sync batch."""
         if not external_ids:
             return {}
 
         stmt = select(EmailFolder).where(
+            col(EmailFolder.organisation_id) == self.organisation_id,
             col(EmailFolder.integration_id) == integration_id,
             col(EmailFolder.external_folder_id).in_(external_ids),
         )
@@ -440,11 +460,12 @@ class EmailSyncWriter:
         integration_id: UUID,
         external_ids: list[str],
     ) -> dict[str, Email]:
-        """Load messages from DB for IDs already in a sync batch."""
+        """Load tenant-owned messages for IDs already in a sync batch."""
         if not external_ids:
             return {}
 
         stmt = select(Email).where(
+            col(Email.organisation_id) == self.organisation_id,
             col(Email.integration_id) == integration_id,
             col(Email.external_message_id).in_(external_ids),
         )

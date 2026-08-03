@@ -66,8 +66,10 @@ class _ConflictSafeInsertResult:
 class _ConflictSafeInsertSession:
     def __init__(self) -> None:
         self.commit_count = 0
+        self.statements: list[ClauseElement] = []
 
-    async def execute(self, _stmt: ClauseElement) -> _ConflictSafeInsertResult:
+    async def execute(self, stmt: ClauseElement) -> _ConflictSafeInsertResult:
+        self.statements.append(stmt)
         return _ConflictSafeInsertResult()
 
     async def commit(self) -> None:
@@ -898,6 +900,7 @@ async def test_create_deal_asset_returns_false_when_conflict_already_inserted() 
 
     assert inserted == (False, None)
     assert session.commit_count == 1
+    assert "ON CONSTRAINT uq_deal_asset_source_dedup_org" in str(session.statements[0])
 
 
 @pytest.mark.asyncio
