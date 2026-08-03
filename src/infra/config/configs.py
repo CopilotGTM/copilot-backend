@@ -1364,6 +1364,33 @@ class MicrosoftIntegrationConfig:
             )
 
 
+class MicrosoftLoginConfig(MicrosoftIntegrationConfig):
+    """Credentials for the Azure provider configured in Supabase Auth.
+
+    The login registration is intentionally separate from the Outlook/Teams
+    integration registration so either app can be rotated independently.
+    """
+
+    SECRET_NAME_CLIENT_ID = "microsoft-login-client-id"
+    SECRET_NAME_CLIENT_SECRET = "microsoft-login-client-secret"
+
+    def __init__(self) -> None:
+        self._client_id = (os.getenv("MICROSOFT_LOGIN_CLIENT_ID") or "").strip() or None
+        self._client_secret = (os.getenv("MICROSOFT_LOGIN_CLIENT_SECRET") or "").strip() or None
+        self._credentials_from_env = bool(self._client_id and self._client_secret)
+        self._credentials_ttl_hours = float(os.getenv("MICROSOFT_LOGIN_CREDENTIALS_TTL_HOURS", "6"))
+        self._credentials_loaded_at = None
+        self._refresh_lock = None
+
+    async def get_credentials(self) -> tuple[str, str]:
+        """Return only the credentials belonging to the Microsoft login app."""
+        if bool(self._client_id) != bool(self._client_secret):
+            raise RuntimeError(
+                "MICROSOFT_LOGIN_CLIENT_ID and MICROSOFT_LOGIN_CLIENT_SECRET must be set together"
+            )
+        return await super().get_credentials()
+
+
 class HubSpotIntegrationConfig:
     """Configuration for custom HubSpot OAuth flows.
 
@@ -1906,6 +1933,7 @@ google_integration_config = GoogleIntegrationConfig()
 google_login_config = GoogleLoginConfig(google_integration_config)
 google_gmail_pubsub_config = GoogleGmailPubSubConfig()
 microsoft_integration_config = MicrosoftIntegrationConfig()
+microsoft_login_config = MicrosoftLoginConfig()
 hubspot_integration_config = HubSpotIntegrationConfig()
 salesforce_integration_config = SalesforceIntegrationConfig()
 apollo_config = ApolloConfig()

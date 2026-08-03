@@ -169,29 +169,6 @@ resource "azurerm_log_analytics_workspace" "storage_diagnostics" {
 }
 
 # -----------------------------------------------------------------
-# Azure Key Vault
-# -----------------------------------------------------------------
-module "database_key_vault" {
-  source                        = "../modules/key_vault"
-  key_vault_name                = "copilot-db-kv-${var.env}"
-  location                      = var.location
-  resource_group_name           = module.resource_group.resource_group_name
-  tenant_id                     = data.azurerm_client_config.current.tenant_id
-  admin_object_id               = coalesce(var.azure_resource_owner_object_id, data.azurerm_client_config.current.object_id)
-  public_network_access_enabled = var.enable_key_vault_private_endpoints ? false : true
-  private_endpoint_enabled      = var.enable_key_vault_private_endpoints
-  private_endpoint_subnet_id    = module.vnet.private_endpoints_subnet_id
-  private_dns_zone_id           = var.enable_key_vault_private_endpoints ? azurerm_private_dns_zone.key_vault[0].id : null
-  tags = {
-    environment = var.env
-    project     = var.project_name
-  }
-  depends_on = [
-    module.resource_group
-  ]
-}
-
-# -----------------------------------------------------------------
 # Azure Key Vault (Master)
 # -----------------------------------------------------------------
 module "master_key_vault" {
@@ -406,12 +383,6 @@ module "workload_identity_workers" {
 }
 
 # Role assignments for workload identity SP (least privilege scopes similar to prior UAMI)
-resource "azurerm_role_assignment" "wi_kv_database_secrets_user" {
-  scope                = module.database_key_vault.key_vault_id
-  role_definition_name = "Key Vault Secrets Officer" # upgraded from Secrets User for create/update/delete
-  principal_id         = module.workload_identity_backend.object_id
-}
-
 resource "azurerm_role_assignment" "wi_kv_master_secrets_user" {
   scope                = module.master_key_vault.key_vault_id
   role_definition_name = "Key Vault Secrets Officer" # upgraded from Secrets User for create/update/delete
@@ -443,12 +414,6 @@ resource "azurerm_role_assignment" "wi_org_storage_blob_delegator" {
 }
 
 # Workers identity role assignments (mirror backend access for now)
-resource "azurerm_role_assignment" "wi_workers_kv_database_secrets_user" {
-  scope                = module.database_key_vault.key_vault_id
-  role_definition_name = "Key Vault Secrets Officer" # upgraded for write/delete
-  principal_id         = module.workload_identity_workers.object_id
-}
-
 resource "azurerm_role_assignment" "wi_workers_kv_master_secrets_user" {
   scope                = module.master_key_vault.key_vault_id
   role_definition_name = "Key Vault Secrets Officer" # upgraded for write/delete
@@ -596,7 +561,7 @@ module "application_database" {
   db_sku_name                   = var.db_sku_name
   db_admin_user                 = "CopilotGTMAdmin"
   db_admin_password             = random_password.db_admin.result
-  key_vault_id                  = module.database_key_vault.key_vault_id
+  key_vault_id                  = module.master_key_vault.key_vault_id
   private_endpoint_enabled      = var.enable_postgresql_private_endpoint
   public_network_access_enabled = var.postgresql_public_network_access_enabled
   private_endpoint_subnet_id    = module.vnet.private_endpoints_subnet_id
@@ -614,7 +579,7 @@ module "application_database" {
   }
   depends_on = [
     module.resource_group,
-    module.database_key_vault
+    module.master_key_vault
   ]
 }
 
@@ -688,11 +653,6 @@ resource "azuredevops_variable_group" "secrets" {
   variable {
     name  = "ORGANISATION_STORAGE_NAME"
     value = module.org_storage_account.storage_account_name
-  }
-
-  variable {
-    name  = "AZURE_KEY_VAULT_URL"
-    value = module.database_key_vault.key_vault_uri
   }
 
   variable {

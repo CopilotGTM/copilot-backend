@@ -21,7 +21,7 @@ This document lists the Azure RBAC roles required for different operations in th
 ### How to Assign Key Vault Roles
 
 **Via Azure Portal:**
-1. Navigate to the Key Vault (e.g., `copilot-db-kv-dev`)
+1. Navigate to the Key Vault (e.g., `copilot-master-kv-dev`)
 2. Click **Access control (IAM)**
 3. Click **+ Add** → **Add role assignment**
 4. Select the required role (e.g., **Key Vault Secrets Officer**)
@@ -43,9 +43,7 @@ az role assignment create \
 
 | Environment | Key Vault Name | Resource Group |
 |-------------|---------------|----------------|
-| Dev | `copilot-db-kv-dev` | `copilot-gtm-app-dev` |
 | Dev | `copilot-master-kv-dev` | `copilot-gtm-app-dev` |
-| Prod | `copilot-db-kv-prod` | `copilot-gtm-app-prod` |
 | Prod | `copilot-master-kv-prod` | `copilot-gtm-app-prod` |
 
 ---
@@ -90,8 +88,7 @@ The following roles are assigned to workload identities for AKS pods:
 
 | Identity | Role | Scope | Purpose |
 |----------|------|-------|---------|
-| `copilot-backend-wi-dev` | Key Vault Secrets Officer | Database Key Vault | App reads/writes DB passwords |
-| `copilot-backend-wi-dev` | Key Vault Secrets Officer | Master Key Vault | App reads/writes encryption keys |
+| `copilot-backend-wi-dev` | Key Vault Secrets Officer | Master Key Vault | App reads/writes application and database credentials |
 | `copilot-backend-wi-dev` | Storage Blob Data Contributor | Master Storage | App uploads/downloads files |
 | `copilot-backend-wi-dev` | Storage Blob Delegator | Master Storage | App generates SAS tokens |
 | `copilot-workers-wi-dev` | (Same as backend) | (Same scopes) | Workers need same access |
