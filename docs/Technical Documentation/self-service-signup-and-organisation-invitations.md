@@ -110,8 +110,6 @@ Required:
 
 - `first_name` and `last_name`, pre-filled from the provider but confirmed by the user;
 - `organisation_name`;
-- `primary_domain`, pre-filled from Google `hd` or the Microsoft verified email domain and not
-  accepted when it differs from the verified provider identity;
 - `country` from the existing allowed-country catalogue;
 - acceptance of the Terms of Service and Privacy Policy versions.
 
@@ -119,7 +117,7 @@ Optional before provisioning:
 
 - `job_title`;
 - `sales_team_size`;
-- `website_url`, which must resolve to the confirmed primary domain;
+- `website_url`, which must resolve to the provider-derived primary domain;
 - `linkedin_url`.
 
 Do not block signup on `agent_name`, company address, summary, logo, CRM selection, integrations,
@@ -127,6 +125,9 @@ or channel setup. Collect those in post-signup onboarding or derive them through
 best-effort organisation research job. The backend assigns `user_role=admin`,
 `organisation_role="Administrator"`, authentication method, email, provider tenant, status, IDs, and all
 approval fields; the public request cannot choose them.
+
+The public request does not contain `primary_domain`. The backend derives and normalizes it from
+the remotely verified Google Workspace hosted-domain claim or Microsoft Entra identity.
 
 ### Backend
 
@@ -275,7 +276,6 @@ Supabase bearer session. Public, strongly rate-limited, and requires `Idempotenc
   "last_name": "Doe",
   "job_title": "VP Sales",
   "organisation_name": "Acme",
-  "primary_domain": "acme.com",
   "country": "US",
   "sales_team_size": 20,
   "website_url": "https://acme.com",

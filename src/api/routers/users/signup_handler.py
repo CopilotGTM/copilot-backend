@@ -8,7 +8,11 @@ from src.api.dependencies.rate_limit import rate_limit_signup, rate_limit_signup
 from src.api.schemas.base_models import GenericResponse
 from src.api.utils.http_response import Response
 from src.domain.models.master_tables import SignupRequestStatus, UserAuthenticationMethod
-from src.domain.models.user_signup_models import ExternalSignupRequest, ExternalSignupResponse
+from src.domain.models.user_signup_models import (
+    ExternalSignupProfile,
+    ExternalSignupRequest,
+    ExternalSignupResponse,
+)
 from src.infra.auth.supabase_user_client import SupabaseAuthError, supabase_user_client
 from src.infra.database.sessions import master_async_session_scope
 from src.infra.utils.logger import get_logger
@@ -44,7 +48,6 @@ def _verify_identity(
     request: Request,
     *,
     provider: str | None,
-    requested_primary_domain: str,
 ) -> ExternalSignupIdentity:
     token = _bearer_token(request)
     if token is None:
@@ -64,10 +67,54 @@ def _verify_identity(
     )
     if claims.authentication_method != verified.authentication_method:
         raise ExternalAuthError("The session provider does not match the requested provider")
-    return ExternalAuthService().validate_signup_identity(
-        claims,
-        requested_primary_domain=requested_primary_domain,
-    )
+    return ExternalAuthService().validate_signup_identity(claims)
+
+
+@router.get(
+    "/{provider}/signup",
+    response_model=GenericResponse[ExternalSignupProfile],
+    tags=["user_signup"],
+)
+async def get_external_signup_profile(
+    provider: str,
+    request: Request,
+    response: FastAPIResponse,
+    _rate_limit: None = Depends(rate_limit_signup),
+) -> GenericResponse[ExternalSignupProfile]:
+    """Verify signup eligibility before collecting organisation details."""
+    if provider not in {"google", "microsoft"}:
+        return Response.error_response(
+            status_code=400,
+            message="Unsupported signup provider",
+            code="SIGNUP_PROVIDER_INVALID",
+            response=response,
+        )
+    try:
+        identity = _verify_identity(request, provider=provider)
+        return Response.success_response(
+            message="Signup identity verified",
+            data=ExternalSignupProfile(
+                provider=provider,
+                email=identity.claims.email,
+                primary_domain=identity.primary_domain,
+                full_name=identity.claims.full_name,
+            ),
+            response=response,
+        )
+    except SupabaseAuthError:
+        return Response.error_response(
+            status_code=401,
+            message="Authentication failed",
+            code="AUTHENTICATION_FAILED",
+            response=response,
+        )
+    except ExternalAuthError as exc:
+        return Response.error_response(
+            status_code=exc.status_code,
+            message=exc.message,
+            code=exc.code,
+            response=response,
+        )
 
 
 @router.post(
@@ -107,8 +154,18 @@ async def start_external_signup(
         identity = _verify_identity(
             request,
             provider=provider,
-            requested_primary_domain=signup_request.primary_domain,
         )
+        if signup_request.website_url is not None:
+            website_host = signup_request.website_url.host
+            if website_host is None or (
+                website_host != identity.primary_domain
+                and not website_host.endswith(f".{identity.primary_domain}")
+            ):
+                raise ExternalAuthError(
+                    "The company website does not match the verified identity",
+                    code="SIGNUP_DOMAIN_MISMATCH",
+                    status_code=403,
+                )
         async with master_async_session_scope() as session:
             signup = await SignupService(session).start_signup(
                 identity=identity,

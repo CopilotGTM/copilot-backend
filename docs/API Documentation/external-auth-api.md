@@ -30,10 +30,11 @@ The `/signup` UI uses the same provider sessions but a separate intent and endpo
 | Continue with Microsoft | `POST /users/auth/microsoft/signup` | verified email plus non-consumer Entra tenant UUID |
 
 The browser sends organisation profile fields, the bearer session, and `Idempotency-Key`; it never
-sends trusted provider subject or tenant values. Poll
+sends a company domain, provider subject, or tenant value. The backend derives the canonical
+company domain from the remotely verified provider identity. Poll
 `GET /users/auth/signup-requests/{signup_request_id}` with that same provider identity until
-`active`, then open onboarding. Consumer accounts and claimed/provider domain mismatches are
-rejected. No second email-verification message is sent because provider verification is the trust
+`active`, then open onboarding. Consumer accounts and company websites that do not match the
+provider-derived domain are rejected. No second email-verification message is sent because provider verification is the trust
 boundary. After activation, the backend makes a best-effort welcome-email attempt; email delivery
 does not control whether the already-provisioned organisation is active. See
 [User Authentication API](users-auth-api.md#self-service-organisation-signup) for the full

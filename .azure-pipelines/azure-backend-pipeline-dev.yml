@@ -168,35 +168,6 @@ stages:
           - checkout: self
 
           - script: |
-              echo "##[section]📊 Checking disk space before cleanup..."
-              df -h
-              DISK_USAGE=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
-              echo "Current disk usage: ${DISK_USAGE}%"
-
-              echo ""
-              echo "##[section]🧹 Cleaning up Docker resources..."
-              docker container prune -f || true
-              docker image prune -a -f || true
-              docker volume prune -f || true
-              docker builder prune -a -f || true
-
-              echo ""
-              echo "##[section]✅ Disk space after cleanup:"
-              df -h
-              DISK_USAGE_AFTER=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
-              echo "Disk usage after cleanup: ${DISK_USAGE_AFTER}%"
-
-              if [ "$DISK_USAGE_AFTER" -gt 90 ]; then
-                echo "##[error]❌ Critical: Disk usage is ${DISK_USAGE_AFTER}% - aborting build"
-                exit 1
-              elif [ "$DISK_USAGE_AFTER" -gt 80 ]; then
-                echo "##[warning]⚠️ Warning: Disk usage is ${DISK_USAGE_AFTER}% - consider cleaning up agent"
-              else
-                echo "##[section]✅ Disk space is healthy (${DISK_USAGE_AFTER}% used)"
-              fi
-            displayName: 'Clean Up Disk Space & Check'
-
-          - script: |
               echo "##[group]Verifying Environment Configuration"
               echo "Environment: $(ENVIRONMENT)"
               echo "ACR Login Server: $(ACR_LOGIN_SERVER)"

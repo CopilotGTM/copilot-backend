@@ -22,6 +22,14 @@ def test_backend_pipelines_do_not_force_second_worker_rollout() -> None:
         assert "wait_if_present copilot-backend\n" in pipeline_text, pipeline_path
 
 
+def test_backend_pipelines_do_not_prune_local_docker_cache_before_build() -> None:
+    for pipeline_path in PIPELINE_PATHS:
+        pipeline_text = pipeline_path.read_text(encoding="utf-8")
+
+        assert "Clean Up Disk Space & Check" not in pipeline_text, pipeline_path
+        assert "docker builder prune" not in pipeline_text, pipeline_path
+
+
 def test_backend_pipeline_rollback_uses_release_namespace() -> None:
     for pipeline_path in PIPELINE_PATHS:
         pipeline_text = pipeline_path.read_text(encoding="utf-8")
