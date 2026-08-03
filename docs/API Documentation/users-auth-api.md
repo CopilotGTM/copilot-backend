@@ -46,7 +46,6 @@ Submit the remotely verified Supabase access token as `Authorization: Bearer <to
   "last_name": "Doe",
   "job_title": "VP Sales",
   "organisation_name": "Acme",
-  "primary_domain": "acme.com",
   "country": "US",
   "sales_team_size": 20,
   "website_url": "https://acme.com",
@@ -55,6 +54,11 @@ Submit the remotely verified Supabase access token as `Authorization: Bearer <to
   "privacy_version": "2026-08-02"
 }
 ```
+
+Do not send a company domain. The backend derives the canonical `primary_domain` from the
+remotely verified Google Workspace hosted-domain claim or Microsoft Entra identity. Consumer
+email domains are rejected. If `website_url` is present, its host must match that derived domain
+or one of its subdomains.
 
 `202 Accepted` returns only durable identifiers and state:
 

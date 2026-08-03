@@ -3,7 +3,7 @@
 import re
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 from src.domain.models.master_tables import SignupRequestStatus
 
 
@@ -31,7 +31,6 @@ class ExternalSignupRequest(BaseModel):
     last_name: str = Field(min_length=1, max_length=100)
     job_title: str | None = Field(default=None, max_length=100)
     organisation_name: str = Field(min_length=2, max_length=255)
-    primary_domain: str = Field(min_length=3, max_length=253)
     country: str = Field(min_length=2, max_length=2)
     sales_team_size: int | None = Field(default=None, ge=0, le=1_000_000)
     website_url: HttpUrl | None = None
@@ -40,12 +39,6 @@ class ExternalSignupRequest(BaseModel):
     privacy_version: str = Field(min_length=1, max_length=32)
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-    @field_validator("primary_domain", mode="before")
-    @classmethod
-    def normalize_primary_domain(cls, value: object) -> object:
-        """Normalize domains before length validation and persistence."""
-        return normalize_signup_domain(value) if isinstance(value, str) else value
 
     @field_validator("country", mode="before")
     @classmethod
@@ -58,17 +51,16 @@ class ExternalSignupRequest(BaseModel):
             raise ValueError("country must be a two-letter code")
         return country
 
-    @model_validator(mode="after")
-    def validate_website_domain(self) -> "ExternalSignupRequest":
-        """Keep the claimed company website within the provider-verified domain."""
-        if self.website_url is None:
-            return self
-        host = self.website_url.host
-        if host is None or (
-            host != self.primary_domain and not host.endswith(f".{self.primary_domain}")
-        ):
-            raise ValueError("website_url must use the primary domain")
-        return self
+
+class ExternalSignupProfile(BaseModel):
+    """Return the provider-verified identity required before signup details."""
+
+    provider: str
+    email: str
+    primary_domain: str
+    full_name: str | None
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class ExternalSignupResponse(BaseModel):

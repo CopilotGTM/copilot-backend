@@ -86,6 +86,7 @@ class ExternalAuthService:
         *,
         requested_provider: str,
     ) -> ExternalAuthClaims:
+        """Normalize one remotely verified Supabase identity into the shared auth contract."""
         provider_key = requested_provider.strip().lower()
         config = self._PROVIDERS.get(provider_key)
         if not config:
@@ -138,6 +139,7 @@ class ExternalAuthService:
         *,
         organisation_domains: list[str] | None,
     ) -> None:
+        """Require an existing user identity to match its organisation's allowed domains."""
         domains = self.normalize_domains(organisation_domains)
         email_domain = claims.email.rsplit("@", 1)[-1]
         if email_domain in FREE_EMAIL_DOMAINS or email_domain not in domains:
@@ -158,8 +160,6 @@ class ExternalAuthService:
     def validate_signup_identity(
         self,
         claims: ExternalAuthClaims,
-        *,
-        requested_primary_domain: str,
     ) -> ExternalSignupIdentity:
         """Bind public signup to the company domain proven by provider claims."""
         _, separator, email_domain_value = claims.email.strip().lower().rpartition("@")
@@ -216,20 +216,6 @@ class ExternalAuthService:
                 status_code=403,
             )
 
-        try:
-            requested_domain = normalize_signup_domain(requested_primary_domain)
-        except ValueError as exc:
-            raise ExternalAuthError(
-                "The requested domain does not match the verified identity",
-                code="SIGNUP_DOMAIN_MISMATCH",
-                status_code=400,
-            ) from exc
-        if requested_domain != identity_domain:
-            raise ExternalAuthError(
-                "The requested domain does not match the verified identity",
-                code="SIGNUP_DOMAIN_MISMATCH",
-                status_code=403,
-            )
         return ExternalSignupIdentity(claims=claims, primary_domain=identity_domain)
 
     def email_matches_organisation_domain(
@@ -238,6 +224,7 @@ class ExternalAuthService:
         email: str,
         organisation_domains: list[str] | None,
     ) -> bool:
+        """Match a non-consumer email against normalized organisation domains."""
         email_domain = email.strip().lower().rsplit("@", 1)[-1]
         return email_domain not in FREE_EMAIL_DOMAINS and email_domain in self.normalize_domains(
             organisation_domains
@@ -245,6 +232,7 @@ class ExternalAuthService:
 
     @staticmethod
     def normalize_domains(domains: list[str] | None) -> set[str]:
+        """Canonicalize configured organisation domains for policy comparisons."""
         return {value.strip().lower() for value in domains or [] if value.strip()}
 
     @staticmethod
