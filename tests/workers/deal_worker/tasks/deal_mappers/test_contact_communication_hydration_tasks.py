@@ -179,6 +179,85 @@ async def test_dispatch_chunks_changed_ids_instead_of_sending_one_task_per_conta
     assert len(send.await_args_list[1].kwargs["kwargs"]["changed_email_ids"]) == 1
 
 
+def test_tracked_hydration_records_metrics_before_its_data_commit(monkeypatch) -> None:
+    """The one-time created flags must be written in the same transaction as CRM rows."""
+    order: list[str] = []
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    sync_id = uuid4()
+    email_id = uuid4()
+    result = SimpleNamespace(
+        email_deal_ids=set(),
+        discovered_contact_ids=set(),
+        attachment_email_ids_by_deal={},
+        contacts_created=4,
+        accounts_created=2,
+        emails_linked=1,
+        to_dict=lambda: {},
+    )
+    service = SimpleNamespace(hydrate_changed_sources=AsyncMock(return_value=result))
+
+    class _Scope:
+        def __init__(self, value):
+            self.value = value
+
+        async def __aenter__(self):
+            return self.value
+
+        async def __aexit__(self, *_args):
+            return None
+
+    async def commit():
+        order.append("commit")
+
+    async def complete_in_session(*_args, **_kwargs):
+        order.append("progress")
+        return {"revision": 3}
+
+    org_session = SimpleNamespace(commit=commit)
+    monkeypatch.setattr(hydration_tasks, "master_async_session_scope", lambda: _Scope(object()))
+    monkeypatch.setattr(
+        hydration_tasks,
+        "org_async_session_scope",
+        lambda _organisation_id: _Scope(org_session),
+    )
+    monkeypatch.setattr(
+        hydration_tasks,
+        "ContactCommunicationHydrationService",
+        lambda *_args, **_kwargs: service,
+    )
+    monkeypatch.setattr(hydration_tasks, "_dispatch_association_followups", AsyncMock())
+    monkeypatch.setattr(
+        hydration_tasks.InitialSyncProgressService,
+        "complete_hydration_chunk_in_session",
+        complete_in_session,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        hydration_tasks.InitialSyncProgressService,
+        "publish_committed_snapshot",
+        Mock(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        hydration_tasks.InitialSyncProgressService,
+        "complete_hydration_chunk",
+        AsyncMock(side_effect=lambda *_args, **_kwargs: order.append("late-progress")),
+    )
+
+    hydrate_contact_communications_task.run(
+        organisation_id=str(organisation_id),
+        integration_id=str(integration_id),
+        changed_email_ids=[str(email_id)],
+        trigger="email_sync",
+        initial_sync_id=str(sync_id),
+        initial_sync_branch="email",
+        initial_sync_chunk_key="email:0",
+    )
+
+    assert order[:2] == ["progress", "commit"]
+
+
 @pytest.mark.asyncio
 async def test_dispatch_batches_manual_contact_backfill(monkeypatch) -> None:
     send = AsyncMock(return_value="task-1")

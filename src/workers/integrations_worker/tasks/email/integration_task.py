@@ -32,6 +32,10 @@ from src.domain.models.organisation_tables.sync import SyncStatus
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.integrations.email_delta_sync_service import EmailDeltaSyncService
+from src.service.integrations.initial_sync_progress_service import (
+    InitialSyncErrorCode,
+    InitialSyncProgressService,
+)
 from src.service.integrations.sync_health import (
     classify_sync_error,
     is_action_required_failure,
@@ -68,6 +72,7 @@ def sync_email_integration_task(
     integration_id: str,
     trigger_source: str = "manual_sync",
     webhook_sync_id: str | None = None,
+    initial_sync_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Tier 3: Sync specific email integration.
@@ -100,6 +105,17 @@ def sync_email_integration_task(
     org_id = UUID(organisation_id)
     int_id = UUID(integration_id)
     receipt_id = UUID(webhook_sync_id) if webhook_sync_id else None
+    tracked_sync_id = UUID(initial_sync_id) if initial_sync_id else None
+
+    if tracked_sync_id is not None:
+        run_async(
+            InitialSyncProgressService.mark_branch_started(
+                org_id,
+                tracked_sync_id,
+                "email",
+                self.request.retries + 1,
+            )
+        )
 
     def _record_receipt(
         status: SyncStatus,
@@ -140,10 +156,13 @@ def sync_email_integration_task(
         result = await service.sync_integration(
             organisation_id=org_id,
             integration_id=int_id,
+            initial_sync_id=tracked_sync_id,
         )
 
         if result.get("status") == "success" and (
-            result.get("messages_synced", 0) > 0 or result.get("changed_email_ids")
+            tracked_sync_id is not None
+            or result.get("messages_synced", 0) > 0
+            or result.get("changed_email_ids")
         ):
             # Delta sync commits before returning, so the hydration worker can safely read these
             # IDs. Queue it before deal mapping, which may transfer card ownership to an
@@ -155,6 +174,9 @@ def sync_email_integration_task(
                 integration_id=int_id,
                 changed_email_ids=result.get("changed_email_ids", []),
                 trigger="email_sync",
+                initial_sync_id=tracked_sync_id,
+                initial_sync_branch="email" if tracked_sync_id else None,
+                records_synced=result.get("messages_synced", 0) if tracked_sync_id else None,
             )
 
         # Add timing info to result
@@ -197,6 +219,15 @@ def sync_email_integration_task(
                     )
                     return result
                 raise RuntimeError(str(result.get("error") or "Webhook email sync failed"))
+            if tracked_sync_id is not None:
+                run_async(
+                    InitialSyncProgressService.fail_branch(
+                        org_id,
+                        tracked_sync_id,
+                        "email",
+                        error=InitialSyncErrorCode.PROVIDER_FAILED,
+                    )
+                )
 
         return result
 
@@ -228,6 +259,15 @@ def sync_email_integration_task(
             error=f"Task exceeded soft time limit of {_L['soft']}s",
             completed=False,
         )
+        if tracked_sync_id is not None:
+            run_async(
+                InitialSyncProgressService.fail_branch(
+                    org_id,
+                    tracked_sync_id,
+                    "email",
+                    error=InitialSyncErrorCode.PROVIDER_TIMED_OUT,
+                )
+            )
         return {
             "status": "timed_out",
             "organisation_id": organisation_id,
@@ -294,6 +334,15 @@ def sync_email_integration_task(
             error=str(e),
             completed=terminal,
         )
+        if tracked_sync_id is not None:
+            run_async(
+                InitialSyncProgressService.fail_branch(
+                    org_id,
+                    tracked_sync_id,
+                    "email",
+                    error=InitialSyncErrorCode.PROVIDER_FAILED,
+                )
+            )
         return {
             "status": "failed",
             "organisation_id": organisation_id,

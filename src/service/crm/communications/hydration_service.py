@@ -81,6 +81,8 @@ class ContactCommunicationHydrationResult:
     contacts_reused: int
     activities_projected: int
     skip_counters: dict[str, int]
+    accounts_created: int = 0
+    emails_linked: int = 0
     identities_considered: int = 0
     deal_associations_created: int = 0
     deal_associations_ambiguous: int = 0
@@ -99,6 +101,8 @@ class ContactCommunicationHydrationResult:
             "events_considered": self.events_considered,
             "contacts_created": self.contacts_created,
             "contacts_reused": self.contacts_reused,
+            "accounts_created": self.accounts_created,
+            "emails_linked": self.emails_linked,
             "activities_projected": self.activities_projected,
             "identities_considered": self.identities_considered,
             "deal_associations_created": self.deal_associations_created,
@@ -160,6 +164,7 @@ class ContactCommunicationHydrationService:
             seed_contacts=[],
         )
         # --- Step 2: project relationship activity before selecting deal ownership ---
+        linked_email_ids: set[UUID] = set()
         projected = await self._project(
             emails=emails,
             events=events,
@@ -167,6 +172,7 @@ class ContactCommunicationHydrationService:
             integration_id=integration_id,
             replace_links=True,
             target_deal_ids=None,
+            linked_email_ids=linked_email_ids,
         )
         # --- Step 3: create qualifying deal links and collect discovery candidates ---
         # Deal association consumes the exact contacts resolved above. Running it after direct
@@ -207,6 +213,8 @@ class ContactCommunicationHydrationService:
             events_considered=len(events),
             contacts_created=len(resolution.created_contact_ids),
             contacts_reused=len(resolution.reused_contact_ids),
+            accounts_created=len(resolution.created_account_ids),
+            emails_linked=len(set(changed_email_ids or []) & linked_email_ids),
             activities_projected=projected,
             skip_counters=resolution.plan.skip_counters,
             identities_considered=len(resolution.plan.activity_identities),
@@ -524,6 +532,7 @@ class ContactCommunicationHydrationService:
         integration_id: UUID | None,
         replace_links: bool,
         target_deal_ids: set[UUID] | None,
+        linked_email_ids: set[UUID] | None = None,
     ) -> int:
         """Project loaded communications onto resolved contacts and their companies.
 
@@ -587,6 +596,8 @@ class ContactCommunicationHydrationService:
                         ),
                         replace_existing=replace_links,
                     )
+                if linked_email_ids is not None:
+                    linked_email_ids.add(email.email_id)
             else:
                 if await projection.upsert_direct_email(
                     email,
@@ -595,6 +606,8 @@ class ContactCommunicationHydrationService:
                     replace_links=replace_links,
                 ):
                     projected += 1
+                if linked_email_ids is not None:
+                    linked_email_ids.add(email.email_id)
 
         # Meetings mirror email projection, but future meetings do not advance
         # engagement recency until their scheduled time has passed.

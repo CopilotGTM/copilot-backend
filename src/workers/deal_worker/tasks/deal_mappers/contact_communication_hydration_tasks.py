@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from celery import Task
@@ -16,6 +16,10 @@ from src.service.crm.communications.hydration_service import (
 )
 from src.service.crm.communications.participant_resolution_service import (
     CommunicationHydrationBusyError,
+)
+from src.service.integrations.initial_sync_progress_service import (
+    InitialSyncErrorCode,
+    InitialSyncProgressService,
 )
 from src.workers.deal_worker.celery_app import app
 from src.workers.deal_worker.tasks.deal_asset_email_attachment_tasks import (
@@ -64,12 +68,18 @@ def hydrate_contact_communications_task(
     job_id: str | None = None,
     job_type: str | None = None,
     emit_events: bool = False,
+    initial_sync_id: str | None = None,
+    initial_sync_branch: Literal["email", "calendar"] | None = None,
+    initial_sync_chunk_key: str | None = None,
 ) -> dict[str, Any]:
     """Run one retry-safe local hydration batch without provider research calls."""
     if emit_events and (not job_id or not job_type):
         raise ValueError("emit_events=True requires job_id and job_type")
     if not emit_events and (job_id or job_type):
         raise ValueError("job context requires emit_events=True")
+    tracking_values = (initial_sync_id, initial_sync_branch, initial_sync_chunk_key)
+    if any(tracking_values) and not all(tracking_values):
+        raise ValueError("initial sync tracking fields must be supplied together")
 
     org_id = UUID(organisation_id)
     int_id = UUID(integration_id) if integration_id else None
@@ -145,7 +155,24 @@ def hydrate_contact_communications_task(
                     "email_associated",
                 )
                 email_deal_jobs[affected_deal_id] = memory_job_id
+            progress_snapshot = None
+            if initial_sync_id and initial_sync_branch and initial_sync_chunk_key:
+                # Creation flags exist only in this transaction. Stage progress before the
+                # commit so a crash cannot commit CRM rows while losing their exact counts.
+                progress_snapshot = (
+                    await InitialSyncProgressService.complete_hydration_chunk_in_session(
+                        org_session,
+                        org_id,
+                        UUID(initial_sync_id),
+                        initial_sync_branch,
+                        initial_sync_chunk_key,
+                        contacts_created=result.contacts_created,
+                        accounts_created=result.accounts_created,
+                        emails_linked=result.emails_linked,
+                    )
+                )
             await org_session.commit()
+            InitialSyncProgressService.publish_committed_snapshot(progress_snapshot)
             await _dispatch_association_followups(
                 organisation_id=org_id,
                 discovered_contact_ids=set(result.discovered_contact_ids),
@@ -192,6 +219,16 @@ def hydrate_contact_communications_task(
             ) from exc
         if tracker:
             run_async(tracker.fail(str(exc)))
+        if initial_sync_id and initial_sync_branch and initial_sync_chunk_key:
+            run_async(
+                InitialSyncProgressService.fail_hydration_chunk(
+                    org_id,
+                    UUID(initial_sync_id),
+                    initial_sync_branch,
+                    initial_sync_chunk_key,
+                    error=InitialSyncErrorCode.HYDRATION_FAILED,
+                )
+            )
         raise
     except Exception as exc:
         logger.exception(
@@ -206,6 +243,16 @@ def hydrate_contact_communications_task(
             raise self.retry(exc=exc) from exc
         if tracker:
             run_async(tracker.fail(str(exc)))
+        if initial_sync_id and initial_sync_branch and initial_sync_chunk_key:
+            run_async(
+                InitialSyncProgressService.fail_hydration_chunk(
+                    org_id,
+                    UUID(initial_sync_id),
+                    initial_sync_branch,
+                    initial_sync_chunk_key,
+                    error=InitialSyncErrorCode.HYDRATION_FAILED,
+                )
+            )
         raise
 
 

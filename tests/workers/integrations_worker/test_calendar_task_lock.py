@@ -1,9 +1,11 @@
 """Concurrency contract tests for integration-scoped Calendar sync."""
 
+import inspect
 from unittest.mock import patch
 from uuid import uuid4
 
 from src.service.integrations.calendar_cursor_metadata import CalendarCursorMissingError
+from src.workers.integrations_worker.tasks.calendar import integration_task as calendar_task_module
 from src.workers.integrations_worker.tasks.calendar.integration_task import (
     sync_calendar_integration_task,
 )
@@ -128,3 +130,10 @@ def test_missing_cursor_failure_is_not_retried() -> None:
 
     assert result["status"] == "failed"
     retry.assert_not_called()
+
+
+def test_calendar_count_is_staged_before_provider_transaction_commit() -> None:
+    """Calendar rows and their progress count must cross the transaction boundary together."""
+    source = inspect.getsource(calendar_task_module)
+
+    assert source.index("record_provider_batch_in_session") < source.index("await session.commit()")

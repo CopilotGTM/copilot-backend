@@ -18,6 +18,10 @@ from src.infra.config.integrations_metadata import INTEGRATION_METADATA
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.copilot_oauth_service import copilot_oauth_service
+from src.service.integrations.initial_sync_progress_service import (
+    InitialSyncBranch,
+    InitialSyncProgressService,
+)
 from src.service.integrations.initial_sync_service import InitialSyncService
 from src.service.integrations.providers.provider_factory import ProviderFactory
 from src.service.integrations.providers.salesforce_provider import (
@@ -576,7 +580,11 @@ class CopilotCallbackService:
 
         # Trigger initial sync so data starts flowing immediately — without this,
         # users would wait up to 30 min for the next Celery Beat cycle
-        self._trigger_initial_sync(integration, enabled_capabilities=enabled_capabilities)
+        await self._trigger_initial_sync(
+            session,
+            integration,
+            enabled_capabilities=enabled_capabilities,
+        )
 
         return self._build_success_response(integration, reactivated=True)
 
@@ -637,7 +645,11 @@ class CopilotCallbackService:
             )
 
             # Trigger initial sync so data starts flowing immediately
-            self._trigger_initial_sync(integration, enabled_capabilities=enabled_capabilities)
+            await self._trigger_initial_sync(
+                org_session,
+                integration,
+                enabled_capabilities=enabled_capabilities,
+            )
 
             return self._build_success_response(integration, reactivated=False)
 
@@ -684,8 +696,9 @@ class CopilotCallbackService:
 
         await session.commit()
 
-    def _trigger_initial_sync(
+    async def _trigger_initial_sync(
         self,
+        session: Any,
         integration: KnowledgeIntegration,
         *,
         enabled_capabilities: list[IntegrationType] | None = None,
@@ -695,11 +708,32 @@ class CopilotCallbackService:
         Errors are caught and logged — a failed sync trigger should not
         prevent the OAuth callback from returning success to the user.
         """
+        initial_sync_id = None
+        requested_branches = self._initial_sync_branches(
+            integration.integration_type,
+            enabled_capabilities or [],
+        )
+        if requested_branches:
+            try:
+                initial_sync_id = await InitialSyncProgressService.start_run(
+                    session,
+                    integration=integration,
+                    requested_branches=requested_branches,
+                )
+            except Exception:
+                # Progress is optional visibility. The pre-existing provider sync must still
+                # start when its tracking row cannot be created.
+                logger.warning(
+                    "Initial sync progress unavailable; dispatching untracked: integration=%s",
+                    integration.integration_id,
+                    exc_info=True,
+                )
         try:
             InitialSyncService().trigger_initial_sync(
                 organisation_id=integration.organisation_id,
                 integration=integration,
                 enabled_capabilities=enabled_capabilities,
+                initial_sync_id=initial_sync_id,
             )
             logger.info(
                 "Triggered initial sync: integration=%s type=%s",
@@ -713,6 +747,29 @@ class CopilotCallbackService:
                 str(e),
                 exc_info=True,
             )
+
+    @staticmethod
+    def _initial_sync_branches(
+        integration_type: IntegrationType | str,
+        enabled_capabilities: list[IntegrationType],
+    ) -> list[InitialSyncBranch]:
+        integration_type = IntegrationType(integration_type)
+        capabilities = (
+            enabled_capabilities
+            if integration_type in {IntegrationType.GOOGLE, IntegrationType.MICROSOFT}
+            else [integration_type]
+        )
+        branches: list[InitialSyncBranch] = []
+        if any(
+            capability in InitialSyncService.EMAIL_INTEGRATION_TYPES for capability in capabilities
+        ):
+            branches.append("email")
+        if any(
+            capability in InitialSyncService.CALENDAR_INTEGRATION_TYPES
+            for capability in capabilities
+        ):
+            branches.append("calendar")
+        return branches
 
     def _build_success_response(
         self,

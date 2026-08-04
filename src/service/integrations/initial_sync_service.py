@@ -16,12 +16,17 @@ from __future__ import annotations
 from uuid import UUID
 
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
+from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.integrations.crm.orchestration.hubspot_initial_sync_chain import (
     build_hubspot_initial_sync_chain,
 )
 from src.service.integrations.crm.orchestration.salesforce_initial_sync_chain import (
     build_salesforce_initial_sync_chain,
+)
+from src.service.integrations.initial_sync_progress_service import (
+    InitialSyncErrorCode,
+    InitialSyncProgressService,
 )
 from src.workers.integrations_worker.client import (
     send_integrations_task,
@@ -129,6 +134,7 @@ class InitialSyncService:
         organisation_id: UUID,
         integration: KnowledgeIntegration,
         enabled_capabilities: list[IntegrationType] | None = None,
+        initial_sync_id: UUID | None = None,
     ) -> None:
         """Trigger initial sync for a newly connected/reactivated integration.
 
@@ -155,6 +161,7 @@ class InitialSyncService:
                     org_id_str,
                     int_id_str,
                     capabilities,
+                    initial_sync_id,
                 )
                 return
 
@@ -163,6 +170,7 @@ class InitialSyncService:
                 self._trigger_calendar_sync(
                     org_id_str,
                     int_id_str,
+                    initial_sync_id,
                 )
                 if integration_type in MICROSOFT_WEBHOOK_INTEGRATION_TYPES:
                     # Initial sync establishes the first delta cursor; the
@@ -185,7 +193,7 @@ class InitialSyncService:
 
             # Email
             if integration_type in self.EMAIL_INTEGRATION_TYPES:
-                self._trigger_email_sync(org_id_str, int_id_str)
+                self._trigger_email_sync(org_id_str, int_id_str, initial_sync_id)
                 if integration_type in MICROSOFT_WEBHOOK_INTEGRATION_TYPES:
                     # Email follows the same contract as calendar: first sync
                     # stores folder delta links, then webhooks trigger refreshes.
@@ -236,14 +244,18 @@ class InitialSyncService:
         self,
         org_id_str: str,
         int_id_str: str,
+        initial_sync_id: UUID | None = None,
     ) -> None:
         """Trigger calendar initial sync."""
         # The integration task now owns post-commit contact hydration and deal-mapping dispatch.
         # Sending one task avoids a second API-side Celery chain whose callback could run even
         # when the sync returned a handled failure result.
+        kwargs = {"organisation_id": org_id_str, "integration_id": int_id_str}
+        if initial_sync_id is not None:
+            kwargs["initial_sync_id"] = str(initial_sync_id)
         send_integrations_task(
             task_name="integrations.sync_calendar_integration",
-            kwargs={"organisation_id": org_id_str, "integration_id": int_id_str},
+            kwargs=kwargs,
         )
         logger.info("Triggered initial calendar sync: integration=%s", int_id_str)
 
@@ -252,30 +264,72 @@ class InitialSyncService:
         org_id_str: str,
         int_id_str: str,
         enabled_capabilities: list[IntegrationType],
+        initial_sync_id: UUID | None = None,
     ) -> None:
         for capability in enabled_capabilities:
-            if capability in self.CALENDAR_INTEGRATION_TYPES:
-                self._trigger_calendar_sync(org_id_str, int_id_str)
-                if capability in MICROSOFT_WEBHOOK_INTEGRATION_TYPES:
-                    self._trigger_microsoft_graph_subscription_ensure(org_id_str, int_id_str)
-                if capability in GOOGLE_WEBHOOK_INTEGRATION_TYPES:
-                    self._trigger_google_subscription_ensure(org_id_str, int_id_str)
-                continue
-            if capability in self.EMAIL_INTEGRATION_TYPES:
-                self._trigger_email_sync(org_id_str, int_id_str)
-                if capability in MICROSOFT_WEBHOOK_INTEGRATION_TYPES:
-                    self._trigger_microsoft_graph_subscription_ensure(org_id_str, int_id_str)
-                if capability in GOOGLE_WEBHOOK_INTEGRATION_TYPES:
-                    self._trigger_google_subscription_ensure(org_id_str, int_id_str)
-                continue
-            if capability in self.MESSAGING_INTEGRATION_TYPES:
-                self._trigger_messaging_sync(org_id_str, int_id_str)
+            try:
+                if capability in self.CALENDAR_INTEGRATION_TYPES:
+                    self._trigger_calendar_sync(org_id_str, int_id_str, initial_sync_id)
+                    if capability in MICROSOFT_WEBHOOK_INTEGRATION_TYPES:
+                        self._trigger_microsoft_graph_subscription_ensure(org_id_str, int_id_str)
+                    if capability in GOOGLE_WEBHOOK_INTEGRATION_TYPES:
+                        self._trigger_google_subscription_ensure(org_id_str, int_id_str)
+                    continue
+                if capability in self.EMAIL_INTEGRATION_TYPES:
+                    self._trigger_email_sync(org_id_str, int_id_str, initial_sync_id)
+                    if capability in MICROSOFT_WEBHOOK_INTEGRATION_TYPES:
+                        self._trigger_microsoft_graph_subscription_ensure(org_id_str, int_id_str)
+                    if capability in GOOGLE_WEBHOOK_INTEGRATION_TYPES:
+                        self._trigger_google_subscription_ensure(org_id_str, int_id_str)
+                    continue
+                if capability in self.MESSAGING_INTEGRATION_TYPES:
+                    self._trigger_messaging_sync(org_id_str, int_id_str)
+            except Exception:
+                # Each provider capability is independently useful. A broker or route failure
+                # for one branch must not suppress its email/calendar sibling.
+                logger.exception(
+                    "Failed to dispatch initial capability sync: integration=%s capability=%s",
+                    int_id_str,
+                    capability.value,
+                )
+                branch = (
+                    "email"
+                    if capability in self.EMAIL_INTEGRATION_TYPES
+                    else "calendar"
+                    if capability in self.CALENDAR_INTEGRATION_TYPES
+                    else None
+                )
+                if initial_sync_id is not None and branch is not None:
+                    try:
+                        run_async(
+                            InitialSyncProgressService.fail_branch(
+                                UUID(org_id_str),
+                                initial_sync_id,
+                                branch,
+                                error=InitialSyncErrorCode.DISPATCH_FAILED,
+                            )
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to record initial sync dispatch failure: "
+                            "integration=%s capability=%s",
+                            int_id_str,
+                            capability.value,
+                        )
 
-    def _trigger_email_sync(self, org_id_str: str, int_id_str: str) -> None:
+    def _trigger_email_sync(
+        self,
+        org_id_str: str,
+        int_id_str: str,
+        initial_sync_id: UUID | None = None,
+    ) -> None:
         """Trigger email initial sync."""
+        kwargs = {"organisation_id": org_id_str, "integration_id": int_id_str}
+        if initial_sync_id is not None:
+            kwargs["initial_sync_id"] = str(initial_sync_id)
         send_integrations_task(
             task_name="integrations.sync_email_integration",
-            kwargs={"organisation_id": org_id_str, "integration_id": int_id_str},
+            kwargs=kwargs,
         )
         logger.info("Triggered initial email sync: integration=%s", int_id_str)
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from uuid import UUID
 
@@ -118,6 +118,7 @@ class CommunicationParticipantResolution:
     identity_contacts: dict[str, CRMContact]
     created_contact_ids: frozenset[UUID]
     reused_contact_ids: frozenset[UUID]
+    created_account_ids: frozenset[UUID] = field(default_factory=frozenset)
 
 
 def build_contact_communication_hydration_plan(
@@ -279,6 +280,11 @@ class CommunicationParticipantResolutionService:
                 contact.contact_id for contact in identity_contacts.values()
             )
             - created_contact_ids,
+            created_account_ids=frozenset(
+                result.created_account_id
+                for result in resolved.values()
+                if result.created_account_id is not None
+            ),
         )
 
 

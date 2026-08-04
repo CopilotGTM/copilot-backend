@@ -15,6 +15,7 @@ _ATTACHMENT_TEMPLATE = "att:{org_id}:attachments"
 _DEAL_JOB_TEMPLATE = "deal:{org_id}:job:{job_id}"
 _DEAL_ASSET_TEMPLATE = "deal_asset:{org_id}:assets"
 _ORG_JOB_TEMPLATE = "org:job:{job_id}"
+_INITIAL_SYNC_TEMPLATE = "initial_sync:{org_id}:{sync_id}"
 
 
 def channel_for_chat_job(organisation_id: UUID | str, job_id: UUID | str) -> str:
@@ -48,3 +49,8 @@ def channel_for_org_job(job_id: UUID | str) -> str:
     Organisation jobs are master-level (not tenant-scoped), so channel only includes job_id.
     """
     return _ORG_JOB_TEMPLATE.format(job_id=job_id)
+
+
+def channel_for_initial_sync(organisation_id: UUID | str, sync_id: UUID | str) -> str:
+    """Return a tenant- and run-scoped Redis Stream key for sync progress."""
+    return _INITIAL_SYNC_TEMPLATE.format(org_id=organisation_id, sync_id=sync_id)

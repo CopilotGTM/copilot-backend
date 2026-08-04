@@ -38,6 +38,11 @@ TASK_LIMITS: dict[str, dict] = {
         "hard": 300,
         "retries": 0,
     },
+    "integrations.recover_stale_initial_syncs": {
+        "soft": 240,
+        "hard": 300,
+        "retries": 0,
+    },
     # ── Tier 2: per-org (external API calls, pagination, persistence) ──
     "integrations.sync_messaging_channels_org": {
         "soft": 900,
@@ -332,6 +337,10 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "routing_key": "integrations_priority",
             },
             "integrations.recover_stale_webhook_syncs": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.recover_stale_initial_syncs": {
                 "queue": "integrations_priority",
                 "routing_key": "integrations_priority",
             },

@@ -35,6 +35,14 @@ SCHEDULED_JOBS: dict[str, ScheduledJob] = {
         queue="integrations_priority",
         routing_key="integrations_priority",
     ),
+    "recover-stale-initial-syncs": ScheduledJob(
+        name="recover-stale-initial-syncs",
+        task_name="integrations.recover_stale_initial_syncs",
+        schedule="*/5 * * * *",
+        max_lag_seconds=15 * 60,
+        queue="integrations_priority",
+        routing_key="integrations_priority",
+    ),
     "sync-messaging-channels-all-orgs": ScheduledJob(
         name="sync-messaging-channels-all-orgs",
         task_name="integrations.sync_messaging_channels_all_orgs",
