@@ -130,17 +130,17 @@ async def test_signup_worker_resumes_without_repeating_completed_phases(
 
         async def mark_tenant_defaults_created(self, _request_id):
             calls.append("mark_tenant")
-            signup.status = SignupRequestStatus.TENANT_DEFAULTS_CREATED
+            signup.status = SignupRequestStatus.TENANT_DEFAULTS_CREATED.value
             return signup
 
         async def mark_storage_created(self, _request_id):
             calls.append("mark_storage")
-            signup.status = SignupRequestStatus.STORAGE_CREATED
+            signup.status = SignupRequestStatus.STORAGE_CREATED.value
             return signup
 
         async def activate(self, _request_id):
             calls.append("activate")
-            signup.status = SignupRequestStatus.ACTIVE
+            signup.status = SignupRequestStatus.ACTIVE.value
             return signup
 
     class Provisioning:

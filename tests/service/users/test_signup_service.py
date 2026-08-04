@@ -250,10 +250,11 @@ async def test_existing_user_cannot_create_a_second_organisation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_control_plane_creates_founder_as_active_organisation_admin() -> None:
-    """A submitted signup creates the founder admin with trusted provider profile data."""
+async def test_control_plane_accepts_database_hydrated_provider_string() -> None:
+    """A submitted signup survives VARCHAR hydration before founder creation."""
     signup = _signup(
-        status=SignupRequestStatus.RECEIVED,
+        provider=ExternalSignupProvider.GOOGLE_WORKSPACE.value,
+        status=SignupRequestStatus.RECEIVED.value,
         organisation_name="Acme",
         profile_image_url="https://lh3.googleusercontent.com/avatar.png",
     )
