@@ -24,17 +24,17 @@ backend deliberately rejects an ambiguous linked OAuth session.
 
 The `/signup` UI uses the same provider sessions but a separate intent and endpoint:
 
-| UI choice | Backend signup | Provider authority required |
-|---|---|---|
-| Continue with Google | `POST /users/auth/google/signup` | verified email plus matching Google Workspace `hd` |
-| Continue with Microsoft | `POST /users/auth/microsoft/signup` | verified email plus non-consumer Entra tenant UUID |
+| UI choice | Draft/resume | Finalise | Provider authority required |
+|---|---|---|---|
+| Continue with Google | `PUT /users/auth/google/signup/draft` | `POST /users/auth/google/signup` | verified email plus matching Google Workspace `hd` |
+| Continue with Microsoft | `PUT /users/auth/microsoft/signup/draft` | `POST /users/auth/microsoft/signup` | verified email plus non-consumer Entra tenant UUID |
 
-The browser sends organisation profile fields, the bearer session, and `Idempotency-Key`; it never
-sends a company domain, provider subject, or tenant value. The backend derives the canonical
-company domain from the remotely verified provider identity. Poll
+The idempotent PUT creates or resumes a durable draft. The POST body contains only `organisation_name`; the
+browser never sends personal profile fields, policy versions, an idempotency key, a company domain,
+provider subject, or tenant value. The backend derives the founder profile and canonical company
+domain from the remotely verified provider identity. Poll
 `GET /users/auth/signup-requests/{signup_request_id}` with that same provider identity until
-`active`, then open onboarding. Consumer accounts and company websites that do not match the
-provider-derived domain are rejected. No second email-verification message is sent because provider verification is the trust
+`active`, then open onboarding. Consumer accounts are rejected. No second email-verification message is sent because provider verification is the trust
 boundary. After activation, the backend makes a best-effort welcome-email attempt; email delivery
 does not control whether the already-provisioned organisation is active. See
 [User Authentication API](users-auth-api.md#self-service-organisation-signup) for the full

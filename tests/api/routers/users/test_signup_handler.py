@@ -17,14 +17,7 @@ from src.infra.auth.supabase_user_client import SupabaseAuthError, VerifiedSupab
 
 
 def _request() -> dict[str, object]:
-    return {
-        "first_name": "Founding",
-        "last_name": "Admin",
-        "organisation_name": "Acme",
-        "country": "US",
-        "terms_version": "2026-08-02",
-        "privacy_version": "2026-08-02",
-    }
+    return {"organisation_name": "Acme"}
 
 
 def _verified_session(provider: str = "google") -> VerifiedSupabaseSession:
@@ -37,8 +30,10 @@ def _verified_session(provider: str = "google") -> VerifiedSupabaseSession:
         "sub": "provider-user",
         "email": "founder@acme.com",
         "email_verified": True,
-        ("hd" if provider == "google" else "tid"): (
-            "acme.com" if provider == "google" else "00000000-0000-4000-8000-000000000001"
+        **(
+            {"custom_claims": {"hd": "acme.com"}}
+            if provider == "google"
+            else {"custom_claims": {"tid": "00000000-0000-4000-8000-000000000001"}}
         ),
     }
     return VerifiedSupabaseSession(
@@ -46,6 +41,10 @@ def _verified_session(provider: str = "google") -> VerifiedSupabaseSession:
             "id": "supabase-user",
             "email": "founder@acme.com",
             "email_confirmed_at": "2026-08-02T00:00:00Z",
+            "user_metadata": {
+                "full_name": "Founding Admin",
+                "avatar_url": "https://lh3.googleusercontent.com/avatar.png",
+            },
             "identities": [
                 {
                     "id": "provider-user",
@@ -60,13 +59,19 @@ def _verified_session(provider: str = "google") -> VerifiedSupabaseSession:
     )
 
 
-def _client(monkeypatch, provider: str = "google"):
+def _client(
+    monkeypatch,
+    provider: str = "google",
+    *,
+    initial_status: SignupRequestStatus = SignupRequestStatus.DRAFT,
+):
     signup_request_id = uuid4()
     signup = SimpleNamespace(
         signup_request_id=signup_request_id,
-        status=SignupRequestStatus.RECEIVED,
+        status=initial_status,
         organisation_id=None,
         user_id=None,
+        organisation_name=None,
     )
     captured_identities = []
 
@@ -74,9 +79,16 @@ def _client(monkeypatch, provider: str = "google"):
         def __init__(self, _session):
             pass
 
-        async def start_signup(self, **_kwargs):
+        async def get_or_create_draft(self, **_kwargs):
+            """Return the durable draft exposed by signup preflight."""
+            captured_identities.append(_kwargs["identity"])
+            return signup
+
+        async def finalize_signup(self, **_kwargs):
             """Capture the verified identity without writing signup state."""
             captured_identities.append(_kwargs["identity"])
+            if signup.status == SignupRequestStatus.DRAFT:
+                signup.status = SignupRequestStatus.RECEIVED
             return signup
 
         async def get_owned_request(self, _request_id, _identity):
@@ -117,10 +129,7 @@ def test_provider_signup_returns_accepted_and_dispatches_uuid(monkeypatch, provi
 
     response = client.post(
         f"/users/auth/{provider}/signup",
-        headers={
-            "Authorization": "Bearer a.b.c",
-            "Idempotency-Key": "a-stable-idempotency-key",
-        },
+        headers={"Authorization": "Bearer a.b.c"},
         json=_request(),
     )
 
@@ -130,34 +139,56 @@ def test_provider_signup_returns_accepted_and_dispatches_uuid(monkeypatch, provi
     assert captured_identities[0].primary_domain == "acme.com"
 
 
-def test_signup_preflight_verifies_identity_before_showing_form(monkeypatch) -> None:
-    """Preflight returns authoritative identity data without provisioning anything."""
-    client, _, dispatched, _ = _client(monkeypatch)
+def test_received_signup_retry_redispatches_after_an_uncertain_queue_result(monkeypatch) -> None:
+    """A retry repairs a commit-before-dispatch failure instead of stranding the signup."""
+    client, signup_request_id, dispatched, _ = _client(
+        monkeypatch,
+        initial_status=SignupRequestStatus.RECEIVED,
+    )
 
-    response = client.get(
+    response = client.post(
         "/users/auth/google/signup",
+        headers={"Authorization": "Bearer a.b.c"},
+        json=_request(),
+    )
+
+    assert response.status_code == 202
+    assert dispatched == [signup_request_id]
+
+
+def test_signup_preflight_creates_resumable_draft(monkeypatch) -> None:
+    """Preflight returns provider identity together with its durable draft."""
+    client, signup_request_id, dispatched, captured_identities = _client(monkeypatch)
+
+    response = client.put(
+        "/users/auth/google/signup/draft",
         headers={"Authorization": "Bearer a.b.c"},
     )
 
     assert response.status_code == 200
     assert response.json()["data"] == {
+        "signup_request_id": str(signup_request_id),
+        "status": "draft",
         "provider": "google",
         "email": "founder@acme.com",
         "primary_domain": "acme.com",
-        "full_name": None,
+        "full_name": "Founding Admin",
+        "profile_image_url": "https://lh3.googleusercontent.com/avatar.png",
+        "organisation_name": None,
     }
     assert dispatched == []
+    assert captured_identities[0].primary_domain == "acme.com"
 
 
 def test_signup_preflight_rejects_google_identity_without_hosted_domain(monkeypatch) -> None:
     """A Google email alone cannot expose the organisation form without Workspace proof."""
     client, _, dispatched, _ = _client(monkeypatch)
     verified = _verified_session()
-    verified.user["identities"][0]["identity_data"].pop("hd")
+    verified.user["identities"][0]["identity_data"]["custom_claims"].pop("hd")
     monkeypatch.setattr(module.supabase_user_client, "verify_session", lambda _token: verified)
 
-    response = client.get(
-        "/users/auth/google/signup",
+    response = client.put(
+        "/users/auth/google/signup/draft",
         headers={"Authorization": "Bearer a.b.c"},
     )
 
@@ -166,29 +197,22 @@ def test_signup_preflight_rejects_google_identity_without_hosted_domain(monkeypa
     assert dispatched == []
 
 
-def test_signup_requires_bearer_and_idempotency_key(monkeypatch) -> None:
-    """Submission requires both verified identity and replay-safe request identity."""
+def test_signup_requires_bearer_but_not_browser_idempotency_key(monkeypatch) -> None:
+    """The provider session owns request identity; the browser sends no idempotency key."""
     client, _, _, _ = _client(monkeypatch)
 
     missing_bearer = client.post(
         "/users/auth/google/signup",
-        headers={"Idempotency-Key": "a-stable-idempotency-key"},
         json=_request(),
     )
-    short_key = client.post(
+    valid_request = client.post(
         "/users/auth/google/signup",
-        headers={"Authorization": "Bearer a.b.c", "Idempotency-Key": "short"},
-        json=_request(),
-    )
-    blank_key = client.post(
-        "/users/auth/google/signup",
-        headers={"Authorization": "Bearer a.b.c", "Idempotency-Key": " " * 16},
+        headers={"Authorization": "Bearer a.b.c"},
         json=_request(),
     )
 
     assert missing_bearer.status_code == 401
-    assert short_key.status_code == 400
-    assert blank_key.status_code == 400
+    assert valid_request.status_code == 202
 
 
 def test_signup_returns_unauthorized_for_invalid_verified_session(monkeypatch) -> None:
@@ -203,10 +227,7 @@ def test_signup_returns_unauthorized_for_invalid_verified_session(monkeypatch) -
 
     response = client.post(
         "/users/auth/google/signup",
-        headers={
-            "Authorization": "Bearer invalid.token.value",
-            "Idempotency-Key": "a-stable-idempotency-key",
-        },
+        headers={"Authorization": "Bearer invalid.token.value"},
         json=_request(),
     )
 
@@ -215,37 +236,19 @@ def test_signup_returns_unauthorized_for_invalid_verified_session(monkeypatch) -
     assert dispatched == []
 
 
-def test_signup_rejects_website_outside_provider_domain(monkeypatch) -> None:
-    """Company website input remains bound to the provider-verified domain."""
-    client, _, dispatched, _ = _client(monkeypatch)
-    request = _request()
-    request["website_url"] = "https://attacker.example"
-
-    response = client.post(
-        "/users/auth/google/signup",
-        headers={
-            "Authorization": "Bearer a.b.c",
-            "Idempotency-Key": "a-stable-idempotency-key",
-        },
-        json=request,
-    )
-
-    assert response.status_code == 403
-    assert response.json()["code"] == "SIGNUP_DOMAIN_MISMATCH"
-    assert dispatched == []
-
-
-def test_signup_rejects_client_supplied_primary_domain(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "field",
+    ["first_name", "country", "terms_version", "primary_domain", "website_url"],
+)
+def test_signup_rejects_every_field_except_organisation_name(monkeypatch, field) -> None:
+    """Extra browser fields cannot override provider or server-owned signup data."""
     client, _, dispatched, captured_identities = _client(monkeypatch)
     request = _request()
-    request["primary_domain"] = "attacker.example"
+    request[field] = "attacker-controlled"
 
     response = client.post(
         "/users/auth/google/signup",
-        headers={
-            "Authorization": "Bearer a.b.c",
-            "Idempotency-Key": "a-stable-idempotency-key",
-        },
+        headers={"Authorization": "Bearer a.b.c"},
         json=request,
     )
 
@@ -264,4 +267,4 @@ def test_signup_status_requires_provider_session_ownership(monkeypatch) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["data"]["status"] == "received"
+    assert response.json()["data"]["status"] == "draft"

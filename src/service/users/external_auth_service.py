@@ -237,12 +237,22 @@ class ExternalAuthService:
 
     @staticmethod
     def _tenant_id(provider: str, identity_data: dict[str, Any]) -> str:
+        custom_claims = identity_data.get("custom_claims")
         if provider == "google":
-            hosted_domain = ExternalAuthService._clean(identity_data.get("hd"))
+            hosted_domain = ExternalAuthService._clean(
+                (custom_claims.get("hd") if isinstance(custom_claims, dict) else None)
+                or identity_data.get("hd")
+            )
             return hosted_domain or ""
 
         tenant_id = ExternalAuthService._clean(
-            identity_data.get("tid") or identity_data.get("tenant_id")
+            (
+                custom_claims.get("tid") or custom_claims.get("tenant_id")
+                if isinstance(custom_claims, dict)
+                else None
+            )
+            or identity_data.get("tid")
+            or identity_data.get("tenant_id")
         )
         try:
             return str(UUID(tenant_id or ""))

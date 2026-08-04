@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime, ForeignKey, String, UniqueConstraint, text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, UniqueConstraint, text
 from sqlmodel import Field
 
 from .base_mixins import TimestampMixin
@@ -20,6 +20,7 @@ class ExternalSignupProvider(str, Enum):
 class SignupRequestStatus(str, Enum):
     """Committed milestones used to resume cross-system provisioning safely."""
 
+    DRAFT = "draft"
     RECEIVED = "received"
     CONTROL_PLANE_CREATED = "control_plane_created"
     TENANT_DEFAULTS_CREATED = "tenant_defaults_created"
@@ -58,17 +59,25 @@ class SignupRequest(TimestampMixin, table=True):
     first_name: str = Field(sa_column=Column(String(100), nullable=False))
     last_name: str = Field(sa_column=Column(String(100), nullable=False))
     job_title: str | None = Field(default=None, max_length=100)
-    organisation_name: str = Field(sa_column=Column(String(255), nullable=False))
+    organisation_name: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+    )
     primary_domain: str = Field(sa_column=Column(String(253), nullable=False, index=True))
-    country: str = Field(sa_column=Column(String(2), nullable=False))
+    country: str | None = Field(default=None, sa_column=Column(String(2), nullable=True))
     sales_team_size: int | None = Field(default=None, ge=0, le=1_000_000)
     website_url: str | None = Field(default=None, max_length=2048)
     linkedin_url: str | None = Field(default=None, max_length=2048)
-    terms_version: str = Field(sa_column=Column(String(32), nullable=False))
-    privacy_version: str = Field(sa_column=Column(String(32), nullable=False))
+    terms_version: str | None = Field(default=None, sa_column=Column(String(32), nullable=True))
+    privacy_version: str | None = Field(default=None, sa_column=Column(String(32), nullable=True))
+    profile_image_url: str | None = Field(default=None, max_length=1000)
+    profile_incomplete: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+    )
     status: SignupRequestStatus = Field(
-        default=SignupRequestStatus.RECEIVED,
-        sa_column=Column(String(40), nullable=False, server_default=text("'received'"), index=True),
+        default=SignupRequestStatus.DRAFT,
+        sa_column=Column(String(40), nullable=False, server_default=text("'draft'"), index=True),
     )
     organisation_id: UUID | None = Field(
         default=None,

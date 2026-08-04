@@ -33,32 +33,47 @@ All endpoints below are relative to `/users/auth`. Responses use:
 
 ## Self-service organisation signup
 
-The frontend sequence is `/signup` -> provider OAuth -> organisation details -> `POST` -> durable
-polling -> onboarding. Preserve `intent=signup` in signed OAuth state; a successful `/signin`
-callback must never be repurposed as signup.
+The frontend sequence is `/signup` -> provider OAuth -> `PUT` draft -> organisation name -> `POST`
+finalisation -> durable polling -> onboarding. Preserve `intent=signup` in signed OAuth state; a
+successful `/signin` callback must never be repurposed as signup.
 
-Submit the remotely verified Supabase access token as `Authorization: Bearer <token>` and a stable
-16-255 character `Idempotency-Key` to `POST /google/signup` or `POST /microsoft/signup`:
+After OAuth, call `PUT /google/signup/draft` or `PUT /microsoft/signup/draft` with the remotely verified
+Supabase access token. The backend creates or resumes a server-side draft and returns the
+provider-owned identity used by the confirmation screen:
+
+```http
+Authorization: Bearer <supabase-access-token>
+```
 
 ```json
 {
-  "first_name": "Jane",
-  "last_name": "Doe",
-  "job_title": "VP Sales",
-  "organisation_name": "Acme",
-  "country": "US",
-  "sales_team_size": 20,
-  "website_url": "https://acme.com",
-  "linkedin_url": "https://www.linkedin.com/company/acme",
-  "terms_version": "2026-08-02",
-  "privacy_version": "2026-08-02"
+  "status": "SUCCESS",
+  "message": "Signup draft ready",
+  "data": {
+    "signup_request_id": "uuid",
+    "status": "draft",
+    "provider": "google",
+    "email": "jane@acme.com",
+    "primary_domain": "acme.com",
+    "full_name": "Jane Doe",
+    "profile_image_url": "https://lh3.googleusercontent.com/avatar.png",
+    "organisation_name": null
+  }
 }
 ```
 
-Do not send a company domain. The backend derives the canonical `primary_domain` from the
-remotely verified Google Workspace hosted-domain claim or Microsoft Entra identity. Consumer
-email domains are rejected. If `website_url` is present, its host must match that derived domain
-or one of its subdomains.
+Submit only the editable workspace name to `POST /google/signup` or `POST /microsoft/signup`:
+
+```json
+{
+  "organisation_name": "Acme"
+}
+```
+
+Do not send names, company domain, profile fields, roles, policy versions, or an idempotency key.
+The backend derives the founder identity and canonical `primary_domain` from the remotely verified
+Google Workspace hosted-domain claim or Microsoft Entra identity. It selects the current Terms and
+Privacy versions when finalising the draft. Consumer email domains are rejected.
 
 `202 Accepted` returns only durable identifiers and state:
 
@@ -75,20 +90,20 @@ or one of its subdomains.
 }
 ```
 
-Poll `GET /signup-requests/{signup_request_id}` with the same verified provider session. Continue
-polling through `received`, `control_plane_created`, `tenant_defaults_created`, and
+Poll `GET /signup-requests/{signup_request_id}` with the same verified provider session. A closed
+tab can resume at `draft`; after Create workspace, continue polling through `received`,
+`control_plane_created`, `tenant_defaults_created`, and
 `storage_created`; enter onboarding only at `active`. `reconciliation_required` is retryable via
 support/operations and is not success. The UUID is not authorization: another identity receives
 `SIGNUP_REQUEST_NOT_FOUND`.
 
 Stable signup errors are `AUTHENTICATION_FAILED`, `SIGNUP_PROVIDER_INVALID`,
-`IDEMPOTENCY_KEY_REQUIRED`, `IDEMPOTENCY_KEY_REUSED`, `SIGNUP_IDENTITY_INVALID`,
-`CONSUMER_ACCOUNT_NOT_SUPPORTED`, `SIGNUP_DOMAIN_MISMATCH`, `ACCOUNT_ALREADY_EXISTS`,
+`SIGNUP_IDENTITY_INVALID`, `CONSUMER_ACCOUNT_NOT_SUPPORTED`, `ACCOUNT_ALREADY_EXISTS`,
 `ACCOUNT_IN_OTHER_ORGANISATION`, `ORGANISATION_ACCESS_REQUIRED`, `SIGNUP_DISPATCH_FAILED`,
 `SIGNUP_REQUEST_NOT_FOUND`, `SIGNUP_STATUS_UNAVAILABLE`, `SIGNUP_RECONCILIATION_REQUIRED`, and
 `SIGNUP_STATE_INVALID`.
 Rate-limit storage failure returns `503`; the frontend must fail closed and retry later with the
-same key.
+same verified provider session.
 
 The signup write budget is intentionally strict. Status polling has a separate read budget; poll
 with backoff (for example, every 2 seconds initially, then every 5 seconds) and always respect

@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi import Response as FastAPIResponse
 from src.api.dependencies.rate_limit import rate_limit_signup, rate_limit_signup_status
 from src.api.schemas.base_models import GenericResponse
@@ -70,18 +70,18 @@ def _verify_identity(
     return ExternalAuthService().validate_signup_identity(claims)
 
 
-@router.get(
-    "/{provider}/signup",
+@router.put(
+    "/{provider}/signup/draft",
     response_model=GenericResponse[ExternalSignupProfile],
     tags=["user_signup"],
 )
-async def get_external_signup_profile(
+async def put_external_signup_draft(
     provider: str,
     request: Request,
     response: FastAPIResponse,
     _rate_limit: None = Depends(rate_limit_signup),
 ) -> GenericResponse[ExternalSignupProfile]:
-    """Verify signup eligibility before collecting organisation details."""
+    """Verify signup eligibility and idempotently create or resume its draft."""
     if provider not in {"google", "microsoft"}:
         return Response.error_response(
             status_code=400,
@@ -91,13 +91,19 @@ async def get_external_signup_profile(
         )
     try:
         identity = _verify_identity(request, provider=provider)
+        async with master_async_session_scope() as session:
+            signup = await SignupService(session).get_or_create_draft(identity=identity)
         return Response.success_response(
-            message="Signup identity verified",
+            message="Signup draft ready",
             data=ExternalSignupProfile(
+                signup_request_id=signup.signup_request_id,
+                status=signup.status,
                 provider=provider,
                 email=identity.claims.email,
                 primary_domain=identity.primary_domain,
                 full_name=identity.claims.full_name,
+                profile_image_url=identity.claims.profile_image_url,
+                organisation_name=signup.organisation_name,
             ),
             response=response,
         )
@@ -108,7 +114,7 @@ async def get_external_signup_profile(
             code="AUTHENTICATION_FAILED",
             response=response,
         )
-    except ExternalAuthError as exc:
+    except (ExternalAuthError, SignupServiceError) as exc:
         return Response.error_response(
             status_code=exc.status_code,
             message=exc.message,
@@ -128,10 +134,9 @@ async def start_external_signup(
     signup_request: ExternalSignupRequest,
     request: Request,
     response: FastAPIResponse,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     _rate_limit: None = Depends(rate_limit_signup),
 ) -> GenericResponse[ExternalSignupResponse]:
-    """Verify provider authority, persist intent, and dispatch its UUID."""
+    """Finalize the verified subject's draft and dispatch it retry-safely."""
     if provider not in {"google", "microsoft"}:
         return Response.error_response(
             status_code=400,
@@ -139,40 +144,19 @@ async def start_external_signup(
             code="SIGNUP_PROVIDER_INVALID",
             response=response,
         )
-    if (
-        idempotency_key is None
-        or not 16 <= len(idempotency_key) <= 255
-        or any(character.isspace() for character in idempotency_key)
-    ):
-        return Response.error_response(
-            status_code=400,
-            message="A valid Idempotency-Key is required",
-            code="IDEMPOTENCY_KEY_REQUIRED",
-            response=response,
-        )
     try:
         identity = _verify_identity(
             request,
             provider=provider,
         )
-        if signup_request.website_url is not None:
-            website_host = signup_request.website_url.host
-            if website_host is None or (
-                website_host != identity.primary_domain
-                and not website_host.endswith(f".{identity.primary_domain}")
-            ):
-                raise ExternalAuthError(
-                    "The company website does not match the verified identity",
-                    code="SIGNUP_DOMAIN_MISMATCH",
-                    status_code=403,
-                )
         async with master_async_session_scope() as session:
-            signup = await SignupService(session).start_signup(
+            signup = await SignupService(session).finalize_signup(
                 identity=identity,
                 request=signup_request,
-                idempotency_key=idempotency_key,
             )
-        if signup.status != SignupRequestStatus.ACTIVE:
+        # A request may commit before queue delivery fails or times out. Re-dispatch
+        # while it remains RECEIVED; the worker's row locks make duplicates safe.
+        if signup.status == SignupRequestStatus.RECEIVED:
             await send_signup_provisioning_task(signup.signup_request_id)
         return Response.accepted_response(
             message="Organisation signup accepted",
