@@ -44,6 +44,37 @@ ATTACHMENT_EMAIL_CHUNK_SIZE = 100
 HYDRATION_BUSY_MAX_RETRIES = 5
 
 
+def _fail_initial_sync_chunk_safely(
+    *,
+    organisation_id: UUID,
+    sync_id: UUID,
+    branch: Literal["email", "calendar"],
+    chunk_key: str,
+) -> None:
+    """Terminalize optional progress without replacing the hydration failure."""
+    try:
+        run_async(
+            InitialSyncProgressService.fail_hydration_chunk(
+                organisation_id,
+                sync_id,
+                branch,
+                chunk_key,
+                error=InitialSyncErrorCode.HYDRATION_FAILED,
+            )
+        )
+    except Exception:
+        logger.warning(
+            "Could not terminalize failed initial sync hydration chunk",
+            extra={
+                "organisation_id": str(organisation_id),
+                "initial_sync_id": str(sync_id),
+                "branch": branch,
+                "chunk_key": chunk_key,
+            },
+            exc_info=True,
+        )
+
+
 # Two delayed retries cover transient database failures without looping indefinitely. The hard
 # limit gives a worker 60 seconds after the twenty-minute soft limit to unwind the batch cleanly.
 # Batches remain bounded; the wider window accommodates measured large-tenant projection time.
@@ -160,7 +191,7 @@ def hydrate_contact_communications_task(
                 # Creation flags exist only in this transaction. Stage progress before the
                 # commit so a crash cannot commit CRM rows while losing their exact counts.
                 progress_snapshot = (
-                    await InitialSyncProgressService.complete_hydration_chunk_in_session(
+                    await InitialSyncProgressService.try_complete_hydration_chunk_in_session(
                         org_session,
                         org_id,
                         UUID(initial_sync_id),
@@ -220,14 +251,11 @@ def hydrate_contact_communications_task(
         if tracker:
             run_async(tracker.fail(str(exc)))
         if initial_sync_id and initial_sync_branch and initial_sync_chunk_key:
-            run_async(
-                InitialSyncProgressService.fail_hydration_chunk(
-                    org_id,
-                    UUID(initial_sync_id),
-                    initial_sync_branch,
-                    initial_sync_chunk_key,
-                    error=InitialSyncErrorCode.HYDRATION_FAILED,
-                )
+            _fail_initial_sync_chunk_safely(
+                organisation_id=org_id,
+                sync_id=UUID(initial_sync_id),
+                branch=initial_sync_branch,
+                chunk_key=initial_sync_chunk_key,
             )
         raise
     except Exception as exc:
@@ -244,14 +272,11 @@ def hydrate_contact_communications_task(
         if tracker:
             run_async(tracker.fail(str(exc)))
         if initial_sync_id and initial_sync_branch and initial_sync_chunk_key:
-            run_async(
-                InitialSyncProgressService.fail_hydration_chunk(
-                    org_id,
-                    UUID(initial_sync_id),
-                    initial_sync_branch,
-                    initial_sync_chunk_key,
-                    error=InitialSyncErrorCode.HYDRATION_FAILED,
-                )
+            _fail_initial_sync_chunk_safely(
+                organisation_id=org_id,
+                sync_id=UUID(initial_sync_id),
+                branch=initial_sync_branch,
+                chunk_key=initial_sync_chunk_key,
             )
         raise
 

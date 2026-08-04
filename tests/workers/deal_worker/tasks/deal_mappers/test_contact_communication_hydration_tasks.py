@@ -75,6 +75,23 @@ def test_hydration_task_rejects_mixed_deal_and_contact_payloads() -> None:
         )
 
 
+def test_initial_sync_failure_reporting_does_not_mask_hydration_error(monkeypatch) -> None:
+    """Progress terminalization is secondary to the original hydration failure."""
+
+    def fail_run(coroutine):
+        coroutine.close()
+        raise RuntimeError("progress unavailable")
+
+    monkeypatch.setattr(hydration_tasks, "run_async", fail_run)
+
+    hydration_tasks._fail_initial_sync_chunk_safely(  # noqa: SLF001
+        organisation_id=uuid4(),
+        sync_id=uuid4(),
+        branch="email",
+        chunk_key="email:0",
+    )
+
+
 @pytest.mark.parametrize(
     ("job_type", "starting_method"),
     [
@@ -229,7 +246,7 @@ def test_tracked_hydration_records_metrics_before_its_data_commit(monkeypatch) -
     monkeypatch.setattr(hydration_tasks, "_dispatch_association_followups", AsyncMock())
     monkeypatch.setattr(
         hydration_tasks.InitialSyncProgressService,
-        "complete_hydration_chunk_in_session",
+        "try_complete_hydration_chunk_in_session",
         complete_in_session,
         raising=False,
     )

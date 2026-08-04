@@ -144,6 +144,28 @@ stages:
               bandit -c pyproject.toml -r src/
             displayName: '🔒 Security Scan (Bandit)'
 
+          - script: |
+              uv sync --frozen --no-install-project --no-dev \
+                --extra api \
+                --extra integrations \
+                --extra workers-light \
+                --extra test
+              source .venv/bin/activate
+              pytest \
+                tests/api/routers/integrations/test_copilot_oauth_routes.py::test_initial_sync_stream_serializes_before_sending_http_200 \
+                tests/service/crm/communications/test_hydration_service.py \
+                tests/service/integrations/test_email_delta_sync_service.py \
+                tests/service/integrations/test_initial_sync_service.py \
+                tests/service/integrations/test_initial_sync_progress_service.py \
+                tests/service/integrations/test_initial_sync_sse_service.py \
+                tests/service/integrations/test_copilot_callback_service.py \
+                tests/workers/deal_worker/tasks/deal_mappers/test_contact_communication_hydration_tasks.py \
+                tests/workers/deal_worker/utils/test_contact_communication_hydration_dispatch.py \
+                tests/workers/integrations_worker/test_calendar_task_lock.py \
+                tests/workers/integrations_worker/test_initial_sync_task_progress.py \
+                tests/workers/integrations_worker/test_microsoft_parent_messaging_sync.py
+            displayName: '🧪 Initial Sync Runtime Contract Tests'
+
           - task: PublishPipelineArtifact@1
             displayName: 'Upload Security Report'
             inputs:

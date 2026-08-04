@@ -985,7 +985,7 @@ class EmailDeltaSyncService:
                     # The provider count joins the message-write transaction. A retry after
                     # cursor advancement must not replace this first committed count with zero.
                     progress_snapshot = (
-                        await InitialSyncProgressService.record_provider_batch_in_session(
+                        await InitialSyncProgressService.try_record_provider_batch_in_session(
                             session,
                             org_id,
                             initial_sync_id,

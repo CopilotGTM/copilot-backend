@@ -1,8 +1,44 @@
 """Tests for custom OAuth routes in the integrations API."""
 
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
 from fastapi.testclient import TestClient
-from src.api.routers.integrations.copilot_oauth_routes import _provider_error_message
+from src.api.routers.integrations import copilot_oauth_routes
+from src.api.routers.integrations.copilot_oauth_routes import (
+    _provider_error_message,
+    stream_initial_sync_progress,
+)
 from src.infra.config.constant import IntegrationErrors
+from starlette.requests import Request
+
+
+@pytest.mark.asyncio
+async def test_initial_sync_stream_serializes_before_sending_http_200(monkeypatch) -> None:
+    """A broken durable snapshot must fail before SSE response headers are committed."""
+
+    class BrokenSnapshotService:
+        """Expose the authorization path while making snapshot serialization fail."""
+
+        async def ensure_user_access(self):
+            """Allow the route to proceed to its snapshot preflight."""
+            return True
+
+        async def get_snapshot(self):
+            """Model the persisted-status serialization defect seen in dev."""
+            raise RuntimeError("snapshot unavailable")
+
+    monkeypatch.setattr(
+        copilot_oauth_routes,
+        "_initial_sync_sse_service",
+        lambda *_args: BrokenSnapshotService(),
+    )
+    request = Request({"type": "http", "headers": []})
+    user_ids = SimpleNamespace(organisation_id=uuid4(), user_id=uuid4())
+
+    with pytest.raises(RuntimeError, match="snapshot unavailable"):
+        await stream_initial_sync_progress(uuid4(), request, user_ids)
 
 
 def test_copilot_authorize_success(client: TestClient, integrations_dependency_overrides) -> None:

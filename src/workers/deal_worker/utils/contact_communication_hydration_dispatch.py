@@ -22,6 +22,34 @@ CONTACT_CHUNK_SIZE = 100
 DEAL_CHUNK_SIZE = 100
 
 
+async def _fail_hydration_chunk_safely(
+    organisation_id: UUID,
+    initial_sync_id: UUID,
+    initial_sync_branch: Literal["email", "calendar"],
+    chunk_key: str,
+) -> None:
+    """Best-effort terminalization must not suppress independent hydration chunks."""
+    try:
+        await InitialSyncProgressService.fail_hydration_chunk(
+            organisation_id,
+            initial_sync_id,
+            initial_sync_branch,
+            chunk_key,
+            error=InitialSyncErrorCode.DISPATCH_FAILED,
+        )
+    except Exception:
+        logger.warning(
+            "Initial sync hydration dispatch failure could not be recorded",
+            extra={
+                "organisation_id": str(organisation_id),
+                "initial_sync_id": str(initial_sync_id),
+                "branch": initial_sync_branch,
+                "chunk_key": chunk_key,
+            },
+            exc_info=True,
+        )
+
+
 async def dispatch_contact_communication_hydration_async(
     *,
     organisation_id: UUID,
@@ -147,13 +175,12 @@ async def dispatch_contact_communication_hydration_async(
             )
             task_ids.append(str(task_id))
         except Exception:
-            if initial_sync_id is None or initial_sync_branch is None:
+            if not tracking_enabled:
                 raise
-            await InitialSyncProgressService.fail_hydration_chunk(
+            await _fail_hydration_chunk_safely(
                 organisation_id,
                 initial_sync_id,
                 initial_sync_branch,
                 chunk_keys[index],
-                error=InitialSyncErrorCode.DISPATCH_FAILED,
             )
     return task_ids

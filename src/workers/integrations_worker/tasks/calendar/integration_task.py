@@ -21,6 +21,7 @@ Session Management:
 
 from __future__ import annotations
 
+from collections.abc import Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -179,8 +180,23 @@ def sync_calendar_integration_task(
     receipt_id = UUID(webhook_sync_id) if webhook_sync_id else None
     tracked_sync_id = UUID(initial_sync_id) if initial_sync_id else None
 
+    def _record_initial_sync_progress(update: Coroutine[Any, Any, Any]) -> None:
+        """Run optional visibility updates without changing provider outcomes."""
+        try:
+            run_async(update)
+        except Exception:
+            logger.warning(
+                "Initial calendar sync progress update failed; provider sync continues",
+                extra={
+                    "organisation_id": organisation_id,
+                    "integration_id": integration_id,
+                    "initial_sync_id": initial_sync_id,
+                },
+                exc_info=True,
+            )
+
     if tracked_sync_id is not None:
-        run_async(
+        _record_initial_sync_progress(
             InitialSyncProgressService.mark_branch_started(
                 org_id,
                 tracked_sync_id,
@@ -537,7 +553,7 @@ def sync_calendar_integration_task(
                 # Calendar rows, cursor state, and their first provider count commit together;
                 # a retry after cursor advancement must not report a zero replacement count.
                 progress_snapshot = (
-                    await InitialSyncProgressService.record_provider_batch_in_session(
+                    await InitialSyncProgressService.try_record_provider_batch_in_session(
                         session,
                         org_id,
                         tracked_sync_id,
@@ -640,7 +656,7 @@ def sync_calendar_integration_task(
                     return result
                 raise RuntimeError(str(result.get("error") or "Webhook calendar sync failed"))
             if tracked_sync_id is not None:
-                run_async(
+                _record_initial_sync_progress(
                     InitialSyncProgressService.fail_branch(
                         org_id,
                         tracked_sync_id,
@@ -681,7 +697,7 @@ def sync_calendar_integration_task(
             completed=False,
         )
         if tracked_sync_id is not None:
-            run_async(
+            _record_initial_sync_progress(
                 InitialSyncProgressService.fail_branch(
                     org_id,
                     tracked_sync_id,
@@ -761,7 +777,7 @@ def sync_calendar_integration_task(
             completed=terminal or cursor_contract_failed,
         )
         if tracked_sync_id is not None:
-            run_async(
+            _record_initial_sync_progress(
                 InitialSyncProgressService.fail_branch(
                     org_id,
                     tracked_sync_id,

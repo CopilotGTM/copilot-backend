@@ -43,6 +43,18 @@ class FakeSession:
         self.statement = statement
         return SimpleNamespace(scalar_one_or_none=lambda: self.record)
 
+    def begin_nested(self):
+        """Provide the savepoint contract used by fail-open progress writers."""
+
+        class _Savepoint:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+        return _Savepoint()
+
 
 def make_integration() -> KnowledgeIntegration:
     return KnowledgeIntegration(
@@ -65,6 +77,14 @@ def make_record() -> IntegrationSyncHistory:
         status=SyncStatus.QUEUED,
         sync_metadata=InitialSyncProgressService.new_metadata(["email", "calendar"]),
     )
+
+
+def test_snapshot_serializes_database_string_status() -> None:
+    """A String-backed ORM reload must preserve the public status contract."""
+    record = make_record()
+    record.status = SyncStatus.QUEUED.value
+
+    assert InitialSyncProgressService.snapshot(record)["status"] == "queued"
 
 
 @pytest.mark.asyncio
@@ -90,6 +110,26 @@ async def test_start_uses_oauth_attempt_as_sync_id_and_records_requested_branche
     assert record.sync_metadata["requested_capabilities"] == ["email", "calendar"]
     assert session.committed
     assert published[0]["sync_id"] == str(SYNC_ID)
+
+
+@pytest.mark.asyncio
+async def test_post_commit_snapshot_failure_does_not_break_sync_handoff(monkeypatch) -> None:
+    """Visibility serialization happens after commit and must remain fail-open."""
+    session = FakeSession()
+
+    def fail_snapshot(_record):
+        raise RuntimeError("snapshot unavailable")
+
+    monkeypatch.setattr(InitialSyncProgressService, "snapshot", fail_snapshot)
+
+    sync_id = await InitialSyncProgressService.start_run(
+        session,
+        integration=make_integration(),
+        requested_branches=["email", "calendar"],
+    )
+
+    assert sync_id == SYNC_ID
+    assert session.committed
 
 
 @pytest.mark.asyncio
@@ -185,6 +225,33 @@ async def test_provider_batch_count_joins_caller_transaction_and_is_retry_idempo
 
 
 @pytest.mark.asyncio
+async def test_provider_progress_failure_rolls_back_only_its_savepoint(monkeypatch) -> None:
+    """Optional tracking failure must leave the provider transaction available to commit."""
+    session = FakeSession(make_record())
+
+    async def fail_progress(*_args, **_kwargs):
+        raise LookupError("progress row unavailable")
+
+    monkeypatch.setattr(
+        InitialSyncProgressService,
+        "record_provider_batch_in_session",
+        fail_progress,
+    )
+
+    snapshot = await InitialSyncProgressService.try_record_provider_batch_in_session(
+        session,
+        ORG_ID,
+        SYNC_ID,
+        "email",
+        batch_key="folder:inbox",
+        records_synced=12,
+    )
+
+    assert snapshot is None
+    assert session.committed is False
+
+
+@pytest.mark.asyncio
 async def test_hydration_registration_cannot_overwrite_atomic_provider_count(monkeypatch) -> None:
     """A zero-delta retry may register work but cannot erase its first provider count."""
     record = make_record()
@@ -240,6 +307,35 @@ async def test_chunk_metrics_can_commit_with_the_caller_transaction() -> None:
     assert record.sync_metadata["metrics"]["contacts_created"] == 4
     assert record.sync_metadata["metrics"]["accounts_created"] == 2
     assert record.sync_metadata["metrics"]["emails_linked"] == 7
+    assert session.committed is False
+
+
+@pytest.mark.asyncio
+async def test_hydration_progress_failure_rolls_back_only_its_savepoint(monkeypatch) -> None:
+    """Optional metrics failure must leave CRM creation available to commit."""
+    session = FakeSession(make_record())
+
+    async def fail_progress(*_args, **_kwargs):
+        raise LookupError("progress row unavailable")
+
+    monkeypatch.setattr(
+        InitialSyncProgressService,
+        "complete_hydration_chunk_in_session",
+        fail_progress,
+    )
+
+    snapshot = await InitialSyncProgressService.try_complete_hydration_chunk_in_session(
+        session,
+        ORG_ID,
+        SYNC_ID,
+        "email",
+        "email:0",
+        contacts_created=4,
+        accounts_created=2,
+        emails_linked=1,
+    )
+
+    assert snapshot is None
     assert session.committed is False
 
 
@@ -392,6 +488,40 @@ async def test_provider_redelivery_does_not_reopen_completed_hydration(monkeypat
 
     assert record.sync_metadata["branches"]["email"]["status"] == "completed"
     assert record.sync_metadata["branches"]["email"]["hydration_completed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_provider_redelivery_preserves_registered_chunk_totals(monkeypatch) -> None:
+    """A replay with no changed rows must not erase unfinished hydration work."""
+    record = make_record()
+    record.sync_metadata["hydration_chunks"] = {
+        "email:0": "completed",
+        "email:1": "queued",
+    }
+    record.sync_metadata["branches"]["email"].update(
+        {
+            "status": "hydrating",
+            "records_synced": 2,
+            "hydration_expected": 2,
+            "hydration_completed": 1,
+        }
+    )
+    session = FakeSession(record)
+
+    async def sessions(_organisation_id):
+        yield session
+
+    monkeypatch.setattr(progress_module, "acquire_org_async_session", sessions)
+    monkeypatch.setattr(progress_module, "_publish_snapshot", lambda _snapshot: None)
+
+    await InitialSyncProgressService.register_hydration(
+        ORG_ID, SYNC_ID, "email", records_synced=0, chunk_keys=[]
+    )
+
+    branch = record.sync_metadata["branches"]["email"]
+    assert branch["status"] == "hydrating"
+    assert branch["hydration_expected"] == 2
+    assert branch["hydration_completed"] == 1
 
 
 @pytest.mark.asyncio

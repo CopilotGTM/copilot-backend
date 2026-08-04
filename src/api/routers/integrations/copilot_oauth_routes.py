@@ -59,10 +59,12 @@ _MICROSOFT_USER_OWNED_TYPES = {"microsoft", "outlook_email", "outlook_calendar",
 
 
 async def get_copilot_oauth_service() -> CopilotOAuthService:
+    """Provide the shared OAuth service through FastAPI dependency injection."""
     return copilot_oauth_service
 
 
 async def get_copilot_callback_service() -> CopilotCallbackService:
+    """Provide the shared callback service through FastAPI dependency injection."""
     return copilot_callback_service
 
 
@@ -153,6 +155,7 @@ async def initiate_custom_oauth_flow(
     oauth_service: CopilotOAuthService = Depends(get_copilot_oauth_service),
     _rl: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[dict]:
+    """Create a signed, user-scoped provider authorization URL."""
     try:
         result = await oauth_service.initiate_oauth_flow(
             user_ids=user_ids,
@@ -201,6 +204,7 @@ async def initiate_microsoft_admin_consent_flow(
     oauth_service: CopilotOAuthService = Depends(get_copilot_oauth_service),
     _rl: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[dict]:
+    """Create a signed Microsoft tenant-admin consent URL for this user."""
     try:
         result = await oauth_service.initiate_microsoft_admin_consent_flow(
             user_ids=user_ids,
@@ -425,12 +429,20 @@ async def stream_initial_sync_progress(
 ) -> EventSourceResponse:
     """Replay and stream one user-owned initial sync from an optional event cursor."""
     service = await _authorize_initial_sync(user_ids, sync_id)
+    # Serialize before constructing EventSourceResponse so a durable-state defect
+    # produces an HTTP error instead of committing a misleading empty 200 stream.
+    initial_snapshot = await service.get_snapshot()
+    if initial_snapshot is None:
+        raise HTTPException(status_code=404, detail="Initial sync run not found")
     resume_from_id = request.headers.get("last-event-id")
 
     async def event_generator():
         """Stop delivery on browser disconnect while leaving workers untouched."""
         try:
-            async for event in service.stream_events(resume_from_id=resume_from_id):
+            async for event in service.stream_events(
+                initial_snapshot=initial_snapshot,
+                resume_from_id=resume_from_id,
+            ):
                 if await request.is_disconnected():
                     break
                 yield event

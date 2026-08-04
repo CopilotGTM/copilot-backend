@@ -59,19 +59,21 @@ class InitialSyncSSEService:
     async def stream_events(
         self,
         *,
+        initial_snapshot: dict | None = None,
         resume_from_id: str | None = None,
         timeout_seconds: int = 300,
         heartbeat_interval: float = 25.0,
     ) -> AsyncGenerator[dict, None]:
         """Yield durable state first, then replay Redis events from the cursor."""
-        record = await self._get_record()
-        if record is None:
-            return
-
-        durable = InitialSyncProgressService.snapshot(record)
+        durable = initial_snapshot
+        if durable is None:
+            record = await self._get_record()
+            if record is None:
+                return
+            durable = InitialSyncProgressService.snapshot(record)
         yield {"event": "ready", "data": json.dumps({"sync_id": str(self.sync_id)})}
         yield {"event": "snapshot", "data": json.dumps(durable)}
-        if record.status in _TERMINAL_STATUSES:
+        if durable.get("status") in {status.value for status in _TERMINAL_STATUSES}:
             yield {"event": "complete", "data": json.dumps({"sync_id": str(self.sync_id)})}
             return
 

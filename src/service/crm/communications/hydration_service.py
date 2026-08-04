@@ -599,15 +599,16 @@ class ContactCommunicationHydrationService:
                 if linked_email_ids is not None:
                     linked_email_ids.add(email.email_id)
             else:
-                if await projection.upsert_direct_email(
+                direct_linked = await projection.upsert_direct_email(
                     email,
                     contact_ids=contact_ids,
                     company_ids=company_ids,
                     replace_links=replace_links,
-                ):
+                )
+                if direct_linked:
                     projected += 1
-                if linked_email_ids is not None:
-                    linked_email_ids.add(email.email_id)
+                    if linked_email_ids is not None:
+                        linked_email_ids.add(email.email_id)
 
         # Meetings mirror email projection, but future meetings do not advance
         # engagement recency until their scheduled time has passed.

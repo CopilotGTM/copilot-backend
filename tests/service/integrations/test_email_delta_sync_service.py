@@ -375,7 +375,7 @@ async def test_tracked_folder_count_is_staged_before_message_commit() -> None:
             create=True,
         ) as progress_service,
     ):
-        progress_service.record_provider_batch_in_session = AsyncMock(side_effect=record)
+        progress_service.try_record_provider_batch_in_session = AsyncMock(side_effect=record)
         progress_service.publish_committed_snapshot = MagicMock()
         email_service_cls.return_value.sync_messages = AsyncMock(
             return_value={"records_processed": 1, "changed_email_ids": [str(uuid4())]}

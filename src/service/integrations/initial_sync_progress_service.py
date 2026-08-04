@@ -169,11 +169,17 @@ class InitialSyncProgressService:
                 chunks.setdefault(chunk_key, "queued")
             provider_batches = metadata.get("provider_batches", {}).get(branch, {})
             authoritative_count = (
-                sum(provider_batches.values()) if provider_batches else records_synced
+                sum(provider_batches.values())
+                if provider_batches
+                else max(branch_state["records_synced"], records_synced)
             )
             branch_state["records_synced"] = authoritative_count
-            branch_state["hydration_expected"] = len(chunk_keys)
-            branch_state["status"] = "hydrating" if chunk_keys else "completed"
+            prefix = f"{branch}:"
+            branch_state["hydration_expected"] = sum(key.startswith(prefix) for key in chunks)
+            branch_state["status"] = (
+                "hydrating" if branch_state["hydration_expected"] else "completed"
+            )
+            InitialSyncProgressService._refresh_hydration_branch(metadata, branch)
             metric = "emails_synced" if branch == "email" else "calendar_events_synced"
             metadata["metrics"][metric] = authoritative_count
             return True
@@ -243,6 +249,41 @@ class InitialSyncProgressService:
         )
 
     @staticmethod
+    async def try_complete_hydration_chunk_in_session(
+        session: AsyncSession,
+        organisation_id: UUID,
+        sync_id: UUID,
+        branch: InitialSyncBranch,
+        chunk_key: str,
+        *,
+        contacts_created: int,
+        accounts_created: int,
+        emails_linked: int,
+    ) -> dict[str, Any] | None:
+        """Stage hydration metrics in a savepoint without risking CRM writes."""
+        try:
+            async with session.begin_nested():
+                return await InitialSyncProgressService.complete_hydration_chunk_in_session(
+                    session,
+                    organisation_id,
+                    sync_id,
+                    branch,
+                    chunk_key,
+                    contacts_created=contacts_created,
+                    accounts_created=accounts_created,
+                    emails_linked=emails_linked,
+                )
+        except Exception:
+            logger.warning(
+                "Initial sync hydration metrics unavailable; CRM transaction continues: "
+                "sync_id=%s chunk=%s",
+                sync_id,
+                chunk_key,
+                exc_info=True,
+            )
+            return None
+
+    @staticmethod
     async def record_provider_batch_in_session(
         session: AsyncSession,
         organisation_id: UUID,
@@ -280,6 +321,38 @@ class InitialSyncProgressService:
             sync_id,
             _update,
         )
+
+    @staticmethod
+    async def try_record_provider_batch_in_session(
+        session: AsyncSession,
+        organisation_id: UUID,
+        sync_id: UUID,
+        branch: InitialSyncBranch,
+        *,
+        batch_key: str,
+        records_synced: int,
+    ) -> dict[str, Any] | None:
+        """Stage provider counts in a savepoint without risking provider writes."""
+        try:
+            async with session.begin_nested():
+                return await InitialSyncProgressService.record_provider_batch_in_session(
+                    session,
+                    organisation_id,
+                    sync_id,
+                    branch,
+                    batch_key=batch_key,
+                    records_synced=records_synced,
+                )
+        except Exception:
+            logger.warning(
+                "Initial sync provider metrics unavailable; provider transaction continues: "
+                "sync_id=%s branch=%s batch=%s",
+                sync_id,
+                branch,
+                batch_key,
+                exc_info=True,
+            )
+            return None
 
     @staticmethod
     async def fail_hydration_chunk(
@@ -366,7 +439,9 @@ class InitialSyncProgressService:
             "sync_id": str(record.sync_id),
             "organisation_id": str(record.organisation_id),
             "integration_id": str(record.integration_id),
-            "status": record.status.value,
+            "status": (
+                record.status.value if isinstance(record.status, SyncStatus) else str(record.status)
+            ),
             "revision": metadata.get("revision", 0),
             "started_at": f"{record.started_at.isoformat()}Z",
             "completed_at": (
@@ -532,9 +607,18 @@ class InitialSyncProgressService:
 
     @staticmethod
     def _publish_after_commit(record: IntegrationSyncHistory) -> None:
-        InitialSyncProgressService._publish_snapshot_safely(
-            InitialSyncProgressService.snapshot(record)
-        )
+        try:
+            snapshot = InitialSyncProgressService.snapshot(record)
+        except Exception:
+            # Progress is optional visibility after the durable row commits. A
+            # serialization defect must not suppress the provider sync handoff.
+            logger.warning(
+                "Could not serialize committed initial sync snapshot: sync_id=%s",
+                record.sync_id,
+                exc_info=True,
+            )
+            return
+        InitialSyncProgressService._publish_snapshot_safely(snapshot)
 
     @staticmethod
     def _publish_snapshot_safely(snapshot: dict[str, Any]) -> None:

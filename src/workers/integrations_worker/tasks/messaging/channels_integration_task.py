@@ -40,11 +40,16 @@ from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import select
 from sqlmodel import col
 
-from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
+from src.domain.models.organisation_tables.sync import (
+    IntegrationSyncState,
+    IntegrationType,
+    KnowledgeIntegration,
+)
 from src.domain.models.organisation_tables.sync.integration_models import SyncStatus
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
+from src.service.integrations.capability_sync_state import CapabilitySyncStateResolver
 from src.service.integrations.messaging_sync_service import MessagingSyncService
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 from src.service.integrations.sync_health import record_sync_failure
@@ -82,10 +87,15 @@ class IntegrationFetchData:
     credentials: dict[str, Any]
     access_token_expires_at: datetime | None
     scopes: list[str] | None
+    sync_state_id: UUID | None = None
 
 
-# Messaging integration types
-MESSAGING_INTEGRATION_TYPES = (IntegrationType.TEAMS, IntegrationType.SLACK)
+# Combined Microsoft rows own the same Graph token used by their Teams capability.
+MESSAGING_INTEGRATION_TYPES = (
+    IntegrationType.TEAMS,
+    IntegrationType.SLACK,
+    IntegrationType.MICROSOFT,
+)
 
 _TASK_NAME = "integrations.sync_messaging_channels_integration"
 _L = TASK_LIMITS[_TASK_NAME]
@@ -95,7 +105,7 @@ def _resolve_messaging_provider(
     integration_type: IntegrationType,
 ) -> tuple[str, str]:
     """Map integration types to worker provider names/config keys."""
-    if integration_type == IntegrationType.TEAMS:
+    if integration_type in {IntegrationType.TEAMS, IntegrationType.MICROSOFT}:
         return "teams", "microsoft-teams"
     if integration_type == IntegrationType.SLACK:
         return "slack", "slack"
@@ -145,6 +155,7 @@ def sync_messaging_channels_integration_task(
     started_at = datetime.now(UTC).isoformat()
     org_id = UUID(organisation_id)
     int_id = UUID(integration_id)
+    sync_capability: list[IntegrationType | None] = [None]
 
     async def _sync_integration() -> dict[str, Any]:
         """Sync the specific messaging integration channels.
@@ -169,6 +180,7 @@ def sync_messaging_channels_integration_task(
 
         async for session in acquire_org_async_session(org_id):
             stmt = select(KnowledgeIntegration).where(
+                col(KnowledgeIntegration.organisation_id) == org_id,
                 col(KnowledgeIntegration.integration_id) == int_id,
                 col(KnowledgeIntegration.integration_type).in_(MESSAGING_INTEGRATION_TYPES),
             )
@@ -210,6 +222,30 @@ def sync_messaging_channels_integration_task(
             if isinstance(int_type, str):
                 int_type = IntegrationType(int_type)
 
+            sync_state_id = None
+            last_synced_at = integration.last_synced_at
+            if int_type == IntegrationType.MICROSOFT:
+                try:
+                    capability = await CapabilitySyncStateResolver(session).resolve(
+                        organisation_id=org_id,
+                        integration_id=int_id,
+                        capability=IntegrationType.TEAMS,
+                    )
+                except ValueError as exc:
+                    return {
+                        "status": "failed",
+                        "organisation_id": organisation_id,
+                        "integration_id": integration_id,
+                        "started_at": started_at,
+                        "completed_at": datetime.now(UTC).isoformat(),
+                        "error": str(exc),
+                    }
+                # Microsoft stores one token on the parent, but Teams owns its own
+                # enablement and timestamp so email/calendar cannot affect its window.
+                int_type = capability.capability
+                last_synced_at = capability.last_synced_at
+                sync_state_id = capability.sync_state_id
+
             provider, provider_config_key = _resolve_messaging_provider(int_type)
 
             fetch_data = IntegrationFetchData(
@@ -219,12 +255,14 @@ def sync_messaging_channels_integration_task(
                 integration_type_value=int_type.value,
                 provider=provider,
                 provider_config_key=provider_config_key,
-                is_initial=integration.last_synced_at is None,
-                last_synced_at=integration.last_synced_at,
+                is_initial=last_synced_at is None,
+                last_synced_at=last_synced_at,
                 credentials=dict(integration.credentials or {}),
                 access_token_expires_at=integration.access_token_expires_at,
                 scopes=list(integration.scopes or []),
+                sync_state_id=sync_state_id,
             )
+            sync_capability[0] = IntegrationType.TEAMS if sync_state_id is not None else None
         # Session is now released
 
         if not fetch_data:
@@ -247,7 +285,7 @@ def sync_messaging_channels_integration_task(
         )
 
         # ─────────────────────────────────────────────────────────────────────
-        # Create IntegrationSyncHistory record (fresh session)
+        # History gets its own short transaction so Graph latency never pins this session.
         # ─────────────────────────────────────────────────────────────────────
         sync_history_id: UUID | None = None
         try:
@@ -320,6 +358,7 @@ def sync_messaging_channels_integration_task(
             try:
                 async for session in acquire_org_async_session(org_id):
                     stmt = select(KnowledgeIntegration).where(
+                        col(KnowledgeIntegration.organisation_id) == org_id,
                         col(KnowledgeIntegration.integration_id) == int_id,
                     )
                     result = await session.execute(stmt)
@@ -396,6 +435,7 @@ def sync_messaging_channels_integration_task(
         try:
             async for session in acquire_org_async_session(org_id):
                 stmt = select(KnowledgeIntegration).where(
+                    col(KnowledgeIntegration.organisation_id) == org_id,
                     col(KnowledgeIntegration.integration_id) == int_id,
                 )
                 result = await session.execute(stmt)
@@ -415,9 +455,27 @@ def sync_messaging_channels_integration_task(
                             chats_metrics.get("channels_processed", 0),
                         )
 
-                    # Update last_synced_at
-                    integration.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
-                    session.add(integration)
+                    completed_at = datetime.now(UTC).replace(tzinfo=None)
+                    if fetch_data.sync_state_id is not None:
+                        state_stmt = select(IntegrationSyncState).where(
+                            col(IntegrationSyncState.organisation_id) == org_id,
+                            col(IntegrationSyncState.integration_id) == int_id,
+                            col(IntegrationSyncState.sync_state_id) == fetch_data.sync_state_id,
+                        )
+                        state = (await session.execute(state_stmt)).scalar_one_or_none()
+                        if state is None:
+                            raise LookupError("Teams capability sync state not found")
+                        state.last_synced_at = completed_at
+                        if not errors:
+                            # A successful Teams run clears only Teams health;
+                            # sibling Microsoft capabilities keep independent status.
+                            state.last_sync_status = "success"
+                            state.last_sync_error = None
+                            state.consecutive_sync_failures = 0
+                        session.add(state)
+                    else:
+                        integration.last_synced_at = completed_at
+                        session.add(integration)
                     await session.commit()
             # Session released
         except Exception as e:
@@ -449,7 +507,7 @@ def sync_messaging_channels_integration_task(
         )
 
         # ─────────────────────────────────────────────────────────────────────
-        # Update IntegrationSyncHistory record (fresh session)
+        # Finalize history after provider persistence so it reflects committed work only.
         # ─────────────────────────────────────────────────────────────────────
         if sync_history_id:
             try:
@@ -534,6 +592,7 @@ def sync_messaging_channels_integration_task(
                     organisation_id=org_id,
                     integration_id=int_id,
                     error=TimeoutError(f"Soft time limit exceeded ({_L['soft']}s)"),
+                    capability=sync_capability[0],
                 )
             )
         except Exception:
@@ -560,7 +619,7 @@ def sync_messaging_channels_integration_task(
             },
         )
 
-        # Check if we should retry
+        # Transient worker exceptions retry the idempotent provider upserts before failing.
         if self.request.retries < self.max_retries:
             logger.info(
                 "Retrying manual messaging channels sync",

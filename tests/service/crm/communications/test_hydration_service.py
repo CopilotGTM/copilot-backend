@@ -331,6 +331,42 @@ async def test_targeted_projection_repairs_missing_unrelated_activity_before_lin
     assert projected == 2
 
 
+@pytest.mark.asyncio
+async def test_email_link_metric_requires_a_committed_activity_link(monkeypatch) -> None:
+    """An association race must not count an email whose direct projection was skipped."""
+    email = _email(internet_message_id="<message-1@example.com>")
+    contact = CRMContact(
+        organisation_id=ORG_ID,
+        contact_id=uuid4(),
+        email=email.from_email,
+        is_deleted=False,
+    )
+    service = ContactCommunicationHydrationService(MagicMock(), MagicMock(), ORG_ID)
+    service._load_email_associations = AsyncMock(return_value={})  # type: ignore[method-assign]
+    service._load_event_associations = AsyncMock(return_value={})  # type: ignore[method-assign]
+    projection = MagicMock()
+    projection.upsert_direct_email = AsyncMock(return_value=False)
+    monkeypatch.setattr(
+        hydration_module,
+        "ActivityFeedProjectionService",
+        lambda *_args: projection,
+    )
+    linked_email_ids: set[UUID] = set()
+
+    projected = await service._project(  # noqa: SLF001
+        emails=[email],
+        events=[],
+        identity_contacts={email.from_email: contact},
+        integration_id=None,
+        replace_links=True,
+        target_deal_ids=None,
+        linked_email_ids=linked_email_ids,
+    )
+
+    assert projected == 0
+    assert linked_email_ids == set()
+
+
 def test_plan_deduplicates_people_across_email_and_calendar() -> None:
     """One identity appearing in email and calendar must produce one candidate."""
     email_id = uuid4()
