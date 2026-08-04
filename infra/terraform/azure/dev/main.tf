@@ -667,8 +667,9 @@ resource "azuredevops_variable_group" "secrets" {
     value = "https://mdpbmdnwwdkjcxefbbbk.supabase.co"
   }
   variable {
-    name  = "SUPABASE_ANON_KEY"
-    value = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kcGJtZG53d2RramN4ZWZiYmJrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTI4NjMwMDYsImV4cCI6MjA2ODQzOTAwNn0.DKzayhlTsttxR-uIgL2zUZwH0vJf2NgjNJsaq3lANNE"
+    name         = "SUPABASE_ANON_KEY"
+    secret_value = var.supabase_anon_key
+    is_secret    = true
   }
 
   variable {
