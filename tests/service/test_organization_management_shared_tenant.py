@@ -12,6 +12,9 @@ from src.domain.models.master_tables import (
     OrganisationActionHistory,
     OrganisationStatus,
 )
+from src.service.crm.internal.internal_crm_setup_service import (
+    AUTOMATED_PIPELINE_USER_ID,
+)
 from src.service.orgnisation import organization_management as org_management_module
 from src.service.orgnisation.organization_management import OrganizationManagementService
 
@@ -62,6 +65,34 @@ class _MasterSession:
     async def get(self, _model, _identifier):  # noqa: ANN001
         """Return the organisation persisted by the first fake session."""
         return self.state.get("organisation")
+
+
+@pytest.fixture(autouse=True)
+def _stub_internal_crm_setup(monkeypatch) -> None:
+    """Keep organisation service unit tests isolated from the tenant database."""
+
+    async def acquire_session(_organisation_id):  # noqa: ANN001
+        """Yield a fake tenant session so unit tests cannot reach a configured database."""
+        yield object()
+
+    class _InternalCRMSetupService:
+        def __init__(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
+            pass
+
+        async def setup_internal_crm(self) -> None:
+            """Stand in for the mandatory provisioning call exercised by the service."""
+            return None
+
+    monkeypatch.setattr(
+        org_management_module,
+        "acquire_org_async_session",
+        acquire_session,
+    )
+    monkeypatch.setattr(
+        org_management_module,
+        "InternalCRMSetupService",
+        _InternalCRMSetupService,
+    )
 
 
 def _install_master_sessions(
@@ -153,6 +184,63 @@ async def test_create_organization_uses_master_and_existing_org_boundaries(
     assert first_session.commits == 1
     assert final_session.commits == 1
     assert any(isinstance(value, OrganisationActionHistory) for value in final_session.added)
+
+
+@pytest.mark.asyncio
+async def test_create_organization_seeds_internal_crm_before_storage(monkeypatch) -> None:
+    """An admin-created organisation receives mandatory CRM defaults before external storage."""
+
+    _install_master_sessions(monkeypatch)
+    service = OrganizationManagementService()
+    events: list[str] = []
+    org_session = object()
+
+    async def acquire_session(organisation_id):  # noqa: ANN001
+        """Track when the fake tenant session is released relative to storage."""
+        try:
+            yield org_session
+        finally:
+            events.append("tenant-released")
+
+    class _InternalCRMSetupService:
+        def __init__(self, session, organisation_id, user_id):  # noqa: ANN001
+            assert session is org_session
+            assert organisation_id == expected_organisation_id
+            assert user_id == AUTOMATED_PIPELINE_USER_ID
+
+        async def setup_internal_crm(self) -> None:
+            """Record that mandatory CRM defaults were provisioned."""
+            events.append("internal-crm")
+
+    async def provision_storage(organisation_id):  # noqa: ANN001
+        """Record the external storage step after tenant setup completes."""
+        assert organisation_id == expected_organisation_id
+        events.append("storage")
+
+    monkeypatch.setattr(
+        org_management_module,
+        "acquire_org_async_session",
+        acquire_session,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        org_management_module,
+        "InternalCRMSetupService",
+        _InternalCRMSetupService,
+        raising=False,
+    )
+    monkeypatch.setattr(service, "_provision_org_storage_container", provision_storage)
+
+    expected_organisation_id = uuid4()
+    await service.create_organization(
+        organisation_id=expected_organisation_id,
+        admin_id=uuid4(),
+        organisation_name="Acme",
+    )
+
+    # The tenant session must close before Azure I/O so provisioning cannot pin
+    # a database connection while waiting on the storage provider.
+    assert events == ["internal-crm", "tenant-released", "storage"]
 
 
 @pytest.mark.asyncio

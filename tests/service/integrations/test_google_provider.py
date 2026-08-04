@@ -7,7 +7,7 @@ from src.infra.config.integrations_metadata import INTEGRATION_METADATA
 from src.service.integrations.providers.google_provider import GoogleProvider
 
 
-def test_google_provider_gmail_scopes_include_send() -> None:
+def test_google_provider_gmail_scopes_include_send_and_compose() -> None:
     provider = GoogleProvider(IntegrationType.GMAIL)
 
     assert provider._get_scopes() == [
@@ -15,6 +15,7 @@ def test_google_provider_gmail_scopes_include_send() -> None:
         "https://www.googleapis.com/auth/userinfo.profile",
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/gmail.compose",
     ]
 
 
@@ -26,6 +27,7 @@ def test_google_provider_gmail_scopes_ignore_read_scope_flag() -> None:
         "https://www.googleapis.com/auth/userinfo.profile",
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/gmail.compose",
     ]
 
 

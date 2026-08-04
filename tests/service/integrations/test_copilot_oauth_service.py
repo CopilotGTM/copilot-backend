@@ -131,6 +131,7 @@ async def test_initiate_gmail_oauth_ignores_org_gmail_read_scope_preference(
         "https://www.googleapis.com/auth/userinfo.profile",
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/gmail.compose",
     }
     assert query["include_granted_scopes"] == ["true"]
 
@@ -271,7 +272,8 @@ async def test_initiate_microsoft_admin_consent_flow_builds_adminconsent_url() -
     ]
     assert query["scope"] == [
         "offline_access https://graph.microsoft.com/User.Read "
-        "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.Send "
+        "https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite "
+        "https://graph.microsoft.com/Mail.Send "
         "https://graph.microsoft.com/Calendars.ReadWrite "
         "https://graph.microsoft.com/OnlineMeetings.Read "
         "https://graph.microsoft.com/Team.ReadBasic.All "

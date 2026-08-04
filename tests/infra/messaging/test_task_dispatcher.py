@@ -69,6 +69,31 @@ def test_task_client_does_not_shrink_an_in_use_default_producer_pool(monkeypatch
         pools.set_limit(original_limit)
 
 
+def test_send_task_bypasses_the_process_global_producer_pool(monkeypatch):
+    """Each publish owns its connection so an idle pooled producer cannot block it."""
+    original_limit = pools.get_limit()
+    pools.reset()
+    pools.set_limit(10)
+    client = Celery("isolated_dispatch", broker="memory://", backend="cache+memory://")
+    producer_pool = client.producer_pool
+    acquire = MagicMock(wraps=producer_pool.acquire)
+    monkeypatch.setattr(producer_pool, "acquire", acquire)
+    monkeypatch.setattr(task_dispatcher, "get_task_client", lambda: client)
+
+    try:
+        task_id = task_dispatcher.send_task(
+            "chat.process_bot_message",
+            args=["org-id", "job-id"],
+            queue="chat_messages",
+        )
+
+        assert task_id
+        acquire.assert_not_called()
+    finally:
+        pools.reset()
+        pools.set_limit(original_limit)
+
+
 def _assert_publish_event(call, *, task_name: str, queue: str, outcome: str) -> None:
     extra = call.kwargs["extra"]
     assert extra["event"] == "celery_publish"
