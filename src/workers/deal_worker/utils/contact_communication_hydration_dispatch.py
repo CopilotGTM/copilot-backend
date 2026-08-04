@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+from typing import Literal
 from uuid import UUID
 
 from src.domain.models.organisation_tables.job_models import DealJobType
+from src.infra.utils.logger import get_logger
+from src.service.integrations.initial_sync_progress_service import (
+    InitialSyncErrorCode,
+    InitialSyncProgressService,
+)
 from src.workers.deal_worker.client import send_deal_task_async
 
 TASK_NAME = "deal.hydrate_contact_communications"
+logger = get_logger(__name__)
 # copilotgtm: projection still performs one replay-safe upsert per source, so cap each
 # transaction at 100 records; replace this ceiling with bulk SQL if profiling shows queue pressure.
 CHANGED_SOURCE_CHUNK_SIZE = 100
@@ -27,6 +34,9 @@ async def dispatch_contact_communication_hydration_async(
     job_id: UUID | None = None,
     job_type: DealJobType | None = None,
     emit_events: bool = False,
+    initial_sync_id: UUID | None = None,
+    initial_sync_branch: Literal["email", "calendar"] | None = None,
+    records_synced: int | None = None,
 ) -> list[str]:
     """Enqueue bounded hydration, forwarding visibility only when explicitly requested."""
     if (job_id is None) != (job_type is None):
@@ -35,6 +45,11 @@ async def dispatch_contact_communication_hydration_async(
         raise ValueError("job context requires emit_events=True")
     if emit_events and job_id is None:
         raise ValueError("emit_events=True requires job_id and job_type")
+    tracked_values = (initial_sync_id, initial_sync_branch, records_synced)
+    if any(value is not None for value in tracked_values) and not all(
+        value is not None for value in tracked_values
+    ):
+        raise ValueError("initial sync id, branch, and provider count must be supplied together")
 
     email_ids = [str(value) for value in changed_email_ids or []]
     event_ids = [str(value) for value in changed_event_ids or []]
@@ -79,21 +94,66 @@ async def dispatch_contact_communication_hydration_async(
         if emit_events and job_id is not None and job_type is not None
         else {}
     )
+    chunk_keys = [f"{initial_sync_branch}:{index}" for index in range(len(payloads))]
+    tracking_enabled = initial_sync_id is not None and initial_sync_branch is not None
+    if initial_sync_id is not None and initial_sync_branch is not None:
+        try:
+            await InitialSyncProgressService.register_hydration(
+                organisation_id,
+                initial_sync_id,
+                initial_sync_branch,
+                records_synced=records_synced or 0,
+                chunk_keys=chunk_keys,
+            )
+        except Exception:
+            # The provider rows are already committed. Dispatch untracked hydration rather
+            # than letting optional progress visibility suppress CRM contact/account creation.
+            tracking_enabled = False
+            logger.warning(
+                "Initial sync progress registration failed; dispatching hydration untracked",
+                extra={
+                    "organisation_id": str(organisation_id),
+                    "initial_sync_id": str(initial_sync_id),
+                    "branch": initial_sync_branch,
+                },
+                exc_info=True,
+            )
 
     task_ids: list[str] = []
     # Each payload is independently replay-safe, so Celery can retry one failed chunk without
     # redoing successful chunks or requiring a parent orchestration task.
-    for payload in payloads:
-        task_id = await send_deal_task_async(
-            TASK_NAME,
-            kwargs={
-                "organisation_id": str(organisation_id),
-                "integration_id": str(integration_id) if integration_id else None,
-                "trigger": trigger,
-                **visibility,
-                **payload,
-            },
-            queue="deal",
+    for index, payload in enumerate(payloads):
+        tracking = (
+            {
+                "initial_sync_id": str(initial_sync_id),
+                "initial_sync_branch": initial_sync_branch,
+                "initial_sync_chunk_key": chunk_keys[index],
+            }
+            if tracking_enabled
+            else {}
         )
-        task_ids.append(str(task_id))
+        try:
+            task_id = await send_deal_task_async(
+                TASK_NAME,
+                kwargs={
+                    "organisation_id": str(organisation_id),
+                    "integration_id": str(integration_id) if integration_id else None,
+                    "trigger": trigger,
+                    **visibility,
+                    **tracking,
+                    **payload,
+                },
+                queue="deal",
+            )
+            task_ids.append(str(task_id))
+        except Exception:
+            if initial_sync_id is None or initial_sync_branch is None:
+                raise
+            await InitialSyncProgressService.fail_hydration_chunk(
+                organisation_id,
+                initial_sync_id,
+                initial_sync_branch,
+                chunk_keys[index],
+                error=InitialSyncErrorCode.DISPATCH_FAILED,
+            )
     return task_ids

@@ -308,6 +308,91 @@ async def test_folder_cursor_is_persisted_after_successful_message_write() -> No
 
 
 @pytest.mark.asyncio
+async def test_tracked_folder_count_is_staged_before_message_commit() -> None:
+    """Email count and message rows share one commit so a retry cannot replace it with zero."""
+    service = EmailDeltaSyncService()
+    organisation_id = uuid4()
+    integration_id = uuid4()
+    sync_id = uuid4()
+    folder_id = uuid4()
+    order: list[str] = []
+    sync_data = IntegrationSyncData(
+        integration_id=integration_id,
+        integration_type=IntegrationType.OUTLOOK_EMAIL,
+        integration_type_value=IntegrationType.OUTLOOK_EMAIL.value,
+        connection_id="conn-1",
+        provider="outlook",
+        provider_key="outlook",
+        last_synced_at=None,
+        connection_metadata={},
+        credentials={"access_token": "token"},
+        access_token_expires_at=None,
+        scopes=["Mail.Read"],
+    )
+    folder_data = FolderSyncData(
+        folder_id=folder_id,
+        external_folder_id="inbox",
+        folder_name="Inbox",
+        folder_type="inbox",
+        last_synced_at=None,
+        delta_link=None,
+    )
+    integration = MagicMock(integration_id=integration_id, connection_metadata={})
+    query_result = MagicMock()
+    query_result.scalar_one_or_none.return_value = integration
+    folder_result = MagicMock()
+    folder_result.scalar_one_or_none.return_value = MagicMock()
+    write_session = AsyncMock()
+    write_session.execute = AsyncMock(side_effect=[query_result, folder_result])
+    write_session.commit = AsyncMock(side_effect=lambda: order.append("commit"))
+    persist_session = AsyncMock()
+    persist_result = MagicMock()
+    persist_result.scalar_one_or_none.return_value = integration
+    persist_session.execute = AsyncMock(return_value=persist_result)
+    sessions = iter([write_session, persist_session])
+
+    async def acquire(*_args, **_kwargs):
+        yield next(sessions)
+
+    async def record(*_args, **_kwargs):
+        order.append("progress")
+        return {"revision": 2}
+
+    with (
+        patch(
+            "src.service.integrations.email_delta_sync_service._fetch_messages_for_provider",
+            AsyncMock(return_value=([{"id": "message-1"}], "new-delta")),
+        ),
+        patch(
+            "src.service.integrations.email_delta_sync_service.acquire_org_async_session",
+            side_effect=acquire,
+        ),
+        patch(
+            "src.service.integrations.email_delta_sync_service.EmailSyncService"
+        ) as email_service_cls,
+        patch(
+            "src.service.integrations.email_delta_sync_service.InitialSyncProgressService",
+            create=True,
+        ) as progress_service,
+    ):
+        progress_service.record_provider_batch_in_session = AsyncMock(side_effect=record)
+        progress_service.publish_committed_snapshot = MagicMock()
+        email_service_cls.return_value.sync_messages = AsyncMock(
+            return_value={"records_processed": 1, "changed_email_ids": [str(uuid4())]}
+        )
+        await service._sync_folder_messages_fresh_session(
+            token_info=MagicMock(),
+            org_id=organisation_id,
+            sync_data=sync_data,
+            folder_data=folder_data,
+            delta_link_updates={},
+            initial_sync_id=sync_id,
+        )
+
+    assert order[:2] == ["progress", "commit"]
+
+
+@pytest.mark.asyncio
 async def test_empty_delta_result_updates_folder_timestamp_when_cursor_is_returned() -> None:
     service = EmailDeltaSyncService()
     organisation_id = uuid4()

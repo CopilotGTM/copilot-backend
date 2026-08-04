@@ -42,6 +42,7 @@ from .google_subscription_tasks import (
     ensure_google_subscription_task,
     renew_google_subscriptions_all_task,
 )
+from .initial_sync_recovery_tasks import recover_stale_initial_syncs_task
 
 # Messaging channels sync tasks (three-tier architecture)
 from .messaging import (
@@ -71,6 +72,7 @@ __all__ = [
     "refresh_tokens_org_task",
     "refresh_token_task",
     "recover_stale_webhook_syncs_task",
+    "recover_stale_initial_syncs_task",
     # Calendar sync (event/post-connect integration dispatch)
     "sync_calendar_integration_task",
     # Messaging channels sync (three-tier architecture)

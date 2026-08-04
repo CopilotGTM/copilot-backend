@@ -14,6 +14,45 @@ from src.service.integrations import copilot_callback_service
 from src.service.integrations.copilot_callback_service import CopilotCallbackService
 
 
+@pytest.mark.asyncio
+async def test_progress_creation_failure_does_not_block_initial_sync(monkeypatch) -> None:
+    """Progress is optional telemetry; its database failure cannot suppress data sync."""
+    integration = KnowledgeIntegration(
+        organisation_id=uuid4(),
+        created_by_user_id=uuid4(),
+        integration_type=IntegrationType.GMAIL,
+        name="Gmail",
+        credentials={},
+        connection_id=str(uuid4()),
+    )
+    dispatched: list[object] = []
+
+    async def fail_start(*_args, **_kwargs):
+        raise RuntimeError("progress database unavailable")
+
+    def capture_dispatch(*_args, **kwargs):
+        dispatched.append(kwargs.get("initial_sync_id"))
+
+    monkeypatch.setattr(
+        copilot_callback_service.InitialSyncProgressService,
+        "start_run",
+        fail_start,
+    )
+    monkeypatch.setattr(
+        copilot_callback_service.InitialSyncService,
+        "trigger_initial_sync",
+        capture_dispatch,
+    )
+
+    await CopilotCallbackService()._trigger_initial_sync(
+        SimpleNamespace(),
+        integration,
+        enabled_capabilities=[IntegrationType.GMAIL],
+    )
+
+    assert dispatched == [None]
+
+
 def test_validate_required_scopes_allows_granted_gmail_scope() -> None:
     CopilotCallbackService()._validate_required_scopes(
         IntegrationType.GMAIL,

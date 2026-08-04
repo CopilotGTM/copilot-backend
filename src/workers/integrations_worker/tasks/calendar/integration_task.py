@@ -47,6 +47,10 @@ from src.service.integrations.calendar_cursor_metadata import (
     get_calendar_delta_link,
 )
 from src.service.integrations.calendar_sync_service import CalendarSyncService
+from src.service.integrations.initial_sync_progress_service import (
+    InitialSyncErrorCode,
+    InitialSyncProgressService,
+)
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 from src.service.integrations.sync_health import (
     classify_sync_error,
@@ -141,6 +145,7 @@ def sync_calendar_integration_task(
     trigger_source: str = "manual_sync",
     webhook_sync_id: str | None = None,
     lock_wait_count: int = 0,
+    initial_sync_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Tier 3: Sync specific calendar integration.
@@ -172,6 +177,17 @@ def sync_calendar_integration_task(
     int_id = UUID(integration_id)
     current_capability: list[IntegrationType | None] = [None]
     receipt_id = UUID(webhook_sync_id) if webhook_sync_id else None
+    tracked_sync_id = UUID(initial_sync_id) if initial_sync_id else None
+
+    if tracked_sync_id is not None:
+        run_async(
+            InitialSyncProgressService.mark_branch_started(
+                org_id,
+                tracked_sync_id,
+                "calendar",
+                self.request.retries + 1,
+            )
+        )
 
     def _record_receipt(
         status: SyncStatus,
@@ -210,6 +226,7 @@ def sync_calendar_integration_task(
                 "trigger_source": trigger_source,
                 "webhook_sync_id": webhook_sync_id,
                 "lock_wait_count": lock_wait_count + 1,
+                "initial_sync_id": initial_sync_id,
             },
             queue="integrations_priority",
             routing_key="integrations_priority",
@@ -515,9 +532,28 @@ def sync_calendar_integration_task(
             )
 
             session.add(integration_db)
+            progress_snapshot = None
+            if tracked_sync_id is not None:
+                # Calendar rows, cursor state, and their first provider count commit together;
+                # a retry after cursor advancement must not report a zero replacement count.
+                progress_snapshot = (
+                    await InitialSyncProgressService.record_provider_batch_in_session(
+                        session,
+                        org_id,
+                        tracked_sync_id,
+                        "calendar",
+                        batch_key="calendar:provider",
+                        records_synced=records_synced,
+                    )
+                )
             await session.commit()
+            InitialSyncProgressService.publish_committed_snapshot(progress_snapshot)
 
-            if records_synced > 0 or sync_result.get("changed_event_ids"):
+            if (
+                tracked_sync_id is not None
+                or records_synced > 0
+                or sync_result.get("changed_event_ids")
+            ):
                 # Hydration owns contact projection and deal association in one ordered task, so
                 # calendar sync dispatches only the committed changed event IDs.
                 sync_result[
@@ -527,6 +563,9 @@ def sync_calendar_integration_task(
                     integration_id=int_id,
                     changed_event_ids=sync_result.get("changed_event_ids", []),
                     trigger="calendar_sync",
+                    initial_sync_id=tracked_sync_id,
+                    initial_sync_branch="calendar" if tracked_sync_id else None,
+                    records_synced=records_synced if tracked_sync_id else None,
                 )
 
             logger.info(
@@ -600,6 +639,15 @@ def sync_calendar_integration_task(
                     )
                     return result
                 raise RuntimeError(str(result.get("error") or "Webhook calendar sync failed"))
+            if tracked_sync_id is not None:
+                run_async(
+                    InitialSyncProgressService.fail_branch(
+                        org_id,
+                        tracked_sync_id,
+                        "calendar",
+                        error=InitialSyncErrorCode.PROVIDER_FAILED,
+                    )
+                )
 
         return result
 
@@ -632,6 +680,15 @@ def sync_calendar_integration_task(
             error=f"Task exceeded soft time limit of {_L['soft']}s",
             completed=False,
         )
+        if tracked_sync_id is not None:
+            run_async(
+                InitialSyncProgressService.fail_branch(
+                    org_id,
+                    tracked_sync_id,
+                    "calendar",
+                    error=InitialSyncErrorCode.PROVIDER_TIMED_OUT,
+                )
+            )
         return {
             "status": "timed_out",
             "organisation_id": organisation_id,
@@ -703,6 +760,15 @@ def sync_calendar_integration_task(
             error=str(e),
             completed=terminal or cursor_contract_failed,
         )
+        if tracked_sync_id is not None:
+            run_async(
+                InitialSyncProgressService.fail_branch(
+                    org_id,
+                    tracked_sync_id,
+                    "calendar",
+                    error=InitialSyncErrorCode.PROVIDER_FAILED,
+                )
+            )
         return {
             "status": "failed",
             "organisation_id": organisation_id,

@@ -1,8 +1,10 @@
+"""OAuth integration routes, including authenticated initial-sync progress."""
+
 from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi import Response as FastAPIResponse
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
@@ -31,6 +33,8 @@ from src.service.integrations.copilot_oauth_service import (
     CopilotOAuthService,
     copilot_oauth_service,
 )
+from src.service.integrations.initial_sync_sse_service import InitialSyncSSEService
+from sse_starlette.sse import EventSourceResponse
 
 logger = get_logger(__name__)
 
@@ -384,6 +388,56 @@ async def get_integration_service(
 ):
     """Dependency to create IntegrationService instance."""
     yield IntegrationService(db_session=session, user_ids=user_ids)
+
+
+def _initial_sync_sse_service(user_ids: UserIDs, sync_id: UUID) -> InitialSyncSSEService:
+    return InitialSyncSSEService(user_ids.organisation_id, sync_id, user_ids.user_id)
+
+
+async def _authorize_initial_sync(user_ids: UserIDs, sync_id: UUID) -> InitialSyncSSEService:
+    service = _initial_sync_sse_service(user_ids, sync_id)
+    can_access = await service.ensure_user_access()
+    if can_access is None:
+        raise HTTPException(status_code=404, detail="Initial sync run not found")
+    if can_access is False:
+        raise HTTPException(status_code=403, detail="Not authorized to access this initial sync")
+    return service
+
+
+@router.get("/initial-sync/{sync_id}", summary="Get durable initial sync progress")
+async def get_initial_sync_progress(
+    sync_id: UUID,
+    user_ids: UserIDs = Depends(get_current_user),
+) -> dict:
+    """Return the latest durable initial-sync snapshot owned by this user."""
+    service = await _authorize_initial_sync(user_ids, sync_id)
+    snapshot = await service.get_snapshot()
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Initial sync run not found")
+    return snapshot
+
+
+@router.get("/initial-sync/{sync_id}/stream", summary="Stream initial sync progress")
+async def stream_initial_sync_progress(
+    sync_id: UUID,
+    request: Request,
+    user_ids: UserIDs = Depends(get_current_user),
+) -> EventSourceResponse:
+    """Replay and stream one user-owned initial sync from an optional event cursor."""
+    service = await _authorize_initial_sync(user_ids, sync_id)
+    resume_from_id = request.headers.get("last-event-id")
+
+    async def event_generator():
+        """Stop delivery on browser disconnect while leaving workers untouched."""
+        try:
+            async for event in service.stream_events(resume_from_id=resume_from_id):
+                if await request.is_disconnected():
+                    break
+                yield event
+        finally:
+            await service.close()
+
+    return EventSourceResponse(event_generator())
 
 
 def _mark_capability_state_disconnected(state: Any) -> None:

@@ -51,6 +51,15 @@ def test_get_scheduled_job_rejects_unknown_job_name() -> None:
         get_scheduled_job("does-not-exist")
 
 
+def test_initial_sync_recovery_runs_on_priority_queue_every_five_minutes() -> None:
+    job = get_scheduled_job("recover-stale-initial-syncs")
+
+    assert job.task_name == "integrations.recover_stale_initial_syncs"
+    assert job.schedule == "*/5 * * * *"
+    assert job.queue == "integrations_priority"
+    assert job.routing_key == "integrations_priority"
+
+
 def test_dispatch_scheduled_job_enqueues_and_records_heartbeat(mocker) -> None:
     """Regression test for dispatch scheduled job enqueues and records heartbeat."""
 

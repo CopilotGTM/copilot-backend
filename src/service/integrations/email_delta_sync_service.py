@@ -57,6 +57,7 @@ from src.service.integrations.email.gmail_policy import (
     gmail_mailbox_folder_payload,
 )
 from src.service.integrations.email_sync_service import EmailSyncService
+from src.service.integrations.initial_sync_progress_service import InitialSyncProgressService
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 from src.service.integrations.scope_validation import is_required_scope_satisfied
 from src.service.integrations.sync_health import SyncFailureType, classify_sync_error
@@ -431,6 +432,7 @@ class EmailDeltaSyncService:
         self,
         organisation_id: UUID,
         integration_id: UUID,
+        initial_sync_id: UUID | None = None,
     ) -> dict[str, Any]:
         """
         Public entry point for single integration sync.
@@ -558,6 +560,7 @@ class EmailDeltaSyncService:
             return await self._sync_integration_fresh_session(
                 org_id=organisation_id,
                 sync_data=sync_data,
+                initial_sync_id=initial_sync_id,
             )
         except Exception as e:
             if classify_sync_error(e) in {
@@ -589,6 +592,7 @@ class EmailDeltaSyncService:
         self,
         org_id: UUID,
         sync_data: IntegrationSyncData,
+        initial_sync_id: UUID | None = None,
     ) -> dict[str, Any]:
         """
         Sync a single email integration using fresh session pattern.
@@ -766,6 +770,7 @@ class EmailDeltaSyncService:
                 sync_data=sync_data,
                 folder_data=folder_data,
                 delta_link_updates=delta_link_updates,
+                initial_sync_id=initial_sync_id,
             )
             folder_results.append(folder_result)
             total_messages += folder_result.get("messages_synced", 0)
@@ -866,6 +871,7 @@ class EmailDeltaSyncService:
         sync_data: IntegrationSyncData,
         folder_data: FolderSyncData,
         delta_link_updates: dict[str, str | None],
+        initial_sync_id: UUID | None = None,
     ) -> dict[str, Any]:
         """
         Sync messages for a single folder using fresh session pattern.
@@ -974,7 +980,22 @@ class EmailDeltaSyncService:
                 if folder:
                     folder.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
 
+                progress_snapshot = None
+                if initial_sync_id is not None:
+                    # The provider count joins the message-write transaction. A retry after
+                    # cursor advancement must not replace this first committed count with zero.
+                    progress_snapshot = (
+                        await InitialSyncProgressService.record_provider_batch_in_session(
+                            session,
+                            org_id,
+                            initial_sync_id,
+                            "email",
+                            batch_key=f"folder:{folder_data.folder_id}",
+                            records_synced=messages_synced,
+                        )
+                    )
                 await session.commit()
+                InitialSyncProgressService.publish_committed_snapshot(progress_snapshot)
                 write_committed = True
             # Session released
 
