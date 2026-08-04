@@ -55,6 +55,7 @@ class _Session:
         self.rows = rows or {}
         self.added = []
         self.commits = 0
+        self.flushes = 0
 
     async def execute(self, statement, _parameters=None):
         """Consume one configured query result while accepting advisory locks."""
@@ -69,6 +70,10 @@ class _Session:
     async def commit(self):
         """Count durable boundaries without opening a database transaction."""
         self.commits += 1
+
+    async def flush(self):
+        """Count flushes without opening a database transaction."""
+        self.flushes += 1
 
     async def refresh(self, _value):
         """Preserve the async-session contract after an in-memory commit."""
@@ -268,6 +273,7 @@ async def test_control_plane_creates_founder_as_active_organisation_admin() -> N
     assert mapping.user_id == user.user_id
     assert founder.user_id == user.user_id
     assert signup.status == SignupRequestStatus.CONTROL_PLANE_CREATED
+    assert session.flushes == 1
     assert session.commits == 1
 
 

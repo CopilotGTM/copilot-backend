@@ -181,6 +181,7 @@ class SignupService:
                 code="SIGNUP_REQUEST_NOT_FOUND",
                 status_code=404,
             )
+        signup.provider = ExternalSignupProvider(signup.provider)
 
         if signup.status == SignupRequestStatus.DRAFT:
             raise SignupServiceError(
@@ -269,6 +270,7 @@ class SignupService:
                 details={"source": "self_service_signup", "role": "admin"},
             )
         )
+        await self._session.flush()
         signup.organisation_id = organisation.organisation_id
         signup.user_id = user.user_id
         signup.status = SignupRequestStatus.CONTROL_PLANE_CREATED

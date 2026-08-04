@@ -97,7 +97,7 @@ async def _provision_signup(signup_request_id: UUID) -> dict[str, str]:
 
     return {
         "signup_request_id": str(signup.signup_request_id),
-        "status": signup.status.value,
+        "status": SignupRequestStatus(signup.status).value,
     }
 
 
