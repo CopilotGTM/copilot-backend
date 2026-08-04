@@ -18,9 +18,26 @@ down_revision = "f1a2b3c4d5ed"
 branch_labels = None
 depends_on = None
 
+_AUTH_EVENT_ENUM_LABELS = (
+    "IDENTITY_LINKED",
+    "AUTH_METHOD_REJECTED",
+    "SESSION_REVOKED",
+    "RECOVERY_SUPPRESSED",
+)
+
 
 def upgrade() -> None:
     """Add authentication fields, organisation domains, and signup state."""
+    # SQLAlchemy persists enum member names, so these labels must exist before
+    # authentication routes write the corresponding audit events.
+    for label in _AUTH_EVENT_ENUM_LABELS:
+        op.execute(
+            sa.text(
+                f"ALTER TYPE public.usereventtype "
+                f"ADD VALUE IF NOT EXISTS '{label}'"
+            )
+        )
+
     op.add_column(
         "users",
         sa.Column("profile_image_url", sa.String(length=1000), nullable=True),
@@ -160,7 +177,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Remove signup/domain state before authentication profile fields."""
+    """Remove signup/domain state before authentication profile fields.
+
+    PostgreSQL cannot remove individual enum labels, so the auth event labels
+    intentionally remain after downgrading this revision.
+    """
     op.drop_index(
         "ix_signup_requests_supabase_user_id",
         table_name="signup_requests",
