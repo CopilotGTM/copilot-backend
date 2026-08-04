@@ -114,9 +114,8 @@ def _create_task_client() -> Celery:
         client.conf.broker_use_ssl = config.ssl_config
         client.conf.redis_backend_use_ssl = config.ssl_config
 
-    # Durable jobs own retries, while a health-checked pool avoids paying for a
-    # new Azure Redis TLS connection on every API publication. The executor
-    # still bounds this dispatcher's normal concurrency to four connections.
+    # Bound each Redis operation. send_task() supplies its own connection, but
+    # Celery still initializes the process-global pool while building a producer.
     client.conf.update(
         task_serializer="json",
         accept_content=["json"],
@@ -168,16 +167,20 @@ def send_task(
     routing_key: str | None = None,
     headers: dict | None = None,
 ) -> str:
-    """Publish one task synchronously and return its Celery task ID."""
+    """Publish one task through a request-owned broker connection."""
     client = get_task_client()
-    result = client.send_task(
-        task_name,
-        args=args or [],
-        kwargs=kwargs or {},
-        queue=queue,
-        routing_key=routing_key or queue,
-        headers=correlation_headers(headers),
-    )
+    # A fresh connection bypasses Kombu's process-global producer pool, where
+    # stale idle producers can repeatedly stall later publications.
+    with client.connection_for_write() as connection:
+        result = client.send_task(
+            task_name,
+            args=args or [],
+            kwargs=kwargs or {},
+            queue=queue,
+            routing_key=routing_key or queue,
+            headers=correlation_headers(headers),
+            connection=connection,
+        )
     return str(result.id)
 
 

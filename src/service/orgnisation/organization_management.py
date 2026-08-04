@@ -19,11 +19,16 @@ from src.domain.models.master_tables import (
     OrganisationStatus,
 )
 from src.infra.database.sessions import (
+    acquire_org_async_session,
     master_async_session_scope,
 )
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
+from src.service.crm.internal.internal_crm_setup_service import (
+    AUTOMATED_PIPELINE_USER_ID,
+    InternalCRMSetupService,
+)
 
 logger = get_logger("organization_management_service")
 
@@ -127,6 +132,20 @@ class OrganizationManagementService:
 
         try:
             provision_metrics: dict[str, float] = {}
+
+            crm_start = time.perf_counter()
+            async for org_session in acquire_org_async_session(organisation_id):
+                await InternalCRMSetupService(
+                    org_session,
+                    organisation_id,
+                    AUTOMATED_PIPELINE_USER_ID,
+                ).setup_internal_crm()
+            # Exhausting the one-session generator releases the tenant connection
+            # before the potentially slow Azure storage request begins.
+            provision_metrics["internal_crm_setup"] = round(
+                time.perf_counter() - crm_start,
+                4,
+            )
 
             storage_start = time.perf_counter()
             await self._provision_org_storage_container(organisation_id)

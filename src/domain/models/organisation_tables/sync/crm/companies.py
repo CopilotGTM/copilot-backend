@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
+from pydantic import field_serializer
 from sqlalchemy import (
     Boolean,
     Column,
@@ -95,6 +97,18 @@ class CRMCompany(CRMSyncedRecordMixin, table=True):
         sa_column=Column(Numeric(precision=20, scale=2), nullable=True),
         description="Annual revenue of the company.",
     )
+
+    @field_serializer("annual_revenue")
+    def serialize_annual_revenue(
+        self,
+        value: float | Decimal | None,
+    ) -> float | None:
+        """Return database NUMERIC revenue using the model's public float contract.
+
+        SQLAlchemy hydrates NUMERIC columns as Decimal after Pydantic validation;
+        normalizing here covers every API, audit, and mutation serializer.
+        """
+        return float(value) if value is not None else None
 
     # Contact info
     phone: str | None = Field(default=None, description="Company phone number.")

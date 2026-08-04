@@ -38,4 +38,5 @@ def test_google_parent_scopes_include_gmail_read_scope_when_enabled() -> None:
         "https://www.googleapis.com/auth/meetings.space.readonly",
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/gmail.compose",
     )
