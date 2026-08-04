@@ -2,32 +2,24 @@
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.master_dependencies import get_master_async_session
-from src.api.dependencies.organisation_dependencies import get_org_async_session
+from src.api.dependencies.organisation_dependencies import (
+    get_org_async_session,
+    require_organisation_admin,
+)
 from src.api.dependencies.rate_limit import rate_limit_user_read
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.upload_models import ChatAttachmentsPage
 from src.api.utils.http_response import Response
-from src.domain.models.master_tables import User, UserAppRole
-from src.infra.auth.user_auth import user_auth
+from src.domain.models.master_tables import User
 from src.infra.utils.logger import get_logger
 from src.service.chat.chat_attachment_catalog_service import ChatAttachmentCatalogService
 
 logger = get_logger("chat_attachment_catalog")
 catalog_router = APIRouter()
-
-
-def require_organisation_admin(current_user: User = Depends(user_auth)) -> User:
-    """Allow only application admins to enumerate organisation-wide attachments."""
-    if current_user.user_role != UserAppRole.ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Organisation admin access required",
-        )
-    return current_user
 
 
 async def get_attachment_catalog_service(

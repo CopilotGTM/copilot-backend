@@ -174,3 +174,27 @@ def test_merge_organisation_app_settings_updates_meeting_recording_policy():
 def test_meetings_write_scopes_are_allowed_for_internal_crm() -> None:
     assert has_crm_write_scope({"crm": {"provider": "copilotgtm"}}, "meetings:create") is True
     assert has_crm_write_scope({"crm": {"provider": "copilotgtm"}}, "meetings:update") is True
+
+
+def test_missing_membership_policy_defaults_to_open() -> None:
+    preferences = normalize_organisation_preferences({})
+
+    assert preferences["membership"] == {"domain_join_policy": "open"}
+
+
+def test_invalid_membership_policy_defaults_to_open() -> None:
+    preferences = normalize_organisation_preferences(
+        {"membership": {"domain_join_policy": "unknown"}}
+    )
+
+    assert preferences["membership"] == {"domain_join_policy": "open"}
+
+
+def test_merge_membership_policy_preserves_other_preferences() -> None:
+    preferences = merge_organisation_app_settings(
+        {"integrations": {"google": {"gmail_read_enabled": True}}},
+        membership_domain_join_policy="invite_only",
+    )
+
+    assert preferences["membership"] == {"domain_join_policy": "invite_only"}
+    assert preferences["integrations"]["google"]["gmail_read_enabled"] is True

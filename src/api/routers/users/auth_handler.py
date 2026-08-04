@@ -397,13 +397,9 @@ async def user_external_auth_complete(
 
             if not user:
                 return Response.error_response(
-                    status_code=403,
-                    message="Your account has not been invited. Contact your administrator.",
-                    code=(
-                        "GOOGLE_INVITE_REQUIRED"
-                        if claims.authentication_method == UserAuthenticationMethod.GOOGLE_WORKSPACE
-                        else "MICROSOFT_INVITE_REQUIRED"
-                    ),
+                    status_code=404,
+                    message="We couldn't find a CopilotGTM account for this email.",
+                    code="ACCOUNT_NOT_FOUND",
                     response=response,
                 )
 

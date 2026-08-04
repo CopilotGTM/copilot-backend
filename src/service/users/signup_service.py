@@ -2,11 +2,13 @@
 
 import json
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from uuid import UUID
 
-from sqlalchemy import or_, select, text
+from sqlalchemy import cast, or_, select, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.master_tables import (
@@ -29,7 +31,11 @@ from src.domain.models.master_tables.external_identity_models import (
     ExternalIdentityMapping,
     ExternalIdentityProviderType,
 )
-from src.domain.models.user_signup_models import ExternalSignupRequest
+from src.domain.models.user_signup_models import ExternalSignupRequest, SignupFlow
+from src.service.orgnisation.organisation_preferences import (
+    DOMAIN_JOIN_POLICY_OPEN,
+    normalize_organisation_preferences,
+)
 from src.service.users.external_auth_service import ExternalSignupIdentity
 from src.service.users.user_tenant_setup_service import TenantUserSnapshot
 
@@ -49,6 +55,12 @@ class SignupServiceError(ValueError):
         super().__init__(message)
 
 
+@dataclass(frozen=True)
+class SignupPreflightResult:
+    flow: SignupFlow
+    signup: SignupRequest | None
+
+
 class SignupService:
     """Own signup idempotency, control-plane creation, and monotonic milestones."""
 
@@ -64,6 +76,57 @@ class SignupService:
     def __init__(self, session: AsyncSession):
         self._session = session
 
+    async def preflight(
+        self,
+        *,
+        identity: ExternalSignupIdentity,
+    ) -> SignupPreflightResult:
+        """Resolve the verified identity's next action without trusting browser input."""
+        await self.lock_subject(identity)
+        signup = await self._subject_request(identity)
+        if signup is not None and signup.status not in {
+            SignupRequestStatus.DRAFT,
+            SignupRequestStatus.INVITATION_REQUIRED,
+        }:
+            flow = (
+                SignupFlow.SIGN_IN
+                if signup.status == SignupRequestStatus.ACTIVE
+                else SignupFlow.RESUME_SIGNUP
+            )
+            return SignupPreflightResult(flow, signup)
+
+        existing_mapping = await self._identity_mapping(identity)
+        existing_user = await self._identity_user(identity)
+        if existing_mapping is not None or existing_user is not None:
+            return SignupPreflightResult(SignupFlow.SIGN_IN, None)
+
+        organisation = await self._organisation_for_domain(identity.primary_domain)
+        if signup is None:
+            signup = self._new_draft(identity)
+            self._session.add(signup)
+
+        if organisation is None:
+            signup.organisation_id = None
+            await self._session.commit()
+            await self._session.refresh(signup)
+            return SignupPreflightResult(SignupFlow.CREATE_ORGANISATION, signup)
+
+        signup.organisation_id = organisation.organisation_id
+        if organisation.primary_domain is None:
+            organisation.primary_domain = identity.primary_domain
+        await self._session.commit()
+        await self._session.refresh(signup)
+        if not organisation.is_active or organisation.status != OrganisationStatus.APPROVED:
+            return SignupPreflightResult(SignupFlow.ORGANISATION_UNAVAILABLE, signup)
+
+        membership = normalize_organisation_preferences(organisation.preferences)["membership"]
+        flow = (
+            SignupFlow.JOIN_EXISTING_ORGANISATION
+            if membership["domain_join_policy"] == DOMAIN_JOIN_POLICY_OPEN
+            else SignupFlow.INVITATION_REQUIRED
+        )
+        return SignupPreflightResult(flow, signup)
+
     async def get_or_create_draft(
         self,
         *,
@@ -74,12 +137,12 @@ class SignupService:
         Called by signup preflight after provider verification. A draft records only
         resumable identity context; organisation ownership is checked on submission.
         """
-        await self._lock_subject(identity)
+        await self.lock_subject(identity)
         existing_subject = await self._subject_request(identity)
         if existing_subject is not None:
             return existing_subject
 
-        await self._ensure_identity_available(identity)
+        await self.ensure_identity_available(identity)
         signup = self._new_draft(identity)
         self._session.add(signup)
         await self._session.commit()
@@ -98,31 +161,31 @@ class SignupService:
         checks. Repeated submissions return the same request so the HTTP layer can
         safely retry queue dispatch until a worker advances the state.
         """
-        await self._lock_subject(identity)
+        await self.lock_subject(identity)
         signup = await self._subject_request(identity)
+        if signup is not None and signup.status == SignupRequestStatus.INVITATION_REQUIRED:
+            raise SignupServiceError(
+                "This domain already belongs to an organisation",
+                code="ORGANISATION_ACCESS_REQUIRED",
+            )
         if signup is not None and signup.status != SignupRequestStatus.DRAFT:
             return signup
         if signup is None:
             signup = self._new_draft(identity)
             self._session.add(signup)
+        elif signup.organisation_id is not None:
+            raise SignupServiceError(
+                "This domain already belongs to an organisation",
+                code="ORGANISATION_ACCESS_REQUIRED",
+            )
 
         # Drafts do not reserve domains. The domain lock begins only when the
         # founder submits Create workspace, so abandoned tabs cannot block peers.
         await self._lock(f"signup-domain:{identity.primary_domain}")
-        await self._ensure_identity_available(identity)
+        await self.ensure_identity_available(identity)
         self._refresh_draft_identity(signup, identity)
 
-        existing_org = (
-            (
-                await self._session.execute(
-                    select(Organisation).where(
-                        col(Organisation.primary_domain) == identity.primary_domain
-                    )
-                )
-            )
-            .scalars()
-            .first()
-        )
+        existing_org = await self._organisation_for_domain(identity.primary_domain)
         if existing_org is not None:
             raise SignupServiceError(
                 "An organisation already owns this domain",
@@ -343,11 +406,13 @@ class SignupService:
         identity: ExternalSignupIdentity,
     ) -> SignupRequest | None:
         """Return status only to the immutable provider identity that created it."""
+        provider = self._signup_provider(identity.claims.authentication_method)
         return (
             (
                 await self._session.execute(
                     select(SignupRequest).where(
                         col(SignupRequest.signup_request_id) == signup_request_id,
+                        col(SignupRequest.provider) == provider,
                         col(SignupRequest.supabase_user_id) == identity.claims.supabase_user_id,
                         col(SignupRequest.provider_user_id) == identity.claims.provider_user_id,
                         col(SignupRequest.provider_tenant_id) == identity.claims.provider_tenant_id,
@@ -412,12 +477,16 @@ class SignupService:
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return sha256(canonical.encode()).hexdigest()
 
-    async def _lock_subject(self, identity: ExternalSignupIdentity) -> None:
+    async def lock_subject(self, identity: ExternalSignupIdentity) -> None:
         claims = identity.claims
         await self._lock(
             f"signup-subject:{claims.mapping_provider.value}:"
             f"{claims.provider_user_id}:{claims.provider_tenant_id}"
         )
+
+    async def lock_email(self, email: str) -> None:
+        """Serialize membership creation across providers for one email address."""
+        await self._lock(f"signup-email:{email.strip().lower()}")
 
     async def _lock(self, lock_key: str) -> None:
         await self._session.execute(
@@ -445,9 +514,34 @@ class SignupService:
             .first()
         )
 
-    async def _ensure_identity_available(self, identity: ExternalSignupIdentity) -> None:
+    async def ensure_identity_available(self, identity: ExternalSignupIdentity) -> None:
         claims = identity.claims
-        existing_mapping = (
+        existing_mapping = await self._identity_mapping(identity)
+        if existing_mapping is not None:
+            raise SignupServiceError(
+                "This provider account already exists",
+                code="ACCOUNT_ALREADY_EXISTS",
+            )
+
+        existing_user = await self._identity_user(identity)
+        if existing_user is None:
+            return
+        if existing_user.supabase_user_id == claims.supabase_user_id:
+            raise SignupServiceError(
+                "This account already belongs to an organisation",
+                code="ACCOUNT_IN_OTHER_ORGANISATION",
+            )
+        raise SignupServiceError(
+            "An account already exists for this identity",
+            code="ACCOUNT_ALREADY_EXISTS",
+        )
+
+    async def _identity_mapping(
+        self,
+        identity: ExternalSignupIdentity,
+    ) -> ExternalIdentityMapping | None:
+        claims = identity.claims
+        return (
             (
                 await self._session.execute(
                     select(ExternalIdentityMapping).where(
@@ -461,13 +555,36 @@ class SignupService:
             .scalars()
             .first()
         )
-        if existing_mapping is not None:
-            raise SignupServiceError(
-                "This provider account already exists",
-                code="ACCOUNT_ALREADY_EXISTS",
-            )
 
-        existing_user = (
+    async def get_owned_request_for_update(
+        self,
+        signup_request_id: UUID,
+        identity: ExternalSignupIdentity,
+    ) -> SignupRequest | None:
+        """Lock one signup request only when the verified provider subject owns it."""
+        claims = identity.claims
+        provider = self._signup_provider(claims.authentication_method)
+        return (
+            (
+                await self._session.execute(
+                    select(SignupRequest)
+                    .where(
+                        col(SignupRequest.signup_request_id) == signup_request_id,
+                        col(SignupRequest.provider) == provider,
+                        col(SignupRequest.supabase_user_id) == claims.supabase_user_id,
+                        col(SignupRequest.provider_user_id) == claims.provider_user_id,
+                        col(SignupRequest.provider_tenant_id) == claims.provider_tenant_id,
+                    )
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .first()
+        )
+
+    async def _identity_user(self, identity: ExternalSignupIdentity) -> User | None:
+        claims = identity.claims
+        return (
             (
                 await self._session.execute(
                     select(User).where(
@@ -481,17 +598,42 @@ class SignupService:
             .scalars()
             .first()
         )
-        if existing_user is None:
-            return
-        if existing_user.supabase_user_id == claims.supabase_user_id:
-            raise SignupServiceError(
-                "This account already belongs to an organisation",
-                code="ACCOUNT_IN_OTHER_ORGANISATION",
+
+    async def _organisation_for_domain(self, domain: str) -> Organisation | None:
+        normalized_domain = domain.strip().lower()
+        primary_owner = (
+            (
+                await self._session.execute(
+                    select(Organisation).where(
+                        col(Organisation.primary_domain) == normalized_domain
+                    )
+                )
             )
-        raise SignupServiceError(
-            "An account already exists for this identity",
-            code="ACCOUNT_ALREADY_EXISTS",
+            .scalars()
+            .first()
         )
+        if primary_owner is not None:
+            return primary_owner
+
+        legacy_owners = (
+            (
+                await self._session.execute(
+                    select(Organisation).where(
+                        col(Organisation.primary_domain).is_(None),
+                        cast(col(Organisation.domain), JSONB).contains([normalized_domain]),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if len(legacy_owners) > 1:
+            raise SignupServiceError(
+                "Organisation domain ownership is ambiguous",
+                code="SIGNUP_RECONCILIATION_REQUIRED",
+                status_code=503,
+            )
+        return legacy_owners[0] if legacy_owners else None
 
     def _new_draft(self, identity: ExternalSignupIdentity) -> SignupRequest:
         claims = identity.claims

@@ -16,7 +16,7 @@ from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from src.domain.models.authentication import Authentication
-from src.domain.models.master_tables import User
+from src.domain.models.master_tables import User, UserAppRole
 from src.infra.auth.user_auth import user_auth
 
 # Import core functions from infra (no FastAPI dependencies)
@@ -63,6 +63,16 @@ def get_current_user(request: Request, user: User = Depends(user_auth)) -> UserI
         user_timezone=effective_timezone,
         user_role=user.user_role,
     )
+
+
+def require_organisation_admin(current_user: User = Depends(user_auth)) -> User:
+    """Require an authenticated organisation administrator."""
+    if current_user.user_role != UserAppRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organisation admin access required",
+        )
+    return current_user
 
 
 # ---- SYNC FastAPI Dependencies ----
@@ -115,4 +125,5 @@ __all__ = [
     "acquire_org_async_session",
     "UserIDs",
     "get_current_user",
+    "require_organisation_admin",
 ]

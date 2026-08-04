@@ -2,14 +2,16 @@
 
 ## Status
 
-**Signup implementation complete in source; migration and provider rollout are not applied by
-this change. Organisation invitations remain a separately documented future phase.**
+**Signup, same-domain member admission, organisation-admin membership policy, and direct external
+member invitations are implemented in source. Migration and provider rollout are not applied by
+this change.**
 
-The backend keeps invite-only sign-in for existing organisations and now exposes explicit public
-self-service organisation signup. This document defines two supported product entry paths:
+The backend keeps sign-in separate from signup and exposes three product entry paths:
 
 1. **Sign up** creates a new organisation and its first admin.
-2. **Accept invitation** joins a user to an existing organisation.
+2. **Same-domain signup** joins a verified user as a member when policy is open, or records an
+   invitation-required request when policy is invite-only.
+3. **Admin invitation** pre-creates a member that completes provider linking through sign-in.
 
 Sign in remains a third, separate intent for users who already have an account. Sign in must
 never create an organisation implicitly.
@@ -26,9 +28,10 @@ only to public self-service organisation creation.
 | User intent | Result |
 | --- | --- |
 | Sign up for a new account | Create a new organisation and make the verified founding user its first admin. |
+| Sign up with an existing organisation domain | Join as a member when policy is open; otherwise notify admins and require an invitation. |
 | Sign in to an existing account | Authenticate only; never create a user or organisation. |
 | Accept an invitation | Join the exact organisation and role named by the invitation. |
-| Existing organisation admin invites teammates | Create one or up to 50 invitations and deliver them asynchronously. |
+| Existing organisation admin invites a teammate | Create an approved member for the selected provider and send the invitation. |
 
 The frontend may reuse one visual authentication shell, but it must expose distinct `/signup`
 and `/signin` routes and preserve the selected intent through OAuth using signed `state`. An
@@ -126,8 +129,9 @@ the remotely verified Google Workspace hosted-domain claim or Microsoft Entra id
 1. Remotely verify the Supabase session and extract the immutable provider subject, verified
    email, Workspace hosted domain or Entra tenant ID, name, and trusted avatar.
 2. Reject an exact existing user with `ACCOUNT_ALREADY_EXISTS`; direct the user to Sign in.
-3. Derive and normalize `primary_domain` from the verified provider claims. A matching existing
-   organisation returns `ORGANISATION_ACCESS_REQUIRED`; it never auto-joins or auto-promotes.
+3. Derive and normalize `primary_domain` from verified provider claims. A matching existing
+   organisation returns a server-owned join or invitation-required flow; it never creates a
+   second organisation or promotes the user to admin.
 4. Create or resume one `draft` without reserving the domain. Supabase has already created the
    OAuth identity, so no password or second auth identity is created.
 5. On Create workspace, lock the provider subject and domain, transition the draft to `received`,
@@ -145,10 +149,10 @@ the remotely verified Google Workspace hosted-domain claim or Microsoft Entra id
 10. Send a welcome email and queue existing best-effort organisation research. OAuth-verified users
     do not need a second verification email.
 
-If an existing organisation has a verified claim on the same custom domain, return
-`ORGANISATION_ACCESS_REQUIRED`. The frontend should tell the user to ask an existing admin
-for an invitation. V1 does not need public organisation discovery or automatic domain joining.
-Personal email domains are not accepted for V1 public signup.
+If an approved active organisation owns the verified domain, bind the durable request to that
+organisation without exposing its identity. Missing/`open` policy permits idempotent member
+admission. `invite_only` creates no user, mapping, or CRM identity and notifies active admins once.
+Personal email domains remain unsupported.
 
 ### Existing organisation and repeat-signup rules
 
@@ -157,9 +161,10 @@ the organisation already exists:
 
 | Situation | Result |
 | --- | --- |
-| Same provider subject already mapped | `ACCOUNT_ALREADY_EXISTS`; send to Sign in. |
-| Same verified email already belongs to any user | `ACCOUNT_ALREADY_EXISTS`; enforce that user's configured method. |
-| Same primary domain belongs to an organisation | `ORGANISATION_ACCESS_REQUIRED`; ask its admin for an invitation. |
+| Same provider subject already mapped | Return `sign_in`; do not repeat signup. |
+| Same verified email already belongs to an invited or active user | Return `sign_in`; enforce that user's configured method. |
+| Same primary domain belongs to an organisation with open policy | Return `join_existing_organisation`; create only a member on join. |
+| Same primary domain belongs to an invite-only organisation | Return `invitation_required`; create no user until an admin invites them. |
 | Same display name but a different verified primary domain | Allow a different organisation; names are not identity. |
 | Previous signup request is still running | Return the same request; while status is `received`, retry dispatch because the previous queue result may be uncertain. |
 | Previous request failed after partial work | Resume from its last committed milestone using the same request. |
@@ -201,57 +206,39 @@ orchestrator. Required properties are:
 - one master transaction for organisation and founding user;
 - safe retry of tenant-default creation.
 
-## Flow B: organisation invitation
+## Flow B: current organisation-member invitation
 
-### Who can invite
+### Authority and scope
 
-- `admin` with user-management permission: can invite `member` users. Granting `admin` to an
-  invitee requires the stronger admin-management permission.
-- `member`: cannot invite.
-- `platform_super_admin`: operational override only, fully audited.
+- Only an authenticated, active organisation `admin` may call the invitation endpoint.
+- The service repeats the organisation equality and `admin` role checks inside the business
+  transaction; route authorization is not the only protection.
+- Public invitation can create only `member`. It cannot grant `admin`, choose approval state, or
+  target another organisation.
+- The normalized invite email must match the organisation's scalar primary domain or its legacy
+  configured domain list. Cross-domain and consumer-email invitations are not supported here.
+- The selected authentication method is exactly `google_workspace` or `microsoft_entra`.
 
-The organisation may never be left without an active `admin`.
+### Durable write and retry behavior
 
-### Single and bulk invite
+1. Acquire a transaction-scoped advisory lock for the normalized email.
+2. Reject an email already owned by another user or organisation.
+3. Create one approved, active application `member` with no Supabase user ID. The configured
+   authentication method prevents password access while the provider identity is unlinked.
+4. Provision the tenant CRM identity, then commit the master user and audit rows. If the master
+   commit fails after tenant creation, delete only that newly created tenant CRM user.
+5. Send the provider-specific invitation email after the durable commit.
+6. Repeating the same invitation for the same unlinked member and provider reuses the user and
+   retries email delivery; it does not create another member or CRM identity.
 
-The same API accepts 1-50 invitation entries. A CSV upload is a frontend convenience that parses
-into this request; the backend does not need a separate CSV parser.
-
-Each entry contains:
-
-- normalized email;
-- role (`member` or permitted `admin`);
-- authentication method (`password`, `google`, or `microsoft_entra`);
-- optional organisation/job title metadata.
-
-The backend validates every entry and returns per-entry results. One invalid or duplicate email
-must not discard the other valid invitations. Duplicate pending invitations are idempotent and
-may be resent rather than recreated.
-
-An explicit invitation is sufficient organisation authority. A contractor or agency user does
-not need to share the organisation's email domain. Exact invited email, verified provider
-identity, invitation state, and organisation policy are the checks that matter.
-
-### Delivery and acceptance
-
-1. Commit the invitation and an email-outbox event atomically.
-2. A worker sends a provider-specific invitation email and records delivery attempts.
-3. The email link opens `/accept-invite` with an opaque, single-use token. Store only its hash.
-4. The user authenticates with the invitation's required method.
-5. The backend verifies exact normalized email, provider/method, token, expiry, organisation
-   state, and invitation state.
-6. Acceptance creates/activates the user and membership exactly once, marks the invitation
-   accepted, and revokes the token.
-
-Invitation email failure must not be reported as successful delivery. The admin UI shows
-`queued`, `sent`, `delivered` when available, `failed`, `accepted`, `expired`, or `revoked`, and
-offers an idempotent resend action. Invitation expiry should default to seven days.
+Email is currently best-effort rather than outbox-backed. A delivery failure does not roll back
+the durable invitation. It is logged with organisation and user identifiers, and the admin can
+repeat the same invitation to retry delivery.
 
 ## API contract
 
-The signup endpoints below are implemented. Invitation endpoints remain target contracts for a
-later phase. All responses use the existing CopilotGTM response envelope and stable
-machine-readable error codes.
+The endpoints below are implemented. All responses use the existing CopilotGTM response envelope
+and stable machine-readable error codes.
 
 ### Signup
 
@@ -259,8 +246,13 @@ machine-readable error codes.
 
 #### `PUT /users/auth/microsoft/signup/draft`
 
-Creates or resumes the verified provider subject's durable `draft` and returns its read-only
-provider identity context. It does not reserve the company domain or dispatch provisioning.
+Resolves one of `create_organisation`, `join_existing_organisation`, `invitation_required`,
+`sign_in`, `resume_signup`, or `organisation_unavailable`. It returns read-only provider identity
+context and never accepts an organisation ID, role, domain, or provider authority from the client.
+
+The lookup prefers the unique scalar `primary_domain`. For legacy admin-created rows whose scalar
+is null, it checks `domain[]`, repairs the scalar only when exactly one owner exists, and fails
+closed with `SIGNUP_RECONCILIATION_REQUIRED` when legacy ownership is ambiguous.
 
 #### `POST /users/auth/google/signup`
 
@@ -277,67 +269,56 @@ Supabase bearer session. Public and strongly rate-limited; idempotency is server
 
 Returns `202 Accepted` with `signup_request_id` and a non-secret status resource.
 
+An existing-domain or `invitation_required` draft cannot be submitted to this organisation-
+creation endpoint.
+
+#### `POST /users/auth/google/signup/join`
+
+#### `POST /users/auth/microsoft/signup/join`
+
+Accepts only `{ "signup_request_id": "uuid" }`. The verified provider, subject, tenant, and
+Supabase user ID must own the server-side request. The service rechecks the current verified domain
+and email-domain membership, target organisation state, and policy under locks. Open policy creates
+an active approved member; invite-only transitions once to `invitation_required` without creating
+a user or mapping.
+
 #### `GET /users/auth/signup-requests/{signup_request_id}`
 
-Returns `draft`, `received`, `control_plane_created`, `tenant_defaults_created`, `storage_created`,
-`active`, `reconciliation_required`, or terminal failure status. The remotely verified founding
-session must own the request; a UUID alone is not authorization.
+Returns `draft`, `invitation_required`, `received`, `control_plane_created`,
+`tenant_defaults_created`, `storage_created`, `active`, `reconciliation_required`, or terminal
+failure status. Provider, provider subject, tenant, and Supabase user ID must own the request; a
+UUID alone is not authorization. Organisation and user IDs are withheld until `active`, including
+from an invite-only applicant who is not yet a member.
 
-### Invitation management
+### Membership policy
 
-#### `POST /organisations/{organisation_id}/invitation-batches`
+#### `GET /users/preference/membership`
 
-Creates 1-50 invitations. Requires organisation admin authorization and
-`Idempotency-Key`.
+#### `PATCH /users/preference/membership`
+
+Both require organisation admin authorization. `PATCH` accepts only:
 
 ```json
-{
-  "invitations": [
-    {
-      "email": "alex@acme.com",
-      "role": "member",
-      "authentication_method": "google_workspace"
-    },
-    {
-      "email": "sam@agency.example",
-      "role": "member",
-      "authentication_method": "microsoft_entra"
-    }
-  ]
-}
+{ "domain_join_policy": "open" }
 ```
 
-Returns `201 Created` for the durable batch, including counts and per-entry validation results.
-Email delivery continues through the outbox worker.
+The other value is `invite_only`. Missing or invalid stored policy normalizes to `open`; invalid
+request values fail Pydantic validation.
 
-#### `GET /organisations/{organisation_id}/invitation-batches/{batch_id}`
+### Organisation-member invitation
 
-Returns per-invitation processing and delivery state.
+#### `POST /users/organisation/invitations`
 
-#### `GET /organisations/{organisation_id}/invitations`
+Requires organisation admin authorization and accepts only email, first name, last name, and
+Google/Microsoft authentication method. Organisation, role, status, and approval are server-owned.
+The existing `/users/auth/{provider}/complete` path links the invited email's verified provider
+identity on first sign-in.
 
-Lists invitations with pagination and status filters.
+### Explicitly not implemented in this slice
 
-#### `POST /organisations/{organisation_id}/invitations/{invitation_id}/resend`
-
-Queues another delivery for a still-valid pending invitation. Rate-limited and idempotent.
-
-#### `DELETE /organisations/{organisation_id}/invitations/{invitation_id}`
-
-Revokes a pending invitation and invalidates its token.
-
-### Invitation acceptance
-
-#### `POST /users/auth/invitations/preview`
-
-Accepts the opaque token in the JSON body and returns non-sensitive organisation name, invited
-email mask, role, required authentication method, and expiry. Putting the token in the request
-body prevents API access logs from recording it.
-
-#### `POST /users/auth/invitations/accept`
-
-Requires the verified password/provider session and the opaque invitation token in the body.
-Returns the active user profile and organisation bootstrap data.
+Bulk/CSV invitations, cross-domain contractors, password invitations, invitation-token preview or
+acceptance endpoints, expiry/revocation, and a transactional email outbox are future expansions.
+They must not be described to the frontend as current API contracts.
 
 ## Stable frontend outcomes
 
@@ -345,18 +326,20 @@ Returns the active user profile and organisation bootstrap data.
 | --- | --- |
 | `ACCOUNT_ALREADY_EXISTS` | Offer Sign in; do not reveal authentication details before identity verification. |
 | `ACCOUNT_NOT_FOUND` | On Sign in, offer an explicit link to Sign up. |
-| `ORGANISATION_ACCESS_REQUIRED` | Ask the user to obtain an invitation from an existing admin. |
-| `INVITATION_REQUIRED` | The identity is known but has no valid invitation for this organisation. |
-| `INVITATION_EXPIRED` | Offer admin resend/contact action. |
-| `INVITATION_REVOKED` | Stop; contact organisation admin. |
-| `INVITATION_EMAIL_MISMATCH` | Clear provider session and authenticate as the invited email. |
+| `ORGANISATION_ACCESS_REQUIRED` | The existing-domain draft cannot enter organisation creation; rerun preflight. |
+| `SIGNUP_RECONCILIATION_REQUIRED` | Stop and contact support; domain ownership or committed state is ambiguous. |
+| `ORGANISATION_INACTIVE` | Stop; the matched organisation cannot admit members. |
+| `SIGNUP_FLOW_INVALID` | Rerun preflight; the request is not eligible for existing-organisation join. |
+| `INVALID_COMPANY_EMAIL_DOMAIN` | Admin must use an email matching an organisation domain. |
+| `USER_ALREADY_EXISTS` | The email cannot be invited into another user or organisation. |
 | `PASSWORD_SIGN_IN_REQUIRED` | Show password sign-in. |
 | `GOOGLE_SIGN_IN_REQUIRED` | Start Google sign-in. |
 | `MICROSOFT_SIGN_IN_REQUIRED` | Start Microsoft sign-in. |
 | `ACCOUNT_IN_OTHER_ORGANISATION` | Explain the V1 one-organisation limitation; contact support/admin. |
 
-Public responses must remain enumeration-resistant. More specific account or invitation details
-may be returned only after a verified identity or valid invitation token establishes authority.
+`invitation_required` is a successful preflight flow and durable signup status, not an error code.
+Public responses remain enumeration-resistant. Existing-organisation details are available only
+after an authenticated organisation-admin boundary; preflight never reveals its ID or name.
 
 ## Current implementation gaps
 
@@ -375,27 +358,31 @@ not apply migrations automatically.
 | Consumer Google/Microsoft account | Rejected | Remains rejected in V1 |
 | Organisation uniqueness | Migration `012` uses unique normalized verified primary domain | Apply migration through release gates |
 | Tenant defaults and storage | Founder-first shared provisioning with required container gate | Complete for signup |
-| Organisation invitations | Admin creates a user directly | Durable invitation records with acceptance tokens |
+| Organisation invitations | Admin creates an external-auth member directly and sends provider invitation | Durable token/outbox workflow may be added when cross-domain or bulk invitations are required |
 | Bulk invitations | Not available | One request with 1-50 per-entry results |
-| Delivery reliability | Direct best-effort email | Transactional outbox, retries, status, resend |
-| Approval | User may remain pending after creation | Founder auto-approved; invitee activated on valid acceptance |
+| Delivery reliability | Direct best-effort email; repeating the same unlinked invitation retries delivery | Transactional outbox and delivery status are optional future hardening |
+| Approval | Founder and admitted/invited member are active and approved; provider linking still gates access | Complete for current flow |
 | Organisation roles | `admin` / `member` | Reuse organisation `admin`; keep platform super-admin separate and protect the last active admin |
-| External invite domain | Must match organisation domain | Exact invitation email is authoritative; cross-domain invite allowed |
+| External invite domain | Must match an organisation domain | Keep same-domain validation for this direct-member invitation flow |
 
 ## Security and production gates
 
-- Signed OAuth `state` binds intent (`signin`, `signup`, or `accept_invite`), provider, redirect,
-  and anti-CSRF nonce.
+Provider identity proves the user controls one work account. It never grants an admin role.
+Organisation membership policy decides only member admission; record-level authorization remains
+separate.
+
+- Signed OAuth `state` binds intent (`signin` or `signup`), provider, redirect, and anti-CSRF nonce.
 - Provider session is remotely verified; email must be provider-verified.
 - No organisation or admin role is created from a Sign in callback.
-- Signup and invitation acceptance are idempotent under duplicate and concurrent requests.
-- Domain equality never grants membership or admin rights.
-- Invitation tokens are high-entropy, hashed at rest, single-use, expiring, revocable, and never
-  logged.
-- Signup and invitation endpoints have IP, identity, organisation, and resend rate limits.
-- Email uses a durable outbox with bounded retries and observable terminal failure.
-- Audit records cover signup, organisation creation, founding-admin assignment, invitation
-  create/send/resend/revoke/accept, method mismatch, and rejected linking.
+- Signup, same-domain join, and direct invitation creation are idempotent under duplicate and
+  concurrent requests.
+- Provider verification plus open membership policy may grant only `member`; domain equality
+  never grants admin.
+- Signup and invitation endpoints use the existing public/user write rate limits.
+- Email is post-commit and best-effort. Failure cannot roll back membership; direct invitations
+  can be repeated safely to retry delivery. A durable outbox is not implemented in this slice.
+- Audit records cover signup, organisation creation, founding-admin assignment, automatic member
+  admission, and direct member invitation.
 - Suspended users and organisations fail closed on completion, refresh, `/me`, and protected APIs.
 - No production rollout until migration compatibility, Supabase provider settings, redirect
   allowlists, email delivery, rollback, and the complete acceptance matrix pass in non-production.
@@ -409,13 +396,14 @@ not apply migrations automatically.
 - Existing password user tries Google and receives password guidance.
 - Existing Google/Microsoft user tries password and forgot-password remains neutral.
 - Existing email tries Sign up and is directed safely to Sign in.
-- Same verified organisation domain cannot auto-join or auto-promote another user.
-- Admin single invite and 50-user mixed-result bulk invite.
-- Cross-domain contractor invitation.
-- Wrong-email, wrong-provider, expired, revoked, replayed, and concurrent invitation acceptance.
-- Email send failure, retry, resend, and terminal delivery visibility.
-- Prevention of deleting, suspending, or demoting the last active organisation admin.
-- Suspended user/organisation at signup completion, invite acceptance, refresh, and `/me`.
+- Same verified organisation domain joins only as `member` when policy is open.
+- Invite-only admission creates no user/mapping/CRM identity and notifies admins once.
+- Ambiguous legacy domain ownership fails closed; one legacy owner self-heals `primary_domain`.
+- Admin policy read/update rejects members.
+- Admin single invite works in both modes and rejects cross-domain email.
+- Repeated unlinked invitation reuses one user and retries email delivery.
+- Notification failure after membership commit does not turn the join into failure.
+- Suspended user/organisation at signup completion, join, refresh, and `/me`.
 - Retry after Supabase timeout, database rollback, tenant-default failure, and callback replay.
 
 ## Remaining delivery order
@@ -425,8 +413,9 @@ not apply migrations automatically.
 3. Run real Google Workspace and Microsoft Entra signup, duplicate-domain, retry, and email smoke tests.
 4. Build separate frontend Sign up and Sign in routes on the shared authentication shell.
 5. Release signup through normal environment gates with worker and reconciliation monitoring.
-6. Design and implement the invitation subsystem as a separate change, including outbox delivery,
-   bulk results, acceptance tokens, and the last-active-admin guard.
+6. If product scope expands beyond same-domain direct members, separately design outbox delivery,
+   bulk results, cross-domain authority, acceptance tokens, expiry/revocation, and the
+   last-active-admin guard.
 
 ## External references
 

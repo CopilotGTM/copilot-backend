@@ -1,8 +1,8 @@
 # User Authentication API
 
-> **Current implementation:** sign-in remains invite-only, while new organisations can be created
-> through the separate Google Workspace or Microsoft Entra self-service signup endpoints below.
-> Organisation invitations remain a later phase.
+> **Current implementation:** verified Google Workspace and Microsoft Entra users can create a
+> workspace or join an existing same-domain workspace as members. Organisation admins can switch
+> same-domain admission to invite-only and can invite members in either mode.
 
 Frontend contract for password, Google Workspace, and Microsoft Entra sign-in.
 
@@ -11,8 +11,9 @@ Frontend contract for password, Google Workspace, and Microsoft Entra sign-in.
 Use separate **Sign in** and **Sign up** routes. Sign in has email/password, Continue with Google,
 and Continue with Microsoft. It authenticates existing users only and never creates an
 organisation. Sign up supports verified Google Workspace and Microsoft Entra work accounts and
-creates the founding `admin`; later users still require an administrator-created account or
-invitation. Each user has one immutable `authentication_method`:
+creates the founding `admin`. Later verified same-domain users join as `member` unless the
+organisation has selected invite-only admission. Each user has one immutable
+`authentication_method`:
 
 - `password`
 - `google_workspace`
@@ -33,9 +34,9 @@ All endpoints below are relative to `/users/auth`. Responses use:
 
 ## Self-service organisation signup
 
-The frontend sequence is `/signup` -> provider OAuth -> `PUT` draft -> organisation name -> `POST`
-finalisation -> durable polling -> onboarding. Preserve `intent=signup` in signed OAuth state; a
-successful `/signin` callback must never be repurposed as signup.
+The frontend sequence is `/signup` -> provider OAuth -> `PUT` preflight -> follow the returned
+server-owned `flow`. Preserve `intent=signup` in signed OAuth state; a successful `/signin`
+callback must never be repurposed as signup.
 
 After OAuth, call `PUT /google/signup/draft` or `PUT /microsoft/signup/draft` with the remotely verified
 Supabase access token. The backend creates or resumes a server-side draft and returns the
@@ -50,6 +51,7 @@ Authorization: Bearer <supabase-access-token>
   "status": "SUCCESS",
   "message": "Signup draft ready",
   "data": {
+    "flow": "create_organisation",
     "signup_request_id": "uuid",
     "status": "draft",
     "provider": "google",
@@ -61,6 +63,20 @@ Authorization: Bearer <supabase-access-token>
   }
 }
 ```
+
+`flow` is one of:
+
+| Flow | Frontend action |
+| --- | --- |
+| `create_organisation` | Show organisation name and submit the existing organisation-creation endpoint. |
+| `join_existing_organisation` | Call the join endpoint below; do not show organisation creation. |
+| `invitation_required` | Call the join endpoint to persist the request and notify admins. |
+| `sign_in` | Continue normal sign-in; no signup request is created. |
+| `resume_signup` | Resume durable status polling for the returned request. |
+| `organisation_unavailable` | Stop and show that the workspace is unavailable. |
+
+The response never reveals an existing organisation's ID or name. `signup_request_id`, `status`,
+and `organisation_name` are nullable for `sign_in`.
 
 Submit only the editable workspace name to `POST /google/signup` or `POST /microsoft/signup`:
 
@@ -74,6 +90,11 @@ Do not send names, company domain, profile fields, roles, policy versions, or an
 The backend derives the founder identity and canonical `primary_domain` from the remotely verified
 Google Workspace hosted-domain claim or Microsoft Entra identity. It selects the current Terms and
 Privacy versions when finalising the draft. Consumer email domains are rejected.
+
+Organisation matching prefers the unique scalar `primary_domain`. Legacy organisations are
+considered only when that scalar is missing and their configured domain list contains the verified
+domain. One legacy match is repaired automatically; multiple legacy matches fail closed with
+`SIGNUP_RECONCILIATION_REQUIRED` so a user is never attached to an arbitrary tenant.
 
 `202 Accepted` returns only durable identifiers and state:
 
@@ -95,7 +116,8 @@ tab can resume at `draft`; after Create workspace, continue polling through `rec
 `control_plane_created`, `tenant_defaults_created`, and
 `storage_created`; enter onboarding only at `active`. `reconciliation_required` is retryable via
 support/operations and is not success. The UUID is not authorization: another identity receives
-`SIGNUP_REQUEST_NOT_FOUND`.
+`SIGNUP_REQUEST_NOT_FOUND`. Request ownership includes the provider, provider subject, and email,
+so a request created through one provider cannot be polled through another.
 
 Stable signup errors are `AUTHENTICATION_FAILED`, `SIGNUP_PROVIDER_INVALID`,
 `SIGNUP_IDENTITY_INVALID`, `CONSUMER_ACCOUNT_NOT_SUPPORTED`, `ACCOUNT_ALREADY_EXISTS`,
@@ -104,6 +126,47 @@ Stable signup errors are `AUTHENTICATION_FAILED`, `SIGNUP_PROVIDER_INVALID`,
 `SIGNUP_STATE_INVALID`.
 Rate-limit storage failure returns `503`; the frontend must fail closed and retry later with the
 same verified provider session.
+
+### Join an existing same-domain organisation
+
+For `join_existing_organisation` or `invitation_required`, submit only the server-created request:
+
+```http
+POST /users/auth/google/signup/join
+Authorization: Bearer <supabase-access-token>
+Content-Type: application/json
+```
+
+```json
+{ "signup_request_id": "uuid" }
+```
+
+Use `/microsoft/signup/join` for Microsoft. The backend re-verifies request ownership, domain,
+organisation state, and the current policy. An open policy creates one active approved `member`,
+its provider mapping, and tenant CRM user. Invite-only returns durable status
+`invitation_required`, creates no user or mapping, and notifies active organisation admins once.
+Retries return the same durable result. The request accepts no organisation ID, domain, role, or
+approval fields.
+
+`invitation_required` is a successful durable flow/status, not an error code and not an
+organisation-creation state. A notification delivery failure is logged after commit and does not
+undo a successfully created member. Delivery is currently best-effort rather than outbox-backed.
+Organisation and user IDs remain null until the request is `active`, so an unadmitted applicant
+cannot discover the matched tenant identifier.
+
+### Organisation-admin membership controls
+
+- `GET /users/preference/membership` returns `{ "domain_join_policy": "open|invite_only" }`.
+- `PATCH /users/preference/membership` accepts the same field. Missing policy defaults to `open`.
+- `POST /users/organisation/invitations` accepts `email`, `first_name`, `last_name`, and
+  `authentication_method` (`google_workspace` or `microsoft_entra`). It always creates a member
+  invitation and works in both policy modes.
+
+All three endpoints require an authenticated organisation `admin`; members receive `403`.
+Invitation email must match one of the organisation's configured domains. Repeating the same
+invitation for the same still-unlinked member reuses that member and resends the email. It never
+changes an existing user's organisation, role, provider, or linked identity; those conflicts return
+`USER_ALREADY_EXISTS`.
 
 The signup write budget is intentionally strict. Status polling has a separate read budget; poll
 with backoff (for example, every 2 seconds initially, then every 5 seconds) and always respect
@@ -194,8 +257,7 @@ External completion errors:
 | HTTP | `code` | Meaning/action |
 |---|---|---|
 | 401 | `AUTHENTICATION_FAILED` | Invalid, ambiguous, unsupported, or provider-mismatched session; clear local session and restart OAuth. |
-| 403 | `GOOGLE_INVITE_REQUIRED` | Google user was not invited. Contact admin. |
-| 403 | `MICROSOFT_INVITE_REQUIRED` | Microsoft user was not invited. Contact admin. |
+| 404 | `ACCOUNT_NOT_FOUND` | Verified provider identity has no CopilotGTM account. Offer an explicit **Continue to sign up** action without mentioning organisations or invitations. |
 | 409 | `PASSWORD_SIGN_IN_REQUIRED` | Account is password-owned; clear OAuth session and show password form. |
 | 409 | `GOOGLE_SIGN_IN_REQUIRED` | Use Google. |
 | 409 | `MICROSOFT_SIGN_IN_REQUIRED` | Use Microsoft. |

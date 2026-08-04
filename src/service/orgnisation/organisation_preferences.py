@@ -59,6 +59,10 @@ CRM_WRITE_SCOPES = {
 }
 DEFAULT_INTERNAL_CRM_WRITE_SCOPES = sorted(CRM_WRITE_SCOPES)
 GOOGLE_GMAIL_READ_ENABLED_KEY = "gmail_read_enabled"
+DOMAIN_JOIN_POLICY_OPEN = "open"
+DOMAIN_JOIN_POLICY_INVITE_ONLY = "invite_only"
+DOMAIN_JOIN_POLICIES = {DOMAIN_JOIN_POLICY_OPEN, DOMAIN_JOIN_POLICY_INVITE_ONLY}
+DEFAULT_DOMAIN_JOIN_POLICY = DOMAIN_JOIN_POLICY_OPEN
 
 
 def normalize_crm_provider(provider: str | None) -> str:
@@ -146,6 +150,10 @@ def _clean_bot_join_policy(value: Any) -> str:
     )
 
 
+def _clean_domain_join_policy(value: Any) -> str:
+    return value if value in DOMAIN_JOIN_POLICIES else DEFAULT_DOMAIN_JOIN_POLICY
+
+
 def normalize_organisation_preferences(preferences: dict[str, Any] | None) -> dict[str, Any]:
     """Normalize app-owned preference namespaces while preserving unrelated keys."""
     root = dict(preferences or {})
@@ -153,12 +161,14 @@ def normalize_organisation_preferences(preferences: dict[str, Any] | None) -> di
     raw_channels = root.get("channels")
     raw_integrations = root.get("integrations")
     raw_meeting_recording = root.get("meeting_recording")
+    raw_membership = root.get("membership")
     crm: dict[str, Any] = raw_crm if isinstance(raw_crm, dict) else {}
     channels: dict[str, Any] = raw_channels if isinstance(raw_channels, dict) else {}
     integrations: dict[str, Any] = raw_integrations if isinstance(raw_integrations, dict) else {}
     meeting_recording: dict[str, Any] = (
         raw_meeting_recording if isinstance(raw_meeting_recording, dict) else {}
     )
+    membership: dict[str, Any] = raw_membership if isinstance(raw_membership, dict) else {}
     provider = crm.get("provider") or crm.get("source")
     raw_write_policy = crm.get("write_policy")
     write_policy: dict[str, Any] = raw_write_policy if isinstance(raw_write_policy, dict) else {}
@@ -174,6 +184,9 @@ def normalize_organisation_preferences(preferences: dict[str, Any] | None) -> di
     root["channels"] = {"enabled": _clean_enabled_channels(enabled_channels)}
     root["meeting_recording"] = {
         "bot_join_policy": _clean_bot_join_policy(meeting_recording.get("bot_join_policy")),
+    }
+    root["membership"] = {
+        "domain_join_policy": _clean_domain_join_policy(membership.get("domain_join_policy")),
     }
     root["capabilities"] = derive_capabilities(root["crm"])
     if isinstance(integrations, dict) and set(integrations) <= {"enabled_sources"}:
@@ -210,6 +223,7 @@ def merge_organisation_app_settings(
     enabled_channel_sources: Iterable[Any] | None = None,
     google_gmail_read_enabled: bool | None = None,
     meeting_recording_bot_join_policy: str | None = None,
+    membership_domain_join_policy: str | None = None,
 ) -> dict[str, Any]:
     """Merge admin-controlled app settings without replacing unrelated preferences."""
     root = normalize_organisation_preferences(preferences)
@@ -227,6 +241,10 @@ def merge_organisation_app_settings(
     if meeting_recording_bot_join_policy is not None:
         root["meeting_recording"] = {
             "bot_join_policy": _clean_bot_join_policy(meeting_recording_bot_join_policy),
+        }
+    if membership_domain_join_policy is not None:
+        root["membership"] = {
+            "domain_join_policy": _clean_domain_join_policy(membership_domain_join_policy),
         }
     return root
 

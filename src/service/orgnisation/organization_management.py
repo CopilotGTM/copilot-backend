@@ -75,6 +75,10 @@ class OrganizationManagementService:
         """
         logger.info(f"Starting creation process for organization: {organisation_name}")
 
+        domains = org_details.get("domain")
+        if domains and not org_details.get("primary_domain"):
+            org_details["primary_domain"] = domains[0]
+
         # ── Phase 1: create/update org record, then release session ──
         async with master_async_session_scope() as session:
             existing_org = await session.get(Organisation, organisation_id)
@@ -314,6 +318,10 @@ class OrganizationManagementService:
             OrganisationStatus.PENDING,
         ]:
             raise ValueError(f"Organization with status '{organisation.status}' cannot be updated.")
+
+        domains = update_data.get("domain")
+        if domains:
+            update_data = {**update_data, "primary_domain": domains[0]}
 
         updated_fields = []
         for key, value in update_data.items():
