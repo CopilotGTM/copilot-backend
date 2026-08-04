@@ -57,6 +57,36 @@ async def test_signup_welcome_links_to_signin_without_verification_or_credential
     assert "password" not in content
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "expected_phrase"),
+    [
+        ("send_domain_member_joined_email", "joined your Acme workspace"),
+        ("send_domain_access_attempt_email", "tried to join your workspace"),
+    ],
+)
+async def test_domain_membership_notifications_name_the_requester(
+    monkeypatch, method, expected_phrase
+) -> None:
+    service = EmailService()
+    sent = {}
+
+    async def capture_email(to_email, subject, html_content, text_content=None, cc=None):
+        sent.update(to=to_email, subject=subject, html=html_content, text=text_content)
+        return True
+
+    monkeypatch.setattr(service, "send_email", capture_email)
+
+    assert await getattr(service, method)(
+        "admin@acme.com",
+        "teammate@acme.com",
+        "Acme",
+    )
+    assert sent["to"] == "admin@acme.com"
+    assert "teammate@acme.com" in sent["text"]
+    assert expected_phrase in sent["text"]
+
+
 class TestEmailServiceLazyInit:
     """EmailService should not resolve API key at init time."""
 

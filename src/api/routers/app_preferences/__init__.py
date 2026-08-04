@@ -8,6 +8,7 @@ from src.api.routers.app_preferences.crm_list_handler import crm_list_preference
 from src.api.routers.app_preferences.meeting_recording_policy_handler import (
     meeting_recording_policy_router,
 )
+from src.api.routers.app_preferences.membership_handler import membership_policy_router
 from src.api.routers.app_preferences.navigation_handler import navigation_preferences_router
 
 __all__ = [
@@ -15,5 +16,6 @@ __all__ = [
     "calendar_sender_preferences_router",
     "crm_list_preferences_router",
     "meeting_recording_policy_router",
+    "membership_policy_router",
     "navigation_preferences_router",
 ]

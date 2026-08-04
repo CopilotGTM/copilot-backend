@@ -249,6 +249,43 @@ class EmailService:
             text,
         )
 
+    async def send_domain_member_joined_email(
+        self,
+        to_email: str,
+        member_email: str,
+        organisation_name: str,
+    ) -> bool:
+        """Tell an organisation admin that a verified same-domain member joined."""
+        subject = f"A teammate joined {organisation_name}"
+        text = f"{member_email} joined your {organisation_name} workspace as a member."
+        safe_text = html_escape(text)
+        return await self.send_email(
+            to_email,
+            subject,
+            self._create_styled_html(subject, text, f"<p>{safe_text}</p>"),
+            text,
+        )
+
+    async def send_domain_access_attempt_email(
+        self,
+        to_email: str,
+        requester_email: str,
+        organisation_name: str,
+    ) -> bool:
+        """Tell an organisation admin that invite-only policy blocked a teammate."""
+        subject = f"A teammate requested access to {organisation_name}"
+        text = (
+            f"{requester_email} tried to join your workspace. "
+            f"Invite them from {self.app_url}/settings/members if they should have access."
+        )
+        safe_text = html_escape(text)
+        return await self.send_email(
+            to_email,
+            subject,
+            self._create_styled_html(subject, text, f"<p>{safe_text}</p>"),
+            text,
+        )
+
     async def send_signup_welcome_email(self, to_email: str, first_name: str) -> bool:
         """Welcome a provider-backed founder after their organisation is active."""
         safe_name = html_escape(first_name)

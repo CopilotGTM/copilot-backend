@@ -36,6 +36,7 @@ class _SSOSession:
         self.organisation = organisation
         self.mapping = mapping
         self.added = []
+        self.commits = 0
         self.email_queried = False
 
     async def execute(self, statement):
@@ -46,7 +47,7 @@ class _SSOSession:
             self.email_queried = True
             return _SSOResult(self.user)
         if "supabase_user_id" in query:
-            return _SSOResult(self.user if self.user.supabase_user_id else None)
+            return _SSOResult(self.user if self.user and self.user.supabase_user_id else None)
         return _SSOResult(self.user)
 
     async def get(self, model, _identity):
@@ -56,6 +57,7 @@ class _SSOSession:
         self.added.append(value)
 
     async def commit(self):
+        self.commits += 1
         return None
 
 
@@ -247,6 +249,85 @@ async def test_returning_external_user_resolves_connection_before_changed_email(
     assert result.data is not None
     assert result.data.email == "old-name@acme.com"
     assert session.email_queried is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider", "authentication_method", "identity_provider", "identity_data"),
+    [
+        (
+            "google",
+            "google_workspace",
+            "google",
+            {
+                "sub": "google-unknown-user",
+                "email": "new-user@acme.com",
+                "email_verified": True,
+                "hd": "acme.com",
+            },
+        ),
+        (
+            "microsoft",
+            "microsoft_entra",
+            "azure",
+            {
+                "sub": "microsoft-unknown-user",
+                "tid": "00000000-0000-4000-8000-000000000001",
+                "email": "new-user@acme.com",
+                "email_verified": True,
+            },
+        ),
+    ],
+)
+async def test_unknown_external_user_is_directed_to_signup_without_writes(
+    mocker,
+    provider,
+    authentication_method,
+    identity_provider,
+    identity_data,
+):
+    import src.api.routers.users.auth_handler as auth_handler
+    from src.domain.models.master_tables import UserAuthenticationMethod
+    from src.infra.auth.supabase_user_client import VerifiedSupabaseSession
+
+    session = _SSOSession(user=None, organisation=None)
+
+    @asynccontextmanager
+    async def session_scope():
+        yield session
+
+    mocker.patch.object(auth_handler, "master_async_session_scope", session_scope)
+    mocker.patch.object(
+        auth_handler.supabase_user_client,
+        "verify_session",
+        return_value=VerifiedSupabaseSession(
+            user={
+                "id": f"supabase-{provider}-unknown-user",
+                "email": "new-user@acme.com",
+                "email_confirmed_at": "2026-08-01T00:00:00Z",
+                "identities": [{"provider": identity_provider, "identity_data": identity_data}],
+            },
+            claims={"sub": f"supabase-{provider}-unknown-user"},
+            supabase_user_id=f"supabase-{provider}-unknown-user",
+            authentication_method=UserAuthenticationMethod(authentication_method),
+        ),
+    )
+    response = FastAPIResponse()
+
+    result = await auth_handler.user_external_auth_complete(
+        provider=provider,
+        request=Request({"type": "http", "headers": [(b"authorization", b"Bearer token")]}),
+        response=response,
+        _rl_login=None,
+    )
+
+    assert response.status_code == 404
+    assert result.code == "ACCOUNT_NOT_FOUND"
+    assert result.message == "We couldn't find a CopilotGTM account for this email."
+    assert result.data is None
+    assert session.email_queried is True
+    assert session.added == []
+    assert session.commits == 0
 
 
 # =============================================================================

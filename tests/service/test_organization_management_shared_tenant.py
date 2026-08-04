@@ -168,6 +168,7 @@ async def test_create_organization_uses_master_and_existing_org_boundaries(
         organisation_id=organisation_id,
         admin_id=admin_id,
         organisation_name="Acme",
+        domain=["acme.example"],
         country="US",
         linked_urls=["https://www.linkedin.com/company/acme"],
         website_urls=["https://acme.example"],
@@ -178,6 +179,7 @@ async def test_create_organization_uses_master_and_existing_org_boundaries(
     assert organisation.organisation_id == organisation_id
     assert organisation.status is OrganisationStatus.PENDING
     assert organisation.created_by_auth_user_id == str(admin_id)
+    assert organisation.primary_domain == "acme.example"
     assert organisation.linked_urls == ["https://www.linkedin.com/company/acme"]
     assert organisation.website_urls == ["https://acme.example"]
     provision_storage.assert_awaited_once_with(organisation.organisation_id)

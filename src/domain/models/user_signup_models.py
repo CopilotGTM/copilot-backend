@@ -1,10 +1,22 @@
 """Public request and status schemas for provider-backed organisation signup."""
 
 import re
+from enum import Enum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 from src.domain.models.master_tables import SignupRequestStatus
+
+
+class SignupFlow(str, Enum):
+    """Server-owned next action for a verified provider identity."""
+
+    CREATE_ORGANISATION = "create_organisation"
+    JOIN_EXISTING_ORGANISATION = "join_existing_organisation"
+    INVITATION_REQUIRED = "invitation_required"
+    SIGN_IN = "sign_in"
+    RESUME_SIGNUP = "resume_signup"
+    ORGANISATION_UNAVAILABLE = "organisation_unavailable"
 
 
 def normalize_signup_domain(value: str) -> str:
@@ -32,11 +44,20 @@ class ExternalSignupRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
+class ExistingOrganisationJoinRequest(BaseModel):
+    """Identify the server-created draft to use for existing-domain admission."""
+
+    signup_request_id: UUID
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class ExternalSignupProfile(BaseModel):
     """Return provider identity and the server-side draft used to resume signup."""
 
-    signup_request_id: UUID
-    status: SignupRequestStatus
+    flow: SignupFlow
+    signup_request_id: UUID | None
+    status: SignupRequestStatus | None
     provider: str
     email: str
     primary_domain: str

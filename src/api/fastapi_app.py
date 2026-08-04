@@ -45,6 +45,7 @@ from src.api.routers.app_preferences.kai_training_handler import kai_training_ro
 from src.api.routers.app_preferences.meeting_recording_policy_handler import (
     meeting_recording_policy_router,
 )
+from src.api.routers.app_preferences.membership_handler import membership_policy_router
 from src.api.routers.app_preferences.navigation_handler import navigation_preferences_router
 from src.api.routers.automation import agent_runs_router, automation_triggers_router
 from src.api.routers.bots import bots_router
@@ -95,6 +96,9 @@ from src.api.routers.meetings_tab_handler import meetings_tab_router
 from src.api.routers.private import private_lead_ingestion_router
 from src.api.routers.reminders import agents_router, reminders_router
 from src.api.routers.users.auth_handler import router as user_auth_router
+from src.api.routers.users.membership_handler import (
+    organisation_membership_router,
+)
 from src.api.routers.users.realtime_handler import router as user_realtime_router
 from src.api.routers.users.signup_handler import router as user_signup_router
 from src.infra.config.configs import app_config, security_secrets_config
@@ -258,12 +262,22 @@ def create_fastapi_app():
     fastapp.include_router(user_auth_router, prefix="/users/auth", tags=["user", "authentication"])
     fastapp.include_router(user_signup_router, prefix="/users/auth", tags=["user", "signup"])
     fastapp.include_router(
+        organisation_membership_router,
+        prefix="/users/organisation",
+        tags=["user", "membership"],
+    )
+    fastapp.include_router(
         agent_action_approval_router,
         prefix="/users/preference",
         tags=["user-preferences"],
     )
     fastapp.include_router(
         meeting_recording_policy_router,
+        prefix="/users/preference",
+        tags=["user-preferences"],
+    )
+    fastapp.include_router(
+        membership_policy_router,
         prefix="/users/preference",
         tags=["user-preferences"],
     )

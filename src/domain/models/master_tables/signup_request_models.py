@@ -21,6 +21,7 @@ class SignupRequestStatus(str, Enum):
     """Committed milestones used to resume cross-system provisioning safely."""
 
     DRAFT = "draft"
+    INVITATION_REQUIRED = "invitation_required"
     RECEIVED = "received"
     CONTROL_PLANE_CREATED = "control_plane_created"
     TENANT_DEFAULTS_CREATED = "tenant_defaults_created"

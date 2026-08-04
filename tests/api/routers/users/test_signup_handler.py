@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from src.api.routers.users import signup_handler as module
 from src.domain.models.master_tables import SignupRequestStatus, UserAuthenticationMethod
+from src.domain.models.user_signup_models import SignupFlow
 from src.infra.auth.supabase_user_client import SupabaseAuthError, VerifiedSupabaseSession
 
 
@@ -64,6 +65,7 @@ def _client(
     provider: str = "google",
     *,
     initial_status: SignupRequestStatus = SignupRequestStatus.DRAFT,
+    flow: SignupFlow = SignupFlow.CREATE_ORGANISATION,
 ):
     signup_request_id = uuid4()
     signup = SimpleNamespace(
@@ -79,10 +81,10 @@ def _client(
         def __init__(self, _session):
             pass
 
-        async def get_or_create_draft(self, **_kwargs):
-            """Return the durable draft exposed by signup preflight."""
+        async def preflight(self, **_kwargs):
+            """Return the server-owned next action exposed by signup preflight."""
             captured_identities.append(_kwargs["identity"])
-            return signup
+            return SimpleNamespace(flow=flow, signup=signup)
 
         async def finalize_signup(self, **_kwargs):
             """Capture the verified identity without writing signup state."""
@@ -95,12 +97,28 @@ def _client(
             """Return the stable request used to exercise owner-scoped status reads."""
             return signup
 
+    class _MembershipService:
+        def __init__(self, _session):
+            pass
+
+        async def join_verified_identity(self, _identity, _request_id):
+            signup.status = SignupRequestStatus.ACTIVE
+            signup.organisation_id = uuid4()
+            signup.user_id = uuid4()
+            return SimpleNamespace(
+                signup=signup,
+                status=signup.status,
+                user=SimpleNamespace(email="founder@acme.com"),
+                notify_admins=True,
+            )
+
     @asynccontextmanager
     async def session_scope():
         """Replace the master database boundary with a no-op async session."""
         yield object()
 
     monkeypatch.setattr(module, "SignupService", _SignupService)
+    monkeypatch.setattr(module, "OrganisationMembershipService", _MembershipService, raising=False)
     monkeypatch.setattr(module, "master_async_session_scope", session_scope)
     monkeypatch.setattr(
         module.supabase_user_client,
@@ -115,11 +133,24 @@ def _client(
         return "task-id"
 
     monkeypatch.setattr(module, "send_signup_provisioning_task", dispatch)
+    membership_notifications = []
+
+    async def notify_membership_admins(result, identity):
+        membership_notifications.append((result.status, identity.claims.email))
+
+    monkeypatch.setattr(
+        module,
+        "_notify_membership_admins",
+        notify_membership_admins,
+        raising=False,
+    )
     app = FastAPI()
     app.include_router(module.router, prefix="/users/auth")
     app.dependency_overrides[module.rate_limit_signup] = lambda: None
     app.dependency_overrides[module.rate_limit_signup_status] = lambda: None
-    return TestClient(app), signup_request_id, dispatched, captured_identities
+    client = TestClient(app)
+    client.membership_notifications = membership_notifications
+    return client, signup_request_id, dispatched, captured_identities
 
 
 @pytest.mark.parametrize("provider", ["google", "microsoft"])
@@ -156,28 +187,100 @@ def test_received_signup_retry_redispatches_after_an_uncertain_queue_result(monk
     assert dispatched == [signup_request_id]
 
 
-def test_signup_preflight_creates_resumable_draft(monkeypatch) -> None:
+@pytest.mark.parametrize("provider", ["google", "microsoft"])
+def test_signup_preflight_creates_resumable_draft(monkeypatch, provider) -> None:
     """Preflight returns provider identity together with its durable draft."""
-    client, signup_request_id, dispatched, captured_identities = _client(monkeypatch)
+    client, signup_request_id, dispatched, captured_identities = _client(monkeypatch, provider)
 
     response = client.put(
-        "/users/auth/google/signup/draft",
+        f"/users/auth/{provider}/signup/draft",
         headers={"Authorization": "Bearer a.b.c"},
     )
 
     assert response.status_code == 200
     assert response.json()["data"] == {
+        "flow": "create_organisation",
         "signup_request_id": str(signup_request_id),
         "status": "draft",
-        "provider": "google",
+        "provider": provider,
         "email": "founder@acme.com",
         "primary_domain": "acme.com",
         "full_name": "Founding Admin",
-        "profile_image_url": "https://lh3.googleusercontent.com/avatar.png",
+        "profile_image_url": (
+            "https://lh3.googleusercontent.com/avatar.png" if provider == "google" else None
+        ),
         "organisation_name": None,
     }
     assert dispatched == []
     assert captured_identities[0].primary_domain == "acme.com"
+
+
+@pytest.mark.parametrize("provider", ["google", "microsoft"])
+def test_existing_open_domain_returns_join_flow(monkeypatch, provider) -> None:
+    client, signup_request_id, dispatched, _ = _client(
+        monkeypatch,
+        provider,
+        flow=SignupFlow.JOIN_EXISTING_ORGANISATION,
+    )
+
+    response = client.put(
+        f"/users/auth/{provider}/signup/draft",
+        headers={"Authorization": "Bearer a.b.c"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["flow"] == "join_existing_organisation"
+    assert response.json()["data"]["signup_request_id"] == str(signup_request_id)
+    assert response.json()["data"]["organisation_name"] is None
+    assert dispatched == []
+
+
+@pytest.mark.parametrize("provider", ["google", "microsoft"])
+def test_existing_domain_join_activates_member_and_notifies_admins(monkeypatch, provider) -> None:
+    client, signup_request_id, dispatched, _ = _client(monkeypatch, provider)
+
+    response = client.post(
+        f"/users/auth/{provider}/signup/join",
+        headers={"Authorization": "Bearer a.b.c"},
+        json={"signup_request_id": str(signup_request_id)},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["data"]["status"] == "active"
+    assert client.membership_notifications == [(SignupRequestStatus.ACTIVE, "founder@acme.com")]
+    assert dispatched == []
+
+
+def test_join_success_is_not_reversed_by_notification_failure(monkeypatch) -> None:
+    client, signup_request_id, _, _ = _client(monkeypatch)
+
+    async def fail_notification(_result, _identity):
+        raise RuntimeError("notification database unavailable")
+
+    monkeypatch.setattr(module, "_notify_membership_admins", fail_notification)
+
+    response = client.post(
+        "/users/auth/google/signup/join",
+        headers={"Authorization": "Bearer a.b.c"},
+        json={"signup_request_id": str(signup_request_id)},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["data"]["status"] == "active"
+
+
+def test_invitation_required_response_does_not_disclose_organisation() -> None:
+    signup = SimpleNamespace(
+        signup_request_id=uuid4(),
+        status=SignupRequestStatus.INVITATION_REQUIRED,
+        organisation_id=uuid4(),
+        user_id=None,
+    )
+
+    response = module._response(signup)
+
+    assert response.organisation_id is None
+    assert response.user_id is None
 
 
 def test_signup_preflight_rejects_google_identity_without_hosted_domain(monkeypatch) -> None:

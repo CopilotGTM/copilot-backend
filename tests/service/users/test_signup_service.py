@@ -5,6 +5,7 @@ requiring PostgreSQL; route and migration tests cover the surrounding boundaries
 """
 
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from sqlalchemy.sql.elements import TextClause
@@ -23,7 +24,7 @@ from src.domain.models.master_tables.external_identity_models import (
     ExternalIdentityMapping,
     ExternalIdentityProvider,
 )
-from src.domain.models.user_signup_models import ExternalSignupRequest
+from src.domain.models.user_signup_models import ExternalSignupRequest, SignupFlow
 from src.service.users.external_auth_service import (
     ExternalAuthClaims,
     ExternalSignupIdentity,
@@ -38,6 +39,12 @@ class _Scalars:
     def first(self):
         """Return the single configured row for one service lookup."""
         return self.value
+
+    def all(self):
+        """Return configured rows for ambiguity-sensitive lookups."""
+        if self.value is None:
+            return []
+        return self.value if isinstance(self.value, list) else [self.value]
 
 
 class _Result:
@@ -133,6 +140,136 @@ def _signup(**overrides) -> SignupRequest:
 
 
 @pytest.mark.asyncio
+async def test_preflight_new_domain_returns_create_organisation() -> None:
+    session = _Session(query_results=[None, None, None, None, None])
+
+    result = await SignupService(session).preflight(identity=_identity())
+
+    assert result.flow == SignupFlow.CREATE_ORGANISATION
+    assert result.signup is not None
+    assert result.signup.organisation_id is None
+
+
+@pytest.mark.asyncio
+async def test_preflight_existing_open_domain_targets_existing_organisation() -> None:
+    organisation = Organisation(
+        organisation_name="Acme",
+        primary_domain="acme.com",
+        preferences={"membership": {"domain_join_policy": "open"}},
+        status=OrganisationStatus.APPROVED,
+    )
+    session = _Session(query_results=[None, None, None, organisation])
+
+    result = await SignupService(session).preflight(identity=_identity())
+
+    assert result.flow == SignupFlow.JOIN_EXISTING_ORGANISATION
+    assert result.signup is not None
+    assert result.signup.organisation_id == organisation.organisation_id
+
+
+@pytest.mark.asyncio
+async def test_preflight_ambiguous_legacy_domain_fails_closed() -> None:
+    organisations = [
+        Organisation(
+            organisation_name=name,
+            domain=["acme.com"],
+            primary_domain=None,
+            status=OrganisationStatus.APPROVED,
+        )
+        for name in ("Acme One", "Acme Two")
+    ]
+    session = _Session(query_results=[None, None, None, None, organisations])
+
+    with pytest.raises(SignupServiceError) as error:
+        await SignupService(session).preflight(identity=_identity())
+
+    assert error.value.code == "SIGNUP_RECONCILIATION_REQUIRED"
+    assert session.added == []
+
+
+@pytest.mark.asyncio
+async def test_preflight_legacy_admin_domain_repairs_primary_domain() -> None:
+    organisation = Organisation(
+        organisation_name="Acme",
+        domain=["acme.com"],
+        primary_domain=None,
+        status=OrganisationStatus.APPROVED,
+    )
+    session = _Session(query_results=[None, None, None, None, [organisation]])
+
+    result = await SignupService(session).preflight(identity=_identity())
+
+    assert result.flow == SignupFlow.JOIN_EXISTING_ORGANISATION
+    assert organisation.primary_domain == "acme.com"
+    assert result.signup is not None
+    assert result.signup.organisation_id == organisation.organisation_id
+
+
+@pytest.mark.asyncio
+async def test_preflight_existing_invite_only_domain_requires_invitation() -> None:
+    organisation = Organisation(
+        organisation_name="Acme",
+        primary_domain="acme.com",
+        preferences={"membership": {"domain_join_policy": "invite_only"}},
+        status=OrganisationStatus.APPROVED,
+    )
+    session = _Session(query_results=[None, None, None, organisation])
+
+    result = await SignupService(session).preflight(identity=_identity())
+
+    assert result.flow == SignupFlow.INVITATION_REQUIRED
+    assert result.signup is not None
+    assert result.signup.organisation_id == organisation.organisation_id
+
+
+@pytest.mark.asyncio
+async def test_preflight_existing_invited_user_returns_sign_in_without_new_draft() -> None:
+    invited = User(
+        organisation_id=uuid4(),
+        email="founder@acme.com",
+        first_name="Founding",
+        last_name="Admin",
+        user_role=UserAppRole.MEMBER,
+        organisation_role="Member",
+        authentication_method=UserAuthenticationMethod.GOOGLE_WORKSPACE,
+    )
+    session = _Session(query_results=[None, None, invited])
+
+    result = await SignupService(session).preflight(identity=_identity())
+
+    assert result.flow == SignupFlow.SIGN_IN
+    assert result.signup is None
+    assert session.added == []
+
+
+@pytest.mark.asyncio
+async def test_preflight_submitted_signup_returns_resume_signup() -> None:
+    received = _signup(status=SignupRequestStatus.RECEIVED, organisation_name="Acme")
+    session = _Session(query_results=[received])
+
+    result = await SignupService(session).preflight(identity=_identity())
+
+    assert result.flow == SignupFlow.RESUME_SIGNUP
+    assert result.signup is received
+
+
+@pytest.mark.asyncio
+async def test_preflight_inactive_organisation_is_unavailable() -> None:
+    organisation = Organisation(
+        organisation_name="Acme",
+        primary_domain="acme.com",
+        status=OrganisationStatus.SUSPENDED,
+    )
+    session = _Session(query_results=[None, None, None, organisation])
+
+    result = await SignupService(session).preflight(identity=_identity())
+
+    assert result.flow == SignupFlow.ORGANISATION_UNAVAILABLE
+    assert result.signup is not None
+    assert result.signup.organisation_id == organisation.organisation_id
+
+
+@pytest.mark.asyncio
 async def test_new_signup_persists_provider_identity_as_draft() -> None:
     """Preflight persists provider identity without reserving a workspace domain."""
     session = _Session(query_results=[None, None, None])
@@ -180,7 +317,7 @@ async def test_existing_draft_is_resumed_without_another_write() -> None:
 async def test_finalize_draft_records_only_workspace_input_and_server_policy() -> None:
     """Create workspace stores the one user input and server-owned policy versions."""
     draft = _signup()
-    session = _Session(query_results=[draft, None, None, None, None])
+    session = _Session(query_results=[draft, None, None, None, None, None])
 
     signup = await SignupService(session).finalize_signup(
         identity=_identity(),
@@ -205,7 +342,7 @@ async def test_finalize_refreshes_provider_profile_from_verified_session() -> No
         last_name="Name",
         profile_incomplete=True,
     )
-    session = _Session(query_results=[draft, None, None, None, None])
+    session = _Session(query_results=[draft, None, None, None, None, None])
 
     signup = await SignupService(session).finalize_signup(
         identity=_identity(profile_image_url="https://lh3.googleusercontent.com/avatar.png"),
@@ -255,6 +392,87 @@ async def test_control_plane_accepts_database_hydrated_provider_string() -> None
     signup = _signup(
         provider=ExternalSignupProvider.GOOGLE_WORKSPACE.value,
         status=SignupRequestStatus.RECEIVED.value,
+        organisation_name="Acme",
+        profile_image_url="https://lh3.googleusercontent.com/avatar.png",
+    )
+    session = _Session(query_results=[signup])
+
+    returned, organisation, user, founder = await SignupService(session).ensure_control_plane(
+        signup.signup_request_id
+    )
+
+    mapping = next(value for value in session.added if isinstance(value, ExternalIdentityMapping))
+    assert returned is signup
+    assert organisation.status == OrganisationStatus.PROVISIONING
+    assert organisation.primary_domain == "acme.com"
+    assert user.user_role == UserAppRole.ADMIN
+    assert user.status == SupabaseUserStatus.ACTIVE
+    assert user.profile_image_url == "https://lh3.googleusercontent.com/avatar.png"
+    assert mapping.user_id == user.user_id
+    assert founder.user_id == user.user_id
+    assert signup.status == SignupRequestStatus.CONTROL_PLANE_CREATED
+    assert session.flushes == 1
+    assert session.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_existing_domain_draft_cannot_enter_organisation_creation() -> None:
+    organisation_id = uuid4()
+    session = _Session(query_results=[_signup(organisation_id=organisation_id)])
+
+    with pytest.raises(SignupServiceError) as error:
+        await SignupService(session).finalize_signup(
+            identity=_identity(),
+            request=_request(),
+        )
+
+    assert error.value.code == "ORGANISATION_ACCESS_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_legacy_domain_cannot_enter_organisation_creation() -> None:
+    legacy_organisation = Organisation(
+        organisation_name="Acme",
+        domain=["acme.com"],
+        primary_domain=None,
+        status=OrganisationStatus.APPROVED,
+    )
+    session = _Session(query_results=[_signup(), None, None, None, [legacy_organisation]])
+
+    with pytest.raises(SignupServiceError) as error:
+        await SignupService(session).finalize_signup(
+            identity=_identity(),
+            request=_request(),
+        )
+
+    assert error.value.code == "ORGANISATION_ACCESS_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_invitation_required_request_cannot_enter_organisation_creation() -> None:
+    session = _Session(
+        query_results=[
+            _signup(
+                status=SignupRequestStatus.INVITATION_REQUIRED,
+                organisation_id=uuid4(),
+            )
+        ]
+    )
+
+    with pytest.raises(SignupServiceError) as error:
+        await SignupService(session).finalize_signup(
+            identity=_identity(),
+            request=_request(),
+        )
+
+    assert error.value.code == "ORGANISATION_ACCESS_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_control_plane_creates_founder_as_active_organisation_admin() -> None:
+    """A submitted signup creates the founder admin with trusted provider profile data."""
+    signup = _signup(
+        status=SignupRequestStatus.RECEIVED,
         organisation_name="Acme",
         profile_image_url="https://lh3.googleusercontent.com/avatar.png",
     )
