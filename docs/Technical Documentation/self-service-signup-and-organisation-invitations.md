@@ -98,27 +98,19 @@ link accounts silently.
 2. User chooses Continue with Google or Continue with Microsoft.
 3. OAuth returns a verified provider session. The frontend preserves `intent=signup`, provider,
    redirect target, and anti-CSRF nonce in signed OAuth `state`.
-4. The UI pre-fills provider name/email and asks the user to confirm the required profile and
-   organisation fields listed below.
-5. The UI submits an idempotent signup request with the verified bearer session.
+4. The UI calls the provider signup draft PUT endpoint to create or resume a durable draft, then displays
+   provider name/email as read-only context.
+5. The UI asks only for `organisation_name` and submits it with the verified bearer session.
 6. The UI shows durable provisioning status while the backend completes or reconciles the request.
 7. On success, the founding user enters onboarding as organisation admin.
 
 ### Information collected before provisioning
 
-Required:
+The only browser-authored field is `organisation_name`. Provider name, email, avatar, subject,
+tenant, and domain are read-only authority data. The backend records the current Terms of Service
+and Privacy Policy versions when the user clicks Create workspace.
 
-- `first_name` and `last_name`, pre-filled from the provider but confirmed by the user;
-- `organisation_name`;
-- `country` from the existing allowed-country catalogue;
-- acceptance of the Terms of Service and Privacy Policy versions.
-
-Optional before provisioning:
-
-- `job_title`;
-- `sales_team_size`;
-- `website_url`, which must resolve to the provider-derived primary domain;
-- `linkedin_url`.
+Country, job title, team size, website, and LinkedIn are deferred until after activation.
 
 Do not block signup on `agent_name`, company address, summary, logo, CRM selection, integrations,
 or channel setup. Collect those in post-signup onboarding or derive them through the existing
@@ -136,9 +128,11 @@ the remotely verified Google Workspace hosted-domain claim or Microsoft Entra id
 2. Reject an exact existing user with `ACCOUNT_ALREADY_EXISTS`; direct the user to Sign in.
 3. Derive and normalize `primary_domain` from the verified provider claims. A matching existing
    organisation returns `ORGANISATION_ACCESS_REQUIRED`; it never auto-joins or auto-promotes.
-4. Create one durable signup request before dispatching background provisioning. Supabase has
-   already created the OAuth identity, so no password or second auth identity is created.
-5. In one master transaction, reserve the domain and create the organisation, founding user,
+4. Create or resume one `draft` without reserving the domain. Supabase has already created the
+   OAuth identity, so no password or second auth identity is created.
+5. On Create workspace, lock the provider subject and domain, transition the draft to `received`,
+   and dispatch provisioning. A retry may dispatch again while state is still `received`; the
+   worker is idempotent. In one later master transaction, create the organisation, founding user,
    external identity mapping, and audit records idempotently.
 6. Assign the founding user `admin`, `admin_status=approved`, and an active account state while the
    organisation remains `provisioning` and therefore inaccessible.
@@ -167,15 +161,13 @@ the organisation already exists:
 | Same verified email already belongs to any user | `ACCOUNT_ALREADY_EXISTS`; enforce that user's configured method. |
 | Same primary domain belongs to an organisation | `ORGANISATION_ACCESS_REQUIRED`; ask its admin for an invitation. |
 | Same display name but a different verified primary domain | Allow a different organisation; names are not identity. |
-| Previous signup request is still running | Return the same request and current status; do not enqueue another job. |
+| Previous signup request is still running | Return the same request; while status is `received`, retry dispatch because the previous queue result may be uncertain. |
 | Previous request failed after partial work | Resume from its last committed milestone using the same request. |
 | Existing user requests another organisation | Reject in V1 with `ACCOUNT_IN_OTHER_ORGANISATION`. |
 
-Before `control_plane_created`, a retry for the same provider subject and primary domain may update
-non-authority profile fields such as name, title, team size, and URLs. After the organisation and
-founder exist, organisation identity and user identity are immutable; retries only resume
-provisioning. Changing the provider subject or primary domain starts a different intent and is
-rejected rather than mutating partially created ownership.
+Before submission, the same provider subject resumes its draft and may edit only the organisation
+name. After submission, organisation identity and user identity are immutable; retries return the
+same request and only resume provisioning.
 
 The database must enforce one normalised `primary_domain` per organisation so concurrent requests
 cannot create duplicates. The current globally unique `organisation_name` constraint should be
@@ -201,7 +193,7 @@ Signup crosses systems that cannot share one database transaction. Reuse the dur
 `deferred-public-signup-design.md`; extend it to provider signups rather than writing a second
 orchestrator. Required properties are:
 
-- mandatory `Idempotency-Key`;
+- server-owned idempotency derived from the verified provider subject and durable draft;
 - password-free durable storage and logs;
 - committed milestones before every external boundary;
 - bounded reconciliation after timeouts;
@@ -263,25 +255,23 @@ machine-readable error codes.
 
 ### Signup
 
+#### `PUT /users/auth/google/signup/draft`
+
+#### `PUT /users/auth/microsoft/signup/draft`
+
+Creates or resumes the verified provider subject's durable `draft` and returns its read-only
+provider identity context. It does not reserve the company domain or dispatch provisioning.
+
 #### `POST /users/auth/google/signup`
 
 #### `POST /users/auth/microsoft/signup`
 
-Starts Google Workspace or Microsoft Entra organisation signup using the remotely verified
-Supabase bearer session. Public, strongly rate-limited, and requires `Idempotency-Key`.
+Finalises Google Workspace or Microsoft Entra organisation signup using the remotely verified
+Supabase bearer session. Public and strongly rate-limited; idempotency is server-owned.
 
 ```json
 {
-  "first_name": "Jane",
-  "last_name": "Doe",
-  "job_title": "VP Sales",
-  "organisation_name": "Acme",
-  "country": "US",
-  "sales_team_size": 20,
-  "website_url": "https://acme.com",
-  "linkedin_url": "https://www.linkedin.com/company/acme",
-  "terms_version": "2026-08-02",
-  "privacy_version": "2026-08-02"
+  "organisation_name": "Acme"
 }
 ```
 
@@ -289,7 +279,7 @@ Returns `202 Accepted` with `signup_request_id` and a non-secret status resource
 
 #### `GET /users/auth/signup-requests/{signup_request_id}`
 
-Returns `received`, `control_plane_created`, `tenant_defaults_created`, `storage_created`,
+Returns `draft`, `received`, `control_plane_created`, `tenant_defaults_created`, `storage_created`,
 `active`, `reconciliation_required`, or terminal failure status. The remotely verified founding
 session must own the request; a UUID alone is not authorization.
 

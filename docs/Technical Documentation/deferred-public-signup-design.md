@@ -1,9 +1,9 @@
 # Deferred Public Signup Design
 
-> **Partially superseded:** the durable retry and reconciliation principles in this document remain
-> relevant, but its password endpoint and request body are not the V1 target. The approved proposal
-> is defined in `self-service-signup-and-organisation-invitations.md`: Google Workspace and
-> Microsoft Entra signup, founding-admin assignment, and organisation invitations.
+> **Historical and superseded:** this password-signup proposal and its client-owned idempotency
+> contract are not implemented. The active first-user contract is defined in
+> `first-user-self-service-signup-flow.md` and `../API Documentation/users-auth-api.md`: verified
+> provider identity, a resumable server-side draft, and one browser-authored organisation name.
 
 ## Status and scope
 

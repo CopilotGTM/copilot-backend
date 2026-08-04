@@ -1,6 +1,7 @@
 """Durable control-plane orchestration for provider-backed organisation signup."""
 
 import json
+import os
 from datetime import UTC, datetime
 from hashlib import sha256
 from uuid import UUID
@@ -32,6 +33,11 @@ from src.domain.models.user_signup_models import ExternalSignupRequest
 from src.service.users.external_auth_service import ExternalSignupIdentity
 from src.service.users.user_tenant_setup_service import TenantUserSnapshot
 
+# These versions identify the legal text accepted by the Create workspace action.
+# Deployments can advance them without allowing the browser to choose stale text.
+SIGNUP_TERMS_VERSION = os.getenv("SIGNUP_TERMS_VERSION", "2026-08-04").strip() or "2026-08-04"
+SIGNUP_PRIVACY_VERSION = os.getenv("SIGNUP_PRIVACY_VERSION", "2026-08-04").strip() or "2026-08-04"
+
 
 class SignupServiceError(ValueError):
     """Expose a stable signup outcome without leaking database details."""
@@ -47,6 +53,7 @@ class SignupService:
     """Own signup idempotency, control-plane creation, and monotonic milestones."""
 
     _ORDER = {
+        SignupRequestStatus.DRAFT: -1,
         SignupRequestStatus.RECEIVED: 0,
         SignupRequestStatus.CONTROL_PLANE_CREATED: 1,
         SignupRequestStatus.TENANT_DEFAULTS_CREATED: 2,
@@ -57,115 +64,53 @@ class SignupService:
     def __init__(self, session: AsyncSession):
         self._session = session
 
-    async def start_signup(
+    async def get_or_create_draft(
+        self,
+        *,
+        identity: ExternalSignupIdentity,
+    ) -> SignupRequest:
+        """Create or resume the verified subject's draft without reserving its domain.
+
+        Called by signup preflight after provider verification. A draft records only
+        resumable identity context; organisation ownership is checked on submission.
+        """
+        await self._lock_subject(identity)
+        existing_subject = await self._subject_request(identity)
+        if existing_subject is not None:
+            return existing_subject
+
+        await self._ensure_identity_available(identity)
+        signup = self._new_draft(identity)
+        self._session.add(signup)
+        await self._session.commit()
+        await self._session.refresh(signup)
+        return signup
+
+    async def finalize_signup(
         self,
         *,
         identity: ExternalSignupIdentity,
         request: ExternalSignupRequest,
-        idempotency_key: str,
     ) -> SignupRequest:
-        """Persist one provider/domain signup intent under transaction locks."""
-        key_hash = sha256(idempotency_key.encode()).hexdigest()
-        fingerprint = self._fingerprint(identity, request)
-        claims = identity.claims
+        """Finalize one draft and return its durable provisioning state.
 
-        # Serialize both ownership dimensions before any eligibility reads. The
-        # database constraints remain the final guard if a caller skips this path.
-        for lock_key in (
-            f"signup-subject:{claims.mapping_provider.value}:{claims.provider_user_id}:{claims.provider_tenant_id}",
-            f"signup-domain:{identity.primary_domain}",
-        ):
-            await self._session.execute(
-                text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
-                {"lock_key": lock_key},
-            )
+        The provider subject and company domain are serialized before ownership
+        checks. Repeated submissions return the same request so the HTTP layer can
+        safely retry queue dispatch until a worker advances the state.
+        """
+        await self._lock_subject(identity)
+        signup = await self._subject_request(identity)
+        if signup is not None and signup.status != SignupRequestStatus.DRAFT:
+            return signup
+        if signup is None:
+            signup = self._new_draft(identity)
+            self._session.add(signup)
 
-        existing_key = (
-            (
-                await self._session.execute(
-                    select(SignupRequest).where(col(SignupRequest.idempotency_key_hash) == key_hash)
-                )
-            )
-            .scalars()
-            .first()
-        )
-        if existing_key is not None:
-            if existing_key.request_fingerprint != fingerprint:
-                raise SignupServiceError(
-                    "The idempotency key was already used for another request",
-                    code="IDEMPOTENCY_KEY_REUSED",
-                )
-            return existing_key
-
-        provider = self._signup_provider(claims.authentication_method)
-        existing_subject = (
-            (
-                await self._session.execute(
-                    select(SignupRequest).where(
-                        col(SignupRequest.provider) == provider,
-                        col(SignupRequest.provider_user_id) == claims.provider_user_id,
-                        col(SignupRequest.provider_tenant_id) == claims.provider_tenant_id,
-                    )
-                )
-            )
-            .scalars()
-            .first()
-        )
-        if existing_subject is not None:
-            if existing_subject.primary_domain != identity.primary_domain:
-                raise SignupServiceError(
-                    "This account is already creating another organisation",
-                    code="ACCOUNT_IN_OTHER_ORGANISATION",
-                )
-            if existing_subject.status == SignupRequestStatus.RECEIVED:
-                self._update_profile(existing_subject, request)
-                await self._session.commit()
-            return existing_subject
-
-        existing_mapping = (
-            (
-                await self._session.execute(
-                    select(ExternalIdentityMapping).where(
-                        col(ExternalIdentityMapping.provider) == claims.mapping_provider,
-                        col(ExternalIdentityMapping.external_user_id) == claims.provider_user_id,
-                        col(ExternalIdentityMapping.external_tenant_id)
-                        == claims.provider_tenant_id,
-                    )
-                )
-            )
-            .scalars()
-            .first()
-        )
-        if existing_mapping is not None:
-            raise SignupServiceError(
-                "This provider account already exists",
-                code="ACCOUNT_ALREADY_EXISTS",
-            )
-
-        existing_user = (
-            (
-                await self._session.execute(
-                    select(User).where(
-                        or_(
-                            col(User.supabase_user_id) == claims.supabase_user_id,
-                            col(User.email) == claims.email.lower(),
-                        )
-                    )
-                )
-            )
-            .scalars()
-            .first()
-        )
-        if existing_user is not None:
-            if existing_user.supabase_user_id == claims.supabase_user_id:
-                raise SignupServiceError(
-                    "This account already belongs to an organisation",
-                    code="ACCOUNT_IN_OTHER_ORGANISATION",
-                )
-            raise SignupServiceError(
-                "An account already exists for this identity",
-                code="ACCOUNT_ALREADY_EXISTS",
-            )
+        # Drafts do not reserve domains. The domain lock begins only when the
+        # founder submits Create workspace, so abandoned tabs cannot block peers.
+        await self._lock(f"signup-domain:{identity.primary_domain}")
+        await self._ensure_identity_available(identity)
+        self._refresh_draft_identity(signup, identity)
 
         existing_org = (
             (
@@ -189,7 +134,10 @@ class SignupService:
                 await self._session.execute(
                     select(SignupRequest).where(
                         col(SignupRequest.primary_domain) == identity.primary_domain,
-                        col(SignupRequest.status) != SignupRequestStatus.FAILED,
+                        col(SignupRequest.signup_request_id) != signup.signup_request_id,
+                        col(SignupRequest.status).not_in(
+                            [SignupRequestStatus.DRAFT, SignupRequestStatus.FAILED]
+                        ),
                     )
                 )
             )
@@ -202,27 +150,11 @@ class SignupService:
                 code="ORGANISATION_ACCESS_REQUIRED",
             )
 
-        signup = SignupRequest(
-            idempotency_key_hash=key_hash,
-            request_fingerprint=fingerprint,
-            provider=provider,
-            supabase_user_id=claims.supabase_user_id,
-            provider_user_id=claims.provider_user_id,
-            provider_tenant_id=claims.provider_tenant_id,
-            normalized_email=claims.email.lower(),
-            first_name=request.first_name,
-            last_name=request.last_name,
-            job_title=request.job_title,
-            organisation_name=request.organisation_name,
-            primary_domain=identity.primary_domain,
-            country=request.country.upper(),
-            sales_team_size=request.sales_team_size,
-            website_url=str(request.website_url) if request.website_url else None,
-            linkedin_url=str(request.linkedin_url) if request.linkedin_url else None,
-            terms_version=request.terms_version,
-            privacy_version=request.privacy_version,
-        )
-        self._session.add(signup)
+        signup.organisation_name = request.organisation_name
+        signup.request_fingerprint = self._fingerprint(identity, request)
+        signup.terms_version = SIGNUP_TERMS_VERSION
+        signup.privacy_version = SIGNUP_PRIVACY_VERSION
+        signup.status = SignupRequestStatus.RECEIVED
         await self._session.commit()
         await self._session.refresh(signup)
         return signup
@@ -248,6 +180,12 @@ class SignupService:
                 "Signup request not found",
                 code="SIGNUP_REQUEST_NOT_FOUND",
                 status_code=404,
+            )
+
+        if signup.status == SignupRequestStatus.DRAFT:
+            raise SignupServiceError(
+                "Signup has not been submitted",
+                code="SIGNUP_STATE_INVALID",
             )
 
         if signup.organisation_id is not None and signup.user_id is not None:
@@ -291,7 +229,8 @@ class SignupService:
             user_role=UserAppRole.ADMIN,
             organisation_role="Administrator",
             authentication_method=self._authentication_method(signup.provider),
-            profile_image_url=None,
+            profile_image_url=signup.profile_image_url,
+            preferences={"profile_incomplete": True} if signup.profile_incomplete else {},
             status=SupabaseUserStatus.ACTIVE,
             admin_status=AdminUserStatus.APPROVED,
             email_verified=True,
@@ -471,18 +410,142 @@ class SignupService:
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return sha256(canonical.encode()).hexdigest()
 
+    async def _lock_subject(self, identity: ExternalSignupIdentity) -> None:
+        claims = identity.claims
+        await self._lock(
+            f"signup-subject:{claims.mapping_provider.value}:"
+            f"{claims.provider_user_id}:{claims.provider_tenant_id}"
+        )
+
+    async def _lock(self, lock_key: str) -> None:
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": lock_key},
+        )
+
+    async def _subject_request(
+        self,
+        identity: ExternalSignupIdentity,
+    ) -> SignupRequest | None:
+        claims = identity.claims
+        provider = self._signup_provider(claims.authentication_method)
+        return (
+            (
+                await self._session.execute(
+                    select(SignupRequest).where(
+                        col(SignupRequest.provider) == provider,
+                        col(SignupRequest.provider_user_id) == claims.provider_user_id,
+                        col(SignupRequest.provider_tenant_id) == claims.provider_tenant_id,
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+
+    async def _ensure_identity_available(self, identity: ExternalSignupIdentity) -> None:
+        claims = identity.claims
+        existing_mapping = (
+            (
+                await self._session.execute(
+                    select(ExternalIdentityMapping).where(
+                        col(ExternalIdentityMapping.provider) == claims.mapping_provider,
+                        col(ExternalIdentityMapping.external_user_id) == claims.provider_user_id,
+                        col(ExternalIdentityMapping.external_tenant_id)
+                        == claims.provider_tenant_id,
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if existing_mapping is not None:
+            raise SignupServiceError(
+                "This provider account already exists",
+                code="ACCOUNT_ALREADY_EXISTS",
+            )
+
+        existing_user = (
+            (
+                await self._session.execute(
+                    select(User).where(
+                        or_(
+                            col(User.supabase_user_id) == claims.supabase_user_id,
+                            col(User.email) == claims.email.lower(),
+                        )
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if existing_user is None:
+            return
+        if existing_user.supabase_user_id == claims.supabase_user_id:
+            raise SignupServiceError(
+                "This account already belongs to an organisation",
+                code="ACCOUNT_IN_OTHER_ORGANISATION",
+            )
+        raise SignupServiceError(
+            "An account already exists for this identity",
+            code="ACCOUNT_ALREADY_EXISTS",
+        )
+
+    def _new_draft(self, identity: ExternalSignupIdentity) -> SignupRequest:
+        claims = identity.claims
+        provider = self._signup_provider(claims.authentication_method)
+        first_name, last_name, profile_incomplete = self._founder_profile(identity)
+        identity_key = f"{provider.value}:{claims.provider_user_id}:{claims.provider_tenant_id}"
+        return SignupRequest(
+            idempotency_key_hash=sha256(f"signup-draft:{identity_key}".encode()).hexdigest(),
+            request_fingerprint=sha256(identity_key.encode()).hexdigest(),
+            provider=provider,
+            supabase_user_id=claims.supabase_user_id,
+            provider_user_id=claims.provider_user_id,
+            provider_tenant_id=claims.provider_tenant_id,
+            normalized_email=claims.email.lower(),
+            first_name=first_name,
+            last_name=last_name,
+            organisation_name=None,
+            primary_domain=identity.primary_domain,
+            profile_image_url=(
+                claims.profile_image_url
+                if claims.profile_image_url and len(claims.profile_image_url) <= 1000
+                else None
+            ),
+            profile_incomplete=profile_incomplete,
+            status=SignupRequestStatus.DRAFT,
+        )
+
+    def _refresh_draft_identity(
+        self,
+        signup: SignupRequest,
+        identity: ExternalSignupIdentity,
+    ) -> None:
+        """Refresh non-editable profile data from the final verified session."""
+        claims = identity.claims
+        first_name, last_name, profile_incomplete = self._founder_profile(identity)
+        signup.supabase_user_id = claims.supabase_user_id
+        signup.normalized_email = claims.email.lower()
+        signup.first_name = first_name
+        signup.last_name = last_name
+        signup.primary_domain = identity.primary_domain
+        signup.profile_image_url = (
+            claims.profile_image_url
+            if claims.profile_image_url and len(claims.profile_image_url) <= 1000
+            else None
+        )
+        signup.profile_incomplete = profile_incomplete
+
     @staticmethod
-    def _update_profile(signup: SignupRequest, request: ExternalSignupRequest) -> None:
-        signup.first_name = request.first_name
-        signup.last_name = request.last_name
-        signup.job_title = request.job_title
-        signup.organisation_name = request.organisation_name
-        signup.country = request.country.upper()
-        signup.sales_team_size = request.sales_team_size
-        signup.website_url = str(request.website_url) if request.website_url else None
-        signup.linkedin_url = str(request.linkedin_url) if request.linkedin_url else None
-        signup.terms_version = request.terms_version
-        signup.privacy_version = request.privacy_version
+    def _founder_profile(identity: ExternalSignupIdentity) -> tuple[str, str, bool]:
+        full_name = (identity.claims.full_name or "").strip()
+        if not full_name:
+            return identity.claims.email.split("@", 1)[0][:100], "", True
+        parts = full_name.split(maxsplit=1)
+        first_name = parts[0][:100]
+        last_name = parts[1][:100] if len(parts) == 2 else ""
+        return first_name, last_name, not bool(last_name)
 
     @staticmethod
     def _signup_provider(method: UserAuthenticationMethod) -> ExternalSignupProvider:
