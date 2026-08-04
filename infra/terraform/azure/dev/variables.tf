@@ -404,6 +404,17 @@ variable "azuredevops_pat" {
   default     = ""
 }
 
+variable "supabase_anon_key" {
+  description = "Supabase anon key for the application variable group. Pass via TF_VAR_supabase_anon_key."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(trimspace(var.supabase_anon_key)) > 0
+    error_message = "TF_VAR_supabase_anon_key must be set before applying Terraform."
+  }
+}
+
 variable "azuredevops_pat_secret_name" {
   description = "Optional: name of an existing Key Vault secret that holds the Azure DevOps PAT. If azuredevops_pat is empty and this is set, Terraform will read the PAT from Key Vault (requires Key Vault access)."
   type        = string
