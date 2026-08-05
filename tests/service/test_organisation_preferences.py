@@ -68,6 +68,36 @@ def test_onboarding_preferences_preserve_a_supported_ordered_flow():
     }
 
 
+def test_whatsapp_is_optional_even_when_stored_as_required():
+    preferences = normalize_organisation_preferences(
+        {
+            "onboarding": {
+                "enabled": True,
+                "steps": [
+                    {"id": "google", "skippable": False},
+                    {"id": "whatsapp", "skippable": False},
+                ],
+            }
+        }
+    )
+
+    assert preferences["onboarding"]["steps"][1] == {
+        "id": "whatsapp",
+        "skippable": True,
+    }
+
+
+def test_legacy_onboarding_flow_defaults_whatsapp_to_optional():
+    preferences = normalize_organisation_preferences(
+        {"onboarding": {"enabled": True, "steps": ["google", "whatsapp"]}}
+    )
+
+    assert preferences["onboarding"]["steps"] == [
+        {"id": "google", "skippable": False},
+        {"id": "whatsapp", "skippable": True},
+    ]
+
+
 def test_invalid_onboarding_flow_is_disabled():
     preferences = normalize_organisation_preferences(
         {

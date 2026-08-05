@@ -165,11 +165,17 @@ def _clean_onboarding(value: Any) -> dict[str, Any]:
     if isinstance(raw_steps, list):
         for raw_step in raw_steps:
             if isinstance(raw_step, str):
-                steps.append({"id": raw_step, "skippable": False})
+                steps.append({"id": raw_step, "skippable": raw_step == "whatsapp"})
                 continue
             if not isinstance(raw_step, dict) or not isinstance(raw_step.get("skippable"), bool):
                 return {"enabled": False, "steps": []}
-            steps.append({"id": raw_step.get("id"), "skippable": raw_step["skippable"]})
+            step_id = raw_step.get("id")
+            steps.append(
+                {
+                    "id": step_id,
+                    "skippable": step_id == "whatsapp" or raw_step["skippable"],
+                }
+            )
     flow = tuple(step["id"] for step in steps)
     if onboarding.get("enabled") is not True or flow not in ONBOARDING_FLOWS:
         return {"enabled": False, "steps": []}
