@@ -6,9 +6,10 @@ from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from src.api.schemas.email_name_fallback import EmailNameFallbackModel
 
 
-class CRMEmailItem(BaseModel):
+class CRMEmailItem(EmailNameFallbackModel):
     """Bounded message data safe to render in the CRM email sidebar."""
 
     email_id: UUID

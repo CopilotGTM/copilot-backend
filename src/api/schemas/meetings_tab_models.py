@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from src.api.schemas.email_name_fallback import EmailNameFallbackModel
 from src.service.calendar_invites.models import CalendarInviteAttendee
 
 
@@ -26,7 +27,7 @@ class MeetingLinkedRecordType(StrEnum):
     DEAL = "DEAL"
 
 
-class MeetingAttendeeItem(BaseModel):
+class MeetingAttendeeItem(EmailNameFallbackModel):
     """Display-ready attendee information for list rows and drawers."""
 
     email: str
@@ -56,7 +57,7 @@ class MeetingBotStatus(BaseModel):
     can_remove: bool = False
 
 
-class MeetingListItem(BaseModel):
+class MeetingListItem(EmailNameFallbackModel):
     """Meeting row returned by the top-level Meetings tab."""
 
     event_id: UUID

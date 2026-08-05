@@ -12,6 +12,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from src.api.schemas.email_name_fallback import EmailNameFallbackModel
 from src.domain.models.organisation_tables.sync import (
     IntegrationScope,
     IntegrationType,
@@ -322,7 +323,7 @@ class IntegrationError(BaseModel):
 # ==================== Channel Schemas ====================
 
 
-class ChannelMember(BaseModel):
+class ChannelMember(EmailNameFallbackModel):
     """Schema for a channel member."""
 
     name: str | None = Field(default=None, description="Member display name")

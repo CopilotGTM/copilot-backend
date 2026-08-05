@@ -6,9 +6,10 @@ from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
+from src.api.schemas.email_name_fallback import EmailNameFallbackModel
 
 
-class NoteAuthor(BaseModel):
+class NoteAuthor(EmailNameFallbackModel):
     """Note author information."""
 
     id: str | None = Field(default=None, description="Internal user ID when linked")
@@ -22,7 +23,7 @@ class NoteMetadata(BaseModel):
     synced_at: datetime | None = Field(default=None, description="Last sync time if CRM note")
 
 
-class DealParticipant(BaseModel):
+class DealParticipant(EmailNameFallbackModel):
     """Participant associated with a deal (stakeholder or owner).
 
     Used to provide email suggestions for @mentions or auto-complete.

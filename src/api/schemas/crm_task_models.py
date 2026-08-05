@@ -7,6 +7,7 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from src.api.schemas.email_name_fallback import EmailNameFallbackModel
 from src.domain.models.organisation_tables.sync.crm import (
     CRMActivityPriority,
     CRMActivitySource,
@@ -18,7 +19,7 @@ VALID_REMINDER_DELIVERY_CHANNELS = {"teams", "slack", "whatsapp"}
 _ALLOWED_TASK_STATUS_VALUES = {"NOT_STARTED", "IN_PROGRESS", "COMPLETED", "CANCELLED"}
 
 
-class TaskAssignee(BaseModel):
+class TaskAssignee(EmailNameFallbackModel):
     """Canonical assignee metadata for task display and filtering."""
 
     kind: str = Field(
@@ -97,7 +98,7 @@ class ReminderConfig(BaseModel):
         return self
 
 
-class TaskListItem(BaseModel):
+class TaskListItem(EmailNameFallbackModel):
     """Individual task item in a list response."""
 
     task_id: UUID
@@ -197,7 +198,7 @@ class TaskOptionsResponse(BaseModel):
     default_source: CRMActivitySource = Field(default=CRMActivitySource.MANUAL)
 
 
-class TaskDetail(BaseModel):
+class TaskDetail(EmailNameFallbackModel):
     """Detailed task information including all available fields."""
 
     # Identity

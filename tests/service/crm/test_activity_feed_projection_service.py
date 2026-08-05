@@ -555,7 +555,7 @@ async def test_email_association_projection_writes_email_activity_and_safe_links
         "direction": "INBOUND",
         "participants_preview": [
             {"name": "Buyer", "email": "buyer@example.com", "role": "sender"},
-            {"email": "seller@ourco.com", "role": "recipient"},
+            {"name": "Seller", "email": "seller@ourco.com", "role": "recipient"},
             {"email": "finance@example.com", "role": "recipient"},
         ],
         "participant_count": 3,

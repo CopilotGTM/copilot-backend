@@ -6,6 +6,7 @@ from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from src.api.schemas.email_name_fallback import EmailNameFallbackModel
 
 
 class CRMMeetingDealSummary(BaseModel):
@@ -35,7 +36,7 @@ class CRMMeetingRecordingState(BaseModel):
     sent_to_provider_at: datetime | None = None
 
 
-class CRMMeetingListItem(BaseModel):
+class CRMMeetingListItem(EmailNameFallbackModel):
     """One meeting in the authenticated user's CRM meeting list."""
 
     event_id: UUID

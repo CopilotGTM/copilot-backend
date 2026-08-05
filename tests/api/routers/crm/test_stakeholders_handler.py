@@ -647,7 +647,7 @@ class TestGetDealStakeholders:
         test_deal_id,
         test_user_ids,
     ):
-        """Verify stakeholders with null optional fields are returned correctly."""
+        """Verify email-only stakeholders get a name while other optional fields stay null."""
         stakeholder = FakeStakeholder(
             stakeholder_id=uuid4(),
             deal_id=test_deal_id,
@@ -668,7 +668,7 @@ class TestGetDealStakeholders:
 
         data = body["data"]["stakeholders"][0]
         assert data["email"] == "minimal@example.com"
-        assert data["name"] is None
+        assert data["name"] == "Minimal"
         assert data["job_title"] is None
         assert data["motivation"] is None
         assert data["last_contact_at"] is None
