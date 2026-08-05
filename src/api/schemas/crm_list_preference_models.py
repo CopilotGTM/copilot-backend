@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 CRMListEntity = Literal["contacts", "accounts", "deals", "tasks"]
-CRMColumnEntity = Literal["contacts", "accounts", "deals"]
+CRMColumnEntity = Literal["contacts", "accounts", "deals", "tasks", "leads"]
 SortOrder = Literal["asc", "desc"]
 
 

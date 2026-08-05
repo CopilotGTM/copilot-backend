@@ -429,15 +429,8 @@ async def test_login_success_omits_migrated_columns_but_preserves_other_preferen
     assert "columns" not in result.data.user_preferences["crm"]["contacts"]["list"]
     assert "columns" not in result.data.user_preferences["crm"]["accounts"]["list"]
     assert "columns" not in result.data.user_preferences["crm"]["deals"]["list"]
-    assert result.data.user_preferences["crm"]["tasks"]["list"]["columns"] == [
-        "subject",
-        "due_date",
-        "assigned_to.name",
-        "deal.name",
-        "priority",
-        "status",
-        "has_reminder",
-    ]
+    assert "columns" not in result.data.user_preferences["crm"]["tasks"]["list"]
+    assert "columns" not in result.data.user_preferences["crm"]["leads"]["list"]
     assert result.data.user_preferences["navigation"]["last_settings_item"] == "integrations"
     assert (
         result.data.user_preferences["navigation"]["expanded_sections"]["settings_crm_fields"]

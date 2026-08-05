@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,6 +15,19 @@ from src.api.dependencies.organisation_dependencies import (
 )
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
 from src.api.schemas.crm_schema_models import CRMEntitySchemaResponse, CRMFieldSchemaItem
+
+
+@pytest.fixture(autouse=True)
+def isolate_preference_routes_from_runtime_startup(mocker) -> None:
+    """Route contracts do not need the live shared-tenant startup probes."""
+    mocker.patch(
+        "src.infra.database.tenant_runtime_config.validate_current_shared_tenant_runtime_startup"
+    )
+    mocker.patch(
+        "src.infra.database.tenant_runtime_credentials."
+        "validate_current_shared_tenant_runtime_password",
+        new=AsyncMock(),
+    )
 
 
 class _FakeResult:
@@ -345,11 +359,102 @@ def test_put_crm_list_columns_rejects_unsafe_selections(
     assert crm_list_dependency_overrides.session.committed is False
 
 
-def test_column_configuration_does_not_claim_tasks_support(
+@pytest.mark.parametrize(
+    ("entity", "expected_default_columns", "required_columns"),
+    [
+        (
+            "tasks",
+            [
+                "subject",
+                "due_date",
+                "status",
+                "priority",
+                "deal.name",
+                "assignee.name",
+                "source",
+                "created_at",
+            ],
+            {"subject", "status"},
+        ),
+        (
+            "leads",
+            [
+                "lead",
+                "email",
+                "company",
+                "status",
+                "source",
+                "owner",
+                "budget",
+                "score",
+                "captured",
+            ],
+            {"lead", "status"},
+        ),
+    ],
+)
+def test_get_column_configuration_supports_tasks_and_leads(
     client: TestClient,
     crm_list_dependency_overrides,
+    entity: str,
+    expected_default_columns: list[str],
+    required_columns: set[str],
 ) -> None:
-    """Tasks stay on their existing client contract until their migration is implemented."""
-    response = client.get("/users/preference/crm/lists/tasks")
+    """Actions and Leads expose their current table fields through the shared API."""
+    response = client.get(f"/users/preference/crm/lists/{entity}")
+
+    assert response.status_code == 200, response.text
+    columns = response.json()["data"]["columns"]
+    assert [column["id"] for column in columns if column["visible"]] == expected_default_columns
+    assert {column["id"] for column in columns if column["hideable"] is False} == required_columns
+
+
+@pytest.mark.parametrize(
+    ("entity", "columns"),
+    [
+        ("tasks", ["subject", "status", "due_date"]),
+        ("leads", ["lead", "status", "email"]),
+    ],
+)
+def test_put_tasks_and_leads_persists_the_user_selection(
+    client: TestClient,
+    crm_list_dependency_overrides,
+    entity: str,
+    columns: list[str],
+) -> None:
+    """Both migrated lists save ordered choices in the authenticated user document."""
+    response = client.put(
+        f"/users/preference/crm/lists/{entity}",
+        json={"columns": columns},
+    )
+
+    assert response.status_code == 200, response.text
+    assert crm_list_dependency_overrides.user.preferences["crm"][entity]["list"] == {
+        "columns": columns
+    }
+    assert crm_list_dependency_overrides.session.committed is True
+
+
+@pytest.mark.parametrize(
+    ("entity", "columns", "missing"),
+    [
+        ("tasks", ["subject", "due_date"], "status"),
+        ("leads", ["lead", "email"], "status"),
+    ],
+)
+def test_put_tasks_and_leads_rejects_removing_workflow_state(
+    client: TestClient,
+    crm_list_dependency_overrides,
+    entity: str,
+    columns: list[str],
+    missing: str,
+) -> None:
+    """Direct API callers cannot remove identity or workflow state from either list."""
+    response = client.put(
+        f"/users/preference/crm/lists/{entity}",
+        json={"columns": columns},
+    )
 
     assert response.status_code == 422
+    assert response.json()["detail"] == f"{missing} is required"
+    assert crm_list_dependency_overrides.session.committed is False
