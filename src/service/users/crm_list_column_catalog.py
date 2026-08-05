@@ -24,6 +24,9 @@ _STANDARD_COLUMNS: dict[CRMColumnEntity, tuple[ColumnRow, ...]] = {
         ("primary_contact_name", "Primary contact", "text", "primary_contact_name", False),
         ("primary_contact_email", "Primary contact email", "email", "primary_contact_email", False),
         ("last_activity_at", "Last activity", "datetime", "last_activity_at", True),
+        ("forecast_category", "Forecast category", "text", "forecast_category", False),
+        ("priority", "Priority", "text", "priority", False),
+        ("days_in_stage", "Days in stage", "integer", "days_in_stage", False),
         ("created_at", "Created", "datetime", "created_at", False),
         ("updated_at", "Updated", "datetime", "updated_at", False),
     ),
@@ -42,6 +45,9 @@ _STANDARD_COLUMNS: dict[CRMColumnEntity, tuple[ColumnRow, ...]] = {
         ("deal_count", "Deals", "integer", "deal_count", False),
         ("last_contacted_at", "Last contacted", "datetime", "last_contacted_at", True),
         ("last_activity_at", "Last activity", "datetime", "last_activity_at", True),
+        ("lifecycle_stage", "Lifecycle stage", "text", "lifecycle_stage", False),
+        ("lead_status", "Lead status", "text", "lead_status", False),
+        ("country", "Country", "text", "country", False),
         ("source", "Source", "text", "source", False),
         ("is_profile_enriched", "Profile enriched", "boolean", "is_profile_enriched", False),
         ("profile_enriched_at", "Profile enriched at", "datetime", "profile_enriched_at", False),
@@ -53,6 +59,7 @@ _STANDARD_COLUMNS: dict[CRMColumnEntity, tuple[ColumnRow, ...]] = {
         ("domain", "Domain", "domain", "domain", False),
         ("website", "Website", "url", "website", False),
         ("industry", "Industry", "text", "industry", False),
+        ("company_type", "Account type", "text", "company_type", False),
         ("lifecycle_stage", "Lifecycle stage", "text", "lifecycle_stage", True),
         ("owner.name", "Owner", "person", "owner", True),
         ("owner.email", "Owner email", "email", "owner.email", False),
@@ -62,6 +69,8 @@ _STANDARD_COLUMNS: dict[CRMColumnEntity, tuple[ColumnRow, ...]] = {
         ("number_of_employees", "Employees", "integer", "number_of_employees", True),
         ("annual_revenue", "Annual revenue", "currency", "annual_revenue", True),
         ("phone", "Phone", "phone", "phone", False),
+        ("city", "City", "text", "city", False),
+        ("state", "Region", "text", "state", False),
         ("country", "Country", "text", "country", False),
         ("linkedin_url", "LinkedIn", "url", "linkedin_url", False),
         ("is_active", "Active", "boolean", "is_active", False),
@@ -110,17 +119,17 @@ DEFAULT_COLUMNS: dict[CRMColumnEntity, tuple[str, ...]] = {
     ),
 }
 
-REQUIRED_COLUMN: dict[CRMColumnEntity, str] = {
-    "contacts": "full_name",
-    "accounts": "name",
-    "deals": "name",
+REQUIRED_COLUMNS: dict[CRMColumnEntity, tuple[str, ...]] = {
+    "contacts": ("full_name",),
+    "accounts": ("name",),
+    "deals": ("name", "stage"),
 }
 
 
 def standard_columns(entity: CRMColumnEntity) -> list[CRMListColumn]:
     """Return immutable standard metadata as fresh response models."""
     defaults = set(DEFAULT_COLUMNS[entity])
-    required = REQUIRED_COLUMN[entity]
+    required = set(REQUIRED_COLUMNS[entity])
     return [
         CRMListColumn(
             id=column_id,
@@ -132,7 +141,7 @@ def standard_columns(entity: CRMColumnEntity) -> list[CRMListColumn]:
             default_visible=column_id in defaults,
             position=index,
             sortable=sortable,
-            hideable=column_id != required,
+            hideable=column_id not in required,
         )
         for index, (column_id, label, data_type, value_path, sortable) in enumerate(
             _STANDARD_COLUMNS[entity]

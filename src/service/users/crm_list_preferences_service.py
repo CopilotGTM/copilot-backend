@@ -21,7 +21,7 @@ from src.domain.models.master_tables.user_models import User
 from src.service.crm.schema.deal_schema_service import DealSchemaService
 from src.service.users.crm_list_column_catalog import (
     DEFAULT_COLUMNS,
-    REQUIRED_COLUMN,
+    REQUIRED_COLUMNS,
     standard_columns,
 )
 from src.service.users.user_preferences import (
@@ -77,10 +77,13 @@ class CRMListPreferencesService:
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Unsupported {entity} column",
             )
-        if REQUIRED_COLUMN[entity] not in selected:
+        missing_required = [
+            column_id for column_id in REQUIRED_COLUMNS[entity] if column_id not in selected
+        ]
+        if missing_required:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=f"{REQUIRED_COLUMN[entity]} is required",
+                detail=f"{missing_required[0]} is required",
             )
 
         user = await self._get_current_user_row(lock=True)
@@ -163,9 +166,18 @@ class CRMListPreferencesService:
         selected = list(dict.fromkeys(column for column in saved if column in supported))
         if not selected:
             return [column for column in DEFAULT_COLUMNS[entity] if column in supported]
-        required = REQUIRED_COLUMN[entity]
-        if required not in selected:
-            selected.insert(0, required)
+        positions = {column.id: index for index, column in enumerate(catalog)}
+        for required in REQUIRED_COLUMNS[entity]:
+            if required not in selected:
+                insert_at = next(
+                    (
+                        index
+                        for index, column in enumerate(selected)
+                        if positions[column] > positions[required]
+                    ),
+                    len(selected),
+                )
+                selected.insert(insert_at, required)
         return selected
 
     @staticmethod

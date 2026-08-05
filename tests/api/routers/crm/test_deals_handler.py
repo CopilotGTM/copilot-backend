@@ -531,6 +531,39 @@ def test_list_deals_success(client: TestClient, deals_dependency_overrides):
     assert len(data["items"]) == 3
 
 
+def test_list_deals_returns_operational_column_values(
+    client: TestClient,
+    deals_dependency_overrides,
+    mocker,
+):
+    """Forecasting and stage-age values reach the list contract without detail fetches."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+    stage_entered_at = datetime(2026, 7, 27, 9, tzinfo=UTC)
+    mocker.patch(
+        "src.api.routers.crm.deals_handler.utcnow",
+        create=True,
+        return_value=datetime(2026, 8, 5, 9, tzinfo=UTC),
+    )
+    deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="Operational Deal",
+            forecast_category="Commit",
+            priority="High",
+            stage_entered_at=stage_entered_at,
+        )
+    )
+
+    response = client.get("/users/crm/deals")
+
+    assert response.status_code == 200, response.text
+    item = response.json()["data"]["items"][0]
+    assert item["forecast_category"] == "Commit"
+    assert item["priority"] == "High"
+    assert item["days_in_stage"] == 9
+
+
 def test_list_deals_does_not_expose_deal_health(client: TestClient, deals_dependency_overrides):
     """Deal health is detail/AI context, not a deal-list column."""
     deals_service = deals_dependency_overrides["deals_service"]

@@ -174,6 +174,51 @@ def test_get_crm_list_configuration_returns_selected_then_available_columns(
     assert any(column["id"] == "website" and not column["visible"] for column in data["columns"])
 
 
+@pytest.mark.parametrize(
+    ("entity", "expected_columns"),
+    [
+        ("contacts", {"lifecycle_stage", "lead_status", "country"}),
+        ("accounts", {"company_type", "city", "state"}),
+    ],
+)
+def test_get_crm_list_configuration_exposes_operational_columns(
+    client: TestClient,
+    crm_list_dependency_overrides,
+    entity: str,
+    expected_columns: set[str],
+) -> None:
+    """List catalogs expose stored operational fields without selecting them by default."""
+    response = client.get(f"/users/preference/crm/lists/{entity}")
+
+    assert response.status_code == 200, response.text
+    columns = {column["id"]: column for column in response.json()["data"]["columns"]}
+    assert expected_columns <= columns.keys()
+    assert all(columns[column_id]["default_visible"] is False for column_id in expected_columns)
+
+
+def test_get_deal_configuration_exposes_required_stage_and_operational_columns(
+    client: TestClient,
+    crm_list_dependency_overrides,
+    mocker,
+) -> None:
+    """Deal Stage remains visible while optional forecasting fields stay user-selectable."""
+    mocker.patch(
+        "src.service.users.crm_list_preferences_service.DealSchemaService.get_schema",
+        return_value=CRMEntitySchemaResponse(entity="deal", fields=[]),
+    )
+
+    response = client.get("/users/preference/crm/lists/deals")
+
+    assert response.status_code == 200, response.text
+    columns = {column["id"]: column for column in response.json()["data"]["columns"]}
+    assert columns["stage"]["hideable"] is False
+    assert {"forecast_category", "priority", "days_in_stage"} <= columns.keys()
+    assert all(
+        columns[column_id]["default_visible"] is False
+        for column_id in {"forecast_category", "priority", "days_in_stage"}
+    )
+
+
 def test_get_deal_configuration_uses_readable_internal_custom_field_ids(
     client: TestClient,
     crm_list_dependency_overrides,
@@ -216,9 +261,15 @@ def test_get_deal_configuration_uses_readable_internal_custom_field_ids(
 
     assert response.status_code == 200, response.text
     columns = response.json()["data"]["columns"]
-    assert columns[1]["id"] == "custom_columns.procurement_stage"
+    assert [column["id"] for column in columns[:3]] == [
+        "name",
+        "stage",
+        "custom_columns.procurement_stage",
+    ]
+    assert columns[1]["hideable"] is False
     assert columns[1]["visible"] is True
-    assert columns[1]["source"] == "custom"
+    assert columns[2]["visible"] is True
+    assert columns[2]["source"] == "custom"
     assert not any(
         column["id"] in {"stale_column", "custom_columns.provider_score"} for column in columns
     )
@@ -248,6 +299,27 @@ def test_put_crm_list_columns_persists_order_without_replacing_siblings(
         == "INR"
     )
     assert crm_list_dependency_overrides.session.committed is True
+
+
+def test_put_deal_columns_rejects_removing_stage(
+    client: TestClient,
+    crm_list_dependency_overrides,
+    mocker,
+) -> None:
+    """Deal identity and workflow state are mandatory even for direct API callers."""
+    mocker.patch(
+        "src.service.users.crm_list_preferences_service.DealSchemaService.get_schema",
+        return_value=CRMEntitySchemaResponse(entity="deal", fields=[]),
+    )
+
+    response = client.put(
+        "/users/preference/crm/lists/deals",
+        json={"columns": ["name", "amount"]},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "stage is required"
+    assert crm_list_dependency_overrides.session.committed is False
 
 
 @pytest.mark.parametrize(

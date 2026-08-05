@@ -130,6 +130,12 @@ class DealListItem(BaseModel):
         description="Primary contact details as a list (typically 0..1 items).",
     )
     last_activity_at: datetime | None = None
+    forecast_category: str | None = None
+    priority: str | None = None
+    days_in_stage: int | None = Field(
+        None,
+        description="Whole elapsed days since the deal entered its current stage.",
+    )
     deal_team: list[DealTeamMember] = Field(
         default_factory=list,
         description="List of team members (owners, collaborators, split_owners) associated with the deal.",

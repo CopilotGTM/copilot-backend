@@ -247,6 +247,9 @@ class ContactListItem(BaseModel):
     deal_count: int = Field(0)
     last_contacted_at: datetime | None
     last_activity_at: datetime | None
+    lifecycle_stage: str | None
+    lead_status: str | None
+    country: str | None
     source: str = Field("crm_sync")
     is_profile_enriched: bool = Field(False)
     profile_enriched_at: datetime | None

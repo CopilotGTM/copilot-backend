@@ -170,12 +170,15 @@ class AccountListItem(BaseModel):
     domain: str | None
     website: str | None
     industry: str | None
+    company_type: str | None
     lifecycle_stage: str | None
     owner_name: str | None
     owner: AccountListOwner | None = None
     number_of_employees: int | None
     annual_revenue: float | None
     phone: str | None
+    city: str | None
+    state: str | None
     country: str | None
     linkedin_url: str | None
     is_active: bool = True

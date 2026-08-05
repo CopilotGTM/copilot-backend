@@ -598,6 +598,9 @@ class ContactReadService:
                 "deal_count": contact_deal_count or 0,
                 "last_contacted_at": contact.last_contacted_at,
                 "last_activity_at": contact.last_activity_at,
+                "lifecycle_stage": contact.lifecycle_stage,
+                "lead_status": contact.lead_status,
+                "country": contact.country,
                 "source": self._map_source(integration_map.get(contact.integration_id)),
                 "is_profile_enriched": bool(
                     contact.profile_enriched_at or contact.profile_enrichment_source
