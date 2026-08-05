@@ -8,6 +8,7 @@ from uuid import UUID
 
 from fastapi import Query
 from pydantic import BaseModel, Field
+from src.api.schemas.email_name_fallback import EmailNameFallbackModel
 
 
 class ActivityFeedQueryParams(BaseModel):
@@ -36,7 +37,7 @@ class ActivityFeedRelatedObject(BaseModel):
     link_roles: list[str]
 
 
-class ActivityFeedItem(BaseModel):
+class ActivityFeedItem(EmailNameFallbackModel):
     """One activity-feed card backed by crm_activity_links and crm_activities."""
 
     activity_id: UUID

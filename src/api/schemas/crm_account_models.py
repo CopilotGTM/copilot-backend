@@ -12,6 +12,7 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from src.api.schemas.email_name_fallback import EmailNameFallbackModel
 from src.service.crm.utils.account import ACCOUNT_LINKEDIN_URL_ERROR, is_account_linkedin_url
 
 
@@ -123,7 +124,7 @@ def account_detail_field_definitions() -> list[AccountDetailFieldDefinition]:
     ]
 
 
-class AccountContactItem(BaseModel):
+class AccountContactItem(EmailNameFallbackModel):
     """Compact contact row used when an account response needs contact counts."""
 
     contact_id: UUID
@@ -133,7 +134,7 @@ class AccountContactItem(BaseModel):
     deal_count: int = 0
 
 
-class AccountDetailContactItem(BaseModel):
+class AccountDetailContactItem(EmailNameFallbackModel):
     """Contact row embedded in account detail responses."""
 
     contact_id: UUID
@@ -154,7 +155,7 @@ class AccountDealItem(BaseModel):
     owner_name: str | None
 
 
-class AccountListOwner(BaseModel):
+class AccountListOwner(EmailNameFallbackModel):
     """Owner snapshot returned with account list rows."""
 
     id: UUID | None

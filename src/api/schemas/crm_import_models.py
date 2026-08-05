@@ -6,6 +6,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from src.api.schemas.email_name_fallback import EmailNameFallbackModel
 
 
 class CRMImportPresignRequest(BaseModel):
@@ -101,7 +102,7 @@ class CRMImportStatusResponse(BaseModel):
     mapping_confidence_summary: dict[str, int] = Field(default_factory=dict)
 
 
-class CRMImportRowItem(BaseModel):
+class CRMImportRowItem(EmailNameFallbackModel):
     """Audited outcome and presentation snapshot for one CSV row."""
 
     row_number: int

@@ -43,6 +43,7 @@ from src.service.crm.contacts.last_activity_service import (
     ContactLastActivityService,
 )
 from src.service.crm.deals.last_activity_service import DealLastActivityService
+from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
 from src.service.crm.participants.stakeholder_adapter import (
     participant_to_stakeholder_detail_dict,
 )
@@ -111,8 +112,9 @@ def _participant_preview(
     role: str,
 ) -> dict[str, str]:
     preview: dict[str, str] = {"role": role}
-    if name:
-        preview["name"] = name
+    display_name = resolve_attendee_display_name(name, email)
+    if display_name:
+        preview["name"] = display_name
     if email:
         preview["email"] = email
     return preview

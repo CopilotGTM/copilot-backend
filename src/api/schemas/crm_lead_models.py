@@ -7,6 +7,7 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
+from src.api.schemas.email_name_fallback import EmailNameFallbackModel
 from src.domain.models.organisation_tables.sync.crm.leads import (
     CRMLeadParticipantType,
     CRMLeadPriority,
@@ -15,7 +16,7 @@ from src.domain.models.organisation_tables.sync.crm.leads import (
 )
 
 
-class LeadParticipantItem(BaseModel):
+class LeadParticipantItem(EmailNameFallbackModel):
     """Participant linked to a lead."""
 
     participant_id: UUID
@@ -38,7 +39,7 @@ class LeadParticipantItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class LeadListItem(BaseModel):
+class LeadListItem(EmailNameFallbackModel):
     """Single lead in a list response."""
 
     lead_id: UUID

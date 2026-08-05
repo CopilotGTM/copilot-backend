@@ -7,6 +7,7 @@ from typing import Any, Literal, NamedTuple
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from src.api.schemas.email_name_fallback import EmailNameFallbackModel
 from src.contracts.crm.deal_schema import (
     DealCustomColumnDefinition,
     DealDetailFieldDefinition,
@@ -23,7 +24,7 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
 from src.service.crm.utils.account import PERSON_LINKEDIN_URL_ERROR, is_person_linkedin_url
 
 
-class DealTeamMember(BaseModel):
+class DealTeamMember(EmailNameFallbackModel):
     """A team member associated with a deal (owner, collaborator, split_owner, etc.)."""
 
     participant_id: UUID | None = Field(None, description="Deal participant row ID")
@@ -35,7 +36,7 @@ class DealTeamMember(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class DealOwnerDetail(BaseModel):
+class DealOwnerDetail(EmailNameFallbackModel):
     """Owner details for a deal.
 
     This is exposed as a list in list responses for forward compatibility
@@ -49,7 +50,7 @@ class DealOwnerDetail(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class DealOwnerFilterItem(BaseModel):
+class DealOwnerFilterItem(EmailNameFallbackModel):
     """Owner option for deal filter dropdowns."""
 
     owner_id: UUID = Field(description="Internal owner ID for filtering")
@@ -79,7 +80,7 @@ class DealAccountDetail(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class DealPrimaryContactDetail(BaseModel):
+class DealPrimaryContactDetail(EmailNameFallbackModel):
     """Primary contact details for a deal list row."""
 
     contact_id: UUID | None = Field(None, description="Internal contact ID for linking")
@@ -90,7 +91,7 @@ class DealPrimaryContactDetail(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class DealListItem(BaseModel):
+class DealListItem(EmailNameFallbackModel):
     """Individual deal item in a list response."""
 
     deal_id: UUID
@@ -199,7 +200,7 @@ class DealSearchPage(BaseModel):
     has_more: bool = False
 
 
-class DealDetail(BaseModel):
+class DealDetail(EmailNameFallbackModel):
     """Detailed deal information - streamlined for frontend needs."""
 
     # Identity
@@ -350,7 +351,7 @@ class DealsStats(BaseModel):
     average_amount: float | None = Field(None, description="Average deal amount")
 
 
-class StakeholderDetail(BaseModel):
+class StakeholderDetail(EmailNameFallbackModel):
     """Detailed view of a deal stakeholder.
 
     Source Information:
@@ -414,7 +415,7 @@ class StakeholderEngagementSnapshot(BaseModel):
     decision_power: str | None = Field(None, description="Decision power level at this point")
 
 
-class StakeholderFullDetail(BaseModel):
+class StakeholderFullDetail(EmailNameFallbackModel):
     """Full stakeholder detail including engagement history.
 
     This is returned when fetching a single stakeholder and includes
@@ -708,7 +709,7 @@ class UpdateStakeholderRequest(BaseModel):
         return cleaned
 
 
-class AvailableContactItem(BaseModel):
+class AvailableContactItem(EmailNameFallbackModel):
     """Legacy contact picker item for add-stakeholder compatibility."""
 
     contact_id: UUID = Field(..., description="Internal contact identifier")
@@ -808,7 +809,7 @@ class DealSummaryJobsStatus(BaseModel):
 # Meeting Models
 
 
-class MeetingAttendee(BaseModel):
+class MeetingAttendee(EmailNameFallbackModel):
     """Single attendee in a calendar event."""
 
     name: str | None
@@ -872,7 +873,7 @@ class TranscriptFinalizeRequest(BaseModel):
     job_id: UUID = Field(..., description="The job ID returned by the presign endpoint")
 
 
-class ContactListItem(BaseModel):
+class ContactListItem(EmailNameFallbackModel):
     """Simplified contact model for selection lists."""
 
     contact_id: UUID

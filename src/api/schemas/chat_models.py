@@ -5,6 +5,7 @@ from typing import Any, Generic, Literal, TypeVar
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from src.api.schemas.email_name_fallback import EmailNameFallbackModel
 from src.domain.models.organisation_tables.chat_message_models import (
     ChatMessageRole,
     ChatMessageType,
@@ -59,7 +60,7 @@ class ChatSessionShareOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class ChatSharedByOut(BaseModel):
+class ChatSharedByOut(EmailNameFallbackModel):
     """User who granted the current caller access to a chat."""
 
     user_id: UUID

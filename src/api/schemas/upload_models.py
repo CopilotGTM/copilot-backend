@@ -6,6 +6,7 @@ from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator
+from src.api.schemas.email_name_fallback import EmailNameFallbackModel
 from src.domain.models.organisation_tables.chat_message_models import (
     AttachmentSourceProvider,
     AttachmentStatus,
@@ -112,7 +113,7 @@ class AttachmentDownloadResponse(BaseModel):
     expires_in_seconds: int = Field(default=30 * 60, description="Seconds until the URL expires")
 
 
-class AttachmentUploaderResponse(BaseModel):
+class AttachmentUploaderResponse(EmailNameFallbackModel):
     """Basic uploader identity shown in the admin attachment catalogue."""
 
     user_id: UUID

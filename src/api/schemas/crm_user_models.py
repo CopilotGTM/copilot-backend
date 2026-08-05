@@ -5,9 +5,10 @@ from __future__ import annotations
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from src.api.schemas.email_name_fallback import EmailNameFallbackModel
 
 
-class CRMUserListItem(BaseModel):
+class CRMUserListItem(EmailNameFallbackModel):
     """App user entry eligible for CRM owner/team selection."""
 
     user_id: UUID

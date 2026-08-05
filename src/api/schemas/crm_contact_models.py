@@ -13,6 +13,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from src.api.schemas.email_name_fallback import EmailNameFallbackModel
 from src.service.crm.utils.account import PERSON_LINKEDIN_URL_ERROR, is_person_linkedin_url
 
 
@@ -36,7 +37,7 @@ class ContactListCompany(BaseModel):
     domain: str | None
 
 
-class ContactListOwner(BaseModel):
+class ContactListOwner(EmailNameFallbackModel):
     """Owner context returned by the contacts list endpoint."""
 
     id: UUID | None
@@ -231,7 +232,7 @@ def contact_detail_field_definitions(
     ]
 
 
-class ContactListItem(BaseModel):
+class ContactListItem(EmailNameFallbackModel):
     """Single contact in a list response."""
 
     contact_id: UUID
@@ -313,7 +314,7 @@ class ContactDeleteBlockedData(BaseModel):
     suggested_actions: list[str] = Field(default_factory=list)
 
 
-class ContactDetail(BaseModel):
+class ContactDetail(EmailNameFallbackModel):
     """Page-ready contact detail including research and compact deal involvement."""
 
     detail_field_definitions: list[ContactDetailFieldDefinition] = Field(

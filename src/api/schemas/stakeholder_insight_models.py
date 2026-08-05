@@ -5,6 +5,7 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from src.api.schemas.email_name_fallback import EmailNameFallbackModel
 from src.domain.models.organisation_tables.sync.stakeholder_insight_models import (
     StakeholderInsightPriority,
     StakeholderInsightStatus,
@@ -32,7 +33,7 @@ class InsightAction(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class StakeholderInsightResponse(BaseModel):
+class StakeholderInsightResponse(EmailNameFallbackModel):
     """Response model for a stakeholder insight.
 
     Matches the UI card structure shown in the AI Insights panel.
