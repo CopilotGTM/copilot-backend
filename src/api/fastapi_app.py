@@ -47,6 +47,7 @@ from src.api.routers.app_preferences.meeting_recording_policy_handler import (
 )
 from src.api.routers.app_preferences.membership_handler import membership_policy_router
 from src.api.routers.app_preferences.navigation_handler import navigation_preferences_router
+from src.api.routers.app_preferences.onboarding_handler import onboarding_preferences_router
 from src.api.routers.automation import agent_runs_router, automation_triggers_router
 from src.api.routers.bots import bots_router
 from src.api.routers.chat.messages_handler import router as chat_messages_router
@@ -288,6 +289,11 @@ def create_fastapi_app():
     )
     fastapp.include_router(
         navigation_preferences_router,
+        prefix="/users/preference",
+        tags=["user-preferences"],
+    )
+    fastapp.include_router(
+        onboarding_preferences_router,
         prefix="/users/preference",
         tags=["user-preferences"],
     )

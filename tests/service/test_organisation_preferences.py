@@ -40,6 +40,50 @@ def test_empty_integrations_default_to_all_channels():
     }
 
 
+def test_missing_onboarding_preferences_do_not_gate_existing_organisations():
+    preferences = normalize_organisation_preferences(None)
+
+    assert preferences["onboarding"] == {"enabled": False, "steps": []}
+
+
+def test_onboarding_preferences_preserve_a_supported_ordered_flow():
+    preferences = normalize_organisation_preferences(
+        {
+            "onboarding": {
+                "enabled": True,
+                "steps": [
+                    {"id": "google", "skippable": False},
+                    {"id": "whatsapp", "skippable": True},
+                ],
+            }
+        }
+    )
+
+    assert preferences["onboarding"] == {
+        "enabled": True,
+        "steps": [
+            {"id": "google", "skippable": False},
+            {"id": "whatsapp", "skippable": True},
+        ],
+    }
+
+
+def test_invalid_onboarding_flow_is_disabled():
+    preferences = normalize_organisation_preferences(
+        {
+            "onboarding": {
+                "enabled": True,
+                "steps": [
+                    {"id": "whatsapp", "skippable": True},
+                    {"id": "google", "skippable": False},
+                ],
+            }
+        }
+    )
+
+    assert preferences["onboarding"] == {"enabled": False, "steps": []}
+
+
 def test_explicit_channels_are_preserved_and_cleaned():
     preferences = normalize_organisation_preferences(
         {"channels": {"enabled": ["slack", "slack", "unknown", "teams"]}}

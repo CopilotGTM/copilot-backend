@@ -139,3 +139,38 @@ async def test_updates_google_gmail_scope_preference_without_deal_lock(
     assert organisation.preferences["integrations"]["microsoft"] == {
         "admin_consent": {"granted": True}
     }
+
+
+@pytest.mark.asyncio
+async def test_marks_only_the_selected_organisation_for_onboarding(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    organisation_id = uuid4()
+    organisation = _organisation(organisation_id, {"crm": {"provider": "copilotgtm"}})
+    master_session = _MasterSession(organisation)
+    _patch_tenant_session(monkeypatch, has_deal=True)
+
+    service = AdminOrganisationService(master_session)  # type: ignore[arg-type]
+
+    await service.update_organisation_app_settings(
+        organisation_id=organisation_id,
+        admin_id=uuid4(),
+        settings=UpdateOrganisationAppSettingsRequest(
+            onboarding={
+                "enabled": True,
+                "steps": [
+                    {"id": "google", "skippable": False},
+                    {"id": "whatsapp", "skippable": True},
+                ],
+            }
+        ),
+    )
+
+    assert master_session.committed is True
+    assert organisation.preferences["onboarding"] == {
+        "enabled": True,
+        "steps": [
+            {"id": "google", "skippable": False},
+            {"id": "whatsapp", "skippable": True},
+        ],
+    }

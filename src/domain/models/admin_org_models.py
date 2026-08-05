@@ -13,6 +13,7 @@ T = TypeVar("T")
 
 OrganisationCrmProvider = Literal["copilotgtm", "hubspot", "salesforce"]
 OrganisationChannelSource = Literal["slack", "whatsapp", "teams", "google_chat"]
+OrganisationOnboardingStep = Literal["google", "microsoft", "whatsapp"]
 OrganisationCrmMode = Literal["internal", "external"]
 OrganisationCrmWriteScope = Literal[
     "accounts:create",
@@ -74,6 +75,27 @@ class UpdateOrganisationIntegrationSettings(BaseModel):
     google: UpdateOrganisationGoogleIntegrationSettings | None = None
 
 
+class OrganisationOnboardingStepSettings(BaseModel):
+    id: OrganisationOnboardingStep
+    skippable: bool = False
+
+
+class OrganisationOnboardingSettings(BaseModel):
+    enabled: bool
+    steps: list[OrganisationOnboardingStepSettings] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_flow(self) -> "OrganisationOnboardingSettings":
+        if self.enabled and tuple(step.id for step in self.steps) not in {
+            ("google", "whatsapp"),
+            ("microsoft", "whatsapp"),
+        }:
+            raise ValueError("Onboarding must require a workspace provider before WhatsApp")
+        if not self.enabled:
+            self.steps = []
+        return self
+
+
 class UpdateOrganisationCrmSettingsRequest(BaseModel):
     provider: OrganisationCrmProvider
 
@@ -82,6 +104,7 @@ class UpdateOrganisationAppSettingsRequest(BaseModel):
     crm: UpdateOrganisationCrmSettingsRequest | None = None
     channels: OrganisationChannelSettings | None = None
     integrations: UpdateOrganisationIntegrationSettings | None = None
+    onboarding: OrganisationOnboardingSettings | None = None
 
 
 class ActiveJobInfo(BaseModel):

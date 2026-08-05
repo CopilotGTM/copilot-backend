@@ -3,10 +3,24 @@
 from src.service.users.user_preferences import (
     merge_crm_list_sorting,
     merge_preferred_calendar_sender,
+    merge_skipped_onboarding_step,
     normalize_user_preferences,
     preferred_calendar_sender,
     set_preferred_deal_currency,
 )
+
+
+def test_skipped_onboarding_steps_are_normalized_and_preserve_other_preferences() -> None:
+    updated = merge_skipped_onboarding_step(
+        {
+            "onboarding": {"skipped_steps": ["whatsapp", "unknown"]},
+            "notifications": {"email": True},
+        },
+        "whatsapp",
+    )
+
+    assert normalize_user_preferences(updated)["onboarding"] == {"skipped_steps": ["whatsapp"]}
+    assert updated["notifications"] == {"email": True}
 
 
 def test_normalize_user_preferences_adds_default_contact_list_columns() -> None:

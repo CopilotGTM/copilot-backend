@@ -99,6 +99,30 @@ CRM_LIST_SORT_FIELDS = {
     },
     "tasks": {"subject", "due_date", "priority", "status", "assignee", "created_at"},
 }
+ONBOARDING_STEP_IDS = {"google", "microsoft", "whatsapp"}
+
+
+def normalize_onboarding_preferences(preferences: Any) -> dict[str, Any]:
+    branch = preferences if isinstance(preferences, dict) else {}
+    raw_steps = branch.get("skipped_steps")
+    skipped_steps: list[str] = []
+    if isinstance(raw_steps, list):
+        for step in raw_steps:
+            if step in ONBOARDING_STEP_IDS and step not in skipped_steps:
+                skipped_steps.append(step)
+    return {"skipped_steps": skipped_steps}
+
+
+def merge_skipped_onboarding_step(
+    preferences: dict[str, Any] | None,
+    step_id: str,
+) -> dict[str, Any]:
+    root = dict(preferences or {})
+    onboarding = normalize_onboarding_preferences(root.get("onboarding"))
+    if step_id in ONBOARDING_STEP_IDS and step_id not in onboarding["skipped_steps"]:
+        onboarding["skipped_steps"].append(step_id)
+    root["onboarding"] = onboarding
+    return root
 
 
 def _normalize_preferred_deal_currency(currency: Any) -> str | None:
@@ -284,6 +308,7 @@ def normalize_user_preferences(preferences: dict[str, Any] | None) -> dict[str, 
     crm["tasks"] = tasks
     root["crm"] = crm
     root["navigation"] = normalize_navigation_preferences(root.get("navigation"))
+    root["onboarding"] = normalize_onboarding_preferences(root.get("onboarding"))
     calendar_sender = preferred_calendar_sender(root)
     if calendar_sender:
         root = merge_preferred_calendar_sender(root, calendar_sender)
