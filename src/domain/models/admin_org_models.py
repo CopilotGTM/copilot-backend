@@ -91,6 +91,8 @@ class OrganisationOnboardingSettings(BaseModel):
             ("microsoft", "whatsapp"),
         }:
             raise ValueError("Onboarding must require a workspace provider before WhatsApp")
+        if self.enabled and not self.steps[-1].skippable:
+            raise ValueError("WhatsApp onboarding must be skippable")
         if not self.enabled:
             self.steps = []
         return self

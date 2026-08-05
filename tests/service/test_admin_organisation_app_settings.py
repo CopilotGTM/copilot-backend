@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
+from pydantic import ValidationError
 from src.domain.models.admin_org_models import UpdateOrganisationAppSettingsRequest
 from src.service.admin import admin_organisation_service as service_module
 from src.service.admin.admin_organisation_service import AdminOrganisationService
@@ -174,3 +175,16 @@ async def test_marks_only_the_selected_organisation_for_onboarding(
             {"id": "whatsapp", "skippable": True},
         ],
     }
+
+
+def test_rejects_required_whatsapp_onboarding_configuration():
+    with pytest.raises(ValidationError, match="WhatsApp onboarding must be skippable"):
+        UpdateOrganisationAppSettingsRequest(
+            onboarding={
+                "enabled": True,
+                "steps": [
+                    {"id": "google", "skippable": False},
+                    {"id": "whatsapp", "skippable": False},
+                ],
+            }
+        )

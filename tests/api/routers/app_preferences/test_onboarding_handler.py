@@ -78,7 +78,7 @@ def onboarding_dependency_overrides(client: TestClient, test_user_ids):
     app.dependency_overrides[get_current_user] = _override_user
     app.dependency_overrides[get_master_async_session] = _override_master_session
     app.dependency_overrides[rate_limit_user_write] = _override_rate_limit
-    yield SimpleNamespace(user=user, session=session)
+    yield SimpleNamespace(user=user, organisation=organisation, session=session)
     app.dependency_overrides = previous_overrides
 
 
@@ -104,3 +104,16 @@ def test_skip_required_onboarding_step_is_rejected(
     assert response.status_code == 409
     assert onboarding_dependency_overrides.session.committed is False
     assert "onboarding" not in onboarding_dependency_overrides.user.preferences
+
+
+def test_skip_whatsapp_repairs_legacy_required_policy(
+    client: TestClient, onboarding_dependency_overrides
+) -> None:
+    onboarding_dependency_overrides.organisation.preferences["onboarding"]["steps"][1][
+        "skippable"
+    ] = False
+
+    response = client.patch("/users/preference/onboarding/whatsapp/skip")
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {"skipped_steps": ["whatsapp"]}
