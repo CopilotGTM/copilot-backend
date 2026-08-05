@@ -77,6 +77,27 @@ _STANDARD_COLUMNS: dict[CRMColumnEntity, tuple[ColumnRow, ...]] = {
         ("created_at", "Created", "datetime", "created_at", True),
         ("updated_at", "Updated", "datetime", "updated_at", False),
     ),
+    "tasks": (
+        ("subject", "Action", "text", "subject", True),
+        ("due_date", "Due date", "datetime", "due_date", True),
+        ("status", "Status", "text", "status", True),
+        ("priority", "Priority", "text", "priority", True),
+        ("deal.name", "Deal", "text", "deal.name", False),
+        ("assignee.name", "Assignee", "person", "assigned_to", True),
+        ("source", "Source", "text", "source", False),
+        ("created_at", "Created", "datetime", "created_at", True),
+    ),
+    "leads": (
+        ("lead", "Lead", "text", "full_name", False),
+        ("email", "Email", "email", "email", False),
+        ("company", "Company", "text", "company_name", False),
+        ("status", "Status", "text", "status", False),
+        ("source", "Source", "text", "source_type", False),
+        ("owner", "Owner", "person", "owner_name", False),
+        ("budget", "Budget", "currency", "budget_amount", False),
+        ("score", "Score", "number", "score", False),
+        ("captured", "Captured", "datetime", "captured_at", False),
+    ),
 }
 
 DEFAULT_COLUMNS: dict[CRMColumnEntity, tuple[str, ...]] = {
@@ -117,12 +138,35 @@ DEFAULT_COLUMNS: dict[CRMColumnEntity, tuple[str, ...]] = {
         "primary_contact_name",
         "last_activity_at",
     ),
+    "tasks": (
+        "subject",
+        "due_date",
+        "status",
+        "priority",
+        "deal.name",
+        "assignee.name",
+        "source",
+        "created_at",
+    ),
+    "leads": (
+        "lead",
+        "email",
+        "company",
+        "status",
+        "source",
+        "owner",
+        "budget",
+        "score",
+        "captured",
+    ),
 }
 
 REQUIRED_COLUMNS: dict[CRMColumnEntity, tuple[str, ...]] = {
     "contacts": ("full_name",),
     "accounts": ("name",),
     "deals": ("name", "stage"),
+    "tasks": ("subject", "status"),
+    "leads": ("lead", "status"),
 }
 
 

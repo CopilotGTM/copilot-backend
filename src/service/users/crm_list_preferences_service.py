@@ -196,7 +196,10 @@ class CRMListPreferencesService:
         ]
         sort_by = preferences.get("sort_by")
         sort_order = preferences.get("sort_order")
-        if sort_by not in CRM_LIST_SORT_FIELDS[entity] or sort_order not in {"asc", "desc"}:
+        if sort_by not in CRM_LIST_SORT_FIELDS.get(entity, set()) or sort_order not in {
+            "asc",
+            "desc",
+        }:
             sort_by = None
             sort_order = None
         return CRMListConfiguration(

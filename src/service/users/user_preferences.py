@@ -236,7 +236,7 @@ def user_preferences_for_auth(preferences: dict[str, Any] | None) -> dict[str, A
     """Return bootstrap preferences without duplicating migrated CRM column catalogs."""
     root = normalize_user_preferences(preferences)
     crm = dict(root.get("crm") or {})
-    for entity in ("contacts", "accounts", "deals"):
+    for entity in ("contacts", "accounts", "deals", "tasks", "leads"):
         entity_preferences = dict(crm.get(entity) or {})
         list_preferences = dict(entity_preferences.get("list") or {})
         list_preferences.pop("columns", None)

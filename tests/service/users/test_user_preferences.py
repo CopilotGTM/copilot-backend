@@ -277,7 +277,7 @@ def test_merge_crm_list_sorting_preserves_columns_and_sibling_preferences() -> N
 
 
 def test_auth_preferences_omit_migrated_columns_only() -> None:
-    """Login stays small without dropping sorting, tasks, navigation, or other settings."""
+    """Login stays small without dropping sorting, navigation, or other settings."""
     preferences = {
         "notifications": {"email": True},
         "crm": {
@@ -289,6 +289,7 @@ def test_auth_preferences_omit_migrated_columns_only() -> None:
                 }
             },
             "tasks": {"list": {"columns": ["subject", "status"]}},
+            "leads": {"list": {"columns": ["lead", "status"]}},
         },
     }
 
@@ -298,7 +299,8 @@ def test_auth_preferences_omit_migrated_columns_only() -> None:
         "sort_by": "name",
         "sort_order": "asc",
     }
-    assert projected["crm"]["tasks"]["list"]["columns"] == ["subject", "status"]
+    assert "columns" not in projected["crm"]["tasks"]["list"]
+    assert "columns" not in projected["crm"]["leads"]["list"]
     assert projected["notifications"] == {"email": True}
 
 
