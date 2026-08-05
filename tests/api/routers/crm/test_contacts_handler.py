@@ -988,19 +988,32 @@ async def test_list_contacts_returns_new_list_only_contract() -> None:
 async def test_search_contacts_returns_cursor_page() -> None:
     contact_id = uuid4()
     company_id = uuid4()
+    now = datetime.now(UTC)
     service = _FakeContactSearchService(
         rows=[
             {
                 "contact_id": contact_id,
                 "full_name": "Sam Altman",
                 "email": "sam.altman@openai.com",
+                "additional_emails": [],
                 "job_title": "CEO",
+                "phone": None,
+                "mobile_phone": None,
+                "linkedin_url": None,
                 "company": {
                     "id": company_id,
                     "name": "OpenAI",
                     "domain": "openai.com",
                 },
+                "owner": None,
                 "deal_count": 1,
+                "last_contacted_at": None,
+                "last_activity_at": None,
+                "source": "manual",
+                "is_profile_enriched": False,
+                "profile_enriched_at": None,
+                "created_at": now,
+                "updated_at": now,
                 "match_type": "exact_email",
             }
         ],

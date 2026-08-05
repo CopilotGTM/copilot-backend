@@ -294,7 +294,7 @@ class ContactReadService:
         cursor: str | None = None,
         company_id: UUID | None = None,
     ) -> tuple[list[dict[str, Any]], str | None]:
-        """Return lightweight contact rows for picker and browse search."""
+        """Return page-ready contact rows for picker and browse search."""
         return await self._search_contacts(
             q=q,
             limit=limit,
@@ -566,18 +566,45 @@ class ContactReadService:
             )
 
         companies = await self._load_companies_for_contacts(contacts)
+        integration_ids = {contact.integration_id for contact in contacts}
+        integration_map: dict[UUID, str] = {}
+        if integration_ids:
+            integration_stmt = select(
+                col(KnowledgeIntegration.integration_id),
+                col(KnowledgeIntegration.integration_type),
+            ).where(
+                col(KnowledgeIntegration.organisation_id) == self.organisation_id,
+                col(KnowledgeIntegration.integration_id).in_(list(integration_ids)),
+            )
+            integration_result = await self.org_session.execute(integration_stmt)
+            integration_map = dict(integration_result.all())
         return [
             {
                 "contact_id": contact.contact_id,
                 "full_name": contact.full_name,
                 "email": contact.email,
+                "additional_emails": contact.additional_emails or [],
                 "job_title": contact.job_title,
+                "phone": contact.phone,
+                "mobile_phone": contact.mobile_phone,
+                "linkedin_url": contact.linkedin_url
+                or (contact.properties or {}).get("linkedin_url"),
                 "company": self._contact_company_payload(
                     contact=contact,
                     company=companies.get(contact.company_id) if contact.company_id else None,
                     email_domain=self._extract_domain(contact.email) if contact.email else None,
                 ),
+                "owner": self._contact_owner_payload(contact),
                 "deal_count": contact_deal_count or 0,
+                "last_contacted_at": contact.last_contacted_at,
+                "last_activity_at": contact.last_activity_at,
+                "source": self._map_source(integration_map.get(contact.integration_id)),
+                "is_profile_enriched": bool(
+                    contact.profile_enriched_at or contact.profile_enrichment_source
+                ),
+                "profile_enriched_at": contact.profile_enriched_at,
+                "created_at": contact.created_at,
+                "updated_at": contact.updated_at,
                 "match_type": self._contact_match_type(contact, query, include_company_name),
             }
             for contact, contact_deal_count in contact_rows

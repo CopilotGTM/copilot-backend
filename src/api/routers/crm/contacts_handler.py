@@ -329,7 +329,7 @@ async def search_contacts(
     service: ContactReadService = Depends(get_contact_read_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[ContactSearchPage]:
-    """Return lightweight contact picker rows using cursor pagination."""
+    """Return page-ready contact rows using cursor pagination."""
     try:
         items_raw, next_cursor = await service.search_contacts(
             q=q,

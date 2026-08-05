@@ -210,8 +210,8 @@ async def test_contact_research_status_stops_polling_after_provider_miss() -> No
 
 
 @pytest.mark.asyncio
-async def test_search_contacts_returns_lightweight_cursor_page_and_searches_extra_emails() -> None:
-    """Picker search includes alternate emails without expanding its row contract."""
+async def test_search_contacts_returns_page_ready_cursor_rows_and_searches_extra_emails() -> None:
+    """Browse search keeps full list fields while matching alternate emails."""
     org_id = uuid4()
     company_id = uuid4()
     first = CRMContact(
@@ -222,7 +222,16 @@ async def test_search_contacts_returns_lightweight_cursor_page_and_searches_extr
         email="sam@openai.com",
         additional_emails=["sam.altman@openai.com"],
         job_title="CEO",
+        phone="+1 415 555 0100",
+        mobile_phone="+1 415 555 0101",
+        linkedin_url="https://linkedin.com/in/samaltman",
         company_id=company_id,
+        owner_id=uuid4(),
+        owner_name="CRM Owner",
+        owner_email="owner@openai.com",
+        last_contacted_at=datetime(2026, 8, 1, tzinfo=UTC),
+        last_activity_at=datetime(2026, 8, 2, tzinfo=UTC),
+        profile_enriched_at=datetime(2026, 8, 3, tzinfo=UTC),
     )
     second = CRMContact(
         organisation_id=org_id,
@@ -238,7 +247,9 @@ async def test_search_contacts_returns_lightweight_cursor_page_and_searches_extr
         name="OpenAI",
         domain="openai.com",
     )
-    session = _FakeSession([[(first, 1), (second, 0)], [company]])
+    session = _FakeSession(
+        [[(first, 1), (second, 0)], [company], [(first.integration_id, "hubspot")]]
+    )
 
     rows, next_cursor = await ContactReadService(  # type: ignore[arg-type]
         session, org_id
@@ -249,13 +260,29 @@ async def test_search_contacts_returns_lightweight_cursor_page_and_searches_extr
             "contact_id": first.contact_id,
             "full_name": "Samuel Altman",
             "email": "sam@openai.com",
+            "additional_emails": ["sam.altman@openai.com"],
             "job_title": "CEO",
+            "phone": "+1 415 555 0100",
+            "mobile_phone": "+1 415 555 0101",
+            "linkedin_url": "https://linkedin.com/in/samaltman",
             "company": {
                 "id": company_id,
                 "name": "OpenAI",
                 "domain": "openai.com",
             },
+            "owner": {
+                "id": first.owner_id,
+                "name": "CRM Owner",
+                "email": "owner@openai.com",
+            },
             "deal_count": 1,
+            "last_contacted_at": datetime(2026, 8, 1, tzinfo=UTC),
+            "last_activity_at": datetime(2026, 8, 2, tzinfo=UTC),
+            "source": "hubspot",
+            "is_profile_enriched": True,
+            "profile_enriched_at": datetime(2026, 8, 3, tzinfo=UTC),
+            "created_at": first.created_at,
+            "updated_at": first.updated_at,
             "match_type": "additional_email",
         }
     ]

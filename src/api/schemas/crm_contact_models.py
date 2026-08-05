@@ -374,15 +374,9 @@ class ContactsPage(BaseModel):
     total_pages: int
 
 
-class ContactSearchItem(BaseModel):
-    """Contact search suggestion shown in contact pickers."""
+class ContactSearchItem(ContactListItem):
+    """Page-ready contact row plus match metadata for cursor search."""
 
-    contact_id: UUID
-    full_name: str | None
-    email: str | None
-    job_title: str | None
-    company: ContactListCompany | None
-    deal_count: int
     match_type: str
 
 
