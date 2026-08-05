@@ -343,6 +343,7 @@ class AdminOrganisationService:
                 and settings.integrations.google.gmail_read_enabled is not None
                 else None
             ),
+            onboarding_settings=(settings.onboarding.model_dump() if settings.onboarding else None),
         )
         current_preferences = normalize_organisation_preferences(organization.preferences)
         current_provider = current_preferences.get("crm", {}).get("provider")
@@ -359,7 +360,7 @@ class AdminOrganisationService:
 
         changed_keys = [
             key
-            for key in ("crm", "channels", "capabilities", "integrations")
+            for key in ("crm", "channels", "capabilities", "integrations", "onboarding")
             if current_preferences.get(key) != next_preferences.get(key)
         ]
         organization.preferences = next_preferences

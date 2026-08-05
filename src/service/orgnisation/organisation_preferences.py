@@ -63,6 +63,10 @@ DOMAIN_JOIN_POLICY_OPEN = "open"
 DOMAIN_JOIN_POLICY_INVITE_ONLY = "invite_only"
 DOMAIN_JOIN_POLICIES = {DOMAIN_JOIN_POLICY_OPEN, DOMAIN_JOIN_POLICY_INVITE_ONLY}
 DEFAULT_DOMAIN_JOIN_POLICY = DOMAIN_JOIN_POLICY_OPEN
+ONBOARDING_FLOWS = {
+    ("google", "whatsapp"),
+    ("microsoft", "whatsapp"),
+}
 
 
 def normalize_crm_provider(provider: str | None) -> str:
@@ -154,6 +158,24 @@ def _clean_domain_join_policy(value: Any) -> str:
     return value if value in DOMAIN_JOIN_POLICIES else DEFAULT_DOMAIN_JOIN_POLICY
 
 
+def _clean_onboarding(value: Any) -> dict[str, Any]:
+    onboarding = value if isinstance(value, dict) else {}
+    raw_steps = onboarding.get("steps")
+    steps: list[dict[str, Any]] = []
+    if isinstance(raw_steps, list):
+        for raw_step in raw_steps:
+            if isinstance(raw_step, str):
+                steps.append({"id": raw_step, "skippable": False})
+                continue
+            if not isinstance(raw_step, dict) or not isinstance(raw_step.get("skippable"), bool):
+                return {"enabled": False, "steps": []}
+            steps.append({"id": raw_step.get("id"), "skippable": raw_step["skippable"]})
+    flow = tuple(step["id"] for step in steps)
+    if onboarding.get("enabled") is not True or flow not in ONBOARDING_FLOWS:
+        return {"enabled": False, "steps": []}
+    return {"enabled": True, "steps": steps}
+
+
 def normalize_organisation_preferences(preferences: dict[str, Any] | None) -> dict[str, Any]:
     """Normalize app-owned preference namespaces while preserving unrelated keys."""
     root = dict(preferences or {})
@@ -162,6 +184,7 @@ def normalize_organisation_preferences(preferences: dict[str, Any] | None) -> di
     raw_integrations = root.get("integrations")
     raw_meeting_recording = root.get("meeting_recording")
     raw_membership = root.get("membership")
+    raw_onboarding = root.get("onboarding")
     crm: dict[str, Any] = raw_crm if isinstance(raw_crm, dict) else {}
     channels: dict[str, Any] = raw_channels if isinstance(raw_channels, dict) else {}
     integrations: dict[str, Any] = raw_integrations if isinstance(raw_integrations, dict) else {}
@@ -188,6 +211,7 @@ def normalize_organisation_preferences(preferences: dict[str, Any] | None) -> di
     root["membership"] = {
         "domain_join_policy": _clean_domain_join_policy(membership.get("domain_join_policy")),
     }
+    root["onboarding"] = _clean_onboarding(raw_onboarding)
     root["capabilities"] = derive_capabilities(root["crm"])
     if isinstance(integrations, dict) and set(integrations) <= {"enabled_sources"}:
         root.pop("integrations", None)
@@ -224,6 +248,7 @@ def merge_organisation_app_settings(
     google_gmail_read_enabled: bool | None = None,
     meeting_recording_bot_join_policy: str | None = None,
     membership_domain_join_policy: str | None = None,
+    onboarding_settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Merge admin-controlled app settings without replacing unrelated preferences."""
     root = normalize_organisation_preferences(preferences)
@@ -246,6 +271,8 @@ def merge_organisation_app_settings(
         root["membership"] = {
             "domain_join_policy": _clean_domain_join_policy(membership_domain_join_policy),
         }
+    if onboarding_settings is not None:
+        root["onboarding"] = _clean_onboarding(onboarding_settings)
     return root
 
 
