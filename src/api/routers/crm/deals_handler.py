@@ -207,8 +207,17 @@ def get_deals_list_params(
         ),
     ),
     sort_order: str | None = Query("desc", pattern="^(asc|desc)$", description="Sort direction"),
+    custom_column_keys: list[str] | None = Query(
+        None,
+        description="Active internal custom field keys to include in each list row.",
+    ),
 ) -> DealsListParams:
     """Dependency that parses and returns deals list query parameters."""
+    if custom_column_keys and len(custom_column_keys) > 50:
+        raise HTTPException(
+            status_code=422,
+            detail="At most 50 custom columns can be requested",
+        )
     return DealsListParams(
         limit=limit,
         page=page,
@@ -224,6 +233,7 @@ def get_deals_list_params(
         q=q,
         sort_by=sort_by,
         sort_order=sort_order,
+        custom_column_keys=custom_column_keys,
     )
 
 
@@ -616,6 +626,18 @@ async def list_deals(
             service.session, service.organisation_id, integration_ids
         )
 
+        selected_custom_keys: list[str] = []
+        if params.custom_column_keys:
+            active_custom_keys = set(
+                await DealSchemaService(
+                    service.session,
+                    service.organisation_id,
+                ).active_internal_custom_field_keys()
+            )
+            selected_custom_keys = list(
+                dict.fromkeys(key for key in params.custom_column_keys if key in active_custom_keys)
+            )
+
         # Convert to response models
         items: list[DealListItem] = [
             DealListItem(
@@ -702,6 +724,11 @@ async def list_deals(
                 created_at=deal.created_at,
                 updated_at=deal.updated_at,
                 synced_at=deal.synced_at,
+                custom_columns=(
+                    {key: (deal.properties or {}).get(key) for key in selected_custom_keys} or None
+                    if integration_types_map.get(deal.integration_id, False)
+                    else None
+                ),
             )
             for deal in deals
         ]

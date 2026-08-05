@@ -54,7 +54,7 @@ from src.infra.utils.timezone import USER_TIMEZONE_HEADER, validate_timezone_nam
 from src.service.orgnisation.organisation_preferences import normalize_organisation_preferences
 from src.service.users.auth_access_service import AuthAccessError, AuthAccessService
 from src.service.users.external_auth_service import ExternalAuthError, ExternalAuthService
-from src.service.users.user_preferences import normalize_user_preferences
+from src.service.users.user_preferences import user_preferences_for_auth
 
 logger = get_logger("user_auth_handler")
 router = APIRouter()
@@ -158,7 +158,7 @@ async def user_login(
                 user_organisation_id = user.organisation_id
                 user_profile_image_url = user.profile_image_url
                 user_authentication_method = UserAuthenticationMethod(user.authentication_method)
-                user_preferences = normalize_user_preferences(user.preferences)
+                user_preferences = user_preferences_for_auth(user.preferences)
                 organisation = await session.get(Organisation, user.organisation_id)
             else:
                 user_email = None
@@ -514,7 +514,7 @@ async def user_external_auth_complete(
                     organisation_preferences=normalize_organisation_preferences(
                         organisation.preferences
                     ),
-                    user_preferences=normalize_user_preferences(user.preferences),
+                    user_preferences=user_preferences_for_auth(user.preferences),
                 ),
             )
     except Exception:
@@ -897,7 +897,7 @@ async def get_current_user_profile(
                 profile_image_url=current_user.profile_image_url,
                 organisation_id=current_user.organisation_id,
                 organisation_preferences=organisation_preferences,
-                user_preferences=normalize_user_preferences(current_user.preferences),
+                user_preferences=user_preferences_for_auth(current_user.preferences),
             ),
         )
     except Exception as e:

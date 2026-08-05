@@ -391,8 +391,10 @@ def test_me_returns_google_profile_image(client_with_user_auth):
 
 
 @pytest.mark.asyncio
-async def test_login_success_returns_default_contact_list_columns(user_auth_test_data, mocker):
-    """Test login bootstraps ordered contact list columns for the frontend."""
+async def test_login_success_omits_migrated_columns_but_preserves_other_preferences(
+    user_auth_test_data, mocker
+):
+    """Column catalogs have a dedicated endpoint; login keeps unrelated preferences."""
     import src.api.routers.users.auth_handler as auth_handler
     from src.domain.models.user_models import UserLoginRequest
 
@@ -424,28 +426,9 @@ async def test_login_success_returns_default_contact_list_columns(user_auth_test
 
     assert result.data is not None
     assert result.data.user_preferences is not None
-    assert result.data.user_preferences["crm"]["contacts"]["list"]["columns"] == [
-        "full_name",
-        "job_title",
-        "company.name",
-        "email",
-        "phone",
-        "linkedin_url",
-        "owner.name",
-        "deal_count",
-        "last_contacted_at",
-        "last_activity_at",
-    ]
-    assert result.data.user_preferences["crm"]["deals"]["list"]["columns"] == [
-        "name",
-        "company_name",
-        "stage",
-        "amount",
-        "expected_close_date",
-        "owner",
-        "primary_contact_name",
-        "last_activity_at",
-    ]
+    assert "columns" not in result.data.user_preferences["crm"]["contacts"]["list"]
+    assert "columns" not in result.data.user_preferences["crm"]["accounts"]["list"]
+    assert "columns" not in result.data.user_preferences["crm"]["deals"]["list"]
     assert result.data.user_preferences["crm"]["tasks"]["list"]["columns"] == [
         "subject",
         "due_date",

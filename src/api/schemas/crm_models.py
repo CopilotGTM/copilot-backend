@@ -141,6 +141,10 @@ class DealListItem(BaseModel):
     created_at: datetime
     updated_at: datetime
     synced_at: datetime
+    custom_columns: dict[str, Any] | None = Field(
+        None,
+        description="Requested active internal custom field values.",
+    )
 
     model_config = {"from_attributes": True}
 
@@ -897,3 +901,4 @@ class DealsListParams(NamedTuple):
     q: str | None
     sort_by: str | None
     sort_order: str | None
+    custom_column_keys: list[str] | None = None

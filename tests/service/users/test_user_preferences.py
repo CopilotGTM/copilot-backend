@@ -7,6 +7,7 @@ from src.service.users.user_preferences import (
     normalize_user_preferences,
     preferred_calendar_sender,
     set_preferred_deal_currency,
+    user_preferences_for_auth,
 )
 
 
@@ -273,6 +274,32 @@ def test_merge_crm_list_sorting_preserves_columns_and_sibling_preferences() -> N
     }
     assert updated["crm"]["deals"]["preferred_currency"] == "INR"
     assert updated["notifications"] == {"email": True}
+
+
+def test_auth_preferences_omit_migrated_columns_only() -> None:
+    """Login stays small without dropping sorting, tasks, navigation, or other settings."""
+    preferences = {
+        "notifications": {"email": True},
+        "crm": {
+            "accounts": {
+                "list": {
+                    "columns": ["name", "domain"],
+                    "sort_by": "name",
+                    "sort_order": "asc",
+                }
+            },
+            "tasks": {"list": {"columns": ["subject", "status"]}},
+        },
+    }
+
+    projected = user_preferences_for_auth(preferences)
+
+    assert projected["crm"]["accounts"]["list"] == {
+        "sort_by": "name",
+        "sort_order": "asc",
+    }
+    assert projected["crm"]["tasks"]["list"]["columns"] == ["subject", "status"]
+    assert projected["notifications"] == {"email": True}
 
 
 def test_calendar_sender_preference_normalizes_and_preserves_other_settings() -> None:

@@ -753,6 +753,69 @@ def test_list_deals_includes_default_column_fields(client: TestClient, deals_dep
     assert item["last_activity_at"] == "2026-06-30T15:45:00Z"
 
 
+def test_list_deals_projects_only_requested_active_internal_custom_columns(
+    client: TestClient,
+    deals_dependency_overrides,
+    mocker,
+) -> None:
+    """List payloads include selected registered values without leaking arbitrary properties."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+    integration_id = uuid4()
+    deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="Custom Column Deal",
+            integration_id=integration_id,
+            properties={
+                "procurement_stage": "Legal",
+                "renewal_risk": "High",
+                "unregistered_property": "secret",
+            },
+        )
+    )
+    mocker.patch(
+        "src.api.routers.crm.deals_handler.DealSchemaService.active_internal_custom_field_keys",
+        return_value=["procurement_stage", "renewal_risk"],
+    )
+    mocker.patch(
+        "src.api.routers.crm.deals_handler._get_integration_types_map",
+        return_value={integration_id: True},
+    )
+
+    response = client.get(
+        "/users/crm/deals",
+        params=[
+            ("custom_column_keys", "procurement_stage"),
+            ("custom_column_keys", "unregistered_property"),
+        ],
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["items"][0]["custom_columns"] == {"procurement_stage": "Legal"}
+
+
+def test_list_deals_omits_custom_values_when_no_custom_columns_are_requested(
+    client: TestClient,
+    deals_dependency_overrides,
+) -> None:
+    """Default list requests keep their previous payload size and shape."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+    deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="Default Deal",
+            properties={"procurement_stage": "Legal"},
+        )
+    )
+
+    response = client.get("/users/crm/deals")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["items"][0]["custom_columns"] is None
+
+
 def test_list_deals_sorts_by_last_activity_desc(client: TestClient, deals_dependency_overrides):
     deals_service = deals_dependency_overrides["deals_service"]
     org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
