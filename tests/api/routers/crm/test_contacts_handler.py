@@ -906,6 +906,7 @@ async def test_list_contacts_returns_new_list_only_contract() -> None:
         linkedin_url="https://linkedin.com/in/janedoe",
         lifecycle_stage="lead",
         lead_status="new",
+        country="United States",
         marketing_status="subscribed",
         profile_enrichment={"headline": "Sales leader"},
         profile_enriched_at=enriched_at,
@@ -971,6 +972,9 @@ async def test_list_contacts_returns_new_list_only_contract() -> None:
         "deal_count": 3,
         "last_contacted_at": now,
         "last_activity_at": now,
+        "lifecycle_stage": "lead",
+        "lead_status": "new",
+        "country": "United States",
         "source": "hubspot",
         "is_profile_enriched": True,
         "profile_enriched_at": enriched_at,
@@ -980,7 +984,6 @@ async def test_list_contacts_returns_new_list_only_contract() -> None:
     assert "first_name" not in dumped
     assert "company_id" not in dumped
     assert "owner_name" not in dumped
-    assert "lifecycle_stage" not in dumped
     assert "profile_enrichment_source" not in dumped
 
 
@@ -988,19 +991,35 @@ async def test_list_contacts_returns_new_list_only_contract() -> None:
 async def test_search_contacts_returns_cursor_page() -> None:
     contact_id = uuid4()
     company_id = uuid4()
+    now = datetime.now(UTC)
     service = _FakeContactSearchService(
         rows=[
             {
                 "contact_id": contact_id,
                 "full_name": "Sam Altman",
                 "email": "sam.altman@openai.com",
+                "additional_emails": [],
                 "job_title": "CEO",
+                "phone": None,
+                "mobile_phone": None,
+                "linkedin_url": None,
                 "company": {
                     "id": company_id,
                     "name": "OpenAI",
                     "domain": "openai.com",
                 },
+                "owner": None,
                 "deal_count": 1,
+                "last_contacted_at": None,
+                "last_activity_at": None,
+                "lifecycle_stage": "customer",
+                "lead_status": "connected",
+                "country": "United States",
+                "source": "manual",
+                "is_profile_enriched": False,
+                "profile_enriched_at": None,
+                "created_at": now,
+                "updated_at": now,
                 "match_type": "exact_email",
             }
         ],
@@ -1028,6 +1047,9 @@ async def test_search_contacts_returns_cursor_page() -> None:
     assert result.data is not None
     assert result.data.items[0].contact_id == contact_id
     assert result.data.items[0].match_type == "exact_email"
+    assert result.data.items[0].lifecycle_stage == "customer"
+    assert result.data.items[0].lead_status == "connected"
+    assert result.data.items[0].country == "United States"
     assert result.data.next_cursor == "next-token"
     assert result.data.has_more is True
 

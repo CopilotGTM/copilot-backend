@@ -281,6 +281,9 @@ async def list_contacts(
                 deal_count=row["deal_count"],
                 last_contacted_at=row["contact"].last_contacted_at,
                 last_activity_at=row["contact"].last_activity_at,
+                lifecycle_stage=row["contact"].lifecycle_stage,
+                lead_status=row["contact"].lead_status,
+                country=row["contact"].country,
                 source=row["source"],
                 is_profile_enriched=bool(
                     row["contact"].profile_enriched_at or row["contact"].profile_enrichment_source
@@ -329,7 +332,7 @@ async def search_contacts(
     service: ContactReadService = Depends(get_contact_read_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[ContactSearchPage]:
-    """Return lightweight contact picker rows using cursor pagination."""
+    """Return page-ready contact rows using cursor pagination."""
     try:
         items_raw, next_cursor = await service.search_contacts(
             q=q,

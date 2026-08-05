@@ -328,6 +328,7 @@ async def test_list_accounts_returns_nested_owner_without_source() -> None:
                         "domain": "acme.com",
                         "website": "https://acme.com",
                         "industry": "Software",
+                        "company_type": "Customer",
                         "lifecycle_stage": "customer",
                         "owner_name": "Jane Smith",
                         "owner": {
@@ -338,6 +339,8 @@ async def test_list_accounts_returns_nested_owner_without_source() -> None:
                         "number_of_employees": 250,
                         "annual_revenue": 50000000.0,
                         "phone": "+1-555-0100",
+                        "city": "San Francisco",
+                        "state": "California",
                         "country": "US",
                         "linkedin_url": "https://linkedin.com/company/acme",
                         "is_active": True,
@@ -383,6 +386,9 @@ async def test_list_accounts_returns_nested_owner_without_source() -> None:
         "email": "jane@example.com",
     }
     assert dumped["owner_name"] == "Jane Smith"
+    assert dumped["company_type"] == "Customer"
+    assert dumped["city"] == "San Francisco"
+    assert dumped["state"] == "California"
     assert "source" not in dumped
 
 

@@ -58,6 +58,7 @@ from src.api.schemas.crm_models import (
 )
 from src.api.schemas.crm_schema_models import CRMEntitySchemaResponse
 from src.api.utils.http_response import Response
+from src.domain.models.organisation_tables.base_mixins import utcnow
 from src.domain.models.organisation_tables.job_models import DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync.crm.activities import CRMActivityObjectType
 from src.domain.models.organisation_tables.sync.crm.custom_fields import CRMCustomFieldEntity
@@ -98,6 +99,16 @@ DEAL_SUMMARY_STREAM_JOB_TYPES = frozenset({DealJobType.DEAL_SUMMARY})
 
 # Common error message (Sonar S1192 compliance)
 _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your request"
+
+
+def _days_in_stage(stage_entered_at: datetime | None) -> int | None:
+    """Return whole elapsed days in the current stage, clamped for future timestamps."""
+    if stage_entered_at is None:
+        return None
+    if stage_entered_at.tzinfo is None:
+        stage_entered_at = stage_entered_at.replace(tzinfo=UTC)
+    return max(0, (utcnow() - stage_entered_at).days)
+
 
 deals_router = APIRouter()
 
@@ -207,8 +218,17 @@ def get_deals_list_params(
         ),
     ),
     sort_order: str | None = Query("desc", pattern="^(asc|desc)$", description="Sort direction"),
+    custom_column_keys: list[str] | None = Query(
+        None,
+        description="Active internal custom field keys to include in each list row.",
+    ),
 ) -> DealsListParams:
     """Dependency that parses and returns deals list query parameters."""
+    if custom_column_keys and len(custom_column_keys) > 50:
+        raise HTTPException(
+            status_code=422,
+            detail="At most 50 custom columns can be requested",
+        )
     return DealsListParams(
         limit=limit,
         page=page,
@@ -224,6 +244,7 @@ def get_deals_list_params(
         q=q,
         sort_by=sort_by,
         sort_order=sort_order,
+        custom_column_keys=custom_column_keys,
     )
 
 
@@ -616,6 +637,18 @@ async def list_deals(
             service.session, service.organisation_id, integration_ids
         )
 
+        selected_custom_keys: list[str] = []
+        if params.custom_column_keys:
+            active_custom_keys = set(
+                await DealSchemaService(
+                    service.session,
+                    service.organisation_id,
+                ).active_internal_custom_field_keys()
+            )
+            selected_custom_keys = list(
+                dict.fromkeys(key for key in params.custom_column_keys if key in active_custom_keys)
+            )
+
         # Convert to response models
         items: list[DealListItem] = [
             DealListItem(
@@ -688,6 +721,9 @@ async def list_deals(
                     else []
                 ),
                 last_activity_at=getattr(deal, "last_activity_at", None),
+                forecast_category=getattr(deal, "forecast_category", None),
+                priority=getattr(deal, "priority", None),
+                days_in_stage=_days_in_stage(getattr(deal, "stage_entered_at", None)),
                 deal_team=[
                     DealTeamMember(
                         participant_id=member.get("participant_id"),
@@ -702,6 +738,11 @@ async def list_deals(
                 created_at=deal.created_at,
                 updated_at=deal.updated_at,
                 synced_at=deal.synced_at,
+                custom_columns=(
+                    {key: (deal.properties or {}).get(key) for key in selected_custom_keys} or None
+                    if integration_types_map.get(deal.integration_id, False)
+                    else None
+                ),
             )
             for deal in deals
         ]

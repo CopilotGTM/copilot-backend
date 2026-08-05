@@ -531,6 +531,39 @@ def test_list_deals_success(client: TestClient, deals_dependency_overrides):
     assert len(data["items"]) == 3
 
 
+def test_list_deals_returns_operational_column_values(
+    client: TestClient,
+    deals_dependency_overrides,
+    mocker,
+):
+    """Forecasting and stage-age values reach the list contract without detail fetches."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+    stage_entered_at = datetime(2026, 7, 27, 9, tzinfo=UTC)
+    mocker.patch(
+        "src.api.routers.crm.deals_handler.utcnow",
+        create=True,
+        return_value=datetime(2026, 8, 5, 9, tzinfo=UTC),
+    )
+    deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="Operational Deal",
+            forecast_category="Commit",
+            priority="High",
+            stage_entered_at=stage_entered_at,
+        )
+    )
+
+    response = client.get("/users/crm/deals")
+
+    assert response.status_code == 200, response.text
+    item = response.json()["data"]["items"][0]
+    assert item["forecast_category"] == "Commit"
+    assert item["priority"] == "High"
+    assert item["days_in_stage"] == 9
+
+
 def test_list_deals_does_not_expose_deal_health(client: TestClient, deals_dependency_overrides):
     """Deal health is detail/AI context, not a deal-list column."""
     deals_service = deals_dependency_overrides["deals_service"]
@@ -751,6 +784,69 @@ def test_list_deals_includes_default_column_fields(client: TestClient, deals_dep
     assert item["primary_contact_name"] == "Jane Buyer"
     assert item["primary_contact_email"] == "jane@example.com"
     assert item["last_activity_at"] == "2026-06-30T15:45:00Z"
+
+
+def test_list_deals_projects_only_requested_active_internal_custom_columns(
+    client: TestClient,
+    deals_dependency_overrides,
+    mocker,
+) -> None:
+    """List payloads include selected registered values without leaking arbitrary properties."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+    integration_id = uuid4()
+    deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="Custom Column Deal",
+            integration_id=integration_id,
+            properties={
+                "procurement_stage": "Legal",
+                "renewal_risk": "High",
+                "unregistered_property": "secret",
+            },
+        )
+    )
+    mocker.patch(
+        "src.api.routers.crm.deals_handler.DealSchemaService.active_internal_custom_field_keys",
+        return_value=["procurement_stage", "renewal_risk"],
+    )
+    mocker.patch(
+        "src.api.routers.crm.deals_handler._get_integration_types_map",
+        return_value={integration_id: True},
+    )
+
+    response = client.get(
+        "/users/crm/deals",
+        params=[
+            ("custom_column_keys", "procurement_stage"),
+            ("custom_column_keys", "unregistered_property"),
+        ],
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["items"][0]["custom_columns"] == {"procurement_stage": "Legal"}
+
+
+def test_list_deals_omits_custom_values_when_no_custom_columns_are_requested(
+    client: TestClient,
+    deals_dependency_overrides,
+) -> None:
+    """Default list requests keep their previous payload size and shape."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+    deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="Default Deal",
+            properties={"procurement_stage": "Legal"},
+        )
+    )
+
+    response = client.get("/users/crm/deals")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["items"][0]["custom_columns"] is None
 
 
 def test_list_deals_sorts_by_last_activity_desc(client: TestClient, deals_dependency_overrides):

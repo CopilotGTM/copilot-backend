@@ -7,8 +7,13 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 from src.api.dependencies.master_dependencies import get_master_async_session
-from src.api.dependencies.organisation_dependencies import UserIDs, get_current_user
-from src.api.dependencies.rate_limit import rate_limit_user_write
+from src.api.dependencies.organisation_dependencies import (
+    UserIDs,
+    get_current_user,
+    get_org_async_session,
+)
+from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
+from src.api.schemas.crm_schema_models import CRMEntitySchemaResponse, CRMFieldSchemaItem
 
 
 class _FakeResult:
@@ -60,6 +65,9 @@ def crm_list_dependency_overrides(client: TestClient, test_user_ids):
     async def _override_master_session():
         yield session
 
+    async def _override_org_session():
+        yield SimpleNamespace()
+
     async def _override_rate_limit():
         return None
 
@@ -68,6 +76,8 @@ def crm_list_dependency_overrides(client: TestClient, test_user_ids):
     previous_overrides = dict(app.dependency_overrides)
     app.dependency_overrides[get_current_user] = _override_user
     app.dependency_overrides[get_master_async_session] = _override_master_session
+    app.dependency_overrides[get_org_async_session] = _override_org_session
+    app.dependency_overrides[rate_limit_user_read] = _override_rate_limit
     app.dependency_overrides[rate_limit_user_write] = _override_rate_limit
     yield SimpleNamespace(user=user, session=session)
     app.dependency_overrides = previous_overrides
@@ -136,3 +146,210 @@ def test_patch_crm_list_sorting_preserves_existing_columns(
         "name",
         "owner.name",
     ]
+
+
+def test_get_crm_list_configuration_returns_selected_then_available_columns(
+    client: TestClient,
+    crm_list_dependency_overrides,
+) -> None:
+    """The page-ready contract owns selection, ordering, and available fields."""
+    response = client.get("/users/preference/crm/lists/accounts")
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["entity"] == "accounts"
+    assert [column["id"] for column in data["columns"][:2]] == ["name", "owner.name"]
+    assert data["columns"][0] == {
+        "id": "name",
+        "label": "Account name",
+        "data_type": "text",
+        "source": "standard",
+        "value_path": "name",
+        "visible": True,
+        "default_visible": True,
+        "position": 0,
+        "sortable": True,
+        "hideable": False,
+    }
+    assert any(column["id"] == "website" and not column["visible"] for column in data["columns"])
+
+
+@pytest.mark.parametrize(
+    ("entity", "expected_columns"),
+    [
+        ("contacts", {"lifecycle_stage", "lead_status", "country"}),
+        ("accounts", {"company_type", "city", "state"}),
+    ],
+)
+def test_get_crm_list_configuration_exposes_operational_columns(
+    client: TestClient,
+    crm_list_dependency_overrides,
+    entity: str,
+    expected_columns: set[str],
+) -> None:
+    """List catalogs expose stored operational fields without selecting them by default."""
+    response = client.get(f"/users/preference/crm/lists/{entity}")
+
+    assert response.status_code == 200, response.text
+    columns = {column["id"]: column for column in response.json()["data"]["columns"]}
+    assert expected_columns <= columns.keys()
+    assert all(columns[column_id]["default_visible"] is False for column_id in expected_columns)
+
+
+def test_get_deal_configuration_exposes_required_stage_and_operational_columns(
+    client: TestClient,
+    crm_list_dependency_overrides,
+    mocker,
+) -> None:
+    """Deal Stage remains visible while optional forecasting fields stay user-selectable."""
+    mocker.patch(
+        "src.service.users.crm_list_preferences_service.DealSchemaService.get_schema",
+        return_value=CRMEntitySchemaResponse(entity="deal", fields=[]),
+    )
+
+    response = client.get("/users/preference/crm/lists/deals")
+
+    assert response.status_code == 200, response.text
+    columns = {column["id"]: column for column in response.json()["data"]["columns"]}
+    assert columns["stage"]["hideable"] is False
+    assert {"forecast_category", "priority", "days_in_stage"} <= columns.keys()
+    assert all(
+        columns[column_id]["default_visible"] is False
+        for column_id in {"forecast_category", "priority", "days_in_stage"}
+    )
+
+
+def test_get_deal_configuration_uses_readable_internal_custom_field_ids(
+    client: TestClient,
+    crm_list_dependency_overrides,
+    mocker,
+) -> None:
+    """Internal custom keys are stable public IDs; provider fields are not list columns."""
+    crm_list_dependency_overrides.user.preferences["crm"]["deals"]["list"] = {
+        "columns": ["name", "custom_columns.procurement_stage", "stale_column"]
+    }
+    mocker.patch(
+        "src.service.users.crm_list_preferences_service.DealSchemaService.get_schema",
+        return_value=CRMEntitySchemaResponse(
+            entity="deal",
+            fields=[
+                CRMFieldSchemaItem(
+                    field_id=None,
+                    entity="deal",
+                    key="procurement_stage",
+                    label="Procurement stage",
+                    type="select",
+                    order=1000,
+                    source="internal",
+                    ownership="internal",
+                ),
+                CRMFieldSchemaItem(
+                    field_id=None,
+                    entity="deal",
+                    key="provider_score",
+                    label="Provider score",
+                    type="number",
+                    order=1001,
+                    source="provider",
+                    ownership="hubspot",
+                ),
+            ],
+        ),
+    )
+
+    response = client.get("/users/preference/crm/lists/deals")
+
+    assert response.status_code == 200, response.text
+    columns = response.json()["data"]["columns"]
+    assert [column["id"] for column in columns[:3]] == [
+        "name",
+        "stage",
+        "custom_columns.procurement_stage",
+    ]
+    assert columns[1]["hideable"] is False
+    assert columns[1]["visible"] is True
+    assert columns[2]["visible"] is True
+    assert columns[2]["source"] == "custom"
+    assert not any(
+        column["id"] in {"stale_column", "custom_columns.provider_score"} for column in columns
+    )
+
+
+def test_put_crm_list_columns_persists_order_without_replacing_siblings(
+    client: TestClient,
+    crm_list_dependency_overrides,
+) -> None:
+    """A drag result replaces only one list's ordered columns branch."""
+    response = client.put(
+        "/users/preference/crm/lists/accounts",
+        json={"columns": ["name", "industry", "domain"]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert [column["id"] for column in response.json()["data"]["columns"] if column["visible"]] == [
+        "name",
+        "industry",
+        "domain",
+    ]
+    assert crm_list_dependency_overrides.user.preferences["crm"]["accounts"]["list"] == {
+        "columns": ["name", "industry", "domain"]
+    }
+    assert (
+        crm_list_dependency_overrides.user.preferences["crm"]["deals"]["preferred_currency"]
+        == "INR"
+    )
+    assert crm_list_dependency_overrides.session.committed is True
+
+
+def test_put_deal_columns_rejects_removing_stage(
+    client: TestClient,
+    crm_list_dependency_overrides,
+    mocker,
+) -> None:
+    """Deal identity and workflow state are mandatory even for direct API callers."""
+    mocker.patch(
+        "src.service.users.crm_list_preferences_service.DealSchemaService.get_schema",
+        return_value=CRMEntitySchemaResponse(entity="deal", fields=[]),
+    )
+
+    response = client.put(
+        "/users/preference/crm/lists/deals",
+        json={"columns": ["name", "amount"]},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "stage is required"
+    assert crm_list_dependency_overrides.session.committed is False
+
+
+@pytest.mark.parametrize(
+    "columns",
+    [
+        ["industry"],
+        ["name", "name"],
+        ["name", "not_a_real_column"],
+    ],
+)
+def test_put_crm_list_columns_rejects_unsafe_selections(
+    client: TestClient,
+    crm_list_dependency_overrides,
+    columns: list[str],
+) -> None:
+    """Invalid, duplicate, and identity-free selections must never be persisted."""
+    response = client.put(
+        "/users/preference/crm/lists/accounts",
+        json={"columns": columns},
+    )
+
+    assert response.status_code == 422
+    assert crm_list_dependency_overrides.session.committed is False
+
+
+def test_column_configuration_does_not_claim_tasks_support(
+    client: TestClient,
+    crm_list_dependency_overrides,
+) -> None:
+    """Tasks stay on their existing client contract until their migration is implemented."""
+    response = client.get("/users/preference/crm/lists/tasks")
+
+    assert response.status_code == 422

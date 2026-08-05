@@ -247,6 +247,9 @@ class ContactListItem(BaseModel):
     deal_count: int = Field(0)
     last_contacted_at: datetime | None
     last_activity_at: datetime | None
+    lifecycle_stage: str | None
+    lead_status: str | None
+    country: str | None
     source: str = Field("crm_sync")
     is_profile_enriched: bool = Field(False)
     profile_enriched_at: datetime | None
@@ -374,15 +377,9 @@ class ContactsPage(BaseModel):
     total_pages: int
 
 
-class ContactSearchItem(BaseModel):
-    """Contact search suggestion shown in contact pickers."""
+class ContactSearchItem(ContactListItem):
+    """Page-ready contact row plus match metadata for cursor search."""
 
-    contact_id: UUID
-    full_name: str | None
-    email: str | None
-    job_title: str | None
-    company: ContactListCompany | None
-    deal_count: int
     match_type: str
 
 
