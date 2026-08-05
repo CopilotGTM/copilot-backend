@@ -36,6 +36,8 @@ from src.api.schemas.crm_deal_write_models import (
     DealReopenRequest,
     DealStageMoveRequest,
     DealUpdateRequest,
+    DealWriteOwnerDetail,
+    DealWritePrimaryContactDetail,
     DealWriteResponse,
 )
 from src.api.schemas.crm_models import (
@@ -369,34 +371,58 @@ async def _get_integration_types_map(
     }
 
 
-def _primary_contact_details_from_deal(deal) -> list[DealPrimaryContactDetail]:
+def _primary_contact_details_from_deal(deal, contact=None) -> list[DealPrimaryContactDetail]:
+    contact_id = getattr(contact, "contact_id", None) or getattr(deal, "primary_contact_id", None)
+    name = _clean_string(getattr(contact, "full_name", None)) or getattr(
+        deal, "primary_contact_name", None
+    )
+    email = _clean_string(getattr(contact, "email", None)) or getattr(
+        deal, "primary_contact_email", None
+    )
+    phone_number = (
+        _clean_string(getattr(contact, "phone", None))
+        or _clean_string(getattr(contact, "mobile_phone", None))
+        or getattr(deal, "primary_contact_phone_number", None)
+    )
     if not any(
         [
-            getattr(deal, "primary_contact_id", None),
-            getattr(deal, "primary_contact_name", None),
-            getattr(deal, "primary_contact_email", None),
-            getattr(deal, "primary_contact_phone_number", None),
+            contact_id,
+            name,
+            email,
+            phone_number,
         ]
     ):
         return []
     return [
         DealPrimaryContactDetail(
-            contact_id=getattr(deal, "primary_contact_id", None),
-            name=getattr(deal, "primary_contact_name", None),
-            email=getattr(deal, "primary_contact_email", None),
-            phone_number=getattr(deal, "primary_contact_phone_number", None),
+            contact_id=contact_id,
+            name=name,
+            email=email,
+            phone_number=phone_number,
         )
     ]
+
+
+def _write_primary_contact_details_from_deal(
+    deal,
+) -> list[DealWritePrimaryContactDetail]:
+    values = {
+        "contact_id": getattr(deal, "primary_contact_id", None),
+        "name": getattr(deal, "primary_contact_name", None),
+        "email": getattr(deal, "primary_contact_email", None),
+        "phone_number": getattr(deal, "primary_contact_phone_number", None),
+    }
+    return [DealWritePrimaryContactDetail(**values)] if any(values.values()) else []
 
 
 def _map_deal_write_response(
     deal,
     *,
-    primary_contact_details: list[DealPrimaryContactDetail] | None = None,
+    primary_contact_details: list[DealWritePrimaryContactDetail] | None = None,
 ) -> DealWriteResponse:
     owner_details = (
         [
-            DealOwnerDetail(
+            DealWriteOwnerDetail(
                 owner_id=deal.owner_id,
                 name=getattr(deal, "owner_name", None),
                 email=getattr(deal, "owner_email", None),
@@ -444,7 +470,7 @@ def _map_deal_write_response(
         primary_contact_details=(
             primary_contact_details
             if primary_contact_details is not None
-            else _primary_contact_details_from_deal(deal)
+            else _write_primary_contact_details_from_deal(deal)
         ),
         source_created_at=getattr(deal, "source_created_at", None),
         close_date=getattr(deal, "close_date", None),
@@ -630,6 +656,26 @@ async def list_deals(
         # Fetch deal team members (owners, collaborators, split_owners) in one batch query
         deal_ids = [deal.deal_id for deal in deals]
         team_by_deal = await service.get_deal_team_members_batch(deal_ids) if deal_ids else {}
+        primary_contact_ids = {
+            deal.primary_contact_id for deal in deals if deal.primary_contact_id is not None
+        }
+        primary_contact_emails = {
+            deal.primary_contact_email.strip().lower()
+            for deal in deals
+            if deal.primary_contact_email and deal.primary_contact_email.strip()
+        }
+        contacts_by_id, contacts_by_email = await service.get_contacts_by_ids_or_emails(
+            primary_contact_ids,
+            primary_contact_emails,
+        )
+        primary_contact_details_by_deal = {
+            deal.deal_id: _primary_contact_details_from_deal(
+                deal,
+                contacts_by_id.get(deal.primary_contact_id)
+                or contacts_by_email.get((deal.primary_contact_email or "").strip().lower()),
+            )
+            for deal in deals
+        }
 
         # Batch fetch integration types to determine is_internal
         integration_ids = {deal.integration_id for deal in deals if deal.integration_id}
@@ -699,27 +745,22 @@ async def list_deals(
                     )
                     else []
                 ),
-                primary_contact_id=getattr(deal, "primary_contact_id", None),
-                primary_contact_name=getattr(deal, "primary_contact_name", None),
-                primary_contact_email=getattr(deal, "primary_contact_email", None),
-                primary_contact_details=(
-                    [
-                        DealPrimaryContactDetail(
-                            contact_id=getattr(deal, "primary_contact_id", None),
-                            name=getattr(deal, "primary_contact_name", None),
-                            email=getattr(deal, "primary_contact_email", None),
-                            phone_number=getattr(deal, "primary_contact_phone_number", None),
-                        )
-                    ]
-                    if any(
-                        [
-                            getattr(deal, "primary_contact_id", None),
-                            getattr(deal, "primary_contact_name", None),
-                            getattr(deal, "primary_contact_email", None),
-                        ]
-                    )
-                    else []
+                primary_contact_id=(
+                    primary_contact_details_by_deal[deal.deal_id][0].contact_id
+                    if primary_contact_details_by_deal[deal.deal_id]
+                    else None
                 ),
+                primary_contact_name=(
+                    primary_contact_details_by_deal[deal.deal_id][0].name
+                    if primary_contact_details_by_deal[deal.deal_id]
+                    else None
+                ),
+                primary_contact_email=(
+                    primary_contact_details_by_deal[deal.deal_id][0].email
+                    if primary_contact_details_by_deal[deal.deal_id]
+                    else None
+                ),
+                primary_contact_details=primary_contact_details_by_deal[deal.deal_id],
                 last_activity_at=getattr(deal, "last_activity_at", None),
                 forecast_category=getattr(deal, "forecast_category", None),
                 priority=getattr(deal, "priority", None),
@@ -1189,13 +1230,18 @@ async def get_deal(
                 company_linkedin_url = company.linkedin_url
                 company_country = company.country
 
-        if deal.primary_contact_id:
-            contact = await service.get_contact_by_id(deal.primary_contact_id)
+        primary_contact_details = _primary_contact_details_from_deal(deal)
+        if deal.primary_contact_id or deal.primary_contact_email:
+            contacts_by_id, contacts_by_email = await service.get_contacts_by_ids_or_emails(
+                {deal.primary_contact_id} if deal.primary_contact_id else set(),
+                {deal.primary_contact_email} if deal.primary_contact_email else set(),
+            )
+            contact = contacts_by_id.get(deal.primary_contact_id) or contacts_by_email.get(
+                (deal.primary_contact_email or "").strip().lower()
+            )
             if contact:
-                phone_number = _clean_string(getattr(contact, "phone", None)) or _clean_string(
-                    getattr(contact, "mobile_phone", None)
-                )
-                object.__setattr__(deal, "primary_contact_phone_number", phone_number)
+                primary_contact_details = _primary_contact_details_from_deal(deal, contact)
+        primary_contact_detail = primary_contact_details[0] if primary_contact_details else None
 
         # Check for active deal-level jobs (for SSE reconnection)
         active_deal_jobs = None
@@ -1305,10 +1351,14 @@ async def get_deal(
             company_website=company_website,
             company_linkedin_url=company_linkedin_url,
             company_country=company_country,
-            primary_contact_id=deal.primary_contact_id,
-            primary_contact_name=deal.primary_contact_name,
-            primary_contact_email=deal.primary_contact_email,
-            primary_contact_details=_primary_contact_details_from_deal(deal),
+            primary_contact_id=(
+                primary_contact_detail.contact_id if primary_contact_detail else None
+            ),
+            primary_contact_name=(primary_contact_detail.name if primary_contact_detail else None),
+            primary_contact_email=(
+                primary_contact_detail.email if primary_contact_detail else None
+            ),
+            primary_contact_details=primary_contact_details,
             deal_type=deal.deal_type,
             priority=deal.priority,
             lead_source=deal.lead_source,
@@ -1562,7 +1612,7 @@ async def update_deal_primary_contact(
             primary_contact_email=request.primary_contact_email,
             clear_primary_contact=request.is_clear_request,
         )
-        primary_contact_details = _primary_contact_details_from_deal(deal)
+        primary_contact_details = _write_primary_contact_details_from_deal(deal)
         await service.session.commit()
         await service.session.refresh(deal)
         processing_jobs = []

@@ -771,6 +771,44 @@ class DealReadService:
             logger.error("Failed to get contact by id %s: %s", contact_id, e, exc_info=True)
             return None
 
+    async def get_contacts_by_ids_or_emails(
+        self,
+        contact_ids: set[UUID],
+        emails: set[str],
+    ) -> tuple[dict[UUID, CRMContact], dict[str, CRMContact]]:
+        """Resolve active primary contacts by ID or one unambiguous exact email."""
+        normalized_emails = {email.strip().lower() for email in emails if email.strip()}
+        if not contact_ids and not normalized_emails:
+            return {}, {}
+        c_model = cast(Any, CRMContact)
+        # The organisation predicate is the tenant boundary; neither a contact
+        # UUID nor an email is trusted by itself, even from an org-scoped deal.
+        identity_filters = []
+        if contact_ids:
+            identity_filters.append(c_model.contact_id.in_(contact_ids))
+        if normalized_emails:
+            identity_filters.append(func.lower(func.trim(c_model.email)).in_(normalized_emails))
+        stmt = select(CRMContact).where(
+            c_model.organisation_id == self.organisation_id,
+            c_model.is_deleted.is_(False),
+            or_(*identity_filters),
+        )
+        contacts = (await self.org_session.execute(stmt)).scalars().all()
+        contacts_by_id = {contact.contact_id: contact for contact in contacts}
+        contacts_by_email: dict[str, CRMContact] = {}
+        duplicate_emails: set[str] = set()
+        for contact in contacts:
+            email = (contact.email or "").strip().lower()
+            if not email:
+                continue
+            if email in contacts_by_email:
+                duplicate_emails.add(email)
+            else:
+                contacts_by_email[email] = contact
+        for email in duplicate_emails:
+            contacts_by_email.pop(email, None)
+        return contacts_by_id, contacts_by_email
+
     async def get_deals_stats(self) -> dict:
         """Calculate aggregate statistics for deals.
 

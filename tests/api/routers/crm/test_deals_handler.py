@@ -759,6 +759,61 @@ def test_list_deals_includes_clickable_account_and_primary_contact_details(
     ]
 
 
+@pytest.mark.asyncio
+async def test_list_deals_prefers_linked_contact_name_over_email_guess(
+    fake_deals_service, test_user_ids, monkeypatch
+):
+    """Deal list GETs should use the linked contact's authoritative name."""
+    org_id = test_user_ids["organisation_id"]
+    contact = create_contact(
+        org_id,
+        email="nikhilsinghal005@example.com",
+        full_name="Nikhil Singhal",
+    )
+    fake_deals_service.add_contact(contact)
+    fake_deals_service.add_deal(
+        create_deal(
+            org_id,
+            name="Relationship Deal",
+            primary_contact_id=contact.contact_id,
+            primary_contact_name=None,
+            primary_contact_email=contact.email,
+        )
+    )
+
+    monkeypatch.setattr(
+        "src.api.routers.crm.deals_handler._get_integration_types_map",
+        AsyncMock(return_value={}),
+    )
+
+    response = await deals_handler_module.list_deals(
+        response=FastAPIResponse(),
+        params=DealsListParams(
+            limit=40,
+            page=1,
+            statuses=None,
+            pipeline_ids=None,
+            owner_ids=None,
+            min_amount=None,
+            max_amount=None,
+            min_close_date=None,
+            max_close_date=None,
+            min_expected_close_date=None,
+            max_expected_close_date=None,
+            q=None,
+            sort_by=None,
+            sort_order="desc",
+        ),
+        service=fake_deals_service,
+        _rl_read=None,
+    )
+
+    assert response.status == "SUCCESS"
+    item = response.data.items[0]
+    assert item.primary_contact_name == "Nikhil Singhal"
+    assert item.primary_contact_details[0].name == "Nikhil Singhal"
+
+
 def test_list_deals_includes_default_column_fields(client: TestClient, deals_dependency_overrides):
     """List rows should expose fields referenced by backend default deal columns."""
     deals_service = deals_dependency_overrides["deals_service"]
@@ -1913,6 +1968,42 @@ def test_get_deal_hydrates_primary_contact_details_phone(
             "phone_number": "+15551234567",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_deal_prefers_exact_contact_email_match_over_email_guess(
+    fake_deals_service, test_user_ids
+):
+    """Deal detail GETs should use one exact org-contact email match."""
+    org_id = test_user_ids["organisation_id"]
+    contact = create_contact(
+        org_id,
+        email="nikhilsinghal005@example.com",
+        full_name="Nikhil Singhal",
+    )
+    deal = create_deal(
+        org_id,
+        name="Relationship Deal",
+        primary_contact_id=None,
+        primary_contact_name=None,
+        primary_contact_email=contact.email,
+    )
+    fake_deals_service.add_contact(contact)
+    fake_deals_service.add_deal(deal)
+    job_service = SimpleNamespace(get_active_deal_jobs_status=AsyncMock(return_value=None))
+
+    response = await deals_handler_module.get_deal(
+        deal_id=deal.deal_id,
+        response=FastAPIResponse(),
+        service=fake_deals_service,
+        deal_job_service=job_service,
+        include_empty_custom_columns=True,
+        _rl_read=None,
+    )
+
+    assert response.status == "SUCCESS"
+    assert response.data.primary_contact_name == "Nikhil Singhal"
+    assert response.data.primary_contact_details[0].name == "Nikhil Singhal"
 
 
 def test_get_deal_not_found(client: TestClient, deals_dependency_overrides):

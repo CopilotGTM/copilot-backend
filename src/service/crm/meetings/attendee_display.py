@@ -9,12 +9,12 @@ email with no name, store NULL in `display_name`, and every consumer —
 API responses, agent prompts, meeting summaries — ends up showing "Unknown"
 or nothing at all.
 
-This helper gives every backend read path a single place to get a usable
+This resolver gives every backend read path a single place to get a usable
 name: prefer the authoritative `display_name` if present, otherwise derive
 a best-effort name from the email local-part. The DB stays truthful
 (NULL = "we don't really know") while the rendered output stays useful.
 
-Use this instead of reading `attendee.display_name` directly in any code
+Use the resolver instead of reading `attendee.display_name` directly in code
 that renders/returns a name to a user, an LLM, or a downstream system.
 """
 
@@ -77,7 +77,10 @@ def derive_name_from_email(email: str | None) -> str | None:
 
     # Split on common separators used in corporate email conventions.
     raw_tokens = local_part.replace("_", ".").replace("-", ".").replace("+", ".").split(".")
-    tokens = [t for t in raw_tokens if t and not t.isdigit()]
+    if len(raw_tokens) == 1 and raw_tokens[0].rstrip("0123456789") != raw_tokens[0]:
+        return None
+    tokens = [t.rstrip("0123456789") for t in raw_tokens]
+    tokens = [t for t in tokens if t]
 
     if not tokens:
         return None

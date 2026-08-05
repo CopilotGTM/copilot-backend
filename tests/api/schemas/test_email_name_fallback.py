@@ -38,6 +38,25 @@ def test_write_responses_do_not_apply_email_name_fallback() -> None:
     assert not any(issubclass(model, EmailNameFallbackModel) for model in write_response_models)
 
 
+def test_deal_write_nested_people_do_not_apply_email_name_fallback() -> None:
+    """Keep nested owner/contact snapshots exact in deal mutation responses."""
+    response = DealWriteResponse(
+        deal_id=uuid4(),
+        name="Acme renewal",
+        pipeline_id=None,
+        stage_id=None,
+        deal_status="open",
+        owner_user_id=None,
+        owner_details=[{"name": None, "email": "jane.doe@example.com"}],
+        primary_contact_details=[{"name": None, "email": "john.smith@example.com"}],
+        created_at="2026-08-05T00:00:00Z",
+        updated_at="2026-08-05T00:00:00Z",
+    )
+
+    assert response.owner_details[0].name is None
+    assert response.primary_contact_details[0].name is None
+
+
 def test_person_get_responses_derive_missing_display_name_from_email() -> None:
     """Give list, picker, nested-owner, and note-author GET DTOs one name policy."""
     assert CRMUserListItem(user_id=uuid4(), email="jane.doe@example.com").name == "Jane Doe"
@@ -103,3 +122,4 @@ def test_person_get_response_keeps_name_empty_without_usable_email() -> None:
     """Avoid inventing person names when neither a real name nor usable email exists."""
     assert CRMUserListItem(user_id=uuid4(), email=None).name is None
     assert CRMUserListItem(user_id=uuid4(), email="support@example.com").name is None
+    assert CRMUserListItem(user_id=uuid4(), email="nikhilsinghal005@example.com").name is None
