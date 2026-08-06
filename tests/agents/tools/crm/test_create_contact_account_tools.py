@@ -1,3 +1,5 @@
+"""Regression tests for test create contact account tools; these cases lock the backend contract used by the changed feature."""
+
 from __future__ import annotations
 
 from inspect import signature
@@ -37,6 +39,7 @@ class _AsyncSessionContext:
 
 @pytest.fixture(autouse=True)
 def contact_hydration_dispatch(monkeypatch) -> AsyncMock:
+    """Build the contact hydration dispatch fixture used by the surrounding regression cases."""
     dispatch = AsyncMock(return_value=["hydration-task"])
     monkeypatch.setattr(
         "src.agents.tools.crm.create_contact.dispatch_contact_communication_hydration_async",
@@ -57,6 +60,7 @@ def _context(*, channel: str = "teams") -> AgentContext:
 
 @pytest.mark.asyncio
 async def test_create_account_direct_reuses_existing_domain_account() -> None:
+    """Verify the contract that create account direct reuses existing domain account."""
     existing = SimpleNamespace(
         company_id=uuid4(),
         name="Acme",
@@ -84,7 +88,16 @@ async def test_create_account_direct_reuses_existing_domain_account() -> None:
 
 @pytest.mark.asyncio
 async def test_create_account_direct_creates_and_commits() -> None:
+    """Verify the contract that create account direct creates and commits."""
     context = _context(channel="web")
+    caused_by_run_id = uuid4()
+    context.metadata.update(
+        {
+            "automation_caused_by_run_id": str(caused_by_run_id),
+            "automation_causation_depth": 2,
+            "automation_correlation_id": "automation-chain-1",
+        }
+    )
     org_session = MagicMock()
     org_session.commit = AsyncMock()
     org_session.rollback = AsyncMock()
@@ -131,6 +144,9 @@ async def test_create_account_direct_creates_and_commits() -> None:
             actor_user_id=context.user_id,
             created_via="chat_tool",
             duplicate_scope="internal_only",
+            correlation_id="automation-chain-1",
+            caused_by_run_id=caused_by_run_id,
+            causation_depth=2,
         ),
     )
     org_session.commit.assert_awaited_once()
@@ -140,6 +156,7 @@ async def test_create_account_direct_creates_and_commits() -> None:
 
 @pytest.mark.asyncio
 async def test_create_account_direct_allows_name_only_create() -> None:
+    """Verify the contract that create account direct allows name only create."""
     context = _context()
     org_session = MagicMock()
     org_session.commit = AsyncMock()
@@ -177,6 +194,7 @@ async def test_create_account_direct_allows_name_only_create() -> None:
 
 @pytest.mark.asyncio
 async def test_create_account_direct_allows_domain_only_create() -> None:
+    """Verify the contract that create account direct allows domain only create."""
     context = _context()
     org_session = MagicMock()
     org_session.commit = AsyncMock()
@@ -222,6 +240,7 @@ async def test_create_account_direct_allows_domain_only_create() -> None:
 
 @pytest.mark.asyncio
 async def test_create_account_direct_allows_linkedin_only_create() -> None:
+    """Verify the contract that create account direct allows linkedin only create."""
     context = _context()
     org_session = MagicMock()
     org_session.commit = AsyncMock()
@@ -276,6 +295,7 @@ async def test_create_account_direct_allows_linkedin_only_create() -> None:
 
 @pytest.mark.asyncio
 async def test_create_account_direct_rejects_missing_identity() -> None:
+    """Verify the contract that create account direct rejects missing identity."""
     context = _context()
 
     result = await create_account_direct(context=context, name=None)
@@ -289,6 +309,7 @@ async def test_create_account_direct_rejects_missing_identity() -> None:
 
 @pytest.mark.asyncio
 async def test_create_contact_direct_reuses_existing_email() -> None:
+    """Verify the contract that create contact direct reuses existing email."""
     existing = SimpleNamespace(
         contact_id=uuid4(),
         email="jane@acme.com",
@@ -321,6 +342,7 @@ async def test_create_contact_direct_reuses_existing_email() -> None:
 
 @pytest.mark.asyncio
 async def test_create_contact_direct_does_not_resolve_account() -> None:
+    """Verify the contract that create contact direct does not resolve account."""
     context = _context()
     org_session = MagicMock()
     org_session.commit = AsyncMock()
@@ -367,6 +389,7 @@ async def test_create_contact_direct_does_not_resolve_account() -> None:
 
 @pytest.mark.asyncio
 async def test_create_contact_direct_allows_missing_name() -> None:
+    """Verify the contract that create contact direct allows missing name."""
     context = _context()
     org_session = MagicMock()
     org_session.commit = AsyncMock()
@@ -408,6 +431,7 @@ async def test_create_contact_direct_allows_missing_name() -> None:
 
 @pytest.mark.asyncio
 async def test_create_contact_direct_allows_linkedin_without_email() -> None:
+    """Verify the contract that create contact direct allows linkedin without email."""
     context = _context()
     org_session = MagicMock()
     org_session.commit = AsyncMock()
@@ -456,6 +480,7 @@ async def test_create_contact_direct_allows_linkedin_without_email() -> None:
 
 @pytest.mark.asyncio
 async def test_create_contact_direct_allows_name_only_contact() -> None:
+    """Verify the contract that create contact direct allows name only contact."""
     context = _context()
     org_session = MagicMock()
     org_session.commit = AsyncMock()
@@ -494,6 +519,7 @@ async def test_create_contact_direct_allows_name_only_contact() -> None:
 
 @pytest.mark.asyncio
 async def test_create_contact_direct_rejects_missing_identity() -> None:
+    """Verify the contract that create contact direct rejects missing identity."""
     context = _context()
 
     result = await create_contact_direct(context=context, email=None, name=None)
@@ -506,6 +532,7 @@ async def test_create_contact_direct_rejects_missing_identity() -> None:
 
 
 def test_create_contact_direct_has_no_account_selection_inputs() -> None:
+    """Verify the contract that create contact direct has no account selection inputs."""
     params = signature(create_contact_direct).parameters
 
     assert "account_id" not in params
@@ -515,6 +542,7 @@ def test_create_contact_direct_has_no_account_selection_inputs() -> None:
 
 
 def test_create_account_direct_uses_minimal_create_inputs() -> None:
+    """Verify the contract that create account direct uses minimal create inputs."""
     params = signature(create_account_direct).parameters
 
     assert "name" in params
@@ -530,6 +558,7 @@ def test_create_account_direct_uses_minimal_create_inputs() -> None:
 
 @pytest.mark.asyncio
 async def test_create_contact_direct_does_not_block_on_ambiguous_account_domain() -> None:
+    """Verify the contract that create contact direct does not block on ambiguous account domain."""
     context = _context()
     org_session = MagicMock()
     org_session.commit = AsyncMock()
@@ -572,6 +601,7 @@ async def test_create_contact_direct_does_not_block_on_ambiguous_account_domain(
 
 @pytest.mark.asyncio
 async def test_create_contact_direct_can_link_contact_to_deal() -> None:
+    """Verify the contract that create contact direct can link contact to deal."""
     context = _context()
     org_session = MagicMock()
     org_session.commit = AsyncMock()
@@ -688,6 +718,7 @@ async def test_create_contact_direct_rejects_deal_without_control_access() -> No
 
 @pytest.mark.asyncio
 async def test_search_accounts_returns_slim_results() -> None:
+    """Verify the contract that search accounts returns slim results."""
     account_id = uuid4()
     with patch("src.agents.tools.crm.search_accounts.AccountReadService") as service_cls:
         service = MagicMock()
@@ -724,6 +755,7 @@ async def test_search_accounts_returns_slim_results() -> None:
 
 @pytest.mark.asyncio
 async def test_tool_factories_hide_channel_payloads() -> None:
+    """Verify the contract that tool factories hide channel payloads."""
     context = _context()
     contact_tool = create_create_contact(context, lambda: None)
     account_tool = create_create_account(context, lambda: None)

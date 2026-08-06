@@ -7,7 +7,7 @@ to audit internal CRM writes and later feed workflow dispatch.
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, ClassVar, Optional
 from uuid import UUID, uuid4
 
 import sqlalchemy as sa
@@ -61,7 +61,7 @@ class CRMStageState(str, Enum):
 class CRMPipeline(CRMSyncedRecordMixin, table=True):
     """CRM pipeline metadata (e.g., HubSpot deal pipeline)."""
 
-    __tablename__ = "crm_pipelines"
+    __tablename__: ClassVar[str] = "crm_pipelines"
     __table_args__ = (
         UniqueConstraint(
             "organisation_id",
@@ -126,7 +126,7 @@ class CRMPipeline(CRMSyncedRecordMixin, table=True):
 class CRMDealStage(CRMSyncedRecordMixin, table=True):
     """Stages within a CRM pipeline."""
 
-    __tablename__ = "crm_deal_stages"
+    __tablename__: ClassVar[str] = "crm_deal_stages"
     __table_args__ = (
         UniqueConstraint(
             "organisation_id",
@@ -250,7 +250,7 @@ class CRMDealStage(CRMSyncedRecordMixin, table=True):
 class CRMDeal(CRMSyncedRecordMixin, table=True):
     """Canonical deal record across CRMs."""
 
-    __tablename__ = "crm_deals"
+    __tablename__: ClassVar[str] = "crm_deals"
     __table_args__ = (
         UniqueConstraint(
             "organisation_id",
@@ -608,7 +608,7 @@ class CRMDeal(CRMSyncedRecordMixin, table=True):
 class CRMDealParticipant(CRMSyncedRecordMixin, table=True):
     """Links deals to contacts, companies, owners, or other CRM entities."""
 
-    __tablename__ = "crm_deal_participants"
+    __tablename__: ClassVar[str] = "crm_deal_participants"
     __table_args__ = (
         tenant_foreign_key(
             "crm_deal_participants",
@@ -742,7 +742,7 @@ class CRMDealParticipant(CRMSyncedRecordMixin, table=True):
 class CRMDealStageHistory(CRMSyncedRecordMixin, table=True):
     """Stage transition history for deals."""
 
-    __tablename__ = "crm_deal_stage_history"
+    __tablename__: ClassVar[str] = "crm_deal_stage_history"
     __table_args__ = (
         tenant_foreign_key(
             "crm_deal_stage_history",
@@ -868,18 +868,29 @@ class CRMDealStageHistory(CRMSyncedRecordMixin, table=True):
 class CRMDealMutationEvent(TimestampMixin, table=True):
     """Immutable CRM mutation ledger row for internal CRM writes.
 
-    One business write creates one row with all changed fields. Workflow fanout
-    is represented by semantic event types here; claim/retry/run state belongs
-    in a future child dispatch table because one mutation can trigger many workflows.
+    One business write creates one row with all changed fields and the event-time
+    record snapshot needed by automation producers. Runtime claim and retry state
+    belongs to the automation dispatch and run tables.
     """
 
-    __tablename__ = "crm_mutation_events"
+    __tablename__: ClassVar[str] = "crm_mutation_events"
     __table_args__ = (
         tenant_foreign_key(
             "crm_mutation_events",
             "deal_id",
             "crm_deals",
             "deal_id",
+        ),
+        tenant_foreign_key(
+            "crm_mutation_events",
+            "caused_by_run_id",
+            "agent_runs",
+            "run_id",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "causation_depth BETWEEN 0 AND 3",
+            name="ck_crm_mutation_events_causation_depth",
         ),
         # Multi-field updates can expose several workflow semantics from one audit event.
         Index(
@@ -895,6 +906,11 @@ class CRMDealMutationEvent(TimestampMixin, table=True):
             "created_at",
         ),
         Index("ix_crm_mutation_events_deal", "organisation_id", "deal_id", "occurred_at"),
+        Index(
+            "ix_crm_mutation_events_causation",
+            "organisation_id",
+            "caused_by_run_id",
+        ),
         Index(
             "ux_crm_mutation_events_idempotency",
             "organisation_id",
@@ -959,6 +975,11 @@ class CRMDealMutationEvent(TimestampMixin, table=True):
         sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_SQL)),
         description="Canonical old/new values for all fields changed by this mutation.",
     )
+    record_snapshot: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_SQL)),
+        description="Event-time CRM record fields used by scope and typed matching.",
+    )
     summary: str | None = Field(
         default=None,
         sa_column=Column(String(500), nullable=True),
@@ -1002,6 +1023,20 @@ class CRMDealMutationEvent(TimestampMixin, table=True):
         default=None,
         sa_column=Column(String(128), nullable=True),
         description="Request/job correlation identifier for tracing this mutation.",
+    )
+    automation_source_mode: str = Field(
+        default="system",
+        sa_column=Column(String(32), nullable=False, server_default=text("'system'")),
+        description="Import/backfill policy mode copied into the automation envelope.",
+    )
+    caused_by_run_id: UUID | None = Field(
+        default=None,
+        description="Parent agent run when this mutation was caused by automation.",
+    )
+    causation_depth: int = Field(
+        default=0,
+        sa_column=Column(sa.Integer, nullable=False, server_default=text("0")),
+        description="Bounded automated-hop depth used to stop feedback loops.",
     )
     idempotency_key: str | None = Field(
         default=None,

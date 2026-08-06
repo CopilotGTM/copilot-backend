@@ -16,8 +16,13 @@ import pytest
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.sql.elements import ClauseElement
 from src.domain.models.organisation_tables.sync.integration_models import IntegrationType
-from src.domain.models.organisation_tables.sync.meeting_intelligence import MeetingStatus
+from src.domain.models.organisation_tables.sync.meeting_intelligence import (
+    Meeting,
+    MeetingSource,
+    MeetingStatus,
+)
 from src.domain.models.organisation_tables.sync.meeting_recording import MeetingRecordingProvider
+from src.service.automation.producers.meeting import MeetingEventContext
 from src.service.integrations.transcripts.google_meet_provider import TranscriptAuthError
 from src.service.integrations.transcripts.service import (
     TranscriptFetchResult,
@@ -116,6 +121,7 @@ def _fake_session_gen(results):
     mock_session.execute = AsyncMock(return_value=mock_result)
 
     async def gen(oid):
+        """Build the gen fixture used by the surrounding regression cases."""
         yield mock_session
 
     return gen
@@ -128,6 +134,7 @@ class _CapturingSession:
         self._session = None
 
     async def execute(self, stmt: ClauseElement):
+        """Expose the execute operation expected by the Capturing Session test double."""
         self.statements.append(stmt)
         if self._session is None:
             async for session in self._session_gen(None):
@@ -140,6 +147,7 @@ def _capturing_session_gen(results) -> tuple[_CapturingSession, object]:
     session = _CapturingSession(results)
 
     async def gen(_oid):
+        """Build the gen fixture used by the surrounding regression cases."""
         yield session
 
     return session, gen
@@ -825,6 +833,8 @@ class TestRecallTranscriptParsing:
     """Tests for Recall transcript artifact parsing."""
 
     def test_parse_recall_transcript_words_into_segments(self) -> None:
+        """Verify the contract that parse recall transcript words into segments."""
+        organisation_id = uuid4()
         meeting_id = uuid4()
         payload = [
             {
@@ -840,10 +850,15 @@ class TestRecallTranscriptParsing:
             },
         ]
 
-        full_text, segments = TranscriptService._parse_recall_transcript(payload, meeting_id)
+        full_text, segments = TranscriptService._parse_recall_transcript(
+            payload,
+            organisation_id,
+            meeting_id,
+        )
 
         assert full_text == "Alice: hello there\nBob: hi Alice"
         assert len(segments) == 2
+        assert segments[0].organisation_id == organisation_id
         assert segments[0].speaker_name == "Alice"
         assert segments[0].speaker_external_id == "100"
         assert segments[0].start_time_seconds == 1.0
@@ -922,6 +937,110 @@ class TestRecallTranscriptParsing:
         assert call_args[0][3] == MeetingStatus.NOT_AVAILABLE
 
 
+class TestTranscriptAutomationEvent:
+    """The transcript outbox row shares the transcript-ready commit."""
+
+    @pytest.mark.asyncio
+    async def test_ready_event_is_enqueued_before_transcript_commit(self, monkeypatch) -> None:
+        """Verify the contract that ready event is enqueued before transcript commit."""
+        from src.service.integrations.transcripts import service as module
+
+        organisation_id = uuid4()
+        meeting = Meeting(
+            organisation_id=organisation_id,
+            calendar_event_id=uuid4(),
+            source=MeetingSource.NATIVE_BOT,
+            status=MeetingStatus.FETCHING,
+        )
+        call_order: list[str] = []
+        envelopes = []
+
+        class FakeResult:
+            """Represent the Fake Result test double used by the surrounding regression cases."""
+
+            def scalars(self):
+                """Expose the scalars operation expected by the Fake Result test double."""
+                return self
+
+            def first(self):
+                """Expose the first operation expected by the Fake Result test double."""
+                return meeting
+
+            def all(self):
+                """Expose the all operation expected by the Fake Result test double."""
+                return []
+
+        class FakeSession:
+            """Represent the Fake Session test double used by the surrounding regression cases."""
+
+            async def execute(self, _statement):
+                """Expose the execute operation expected by the Fake Session test double."""
+                return FakeResult()
+
+            def add(self, _row):
+                """Expose the add operation expected by the Fake Session test double."""
+                return None
+
+            async def delete(self, _row):
+                """Expose the delete operation expected by the Fake Session test double."""
+                return None
+
+            async def commit(self):
+                """Expose the commit operation expected by the Fake Session test double."""
+                call_order.append("commit")
+
+        session = FakeSession()
+
+        async def fake_session_gen(_organisation_id):
+            """Build the fake session gen fixture used by the surrounding regression cases."""
+            yield session
+
+        class FakeDispatchService:
+            """Represent the Fake Dispatch Service test double used by the surrounding regression cases."""
+
+            def __init__(self, dispatch_session, dispatch_organisation_id, **_kwargs):
+                assert dispatch_session is session
+                assert dispatch_organisation_id == organisation_id
+
+            async def enqueue(self, envelope):
+                """Expose the enqueue operation expected by the Fake Dispatch Service test double."""
+                call_order.append("enqueue")
+                envelopes.append(envelope)
+
+        monkeypatch.setattr(module, "acquire_org_async_session", fake_session_gen)
+        monkeypatch.setattr(
+            module,
+            "load_meeting_event_context",
+            AsyncMock(return_value=MeetingEventContext()),
+        )
+        monkeypatch.setattr(module, "AutomationEventDispatchService", FakeDispatchService)
+
+        service = TranscriptService(organisation_id)
+        await service._save_transcript(
+            meeting.meeting_id,
+            "private transcript",
+            [],
+            "en-US",
+            {"transcript_id": "provider-transcript-1"},
+            False,
+        )
+        first_fetched_at = meeting.transcript_fetched_at
+        await service._save_transcript(
+            meeting.meeting_id,
+            "private transcript replay",
+            [],
+            "en-US",
+            {"transcript_id": "provider-transcript-1"},
+            True,
+        )
+
+        assert call_order == ["enqueue", "commit", "enqueue", "commit"]
+        assert envelopes[0].event_key == "meeting.transcript.ready"
+        assert envelopes[1] == envelopes[0]
+        assert meeting.transcript_fetched_at == first_fetched_at
+        assert meeting.status == MeetingStatus.READY
+
+
 # =============================================================================
 # TestFindIntegrationByEmail
 # =============================================================================
@@ -958,6 +1077,7 @@ class TestFindIntegrationByEmail:
 
     @pytest.mark.asyncio
     async def test_lookup_uses_provider_parent_integration_types(self) -> None:
+        """Verify the contract that lookup uses provider parent integration types."""
         svc = _make_service()
         capture, session_gen = _capturing_session_gen([])
 
@@ -976,6 +1096,7 @@ class TestFindIntegrationByEmail:
 
     @pytest.mark.asyncio
     async def test_email_lookup_can_be_limited_to_event_provider_parent(self) -> None:
+        """Verify the contract that email lookup can be limited to event provider parent."""
         svc = _make_service()
         capture, session_gen = _capturing_session_gen([])
 

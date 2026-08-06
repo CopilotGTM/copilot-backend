@@ -1,3 +1,11 @@
+"""Organisation-scoped risk/blocker writes and their durable side effects.
+
+CRM routes, agent tools, and workers use these operations for manual and
+AI-derived records. The service validates source and inference identity,
+records audit metadata, projects lifecycle state, and leaves the outer caller
+in control of the transaction commit.
+"""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -17,8 +25,21 @@ from src.domain.models.organisation_tables.sync.risk_blocker_models import (
     RiskBlockerStatus,
     RiskBlockerType,
 )
+from src.service.automation.events.contracts import (
+    AutomationActorType,
+    AutomationEventActor,
+    AutomationEventEnvelope,
+    AutomationSourceMode,
+)
+from src.service.automation.events.service import AutomationEventDispatchService
+from src.service.automation.producers.signals import (
+    AISignalEventAdapter,
+    SignalTransition,
+    prepare_manual_signal_transition,
+)
 from src.service.crm.activity_feed_projection_service import ActivityFeedProjectionService
 from src.service.crm.risks.contracts import (
+    RiskBlockerInference,
     RiskBlockerNotFoundError,
     RiskBlockerWriteContext,
 )
@@ -26,6 +47,8 @@ from src.service.crm.risks.mapper import RiskBlockerMapper
 
 
 class ExtractedRiskBlockerProtocol(Protocol):
+    """Define the Extracted Risk Blocker Protocol contract required by callers of this module."""
+
     item_type: RiskBlockerType
     category: RiskBlockerCategory
     severity: RiskBlockerSeverity
@@ -36,6 +59,14 @@ class ExtractedRiskBlockerProtocol(Protocol):
     confidence: float
     reasoning: str
     suggested_owner: str | None
+
+
+class AutomationEventEnqueuer(Protocol):
+    """Transaction-local automation dispatch boundary used by CRM writes."""
+
+    async def enqueue(self, envelope: AutomationEventEnvelope) -> object:
+        """Queue the current Automation Event Enqueuer work while preserving its tenant and idempotency boundaries."""
+        ...
 
 
 def _enum_value(value: Any) -> str:
@@ -52,6 +83,7 @@ def add_risk_blocker_audit_entry(
     details: dict[str, Any],
     context: RiskBlockerWriteContext,
 ) -> None:
+    """Apply the add risk blocker audit entry contract for this organisation-scoped module."""
     if not item.risk_blocker_data:
         item.risk_blocker_data = {"audit_trail": [], "unique_modifiers": []}
 
@@ -84,7 +116,13 @@ def build_extraction_risk_blocker(
     source_type: RiskBlockerSource,
     source_record_id: str | None = None,
 ) -> DealRiskBlocker:
-    return DealRiskBlocker(
+    """Apply the build extraction risk blocker contract for this organisation-scoped module."""
+    if context.inference is not None:
+        if source_record_id != context.inference.evidence_id:
+            raise ValueError("extraction evidence does not match source_record_id")
+        if extracted.confidence != context.inference.confidence:
+            raise ValueError("extraction confidence does not match inference metadata")
+    item = DealRiskBlocker(
         organisation_id=organisation_id,
         deal_id=deal_id,
         item_type=extracted.item_type,
@@ -123,14 +161,61 @@ def build_extraction_risk_blocker(
             "unique_modifiers": [str(context.actor.actor_id)],
         },
     )
+    if context.inference is not None:
+        persist_risk_blocker_inference(
+            item,
+            context.inference,
+            record_extraction_run=True,
+        )
+    return item
+
+
+def persist_risk_blocker_inference(
+    item: DealRiskBlocker,
+    inference: RiskBlockerInference,
+    *,
+    record_extraction_run: bool = False,
+) -> None:
+    """Persist the exact inference identity consumed by the signal adapter."""
+
+    data = dict(item.risk_blocker_data or {})
+    data["automation_signal"] = {
+        "transition_id": str(inference.transition_id),
+        "evidence_id": inference.evidence_id,
+        "confidence": inference.confidence,
+        "model_name": inference.model_name,
+        "prompt_version": inference.prompt_version,
+        "inference_run_id": str(inference.inference_run_id),
+        "correlation_id": inference.correlation_id,
+        "caused_by_run_id": (
+            str(inference.caused_by_run_id) if inference.caused_by_run_id else None
+        ),
+        "causation_depth": inference.causation_depth,
+    }
+    item.risk_blocker_data = data
+    item.ai_confidence = inference.confidence
+    if record_extraction_run:
+        item.extraction_run_id = inference.inference_run_id
 
 
 class RiskBlockerWriteService:
-    def __init__(self, session: AsyncSession, organisation_id: UUID):
+    """Write risk/blocker records without allowing IDs to escape the organisation boundary."""
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        organisation_id: UUID,
+        *,
+        automation_events: AutomationEventEnqueuer | None = None,
+    ):
         self.session = session
         self.organisation_id = organisation_id
         self._mapper = RiskBlockerMapper()
         self._projection = ActivityFeedProjectionService(session, organisation_id)
+        self._automation_events = automation_events or AutomationEventDispatchService(
+            session,
+            organisation_id,
+        )
         self.last_changes: dict[str, dict[str, str]] = {}
 
     async def create_manual(
@@ -146,6 +231,12 @@ class RiskBlockerWriteService:
         owner_email: str | None = None,
         assigned_team: str | None = None,
     ) -> RiskBlockerDetail:
+        """Create an actor-attributed manual record and its activity-feed projection.
+
+        The supplied write context owns actor and source metadata; this method
+        flushes the row so projections can reference durable values but does not
+        commit the caller's transaction.
+        """
         item = DealRiskBlocker(
             organisation_id=self.organisation_id,
             deal_id=deal_id,
@@ -195,6 +286,11 @@ class RiskBlockerWriteService:
         source_type: RiskBlockerSource,
         source_record_id: str | None = None,
     ) -> DealRiskBlocker:
+        """Create an AI-derived record after evidence and inference metadata match.
+
+        The source record ID and confidence are checked before persistence so a
+        later automation signal can be traced to the exact extraction fact.
+        """
         item = build_extraction_risk_blocker(
             organisation_id=self.organisation_id,
             deal_id=deal_id,
@@ -210,6 +306,7 @@ class RiskBlockerWriteService:
             item,
             source_type=self._opened_source_type(item),
         )
+        await self._enqueue_signal(item, context, "detected")
         return item
 
     async def update_fields(
@@ -218,6 +315,11 @@ class RiskBlockerWriteService:
         updates: dict[str, Any],
         context: RiskBlockerWriteContext,
     ) -> RiskBlockerDetail | None:
+        """Apply non-lifecycle field changes and append one auditable change entry.
+
+        A missing row returns ``None``; a present row is loaded with the
+        organisation filter and flushed before its changed signal is enqueued.
+        """
         item = await self._load_item(risk_blocker_id)
         self.last_changes = {}
         if not item:
@@ -257,11 +359,15 @@ class RiskBlockerWriteService:
         item.updated_at = now
         item.last_modified_by_user_id = context.actor.actor_id
         item.last_modified_by_user_name = context.actor.actor_name
+        if context.inference is not None:
+            persist_risk_blocker_inference(item, context.inference)
         await self.session.flush()
         await self.session.refresh(item)
+        await self._enqueue_signal(item, context, "changed")
         return self._mapper.to_detail(item)
 
     async def delete(self, risk_blocker_id: UUID) -> None:
+        """Delete one organisation-owned record after removing its projection."""
         item = await self._load_item(risk_blocker_id)
         if not item:
             raise RiskBlockerNotFoundError(risk_blocker_id)
@@ -277,6 +383,37 @@ class RiskBlockerWriteService:
             )
         )
         return result.scalar_one_or_none()
+
+    async def _enqueue_signal(
+        self,
+        item: DealRiskBlocker,
+        context: RiskBlockerWriteContext,
+        transition: SignalTransition,
+    ) -> None:
+        if context.inference is None:
+            if not prepare_manual_signal_transition(item):
+                return
+            actor_type = {
+                "user": AutomationActorType.USER,
+                "system": AutomationActorType.SYSTEM,
+                "workflow": AutomationActorType.AGENT,
+            }[context.actor.actor_type]
+            envelope = AISignalEventAdapter(self.organisation_id).from_risk_blocker(
+                item,
+                transition=transition,
+                actor=AutomationEventActor(
+                    type=actor_type,
+                    id=str(context.actor.actor_id),
+                ),
+                source_mode=AutomationSourceMode.INTERACTIVE,
+            )
+        else:
+            envelope = AISignalEventAdapter(self.organisation_id).from_risk_blocker(
+                item,
+                transition=transition,
+            )
+        if envelope is not None:
+            await self._automation_events.enqueue(envelope)
 
     @staticmethod
     def _opened_source_type(item: DealRiskBlocker) -> str:

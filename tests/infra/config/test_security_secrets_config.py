@@ -11,9 +11,12 @@ def _make_config() -> SecuritySecretsConfig:
     config._session_secret = ""
     config._oauth_state_secret = ""
     config._voice_realtime_config_secret = ""
+    config._automation_webhook_root_secret = ""
     config._session_secret_from_env = False
     config._oauth_state_secret_from_env = False
     config._voice_realtime_config_secret_from_env = False
+    config._automation_webhook_root_secret_from_env = False
+    config._automation_webhook_root_loaded_at = None
     config._credentials_loaded_at = None
     config._credentials_ttl_hours = 6.0
     config._refresh_lock = None
@@ -22,6 +25,7 @@ def _make_config() -> SecuritySecretsConfig:
 
 @pytest.mark.asyncio
 async def test_preload_uses_env_overrides_without_vault_calls() -> None:
+    """Verify the contract that preload uses env overrides without vault calls."""
     config = _make_config()
     config._session_secret = "env-session"
     config._oauth_state_secret = "env-oauth"
@@ -41,9 +45,11 @@ async def test_preload_uses_env_overrides_without_vault_calls() -> None:
 
 
 def test_get_session_secret_sync_fetches_from_key_vault() -> None:
+    """Verify the contract that get session secret sync fetches from key vault."""
     config = _make_config()
 
     async def fake_get(name: str) -> str | None:
+        """Build the fake get fixture used by the surrounding regression cases."""
         mapping = {
             config.SECRET_NAME_SESSION_SECRET: "vault-session",
             config.SECRET_NAME_OAUTH_STATE_SECRET: "vault-oauth",
@@ -60,12 +66,38 @@ def test_get_session_secret_sync_fetches_from_key_vault() -> None:
 
 @pytest.mark.asyncio
 async def test_get_oauth_state_secret_raises_when_key_vault_secret_missing() -> None:
+    """Verify the contract that get oauth state secret raises when key vault secret missing."""
     config = _make_config()
 
     async def fake_get(_name: str) -> str | None:
+        """Build the fake get fixture used by the surrounding regression cases."""
         return None
 
     with patch("src.infra.secrets.manager.master_secrets_manager") as mock_manager:
         mock_manager.get = fake_get
         with pytest.raises(RuntimeError, match="SECRET_KEY unavailable"):
             await config.get_oauth_state_secret()
+
+
+@pytest.mark.asyncio
+async def test_webhook_root_uses_a_dedicated_key_vault_secret() -> None:
+    """Verify the contract that webhook root uses a dedicated key vault secret."""
+    config = _make_config()
+    calls: list[str] = []
+
+    async def fake_get(name: str) -> str | None:
+        """Build the fake get fixture used by the surrounding regression cases."""
+        calls.append(name)
+        if name == config.SECRET_NAME_AUTOMATION_WEBHOOK_ROOT_SECRET:
+            return "vault-webhook-root"
+        return None
+
+    with patch("src.infra.secrets.manager.master_secrets_manager") as mock_manager:
+        mock_manager.get = fake_get
+        result = await config.get_automation_webhook_root_secret()
+        cached = await config.get_automation_webhook_root_secret()
+
+    assert result == "vault-webhook-root"
+    assert cached == result
+    assert result != config._oauth_state_secret
+    assert calls == [config.SECRET_NAME_AUTOMATION_WEBHOOK_ROOT_SECRET]

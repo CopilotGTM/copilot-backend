@@ -31,6 +31,9 @@ from src.infra.database.sessions import acquire_org_async_session
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.logger import get_logger
 from src.service.crm.jobs.deal_job_event_publisher import DealJobRedisPublisher
+from src.service.crm.jobs.deal_meeting_job_service import (
+    lock_and_get_active_meeting_summary_job,
+)
 
 logger = get_logger(__name__)
 
@@ -223,7 +226,6 @@ class TranscriptUploadService:
         keeping it out avoids partial/broken data for other note-taker formats.
         """
         async for session in acquire_org_async_session(self.organisation_id):
-            # Check if a meeting already exists for this event
             stmt = select(Meeting).where(
                 col(Meeting.calendar_event_id) == self.event_id,
                 col(Meeting.organisation_id) == self.organisation_id,
@@ -277,51 +279,64 @@ class TranscriptUploadService:
         raise RuntimeError("Failed to acquire session")
 
     async def _trigger_meeting_summary(self) -> UUID:
-        """Create a MEETING_SUMMARY job and enqueue it."""
+        """Reuse or create the event-level summary job and enqueue pending work."""
         from src.workers.deal_worker.client import send_deal_task_async
 
-        # Create job record (release session before Celery dispatch)
+        # The transaction-scoped event lock keeps uploads, Recall, scheduled runs,
+        # and manual requests from creating separate jobs for one meeting.
         summary_job_id: UUID | None = None
+        should_enqueue = False
         async for session in acquire_org_async_session(self.organisation_id):
-            job = DealJobs(
-                organisation_id=self.organisation_id,
-                user_id=self.user_id,
-                job_type=DealJobType.MEETING_SUMMARY,
-                deal_id=self.deal_id,
-                event_id=self.event_id,
-                status=JobStatus.PENDING,
-                job_metadata={
-                    "source": "transcript_upload",
-                    "event_id": str(self.event_id),
-                },
+            job = await lock_and_get_active_meeting_summary_job(
+                session,
+                self.organisation_id,
+                self.event_id,
             )
-            session.add(job)
+            if job is None:
+                job = DealJobs(
+                    organisation_id=self.organisation_id,
+                    user_id=self.user_id,
+                    job_type=DealJobType.MEETING_SUMMARY,
+                    deal_id=self.deal_id,
+                    event_id=self.event_id,
+                    status=JobStatus.PENDING,
+                    job_metadata={
+                        "source": "transcript_upload",
+                        "event_id": str(self.event_id),
+                    },
+                )
+                session.add(job)
+                should_enqueue = True
+            elif job.status == JobStatus.PENDING:
+                should_enqueue = True
             await session.commit()
-            await session.refresh(job)
             summary_job_id = job.job_id
 
         if not summary_job_id:
             raise RuntimeError("Failed to acquire session")
 
-        # Dispatch Celery task AFTER session is released
-        await send_deal_task_async(
-            "meeting_summary_task.process",
-            args=[str(self.organisation_id), str(summary_job_id)],
-            queue="deal_jobs",
-            routing_key="deal_jobs",
-        )
+        # Commit releases the advisory lock before broker I/O; a pending reused
+        # job is re-enqueued so an earlier broker failure can recover.
+        if should_enqueue:
+            await send_deal_task_async(
+                "meeting_summary_task.process",
+                args=[str(self.organisation_id), str(summary_job_id)],
+                queue="deal_jobs",
+                routing_key="deal_jobs",
+            )
 
         logger.info(
-            "Triggered meeting summary job %s after transcript upload for event %s",
+            "Resolved meeting summary job %s after transcript upload for event %s",
             summary_job_id,
             self.event_id,
             extra={
-                "event": "transcript_upload_summary_job_dispatched",
+                "event": "transcript_upload_summary_job_resolved",
                 "organisation_id": str(self.organisation_id),
                 "deal_id": str(self.deal_id),
                 "event_id": str(self.event_id),
                 "summary_job_id": str(summary_job_id),
                 "user_id": str(self.user_id),
+                "enqueued": should_enqueue,
             },
         )
         return summary_job_id

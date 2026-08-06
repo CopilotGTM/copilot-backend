@@ -158,21 +158,15 @@ Load the trigger-builder contract when the user begins configuring a trigger:
 GET /users/v1/automation-trigger-catalog
 ```
 
-The catalog is the source of truth for supported trigger definitions, default JSON configuration,
-field rendering metadata, and organization-owned CRM pipeline/stage options. The frontend should
-not maintain its own duplicate list of event types, pipeline options, or stage options. The current
-CRM catalog includes deal creation, deal stage changes, contact creation/deletion, and account
-creation/deletion. Render each `categories[].triggers[]` entry from its `fields` and default config.
+The catalog is the source of truth for producer-backed trigger definitions, hierarchy, defaults,
+configuration controls, typed filter paths/operators, fixed presets, authority choices, and
+organisation-owned options. Render
+`categories[].resources[].triggers[]`; do not hard-code trigger families or event keys.
 
-For the current `Deal Stage Health Review` template, the operational trigger path is:
-
-```text
-trigger_key: crm.deal.stage_changed
-trigger_type: event
-source_domain: crm
-event_type: crm.deal.stage_changed
-schema_key: crm.deal.stage_changed.v1
-```
+Initialize the selected definition from `default_config` and `config_fields`. `fixed_watch` and
+`fixed_filter` describe non-removable backend behavior and must not be copied into editable
+`watch` or `filter` state. See the [Agent Triggers API](../automation/v1-agent-triggers-api.md) for
+the complete renderer, option-source adapters, authority pairings, and TypeScript contract.
 
 Create the trigger under the materialised agent, never under the template:
 
@@ -183,37 +177,28 @@ Content-Type: application/json
 
 ```json
 {
-  "name": "Review deals after stage changes",
+  "name": "Review material deal stage changes",
+  "trigger_key": "crm.deal.stage_changed",
   "status": "active",
-  "trigger_type": "event",
-  "source_domain": "crm",
-  "event_type": "crm.deal.stage_changed",
-  "trigger_config": {},
-  "filter_config": {
-    "schema_key": "crm.deal.stage_changed.v1",
-    "pipeline_ids": [],
-    "stage_change_mode": "any_change",
-    "from_stage_ids": [],
-    "to_stage_ids": [],
-    "outcome": "any"
+  "config": {},
+  "watch": null,
+  "filter": {
+    "all": [
+      {"path": "record.amount", "operator": "gte", "value": "50000"}
+    ]
   },
-  "scope_config": {},
-  "task_config": {
-    "goal": "Review the deal and recommend the next best actions."
-  }
+  "principal_mode": "personal",
+  "scope": {"type": "owned_or_created_by_principal", "config": {}},
+  "audience": {"mode": "principal", "user_ids": []},
+  "task": {"goal": "Review the deal and recommend the next best actions."},
+  "delivery": {"mode": "none"}
 }
 ```
 
-The successful response is the saved `AutomationTriggerDetail`. Saving an active trigger does not
-run the agent immediately. A matching persisted supported CRM event creates the run and the worker
-executes it.
-
-### Current schedule boundary
-
-The catalog currently also describes schedule configuration, and schedule definitions can be
-validated and stored. This worktree does not yet contain the due-schedule dispatcher that turns
-`next_trigger_at` into an agent run. The frontend should not present scheduled execution as an
-operational V1 path until that worker/service is implemented and verified.
+The successful response is the saved `AutomationTriggerDetail`. Event triggers wait for a matching
+durable event. Manual triggers run through `/invoke`; schedules run through the due dispatcher; and
+webhooks return one-time signing credentials when first provisioned. All four catalog families are
+operational.
 
 ## Owned Agent Detail Flow
 
@@ -281,9 +266,12 @@ usage, cost, errors, and timing:
 GET /users/v1/agent-runs/{run_id}
 ```
 
-V1 has no manual-run endpoint and no frontend push/stream contract for run updates. A frontend that
-shows live execution state must poll the list or detail endpoint while a run is non-terminal and
-stop at `succeeded`, `failed`, `delivery_failed`, `validation_failed`, or `cancelled`.
+Invoke manual triggers through
+`POST /users/v1/agents/{agent_id}/triggers/{trigger_id}/invoke`. That response, and public
+webhook acceptance, returns durable event IDs rather than completed runs. There is no frontend
+push/stream contract for run updates. Poll the list or detail endpoint while a run is `pending` or
+`running` and stop at `succeeded`, `failed`, `delivery_failed`, `validation_failed`, or
+`cancelled`.
 
 ## Complete V1 Endpoint Map
 
@@ -304,13 +292,17 @@ stop at `succeeded`, `failed`, `delivery_failed`, `validation_failed`, or `cance
 | Triggers | `POST` | `/users/v1/agents/{agent_id}/triggers` | Create and pin a trigger |
 | Triggers | `GET` | `/users/v1/agents/{agent_id}/triggers/{trigger_id}` | Read one trigger |
 | Triggers | `PUT` | `/users/v1/agents/{agent_id}/triggers/{trigger_id}` | Replace a trigger |
+| Triggers | `POST` | `/users/v1/agents/{agent_id}/triggers/{trigger_id}/invoke` | Invoke a manual trigger |
+| Triggers | `POST` | `/users/v1/agents/{agent_id}/triggers/{trigger_id}/rotate-webhook-secret` | Rotate a webhook secret |
 | Triggers | `POST` | `/users/v1/agents/{agent_id}/triggers/{trigger_id}/refresh-target` | Repin to current agent revision |
 | Triggers | `DELETE` | `/users/v1/agents/{agent_id}/triggers/{trigger_id}` | Archive a trigger |
+| Webhooks | `POST` | `/webhooks/v1/automation/{endpoint_token}` | Accept a signed external event |
 | Runs | `GET` | `/users/v1/agent-runs` | List execution history |
 | Runs | `GET` | `/users/v1/agent-runs/{run_id}` | Read full execution details |
 
-All endpoints require the normal authenticated user context. Ownership and organization IDs come
-from authentication and must never be accepted from frontend form state.
+The public webhook route uses timestamped HMAC authentication. Every other endpoint requires the
+normal authenticated user context. Organisation, creator, target, and execution-principal IDs come
+from authentication and server validation and must never be accepted from frontend form state.
 
 ## Response And Error Handling
 
@@ -329,8 +321,11 @@ Frontend handling:
 | Status | Meaning | Expected frontend action |
 | --- | --- | --- |
 | `400` | Valid shape but invalid domain/configuration | Show the backend message near the action/form |
+| `401` | Invalid public-webhook signature | Check sender credentials and signing bytes |
+| `403` | Caller cannot manage an organisation binding | Keep organisation management admin-only |
 | `404` | Missing, archived, or inaccessible owned resource | Remove stale local state and return to the relevant list |
 | `409` | Stale revision/timestamp or duplicate trigger | Refetch; never overwrite silently |
+| `413` | Public-webhook body exceeds its limit | Reduce the sender payload |
 | `422` | Malformed request or field bounds | Treat as a frontend contract/validation error |
 | `429` | User rate limit exceeded | Respect retry behavior and avoid request loops |
 | `500` | Sanitized unexpected failure | Keep current state and offer a deliberate retry |
@@ -344,6 +339,8 @@ Frontend handling:
 | Create/update/archive trigger | Trigger list for that agent |
 | Edit agent | Agent detail/list and trigger rows because `target_update_available` may change |
 | Refresh trigger target | That trigger detail/list row |
+| Invoke manual trigger | Begin polling the trigger-filtered run list; retain returned event IDs |
+| Rotate webhook secret | Refetch trigger detail for the new `updated_at`; show the returned secret once |
 
 Runs are created asynchronously by supported trigger activation. They are not invalidated by the
 definition write itself.
@@ -353,7 +350,9 @@ definition write itself.
 - There is no combined agents-plus-trigger-count endpoint; use lazy trigger loading.
 - `Use Template` permits multiple copies and has no idempotency key.
 - Templates have no create/update/admin API and no upgrade flow in V1.
-- Template metadata does not yet expose an explicit `compatible_trigger_keys` field. The current
-  Deal Stage Health Review product flow must use `crm.deal.stage_changed`.
-- Scheduled trigger definitions do not yet have a runtime dispatcher.
+- Template metadata does not expose `compatible_trigger_keys`; present the live trigger catalog
+  after materialisation instead of assuming a template-specific event.
+- The automation catalog does not provide application-user options for `explicit_users`; hide that
+  audience unless the frontend already has a trusted organisation-member data source.
+- Run updates are polling-based; there is no run-history stream endpoint.
 - Templates cannot execute directly; only the materialised user agent can own triggers and runs.

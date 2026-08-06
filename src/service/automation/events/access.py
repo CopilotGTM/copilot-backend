@@ -25,7 +25,7 @@ class AutomationEventDispatchAccess:
         self.organisation_id = organisation_id
 
     async def insert_if_absent(self, dispatch: AutomationEventDispatch) -> bool:
-        """Insert one source occurrence or report an idempotent replay."""
+        """Insert one event identity or report an idempotent replay."""
 
         table = cast(Any, AutomationEventDispatch).__table__
         columns = table.c
@@ -36,42 +36,58 @@ class AutomationEventDispatchAccess:
             .on_conflict_do_nothing(
                 index_elements=[
                     columns.organisation_id,
-                    columns.source_domain,
-                    columns.source_event_id,
-                    columns.event_type,
+                    columns.idempotency_key,
                 ]
             )
-            .returning(columns.dispatch_id)
+            .returning(columns.event_id)
         )
         return (await self.session.execute(statement)).scalar_one_or_none() is not None
 
-    async def get_by_source(
-        self, *, source_domain: str, source_event_id: str, event_type: str
-    ) -> AutomationEventDispatch | None:
-        """Return the tenant-owned dispatch for an idempotent producer replay."""
-
-        columns = cast(Any, AutomationEventDispatch).__table__.c
-        # Source IDs may come from providers and are not trusted as globally unique;
-        # the organization predicate is the cross-tenant isolation boundary.
-        statement = select(AutomationEventDispatch).where(
-            columns.organisation_id == self.organisation_id,
-            columns.source_domain == source_domain,
-            columns.source_event_id == source_event_id,
-            columns.event_type == event_type,
-        )
-        return (await self.session.execute(statement)).scalars().first()
-
-    async def get(self, dispatch_id: UUID) -> AutomationEventDispatch | None:
-        """Load one dispatch without trusting its opaque ID across tenants."""
+    async def get_by_idempotency_key(self, key: str) -> AutomationEventDispatch | None:
+        """Return the tenant-owned event created by an earlier producer delivery."""
 
         columns = cast(Any, AutomationEventDispatch).__table__.c
         statement = select(AutomationEventDispatch).where(
             columns.organisation_id == self.organisation_id,
-            columns.dispatch_id == dispatch_id,
+            columns.idempotency_key == key,
         )
         return (await self.session.execute(statement)).scalars().first()
 
-    async def mark_processed(self, dispatch_id: UUID) -> bool:
+    async def get(self, event_id: UUID) -> AutomationEventDispatch | None:
+        """Load one event without trusting its opaque ID across tenants."""
+
+        columns = cast(Any, AutomationEventDispatch).__table__.c
+        statement = select(AutomationEventDispatch).where(
+            columns.organisation_id == self.organisation_id,
+            columns.event_id == event_id,
+        )
+        return (await self.session.execute(statement)).scalars().first()
+
+    async def list_pending_before(self, cutoff: datetime, *, limit: int) -> list[UUID]:
+        """Return a bounded batch whose direct post-commit publication may be lost."""
+
+        columns = cast(Any, AutomationEventDispatch).__table__.c
+        statement = (
+            select(columns.event_id)
+            .where(
+                columns.organisation_id == self.organisation_id,
+                columns.created_at <= cutoff,
+                columns.processed_at.is_(None),
+                columns.failed_at.is_(None),
+            )
+            .order_by(columns.created_at, columns.event_id)
+            .limit(limit)
+        )
+        return list((await self.session.execute(statement)).scalars().all())
+
+    async def mark_processed(
+        self,
+        event_id: UUID,
+        *,
+        candidate_count: int,
+        matched_count: int,
+        activation_outcomes: list[dict[str, Any]],
+    ) -> bool:
         """Terminally acknowledge activation while duplicate deliveries remain safe."""
 
         columns = cast(Any, AutomationEventDispatch).__table__.c
@@ -80,7 +96,7 @@ class AutomationEventDispatchAccess:
             update(AutomationEventDispatch)
             .where(
                 columns.organisation_id == self.organisation_id,
-                columns.dispatch_id == dispatch_id,
+                columns.event_id == event_id,
                 columns.processed_at.is_(None),
                 columns.failed_at.is_(None),
             )
@@ -88,13 +104,24 @@ class AutomationEventDispatchAccess:
                 processed_at=now,
                 last_attempted_at=now,
                 attempt_count=columns.attempt_count + 1,
+                candidate_count=candidate_count,
+                matched_count=matched_count,
+                activation_outcomes=activation_outcomes,
+                last_error_code=None,
                 last_error=None,
             )
-            .returning(columns.dispatch_id)
+            .returning(columns.event_id)
         )
         return (await self.session.execute(statement)).scalar_one_or_none() is not None
 
-    async def record_failure(self, dispatch_id: UUID, *, error: str, terminal: bool) -> bool:
+    async def record_failure(
+        self,
+        event_id: UUID,
+        *,
+        error_code: str,
+        error: str,
+        terminal: bool,
+    ) -> bool:
         """Record a sanitized retry outcome or stop recovery after the final attempt."""
 
         columns = cast(Any, AutomationEventDispatch).__table__.c
@@ -102,6 +129,7 @@ class AutomationEventDispatchAccess:
         values: dict[str, Any] = {
             "last_attempted_at": now,
             "attempt_count": columns.attempt_count + 1,
+            "last_error_code": error_code[:120],
             "last_error": error[:1000],
         }
         if terminal:
@@ -110,11 +138,11 @@ class AutomationEventDispatchAccess:
             update(AutomationEventDispatch)
             .where(
                 columns.organisation_id == self.organisation_id,
-                columns.dispatch_id == dispatch_id,
+                columns.event_id == event_id,
                 columns.processed_at.is_(None),
                 columns.failed_at.is_(None),
             )
             .values(**values)
-            .returning(columns.dispatch_id)
+            .returning(columns.event_id)
         )
         return (await self.session.execute(statement)).scalar_one_or_none() is not None

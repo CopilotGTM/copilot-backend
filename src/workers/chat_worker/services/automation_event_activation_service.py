@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.automation.events.access import AutomationEventDispatchAccess
+from src.service.automation.events.contracts import AutomationEventEnvelope
 from src.service.automation.events.delivery import (
     DEFAULT_PUBLISH_RETRY_DELAYS,
     publish_task_with_backoff,
@@ -51,28 +52,30 @@ class AutomationEventActivationExecutionService:
         self.publisher = publisher
         self.publish_retry_delays = publish_retry_delays
 
-    async def activate(self, dispatch_id: UUID, *, retry_allowed: bool) -> dict[str, Any]:
-        """Process one dispatch, returning whether Celery should retry failures."""
+    async def activate(self, event_id: UUID, *, retry_allowed: bool) -> dict[str, Any]:
+        """Process one event, returning whether Celery should retry failures."""
 
         created_run_ids: tuple[UUID, ...] = ()
         try:
             async for session in self.session_scope(self.organisation_id):
                 access = self.access_factory(session, self.organisation_id)
-                dispatch = await access.get(dispatch_id)
+                dispatch = await access.get(event_id)
                 if dispatch is None:
-                    return {"status": "not_found", "dispatch_id": str(dispatch_id)}
+                    return {"status": "not_found", "event_id": str(event_id)}
                 if dispatch.processed_at is not None:
-                    return {"status": "already_processed", "dispatch_id": str(dispatch_id)}
+                    return {"status": "already_processed", "event_id": str(event_id)}
                 if dispatch.failed_at is not None:
-                    return {"status": "already_failed", "dispatch_id": str(dispatch_id)}
+                    return {"status": "already_failed", "event_id": str(event_id)}
 
                 try:
+                    envelope = AutomationEventEnvelope.model_validate(dispatch.envelope)
+                    if envelope.event_id != dispatch.event_id:
+                        raise ValueError("Persisted envelope event_id does not match its row")
                     activation = await self.activation_factory(
-                        session, self.organisation_id
-                    ).activate_event(
-                        source_domain=dispatch.source_domain,
-                        source_event_id=dispatch.source_event_id,
-                        event_type=dispatch.event_type,
+                        session,
+                        self.organisation_id,
+                    ).activate(
+                        envelope,
                     )
                 except Exception:
                     # Clear any partial SQL state before failure bookkeeping opens a
@@ -80,9 +83,20 @@ class AutomationEventActivationExecutionService:
                     await session.rollback()
                     raise
                 created_run_ids = activation.created_run_ids
-                if not await access.mark_processed(dispatch_id):
+                if not await access.mark_processed(
+                    event_id,
+                    candidate_count=activation.candidate_count,
+                    matched_count=activation.matched_count,
+                    activation_outcomes=[
+                        item.as_dict(
+                            correlation_id=(activation.correlation_id or envelope.correlation_id),
+                            latency_ms=activation.latency_ms,
+                        )
+                        for item in activation.outcomes
+                    ],
+                ):
                     await session.rollback()
-                    return {"status": "superseded", "dispatch_id": str(dispatch_id)}
+                    return {"status": "superseded", "event_id": str(event_id)}
 
                 # AgentRun rows and terminal dispatch state commit together. Publishing
                 # before this point could let a fast worker observe uncommitted work.
@@ -92,17 +106,17 @@ class AutomationEventActivationExecutionService:
                 raise RuntimeError("organization session scope yielded no session")
         except Exception:
             logger.exception(
-                "Automation event activation failed org=%s dispatch=%s",
+                "Automation event activation failed org=%s event=%s",
                 self.organisation_id,
-                dispatch_id,
+                event_id,
             )
             await self._record_failure(
-                dispatch_id,
+                event_id,
                 terminal=not retry_allowed,
             )
             return {
                 "status": "retry" if retry_allowed else "failed",
-                "dispatch_id": str(dispatch_id),
+                "event_id": str(event_id),
             }
 
         published = 0
@@ -130,13 +144,14 @@ class AutomationEventActivationExecutionService:
             "publish_failures": publish_failures,
         }
 
-    async def _record_failure(self, dispatch_id: UUID, *, terminal: bool) -> None:
+    async def _record_failure(self, event_id: UUID, *, terminal: bool) -> None:
         """Persist retry state in a fresh transaction after activation rollback."""
 
         async for session in self.session_scope(self.organisation_id):
             access = self.access_factory(session, self.organisation_id)
             await access.record_failure(
-                dispatch_id,
+                event_id,
+                error_code="activation_failed",
                 error="Automation event activation failed",
                 terminal=terminal,
             )

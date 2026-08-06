@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import Enum
@@ -10,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealMutationEvent
+from src.service.automation.events.contracts import AutomationEventEnvelope
 from src.service.crm.mutations.contracts import (
     CRMMutationContext,
     CRMMutationEventServiceError,
@@ -37,9 +37,11 @@ class _RowsResult:
         self._rows = rows
 
     def scalars(self) -> _RowsResult:
+        """Expose the scalars operation expected by the Rows Result test double."""
         return self
 
     def all(self) -> list[object]:
+        """Expose the all operation expected by the Rows Result test double."""
         return self._rows
 
 
@@ -48,12 +50,21 @@ class _FakeSession:
         self.existing = existing
         self.rows = rows
         self.added: list[object] = []
+        self.sync_session = self
+        self.info: dict = {}
 
     async def execute(self, _statement: object) -> _ScalarResult | _RowsResult:
         """Return a scalar result with the configured idempotency row."""
+        table = getattr(_statement, "table", None)
+        if getattr(table, "name", None) == "automation_event_dispatches":
+            return _ScalarResult(uuid4())
         if self.rows is not None:
             return _RowsResult(self.rows)
         return _ScalarResult(self.existing)
+
+    def get_nested_transaction(self) -> None:
+        """Expose the get nested transaction operation expected by the Fake Session test double."""
+        return None
 
     def add(self, obj: object) -> None:
         """Capture rows the service would add to the active transaction."""
@@ -66,10 +77,11 @@ class _FakeSession:
 
 class _FakeEventEnqueuer:
     def __init__(self) -> None:
-        self.events: list[tuple[str, str, str]] = []
+        self.events: list[AutomationEventEnvelope] = []
 
-    async def enqueue(self, *, source_domain: str, source_event_id: str, event_type: str) -> object:
-        self.events.append((source_domain, source_event_id, event_type))
+    async def enqueue(self, envelope: AutomationEventEnvelope) -> object:
+        """Build the enqueue fixture used by the surrounding regression cases."""
+        self.events.append(envelope)
         return object()
 
 
@@ -93,6 +105,12 @@ def _command(
             else {"email": {"old": None, "new": "buyer@example.com"}}
         ),
         semantic_event_types=["crm.contact.email_added"],
+        record={
+            "id": str(entity_id),
+            "email": "buyer@example.com",
+            "owner_id": str(uuid4()),
+            "created_by_user_id": str(uuid4()),
+        },
         context=CRMMutationContext(
             source="api",
             actor_user_id=uuid4(),
@@ -154,7 +172,9 @@ async def test_record_event_skips_empty_changed_fields() -> None:
 async def test_record_event_persists_generic_crm_event() -> None:
     """The shared service should hide the current deal-named ORM class."""
     organisation_id = uuid4()
-    service = CRMMutationEventService(_FakeSession(), organisation_id)
+    service = CRMMutationEventService(
+        _FakeSession(), organisation_id, event_enqueuer=_FakeEventEnqueuer()
+    )
 
     result = await service.record_event(_command(idempotency_key="req-123"))
 
@@ -171,36 +191,54 @@ async def test_record_event_persists_generic_crm_event() -> None:
 
 
 @pytest.mark.asyncio
-async def test_supported_semantic_event_enqueues_once_from_shared_recorder() -> None:
+async def test_shared_recorder_emits_one_base_lifecycle_envelope() -> None:
+    """Verify the contract that shared recorder emits one base lifecycle envelope."""
     enqueuer = _FakeEventEnqueuer()
-    service = CRMMutationEventService(_FakeSession(), uuid4(), event_enqueuer=enqueuer)
-    command = replace(_command(), semantic_event_types=["crm.contact.created"])
+    session = _FakeSession()
+    service = CRMMutationEventService(session, uuid4(), event_enqueuer=enqueuer)
+    command = _command()
 
     result = await service.record_event(command)
 
-    assert enqueuer.events == [("crm", str(result.event_id), "crm.contact.created")]
+    assert len(enqueuer.events) == 1
+    envelope = enqueuer.events[0]
+    assert envelope.event_id == result.event_id
+    assert envelope.event_key == "crm.contact.updated"
+    assert envelope.source.operation == "update"
+    assert envelope.source.source_event_id == str(result.event_id)
+    assert envelope.subject.type == "contact"
+    assert envelope.subject.id == str(command.entity_id)
+    assert envelope.record == command.record
+    assert envelope.changes["email"].before is None
+    assert envelope.changes["email"].after == "buyer@example.com"
+    assert envelope.correlation_id == str(session.added[0].mutation_group_id)
 
 
 @pytest.mark.asyncio
-async def test_unsupported_semantic_event_remains_audit_only() -> None:
+async def test_base_lifecycle_event_does_not_depend_on_legacy_semantic_presets() -> None:
+    """Verify the contract that base lifecycle event does not depend on legacy semantic presets."""
     enqueuer = _FakeEventEnqueuer()
     service = CRMMutationEventService(_FakeSession(), uuid4(), event_enqueuer=enqueuer)
 
     await service.record_event(_command())
 
-    assert enqueuer.events == []
+    assert [event.event_key for event in enqueuer.events] == ["crm.contact.updated"]
 
 
 @pytest.mark.asyncio
 async def test_record_event_returns_existing_event_for_same_scoped_idempotency_payload() -> None:
     """Safe retries with the same scoped payload should return the original event id."""
     session = _FakeSession()
-    service = CRMMutationEventService(session, uuid4())
+    service = CRMMutationEventService(session, uuid4(), event_enqueuer=_FakeEventEnqueuer())
     command = _command(idempotency_key="req-123", idempotency_scope="contact:update:1")
     first = await service.record_event(command)
 
     retry_session = _FakeSession(existing=session.added[0])
-    retry_service = CRMMutationEventService(retry_session, service.organisation_id)
+    retry_service = CRMMutationEventService(
+        retry_session,
+        service.organisation_id,
+        event_enqueuer=_FakeEventEnqueuer(),
+    )
     second = await retry_service.record_event(command)
 
     assert second.event_id == first.event_id
@@ -211,10 +249,7 @@ async def test_record_event_returns_existing_event_for_same_scoped_idempotency_p
 async def test_supported_idempotent_retry_replays_enqueue() -> None:
     """A retry must repair a missing dispatch left by an older producer deployment."""
     session = _FakeSession()
-    command = replace(
-        _command(idempotency_key="req-123"),
-        semantic_event_types=["crm.contact.created"],
-    )
+    command = _command(idempotency_key="req-123")
     first_service = CRMMutationEventService(session, uuid4(), event_enqueuer=_FakeEventEnqueuer())
     await first_service.record_event(command)
 
@@ -226,19 +261,21 @@ async def test_supported_idempotent_retry_replays_enqueue() -> None:
     )
     result = await retry_service.record_event(command)
 
-    assert enqueuer.events == [("crm", str(result.event_id), "crm.contact.created")]
+    assert [event.event_id for event in enqueuer.events] == [result.event_id]
 
 
 @pytest.mark.asyncio
 async def test_record_event_rejects_same_scoped_idempotency_key_with_different_payload() -> None:
     """Reusing a scoped idempotency key for a different mutation is a conflict."""
     session = _FakeSession()
-    service = CRMMutationEventService(session, uuid4())
+    service = CRMMutationEventService(session, uuid4(), event_enqueuer=_FakeEventEnqueuer())
     command = _command(idempotency_key="req-123", idempotency_scope="contact:update:1")
     await service.record_event(command)
 
     retry_service = CRMMutationEventService(
-        _FakeSession(existing=session.added[0]), service.organisation_id
+        _FakeSession(existing=session.added[0]),
+        service.organisation_id,
+        event_enqueuer=_FakeEventEnqueuer(),
     )
     with pytest.raises(CRMMutationEventServiceError) as exc:
         await retry_service.record_event(
@@ -257,7 +294,7 @@ async def test_record_event_rejects_same_scoped_idempotency_key_with_different_p
 async def test_same_request_idempotency_key_allows_different_event_scopes() -> None:
     """One API action can create more than one entity event in the same transaction."""
     session = _FakeSession()
-    service = CRMMutationEventService(session, uuid4())
+    service = CRMMutationEventService(session, uuid4(), event_enqueuer=_FakeEventEnqueuer())
 
     first = await service.record_event(
         _command(idempotency_key="req-123", idempotency_scope="account:create:1")
@@ -277,7 +314,7 @@ async def test_record_event_preserves_caller_mutation_group_id() -> None:
     """Events from one user action need a shared group id for audit tracing."""
     mutation_group_id = uuid4()
     session = _FakeSession()
-    service = CRMMutationEventService(session, uuid4())
+    service = CRMMutationEventService(session, uuid4(), event_enqueuer=_FakeEventEnqueuer())
 
     await service.record_event(
         _command(
@@ -322,6 +359,31 @@ async def test_record_event_accepts_settings_entity_types() -> None:
     assert event.entity_type == "custom_field"
     assert event.entity_id == field_id
     assert event.deal_id is None
+
+
+@pytest.mark.asyncio
+async def test_settings_audit_event_does_not_manufacture_an_automation_event() -> None:
+    """Verify the contract that settings audit event does not manufacture an automation event."""
+    enqueuer = _FakeEventEnqueuer()
+    service = CRMMutationEventService(
+        _FakeSession(),
+        uuid4(),
+        event_enqueuer=enqueuer,
+    )
+
+    await service.record_event(
+        CRMMutationRecordCommand(
+            entity_type="custom_field",
+            entity_id=uuid4(),
+            event_type="crm.settings.custom_field.updated",
+            operation="custom_field.update",
+            changed_fields={"label": {"old": "Priority", "new": "Deal priority"}},
+            semantic_event_types=["crm.settings.custom_field.updated"],
+            context=CRMMutationContext(source="api", actor_user_id=uuid4()),
+        )
+    )
+
+    assert enqueuer.events == []
 
 
 @pytest.mark.asyncio

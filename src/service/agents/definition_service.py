@@ -45,10 +45,13 @@ class AgentDefinitionService:
         session: AsyncSession,
         organisation_id: UUID,
         owner_user_id: UUID,
+        *,
+        is_admin: bool = False,
     ) -> None:
         self.session = session
         self.organisation_id = organisation_id
         self.owner_user_id = owner_user_id
+        self.is_admin = is_admin
         self.access = AgentDefinitionAccess(session, organisation_id, owner_user_id)
         self.validator = AgentDefinitionValidator()
 
@@ -120,7 +123,7 @@ class AgentDefinitionService:
             output_schema=body.output_schema,
         )
         await self.access.create_agent(agent)
-        return agent_detail(agent)
+        return agent_detail(agent, is_admin=self.is_admin)
 
     async def list_agents(
         self,
@@ -156,7 +159,7 @@ class AgentDefinitionService:
         agent = await self.access.get_agent(agent_id)
         if agent is None:
             raise AgentServiceError("Agent not found", status_code=404)
-        return agent_detail(agent)
+        return agent_detail(agent, is_admin=self.is_admin)
 
     async def replace_agent(
         self,
@@ -186,7 +189,7 @@ class AgentDefinitionService:
         )
         if updated is None:
             await self._raise_conditional_write_failure(agent_id, body.expected_revision)
-        return agent_detail(updated)
+        return agent_detail(updated, is_admin=self.is_admin)
 
     async def replace_capabilities(
         self,
@@ -206,7 +209,7 @@ class AgentDefinitionService:
         )
         if updated is None:
             await self._raise_conditional_write_failure(agent_id, body.expected_revision)
-        return agent_detail(updated)
+        return agent_detail(updated, is_admin=self.is_admin)
 
     async def archive_agent(self, agent_id: UUID, *, expected_revision: int) -> None:
         """Archive one owned definition while preserving trigger and run references."""

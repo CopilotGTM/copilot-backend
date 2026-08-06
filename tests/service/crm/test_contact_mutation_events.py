@@ -104,6 +104,12 @@ def _mutation_events(session: _ContactSession) -> list[CRMDealMutationEvent]:
     return [obj for obj in session.added if isinstance(obj, CRMDealMutationEvent)]
 
 
+def _service(session: _ContactSession, org_id) -> ContactWriteService:  # noqa: ANN001
+    service = ContactWriteService(session, org_id)
+    service._mutation_events._automation_events = AsyncMock()
+    return service
+
+
 @pytest.mark.asyncio
 async def test_create_contact_records_contact_created_mutation_event() -> None:
     org_id = uuid4()
@@ -112,8 +118,7 @@ async def test_create_contact_records_contact_created_mutation_event() -> None:
         integration=_integration(org_id),
         company=_company(org_id, company_id),
     )
-    service = ContactWriteService(session, org_id)
-    service._mutation_events._automation_events = AsyncMock()
+    service = _service(session, org_id)
     service._account_writer.resolve_or_create_account_for_contact_email_with_result = AsyncMock(  # type: ignore[method-assign]
         return_value=None
     )
@@ -143,7 +148,7 @@ async def test_create_contact_records_contact_created_mutation_event() -> None:
 async def test_create_contact_duplicate_email_records_no_mutation_event() -> None:
     org_id = uuid4()
     session = _ContactSession(existing_contact=_contact(org_id))
-    service = ContactWriteService(session, org_id)
+    service = _service(session, org_id)
 
     with pytest.raises(ContactWriteServiceError):
         await service.create_contact(
@@ -159,7 +164,7 @@ async def test_update_contact_adds_email_mutation_event_for_email_less_contact()
     org_id = uuid4()
     contact = _contact(org_id, email=None)
     session = _ContactSession(existing_contact=contact)
-    service = ContactWriteService(session, org_id)
+    service = _service(session, org_id)
 
     result = await service.update_contact(
         contact.contact_id,
@@ -182,7 +187,7 @@ async def test_update_contact_account_link_records_account_linked_event() -> Non
     contact = _contact(org_id, company_id=None, company_name=None)
     company = _company(org_id, company_id)
     session = _ContactSession(existing_contact=contact, company=company)
-    service = ContactWriteService(session, org_id)
+    service = _service(session, org_id)
 
     await service.update_contact(
         contact.contact_id,
@@ -202,7 +207,7 @@ async def test_update_contact_profile_edit_is_audit_only() -> None:
     org_id = uuid4()
     contact = _contact(org_id, job_title="CFO")
     session = _ContactSession(existing_contact=contact)
-    service = ContactWriteService(session, org_id)
+    service = _service(session, org_id)
 
     await service.update_contact(
         contact.contact_id,
@@ -222,7 +227,7 @@ async def test_update_contact_linkedin_url_is_profile_audit_only() -> None:
     org_id = uuid4()
     contact = _contact(org_id, linkedin_url=None)
     session = _ContactSession(existing_contact=contact)
-    service = ContactWriteService(session, org_id)
+    service = _service(session, org_id)
 
     await service.update_contact(
         contact.contact_id,
@@ -244,7 +249,7 @@ async def test_update_contact_existing_linkedin_url_clear_records_no_mutation_ev
     org_id = uuid4()
     contact = _contact(org_id, linkedin_url="https://linkedin.com/in/buyer")
     session = _ContactSession(existing_contact=contact)
-    service = ContactWriteService(session, org_id)
+    service = _service(session, org_id)
 
     with pytest.raises(ContactWriteServiceError) as exc:
         await service.update_contact(
@@ -264,7 +269,7 @@ async def test_update_contact_profile_enrichment_is_audit_only() -> None:
     org_id = uuid4()
     contact = _contact(org_id, profile_enrichment={})
     session = _ContactSession(existing_contact=contact)
-    service = ContactWriteService(session, org_id)
+    service = _service(session, org_id)
 
     enrichment = {
         "apollo_id": "person_123",
@@ -300,7 +305,7 @@ async def test_update_contact_same_value_records_no_mutation_event() -> None:
     org_id = uuid4()
     contact = _contact(org_id, job_title="CFO")
     session = _ContactSession(existing_contact=contact)
-    service = ContactWriteService(session, org_id)
+    service = _service(session, org_id)
 
     await service.update_contact(
         contact.contact_id,
@@ -316,7 +321,7 @@ async def test_update_contact_illegal_account_relink_records_no_mutation_event()
     org_id = uuid4()
     contact = _contact(org_id, company_id=uuid4())
     session = _ContactSession(existing_contact=contact)
-    service = ContactWriteService(session, org_id)
+    service = _service(session, org_id)
 
     with pytest.raises(ContactWriteServiceError):
         await service.update_contact(
@@ -333,7 +338,7 @@ async def test_find_or_create_existing_contact_profile_update_records_audit_even
     org_id = uuid4()
     contact = _contact(org_id, full_name="Old Name", job_title="CFO")
     session = _ContactSession(existing_contact=contact)
-    service = ContactWriteService(session, org_id)
+    service = _service(session, org_id)
 
     result = await service.find_or_create_contact_by_email(
         email="buyer@example.com",
@@ -356,7 +361,7 @@ async def test_find_or_create_existing_contact_no_profile_change_records_no_even
     org_id = uuid4()
     contact = _contact(org_id, full_name="Buyer Old", first_name="Buyer", last_name="Old")
     session = _ContactSession(existing_contact=contact)
-    service = ContactWriteService(session, org_id)
+    service = _service(session, org_id)
 
     result = await service.find_or_create_contact_by_email(
         email="buyer@example.com",

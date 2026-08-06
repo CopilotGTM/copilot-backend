@@ -1,4 +1,4 @@
-"""Owner-scoped SQL for agent run history and execution metadata."""
+"""Audience-scoped SQL for agent run history and execution metadata."""
 
 from __future__ import annotations
 
@@ -12,25 +12,37 @@ from src.domain.models.organisation_tables import AgentRun, AgentRunStatus
 
 
 class AgentRunReadAccess:
-    """Read runs inside immutable organisation and owner boundaries."""
+    """Read runs inside immutable tenant, principal, and audience boundaries."""
 
     def __init__(
         self,
         session: AsyncSession,
         organisation_id: UUID,
-        owner_user_id: UUID,
+        audience_user_id: UUID,
     ) -> None:
         self.session = session
         self.organisation_id = organisation_id
-        self.owner_user_id = owner_user_id
+        self.audience_user_id = audience_user_id
 
-    def _owned_conditions(self) -> list[Any]:
+    def _visible_conditions(self) -> list[Any]:
         columns = cast(Any, AgentRun).__table__.c
-        # Run UUIDs are locators, not authorization. Both predicates prevent
-        # cross-tenant and cross-user execution metadata disclosure.
+        explicit_audience = columns.audience_config.contains(
+            {"user_ids": [str(self.audience_user_id)]}
+        )
         return [
             columns.organisation_id == self.organisation_id,
-            columns.owner_user_id == self.owner_user_id,
+            or_(
+                and_(
+                    columns.execution_principal_type == "user",
+                    columns.execution_principal_id == self.audience_user_id,
+                    columns.audience_mode == "principal",
+                ),
+                and_(
+                    columns.execution_principal_type == "organisation_service",
+                    columns.audience_mode.in_(("explicit_users", "subject_participants")),
+                    explicit_audience,
+                ),
+            ),
         ]
 
     async def list_runs(
@@ -46,7 +58,7 @@ class AgentRunReadAccess:
         """Return a descending keyset page under optional owned-run filters."""
 
         columns = cast(Any, AgentRun).__table__.c
-        conditions = self._owned_conditions()
+        conditions = self._visible_conditions()
         if agent_id is not None:
             conditions.append(columns.agent_id == agent_id)
         if trigger_id is not None:
@@ -77,7 +89,7 @@ class AgentRunReadAccess:
 
         columns = cast(Any, AgentRun).__table__.c
         statement = select(AgentRun).where(
-            *self._owned_conditions(),
+            *self._visible_conditions(),
             columns.run_id == run_id,
         )
         return (await self.session.execute(statement)).scalars().first()

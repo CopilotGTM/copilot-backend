@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
 from src.contracts.crm.deal_write import DealUpdateRequest
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
-from src.service.crm.deals.contracts import DealWriteServiceError
+from src.service.crm.deals.contracts import DealWriteContext, DealWriteServiceError
 from src.service.crm.deals.write_service import DealWriteService
 from src.service.crm.internal.deal_update_policy import classify_deal_update_policy
 
@@ -229,7 +229,16 @@ def create_update_deal_fields(
                     access_actor=access_actor,
                 )
                 try:
-                    deal = await service.update_deal(resolved_deal_id, effective_fields)
+                    deal = await service.update_deal(
+                        resolved_deal_id,
+                        effective_fields,
+                        context=DealWriteContext(
+                            source="agent",
+                            actor_user_id=actor_user_id,
+                            source_label="Agent",
+                            **context.automation_causation(),
+                        ),
+                    )
                     await org_session.commit()
                     return _result(
                         "applied",

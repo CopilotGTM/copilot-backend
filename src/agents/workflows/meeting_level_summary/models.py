@@ -2,23 +2,7 @@
 
 from pydantic import BaseModel, Field
 
-
-class MeetingLevelSummaryAttendee(BaseModel):
-    """Attendee roster entry passed into the meeting-level summary workflow."""
-
-    email: str = Field(..., description="Attendee email address used for identity grounding")
-    name: str | None = Field(
-        None,
-        description="Attendee display name from the calendar provider, if available",
-    )
-    response_status: str = Field(
-        ...,
-        description="Normalized RSVP status such as accepted, tentative, declined, or none",
-    )
-    is_organiser: bool = Field(
-        False,
-        description="Whether this attendee is the organiser of the meeting",
-    )
+from src.agents.workflows.summary.models import SummaryAttendee
 
 
 class MeetingLevelSummaryInput(BaseModel):
@@ -29,7 +13,7 @@ class MeetingLevelSummaryInput(BaseModel):
     title: str | None = Field(None, description="Meeting title from the calendar event")
     start_at: str = Field(..., description="Meeting start timestamp")
     end_at: str = Field(..., description="Meeting end timestamp")
-    attendees: list[MeetingLevelSummaryAttendee] = Field(
+    attendees: list[SummaryAttendee] = Field(
         ...,
         description="Canonical calendar roster used for identity grounding",
     )

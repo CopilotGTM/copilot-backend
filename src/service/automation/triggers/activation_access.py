@@ -1,131 +1,356 @@
-"""Organization-scoped SQL for CRM trigger activation and replay-safe run creation.
-
-Unlike user-facing trigger CRUD, this layer is called by an internal event producer and therefore
-does not accept an authenticated owner. The deal's canonical owner selects candidates, while every
-query still repeats the immutable organization boundary.
-"""
+"""Tenant-scoped candidate, readiness, lineage, and run persistence queries."""
 
 from __future__ import annotations
 
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.domain.models.master_tables import (
+    AdminUserStatus,
+    SupabaseUserStatus,
+    User,
+)
 from src.domain.models.organisation_tables import (
     AgentRun,
     AgentStatus,
-    AutomationTargetType,
     AutomationTrigger,
     AutomationTriggerStatus,
-    AutomationTriggerType,
+    CRMCompany,
+    CRMContact,
+    CRMDeal,
+    CRMDealParticipant,
+    CRMParticipantType,
     UserAgent,
 )
-from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
-from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealMutationEvent
+from src.domain.models.organisation_tables.sync.email_models import Email
+from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
+from src.domain.models.organisation_tables.sync.meeting_intelligence import Meeting
+from src.service.automation.producers.meeting import load_meeting_event_context
+from src.service.automation.triggers.options import AutomationTriggerOptionAccess
 
 
 class TriggerActivationAccess:
-    """Load one CRM source event and idempotently persist its matching agent runs."""
+    """Read current binding readiness and idempotently create tenant runs."""
 
     def __init__(self, session: AsyncSession, organisation_id: UUID) -> None:
         self.session = session
         self.organisation_id = organisation_id
+        self.options = AutomationTriggerOptionAccess(session, organisation_id)
 
-    async def get_crm_event(self, event_id: UUID) -> CRMDealMutationEvent | None:
-        """Load one immutable event without trusting its globally unique identifier alone."""
+    async def list_event_candidates(self, event_key: str) -> list[AutomationTrigger]:
+        """Return active match bindings selected by the event-key GIN projection."""
 
-        columns = cast(Any, CRMDealMutationEvent).__table__.c
-        statement = select(CRMDealMutationEvent).where(
-            columns.organisation_id == self.organisation_id,
-            columns.event_id == event_id,
-        )
-        return (await self.session.execute(statement)).scalars().first()
-
-    async def get_deal(self, deal_id: UUID) -> CRMDeal | None:
-        """Load the current non-deleted deal snapshot inside the source event's organization."""
-
-        columns = cast(Any, CRMDeal).__table__.c
-        statement = select(CRMDeal).where(
-            columns.organisation_id == self.organisation_id,
-            columns.deal_id == deal_id,
-            columns.is_deleted.is_(False),
-        )
-        return (await self.session.execute(statement)).scalars().first()
-
-    async def get_crm_entity(self, entity_type: str, entity_id: UUID) -> Any | None:
-        """Load the owner-bearing source row, including soft-deleted lifecycle-event entities."""
-
-        model_and_id = {
-            "deal": (CRMDeal, "deal_id"),
-            "contact": (CRMContact, "contact_id"),
-            "account": (CRMCompany, "company_id"),
-        }.get(entity_type)
-        if model_and_id is None:
-            return None
-        model, id_name = model_and_id
-        columns = cast(Any, model).__table__.c
-        statement = select(model).where(
-            columns.organisation_id == self.organisation_id,
-            getattr(columns, id_name) == entity_id,
-        )
-        return (await self.session.execute(statement)).scalars().first()
-
-    async def list_crm_event_candidates(
-        self, *, owner_user_id: UUID, source_domain: str, event_type: str
-    ) -> list[AutomationTrigger]:
-        """Return active owner triggers whose mutable target agent is still active."""
-
-        trigger_columns = cast(Any, AutomationTrigger).__table__.c
-        agent_columns = cast(Any, UserAgent).__table__.c
+        columns = cast(Any, AutomationTrigger).__table__.c
         statement = (
             select(AutomationTrigger)
-            .join(
-                UserAgent,
-                agent_columns.agent_id == trigger_columns.target_id,
-            )
             .where(
-                trigger_columns.organisation_id == self.organisation_id,
-                trigger_columns.owner_user_id == owner_user_id,
-                trigger_columns.target_type == AutomationTargetType.AGENT.value,
-                trigger_columns.trigger_type == AutomationTriggerType.EVENT.value,
-                trigger_columns.source_domain == source_domain,
-                trigger_columns.event_type == event_type,
-                trigger_columns.status == AutomationTriggerStatus.ACTIVE.value,
-                agent_columns.organisation_id == self.organisation_id,
-                agent_columns.owner_user_id == owner_user_id,
-                agent_columns.status == AgentStatus.ACTIVE.value,
+                columns.organisation_id == self.organisation_id,
+                columns.family == "event",
+                columns.status == AutomationTriggerStatus.ACTIVE.value,
+                columns.match_event_keys.contains([event_key]),
             )
-            .order_by(trigger_columns.trigger_id)
+            .order_by(columns.trigger_id)
         )
         return list((await self.session.execute(statement)).scalars().all())
 
-    async def insert_run_if_absent(self, run: AgentRun) -> bool:
-        """Insert one run or report a replay without aborting the surrounding CRM transaction."""
+    async def get_direct_candidate(self, trigger_id: UUID) -> AutomationTrigger | None:
+        """Load one active non-match binding for a direct event route."""
 
-        run_table = cast(Any, AgentRun).__table__
-        columns = run_table.c
-        values = {column.name: getattr(run, column.name) for column in run_table.columns}
+        columns = cast(Any, AutomationTrigger).__table__.c
+        statement = select(AutomationTrigger).where(
+            columns.organisation_id == self.organisation_id,
+            columns.trigger_id == trigger_id,
+            columns.family != "event",
+            columns.status == AutomationTriggerStatus.ACTIVE.value,
+        )
+        return (await self.session.execute(statement)).scalars().first()
+
+    async def list_active_agent_ids(self, agent_ids: set[UUID]) -> set[UUID]:
+        """Return executable agent definitions without trusting trigger snapshots."""
+
+        if not agent_ids:
+            return set()
+        columns = cast(Any, UserAgent).__table__.c
+        statement = select(columns.agent_id).where(
+            columns.organisation_id == self.organisation_id,
+            columns.agent_id.in_(agent_ids),
+            columns.status == AgentStatus.ACTIVE.value,
+        )
+        return set((await self.session.execute(statement)).scalars().all())
+
+    async def list_active_user_ids(self, user_ids: set[UUID]) -> set[UUID]:
+        """Return active approved principals that still belong to this tenant."""
+
+        if not user_ids:
+            return set()
+        columns = cast(Any, User).__table__.c
+        statement = select(columns.user_id).where(
+            columns.organisation_id == self.organisation_id,
+            columns.user_id.in_(user_ids),
+            columns.status == SupabaseUserStatus.ACTIVE.value,
+            columns.admin_status == AdminUserStatus.APPROVED.value,
+        )
+        return set((await self.session.execute(statement)).scalars().all())
+
+    async def validate_option_selection(self, source: str, values: set[str]) -> None:
+        """Revalidate saved stable IDs against current tenant metadata."""
+
+        await self.options.validate_option_selection(source, values)
+
+    async def list_subject_participant_user_ids(
+        self,
+        subject_type: str,
+        subject_id: UUID,
+    ) -> set[UUID]:
+        """Resolve current app users related to a supported subject."""
+
+        candidate_ids: set[UUID] = set()
+        candidate_emails: set[str] = set()
+        if subject_type == "deal":
+            columns = cast(Any, CRMDeal).__table__.c
+            deal = (
+                (
+                    await self.session.execute(
+                        select(CRMDeal).where(
+                            columns.organisation_id == self.organisation_id,
+                            columns.deal_id == subject_id,
+                            columns.is_deleted.is_(False),
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if deal is None:
+                return set()
+            candidate_ids.update(
+                value for value in (deal.owner_id, deal.created_by_user_id) if value
+            )
+            if deal.owner_email:
+                candidate_emails.add(deal.owner_email.strip().casefold())
+            participant_columns = cast(Any, CRMDealParticipant).__table__.c
+            participants = (
+                await self.session.execute(
+                    select(
+                        participant_columns.related_local_id,
+                        participant_columns.related_email,
+                    ).where(
+                        participant_columns.organisation_id == self.organisation_id,
+                        participant_columns.deal_id == subject_id,
+                        participant_columns.participant_type == CRMParticipantType.USER.value,
+                        participant_columns.is_deleted.is_(False),
+                    )
+                )
+            ).all()
+            candidate_ids.update(
+                row.related_local_id for row in participants if row.related_local_id
+            )
+            candidate_emails.update(
+                row.related_email.strip().casefold()
+                for row in participants
+                if row.related_email and row.related_email.strip()
+            )
+        elif subject_type in {"contact", "account"}:
+            model = CRMContact if subject_type == "contact" else CRMCompany
+            columns = cast(Any, model).__table__.c
+            identity = columns.contact_id if subject_type == "contact" else columns.company_id
+            subject_record: Any = (
+                (
+                    await self.session.execute(
+                        select(model).where(
+                            columns.organisation_id == self.organisation_id,
+                            identity == subject_id,
+                            columns.is_deleted.is_(False),
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if subject_record is None:
+                return set()
+            if subject_record.owner_id:
+                candidate_ids.add(subject_record.owner_id)
+            if subject_record.owner_email:
+                candidate_emails.add(subject_record.owner_email.strip().casefold())
+        elif subject_type == "email":
+            email_columns = cast(Any, Email).__table__.c
+            email = (
+                (
+                    await self.session.execute(
+                        select(Email).where(
+                            email_columns.organisation_id == self.organisation_id,
+                            email_columns.email_id == subject_id,
+                            email_columns.is_deleted.is_(False),
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if email is None:
+                return set()
+            candidate_emails.update(
+                value.strip().casefold()
+                for value in (
+                    email.from_email,
+                    *email.to_emails,
+                    *email.cc_emails,
+                    *email.bcc_emails,
+                )
+                if value and value.strip()
+            )
+            integration_columns = cast(Any, KnowledgeIntegration).__table__.c
+            integration = (
+                (
+                    await self.session.execute(
+                        select(KnowledgeIntegration).where(
+                            integration_columns.organisation_id == self.organisation_id,
+                            integration_columns.integration_id == email.integration_id,
+                            integration_columns.is_active.is_(True),
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if integration:
+                candidate_ids.add(integration.created_by_user_id)
+        elif subject_type == "meeting":
+            meeting_columns = cast(Any, Meeting).__table__.c
+            meeting = (
+                (
+                    await self.session.execute(
+                        select(Meeting).where(
+                            meeting_columns.organisation_id == self.organisation_id,
+                            meeting_columns.meeting_id == subject_id,
+                            meeting_columns.is_deleted.is_(False),
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if meeting is None:
+                return set()
+            context = await load_meeting_event_context(
+                self.session,
+                self.organisation_id,
+                meeting,
+            )
+            return set(context.attendee_ids) | ({context.owner_id} if context.owner_id else set())
+        else:
+            return set()
+
+        if not candidate_ids and not candidate_emails:
+            return set()
+        user_columns = cast(Any, User).__table__.c
+        identities = []
+        if candidate_ids:
+            identities.append(user_columns.user_id.in_(candidate_ids))
+        if candidate_emails:
+            identities.append(func.lower(func.trim(user_columns.email)).in_(candidate_emails))
+        statement = select(user_columns.user_id).where(
+            user_columns.organisation_id == self.organisation_id,
+            user_columns.status == SupabaseUserStatus.ACTIVE.value,
+            user_columns.admin_status == AdminUserStatus.APPROVED.value,
+            or_(*identities),
+        )
+        return set((await self.session.execute(statement)).scalars().all())
+
+    async def pause_invalid_trigger(
+        self,
+        trigger_id: UUID,
+        *,
+        error_code: str,
+        message: str,
+    ) -> bool:
+        """Pause an active binding whose persisted contract no longer validates."""
+
+        columns = cast(Any, AutomationTrigger).__table__.c
+        statement = (
+            update(AutomationTrigger)
+            .where(
+                columns.organisation_id == self.organisation_id,
+                columns.trigger_id == trigger_id,
+                columns.status == AutomationTriggerStatus.ACTIVE.value,
+            )
+            .values(
+                status=AutomationTriggerStatus.PAUSED.value,
+                last_error_code=error_code,
+                last_error=message,
+                updated_at=func.now(),
+            )
+        )
+        result = await self.session.execute(statement)
+        return bool(getattr(result, "rowcount", 0))
+
+    async def list_causation_trigger_ids(self, caused_by_run_id: UUID | None) -> set[UUID]:
+        """Return trigger IDs in the bounded parent-run chain for loop prevention."""
+
+        if caused_by_run_id is None:
+            return set()
+        table = cast(Any, AgentRun).__table__
+        columns = table.c
+        lineage = (
+            select(
+                columns.run_id,
+                columns.trigger_id,
+                columns.caused_by_run_id,
+                literal(0).label("lineage_depth"),
+            )
+            .where(
+                columns.organisation_id == self.organisation_id,
+                columns.run_id == caused_by_run_id,
+            )
+            .cte("run_lineage", recursive=True)
+        )
+        parent = table.alias("parent_run")
+        lineage = lineage.union_all(
+            select(
+                parent.c.run_id,
+                parent.c.trigger_id,
+                parent.c.caused_by_run_id,
+                (lineage.c.lineage_depth + 1).label("lineage_depth"),
+            ).where(
+                parent.c.organisation_id == self.organisation_id,
+                parent.c.run_id == lineage.c.caused_by_run_id,
+                lineage.c.lineage_depth < 3,
+            )
+        )
+        statement = select(lineage.c.trigger_id)
+        return set((await self.session.execute(statement)).scalars().all())
+
+    async def insert_run_if_absent(self, run: AgentRun) -> bool:
+        """Insert one trigger/event decision or report an idempotent replay."""
+
+        table = cast(Any, AgentRun).__table__
+        columns = table.c
+        values = {column.name: getattr(run, column.name) for column in table.columns}
         statement = (
             insert(AgentRun)
             .values(values)
             .on_conflict_do_nothing(
-                index_elements=[columns.organisation_id, columns.idempotency_key],
-                index_where=columns.idempotency_key.is_not(None),
+                index_elements=[
+                    columns.organisation_id,
+                    columns.trigger_id,
+                    columns.event_id,
+                ]
             )
             .returning(columns.run_id)
         )
-        inserted_run_id = (await self.session.execute(statement)).scalar_one_or_none()
-        return inserted_run_id is not None
+        return (await self.session.execute(statement)).scalar_one_or_none() is not None
 
-    async def get_run_by_idempotency_key(self, idempotency_key: str) -> AgentRun | None:
-        """Return the run created by an earlier delivery of the same source occurrence."""
+    async def get_run(self, *, trigger_id: UUID, event_id: UUID) -> AgentRun | None:
+        """Resolve the run created by an earlier delivery of this decision."""
 
         columns = cast(Any, AgentRun).__table__.c
         statement = select(AgentRun).where(
             columns.organisation_id == self.organisation_id,
-            columns.idempotency_key == idempotency_key,
+            columns.trigger_id == trigger_id,
+            columns.event_id == event_id,
         )
         return (await self.session.execute(statement)).scalars().first()

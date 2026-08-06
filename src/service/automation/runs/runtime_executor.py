@@ -22,6 +22,10 @@ from src.agents.workflows.user_configured.agent import UserConfiguredAgent
 from src.service.automation.triggers.runtime import AgentRunRuntimeEnvelope
 
 
+class RuntimeAuthorityError(ValueError):
+    """The current tenant, principal, target, or subject no longer permits execution."""
+
+
 @dataclass(frozen=True)
 class AgentExecutionResult:
     """Normalized model output and usage metadata persisted on `AgentRun`."""
@@ -110,15 +114,15 @@ class AgentRunExecutor:
         # These comparisons protect the immutable tenant, user, and deal
         # boundaries before any selected tool receives the context.
         if context.organisation_id != envelope.organisation_id:
-            raise ValueError("context organisation does not match agent run")
-        if context.user_id != envelope.owner_user_id:
-            raise ValueError("context user does not match agent run")
+            raise RuntimeAuthorityError("context organisation does not match agent run")
+        if context.user_id != envelope.principal_user_id:
+            raise RuntimeAuthorityError("context user does not match agent run")
         if context.subject_type != envelope.subject_type:
-            raise ValueError("context subject type does not match agent run")
+            raise RuntimeAuthorityError("context subject type does not match agent run")
         if context.subject_id != envelope.subject_id:
-            raise ValueError("context subject id does not match agent run")
+            raise RuntimeAuthorityError("context subject id does not match agent run")
         if context.deal_id != envelope.deal_id:
-            raise ValueError("context deal does not match agent run")
+            raise RuntimeAuthorityError("context deal does not match agent run")
 
     @staticmethod
     def _normalize_output(

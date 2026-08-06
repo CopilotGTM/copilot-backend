@@ -39,6 +39,22 @@ class ChatWorkerConfig(BaseWorkerConfig):
                 "queue": "chat_processing",
                 "routing_key": "chat_processing",
             },
+            "chat.recover_automation_events_all_orgs": {
+                "queue": "chat_processing",
+                "routing_key": "chat_processing",
+            },
+            "chat.recover_automation_events_org": {
+                "queue": "chat_processing",
+                "routing_key": "chat_processing",
+            },
+            "chat.dispatch_due_automation_schedules_all_orgs": {
+                "queue": "chat_processing",
+                "routing_key": "chat_processing",
+            },
+            "chat.dispatch_due_automation_schedules_org": {
+                "queue": "chat_processing",
+                "routing_key": "chat_processing",
+            },
             "chat.execute_agent_run": {
                 "queue": "chat_messages",
                 "routing_key": "chat_messages",
@@ -94,6 +110,22 @@ class ChatWorkerConfig(BaseWorkerConfig):
 
         # Beat schedule — periodic tasks run by the scheduler
         self.beat_schedule = {
+            "recover-automation-events": {
+                "task": "chat.recover_automation_events_all_orgs",
+                "schedule": 60.0,
+                "options": {
+                    "queue": "chat_processing",
+                    "routing_key": "chat_processing",
+                },
+            },
+            "dispatch-due-automation-schedules": {
+                "task": "chat.dispatch_due_automation_schedules_all_orgs",
+                "schedule": 60.0,
+                "options": {
+                    "queue": "chat_processing",
+                    "routing_key": "chat_processing",
+                },
+            },
             "recover-agent-runs": {
                 "task": "chat.recover_agent_runs",
                 "schedule": 30.0,

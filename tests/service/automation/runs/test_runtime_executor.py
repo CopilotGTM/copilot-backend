@@ -19,18 +19,25 @@ from src.service.automation.triggers.runtime import AgentRunRuntimeEnvelope
 def envelope() -> AgentRunRuntimeEnvelope:
     """Build one internally consistent claimed-run snapshot for executor tests."""
 
+    principal_id = uuid4()
     return AgentRunRuntimeEnvelope(
         run_id=uuid4(),
         attempt_number=1,
         worker_id="agent-worker-1",
         organisation_id=uuid4(),
-        owner_user_id=uuid4(),
+        execution_principal_type="user",
+        execution_principal_id=principal_id,
+        principal_user_id=principal_id,
+        audience_mode="principal",
+        audience_config={},
         agent_id=uuid4(),
         agent_revision=2,
         trigger_id=uuid4(),
-        source_domain="crm",
-        event_type="crm.deal.stage_changed",
-        source_event_id=str(uuid4()),
+        event_id=uuid4(),
+        event_key="crm.deal.updated",
+        correlation_id="request-123",
+        caused_by_run_id=None,
+        causation_depth=0,
         subject_type="deal",
         subject_id=str(uuid4()),
         deal_id=uuid4(),
@@ -93,7 +100,7 @@ async def test_executor_passes_pinned_snapshot_to_user_configured_agent() -> Non
         deal_id=item.deal_id,
         subject_type=item.subject_type,
         subject_id=item.subject_id,
-        user_id=item.owner_user_id,
+        user_id=item.principal_user_id,
     )
 
     result = await runtime.execute(item, context=context)
@@ -123,7 +130,7 @@ async def test_executor_rejects_context_outside_pinned_org_boundary() -> None:
         deal_id=item.deal_id,
         subject_type=item.subject_type,
         subject_id=item.subject_id,
-        user_id=item.owner_user_id,
+        user_id=item.principal_user_id,
     )
 
     with pytest.raises(ValueError, match="organisation"):
@@ -161,7 +168,7 @@ async def test_executor_validates_json_output_against_pinned_schema() -> None:
         deal_id=item.deal_id,
         subject_type=item.subject_type,
         subject_id=item.subject_id,
-        user_id=item.owner_user_id,
+        user_id=item.principal_user_id,
     )
 
     result = await runtime.execute(item, context=context)
@@ -179,7 +186,6 @@ async def test_executor_runs_contact_subject_without_deal() -> None:
         subject_type="contact",
         subject_id=str(contact_id),
         deal_id=None,
-        event_type="crm.contact.created",
         allowed_tools=(),
         allowed_skills=(),
         input_snapshot={"subject": {"type": "contact", "id": str(contact_id)}},
@@ -189,7 +195,7 @@ async def test_executor_runs_contact_subject_without_deal() -> None:
         organisation_id=item.organisation_id,
         subject_type="contact",
         subject_id=str(contact_id),
-        user_id=item.owner_user_id,
+        user_id=item.principal_user_id,
     )
 
     result = await runtime.execute(item, context=context)

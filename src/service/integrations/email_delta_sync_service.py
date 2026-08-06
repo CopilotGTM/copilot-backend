@@ -960,12 +960,14 @@ class EmailDeltaSyncService:
                         integration=integration,
                         messages=messages_data,
                         provider=sync_data.provider,
+                        source_mode="initial_sync",
                     )
                 else:
                     sync_result = await email_service.sync_messages_incremental(
                         integration=integration,
                         messages=messages_data,
                         provider=sync_data.provider,
+                        source_mode="incremental_sync",
                     )
                 messages_synced = sync_result.get("records_processed", 0)
                 changed_email_ids = list(sync_result.get("changed_email_ids", []))

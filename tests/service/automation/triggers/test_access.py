@@ -12,44 +12,58 @@ from src.service.automation.triggers.access import AutomationTriggerAccess
 
 
 class ScalarRows:
+    """Represent the Scalar Rows test double used by the surrounding regression cases."""
+
     def all(self) -> list[Any]:
+        """Build the all fixture used by the surrounding regression cases."""
         return []
 
     def first(self) -> None:
+        """Build the first fixture used by the surrounding regression cases."""
         return None
 
 
 class Result:
+    """Represent the Result test double used by the surrounding regression cases."""
+
     def scalars(self) -> ScalarRows:
+        """Expose the scalars operation expected by the Result test double."""
         return ScalarRows()
 
 
 class RecordingSession:
+    """Represent the Recording Session test double used by the surrounding regression cases."""
+
     def __init__(self) -> None:
         self.statements: list[Any] = []
 
     async def scalar(self, statement: Any) -> int:
+        """Expose the scalar operation expected by the Recording Session test double."""
         self.statements.append(statement)
         return 0
 
     async def execute(self, statement: Any) -> Result:
+        """Expose the execute operation expected by the Recording Session test double."""
         self.statements.append(statement)
         return Result()
 
 
 def sql(statement: Any) -> str:
+    """Build the sql fixture used by the surrounding regression cases."""
     return " ".join(str(statement.compile(dialect=postgresql.dialect())).lower().split())
 
 
 def assert_trigger_boundary(statement_sql: str) -> None:
+    """Build the assert trigger boundary fixture used by the surrounding regression cases."""
     assert "automation_triggers.organisation_id" in statement_sql
-    assert "automation_triggers.owner_user_id" in statement_sql
+    assert "automation_triggers.created_by_user_id" in statement_sql
     assert "automation_triggers.target_type" in statement_sql
     assert "automation_triggers.target_id" in statement_sql
 
 
 @pytest.mark.asyncio
 async def test_list_and_get_repeat_owner_target_and_archive_boundaries() -> None:
+    """Verify the contract that list and get repeat owner target and archive boundaries."""
     session = RecordingSession()
     access = AutomationTriggerAccess(session, uuid4(), uuid4())  # type: ignore[arg-type]
     agent_id = uuid4()
@@ -65,6 +79,7 @@ async def test_list_and_get_repeat_owner_target_and_archive_boundaries() -> None
 
 @pytest.mark.asyncio
 async def test_replace_and_archive_are_conditional_updates_never_deletes() -> None:
+    """Verify the contract that replace and archive are conditional updates never deletes."""
     session = RecordingSession()
     access = AutomationTriggerAccess(session, uuid4(), uuid4())  # type: ignore[arg-type]
     agent_id, trigger_id = uuid4(), uuid4()
@@ -87,3 +102,25 @@ async def test_replace_and_archive_are_conditional_updates_never_deletes() -> No
         assert "automation_triggers.status !=" in statement_sql
         assert "returning" in statement_sql
         assert "delete from" not in statement_sql
+
+
+@pytest.mark.asyncio
+async def test_admin_can_manage_shared_organisation_bindings_and_targets() -> None:
+    """Verify the contract that admin can manage shared organisation bindings and targets."""
+    session = RecordingSession()
+    access = AutomationTriggerAccess(  # type: ignore[arg-type]
+        session,
+        uuid4(),
+        uuid4(),
+        is_admin=True,
+    )
+
+    await access.get_agent(uuid4())
+    await access.get_trigger(uuid4(), uuid4())
+
+    agent_sql = sql(session.statements[0].whereclause)
+    trigger_sql = sql(session.statements[1])
+    assert "user_agents.owner_user_id" not in agent_sql
+    assert "automation_triggers.created_by_user_id" in trigger_sql
+    assert "automation_triggers.execution_principal_type" in trigger_sql
+    assert " or " in trigger_sql

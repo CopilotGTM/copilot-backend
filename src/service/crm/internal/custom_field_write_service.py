@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import and_, func, select, update
@@ -53,6 +53,10 @@ from src.domain.models.organisation_tables.sync.crm.custom_fields import (
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.domain.models.organisation_tables.sync.crm.leads import CRMLead
 from src.infra.utils.logger import get_logger
+from src.service.automation.triggers.crm_schema import custom_field_type
+from src.service.automation.triggers.service import (
+    AutomationTriggerSchemaReconciliationService,
+)
 from src.service.crm.mutations.contracts import CRMMutationContext, CRMMutationRecordCommand
 from src.service.crm.mutations.event_service import CRMMutationEventService
 from src.service.crm.mutations.json_safe import changed_field
@@ -108,13 +112,24 @@ class CustomFieldWriteService:
     side-effect-free and never commit.
     """
 
-    def __init__(self, session: AsyncSession, organisation_id: UUID, user_id: UUID):
+    def __init__(
+        self,
+        session: AsyncSession,
+        organisation_id: UUID,
+        user_id: UUID,
+        *,
+        automation_reconciler: AutomationTriggerSchemaReconciliationService | None = None,
+    ):
         self.session = session
         self.organisation_id = organisation_id
         self.user_id = user_id
         self._mutation_events = CRMMutationEventService(session, organisation_id)
+        self._automation_reconciler = automation_reconciler or (
+            AutomationTriggerSchemaReconciliationService(session, organisation_id)
+        )
 
     async def close(self) -> None:
+        """Close the Custom Field Write Service record while preserving its audit and lifecycle state."""
         try:
             await self.session.close()
         except Exception:
@@ -159,11 +174,14 @@ class CustomFieldWriteService:
         return await self._load_field(field_id)
 
     async def count_deal_usage_by_field_key(self, keys: list[str]) -> dict[str, int]:
+        """Apply the count deal usage by field key contract for this organisation-scoped module."""
         if not keys:
             return {}
 
+        field_columns = cast(Any, CRMCustomFieldDefinition).__table__.c
+        deal_columns = cast(Any, CRMDeal).__table__.c
         stmt = (
-            select(CRMCustomFieldDefinition.key, func.count(CRMDeal.deal_id))
+            select(field_columns.key, func.count(deal_columns.deal_id))
             .select_from(CRMCustomFieldDefinition)
             .outerjoin(
                 CRMDeal,
@@ -180,7 +198,7 @@ class CustomFieldWriteService:
                 col(CRMCustomFieldDefinition.is_deleted).is_(False),
                 col(CRMCustomFieldDefinition.key).in_(keys),
             )
-            .group_by(CRMCustomFieldDefinition.key)
+            .group_by(field_columns.key)
         )
         result = await self.session.execute(stmt)
         return {key: int(count or 0) for key, count in result.all()}
@@ -271,6 +289,8 @@ class CustomFieldWriteService:
             )
 
         before = self._field_snapshot(field)
+        was_active = bool(field.is_active)
+        previous_automation_type = custom_field_type(field)
 
         # Only mutate fields the caller actually sent — exclude_unset matters
         # so that None values from the schema don't blank out existing data.
@@ -306,6 +326,12 @@ class CustomFieldWriteService:
         field.updated_at = utcnow()
         self.session.add(field)
         await self.session.flush()
+        if (
+            CRMCustomFieldEntity(field.entity_type) == CRMCustomFieldEntity.DEAL
+            and was_active
+            and (not field.is_active or previous_automation_type != custom_field_type(field))
+        ):
+            await self._automation_reconciler.reconcile_custom_field_changes({field.key})
         await self._record_settings_event(
             entity_id=field.field_id,
             operation="custom_field.update",
@@ -378,7 +404,8 @@ class CustomFieldWriteService:
                 status_code=409,
             )
 
-        if CRMCustomFieldEntity(field.entity_type) == CRMCustomFieldEntity.DEAL:
+        entity = CRMCustomFieldEntity(field.entity_type)
+        if entity == CRMCustomFieldEntity.DEAL:
             deal_count = await self._count_deals_using_field(field.key)
             if deal_count > 0:
                 raise CustomFieldWriteServiceError(
@@ -393,6 +420,8 @@ class CustomFieldWriteService:
         field.is_active = False
         self.session.add(field)
         await self.session.flush()
+        if entity == CRMCustomFieldEntity.DEAL:
+            await self._automation_reconciler.reconcile_custom_field_changes({field.key})
         await self._record_settings_event(
             entity_id=field.field_id,
             operation="custom_field.delete",
@@ -408,6 +437,7 @@ class CustomFieldWriteService:
     async def restore_field(
         self, field_id: UUID, *, if_updated_at: datetime
     ) -> CRMCustomFieldDefinition:
+        """Apply the restore field contract for this organisation-scoped module."""
         field = await self._load_field(field_id)
         if not _same_timestamp(field.updated_at, if_updated_at):
             raise CustomFieldWriteServiceError(
@@ -441,6 +471,7 @@ class CustomFieldWriteService:
         return field
 
     async def clear_field_values(self, field_id: UUID) -> int:
+        """Apply the clear field values contract for this organisation-scoped module."""
         field = await self._load_field(field_id)
         if field.is_predefined:
             raise CustomFieldWriteServiceError(
@@ -454,6 +485,7 @@ class CustomFieldWriteService:
             )
 
         entity = CRMCustomFieldEntity(field.entity_type)
+        model: Any
         if entity == CRMCustomFieldEntity.LEAD:
             usage_count = await self._count_leads_using_field(field.key)
             model = CRMLead

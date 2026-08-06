@@ -267,6 +267,7 @@ async def create_contact_direct(
                         actor_name=_actor_name(context),
                         actor_email=context.user_email,
                         created_via="chat_tool",
+                        **context.automation_causation(),
                     ),
                 )
                 contact = contact_result.contact

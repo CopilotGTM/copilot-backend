@@ -9,7 +9,7 @@ task via DealJobs records. See DealMeetingSummaryPipelineService for automated f
 Task follows fresh session pattern:
 - Phase 1: Load job context (fresh session)
 - Phase 2: Call service (service manages its own sessions)
-- Phase 3: Save result (fresh session)
+- Phase 3: Persist the result, dispatch downstream work, then complete the job
 """
 
 from __future__ import annotations
@@ -17,8 +17,14 @@ from __future__ import annotations
 from uuid import UUID
 
 from celery import Task
+from sqlalchemy import select
+from sqlmodel import col
 
 from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
+from src.domain.models.organisation_tables.sync.calendar import (
+    AssociationStatus,
+    CalendarEventDealAssociation,
+)
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
@@ -49,9 +55,9 @@ def _should_dispatch_insight_pipeline_after_summary(
 ) -> bool:
     """Decide whether this summary task owns downstream deal insight dispatch.
 
-    Scheduled deal-summary chains already wire the insight pipeline themselves.
-    Recall webhook jobs bypass that chain, so deal-linked webhook summaries must
-    dispatch insights here; non-deal jobs pass `skip_insight_pipeline`.
+    Scheduled deal-summary chains already own their initiating deal. Recall and
+    manual jobs bypass that chain, so this task fans their canonical result out
+    to every active deal association unless the job explicitly opts out.
     """
     if bool(job_metadata.get("skip_insight_pipeline")):
         return False
@@ -121,6 +127,51 @@ async def _dispatch_insight_pipeline_for_manual_summary(
         # Summary data is already durable at this point. Propagate so Celery
         # retries dispatch instead of leaving task automation silently stranded.
         raise
+
+
+async def _dispatch_event_deal_insight_pipelines(
+    organisation_id: UUID,
+    event_id: UUID,
+    summary_job_id: UUID,
+    *,
+    source: str,
+    exclude_deal_id: UUID | None,
+) -> None:
+    """Dispatch downstream insight work for every active deal link.
+
+    Scheduled pipelines exclude the deal whose existing Celery chain already
+    owns downstream work. Recall and manual sources pass no exclusion and fan
+    out to every association after the one canonical summary is durable.
+    """
+    associations: list[tuple[UUID, UUID]] = []
+    async for session in acquire_org_async_session(organisation_id):
+        # Event ID can originate from a queued job, so organisation remains the
+        # tenant boundary. Release the session before broker-backed dispatch.
+        stmt = (
+            select(
+                col(CalendarEventDealAssociation.deal_id),
+                col(CalendarEventDealAssociation.association_id),
+            )
+            .where(
+                col(CalendarEventDealAssociation.organisation_id) == organisation_id,
+                col(CalendarEventDealAssociation.event_id) == event_id,
+                col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE,
+            )
+            .order_by(col(CalendarEventDealAssociation.deal_id))
+        )
+        associations = [tuple(row) for row in (await session.execute(stmt)).all()]
+
+    for deal_id, association_id in associations:
+        if deal_id == exclude_deal_id:
+            continue
+        await _dispatch_insight_pipeline_for_manual_summary(
+            organisation_id,
+            deal_id,
+            event_id=event_id,
+            association_id=association_id,
+            summary_job_id=summary_job_id,
+            source=source,
+        )
 
 
 async def _dispatch_summary_ready_notification(
@@ -197,7 +248,7 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
     Follows fresh session pattern:
     - Phase 1: Load job, verify type, mark IN_PROGRESS (fresh session)
     - Phase 2: Call MeetingSummaryService (service manages its own sessions)
-    - Phase 3: Save result (fresh session)
+    - Phase 3: Persist the result, dispatch downstream work, and mark completion
 
     Args:
         organisation_id: The organisation ID (as string for JSON serialization)
@@ -215,22 +266,11 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
         },
     )
 
-    lock_key = f"task_lock:meeting_summary_job:{job_id}"
-    # The job row is durable, but duplicate Celery messages can still arrive.
-    # The lock keeps the expensive LLM call single-flight for this job id.
-    if not acquire_task_lock(lock_key, ttl=700):
-        logger.info(
-            "Meeting summary job already running, skipping",
-            extra={
-                "event": "meeting_summary_job_skipped",
-                "organisation_id": str(organisation_id),
-                "job_id": str(job_id),
-                "failure_reason": "already_running",
-            },
-        )
-        return {"status": "skipped", "reason": "already_running"}
+    lock_key: str | None = None
+    lock_acquired = False
 
     async def _run():
+        nonlocal lock_acquired, lock_key
         org_uuid = UUID(organisation_id)
         job_uuid = UUID(job_id)
 
@@ -241,6 +281,7 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
         job_type_str: str
         user_id: UUID
         job_metadata: dict
+        stored_result: dict | None
 
         async for session in acquire_org_async_session(org_uuid):
             # Load only the durable job context here, then release the session before
@@ -256,12 +297,37 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
             # Extract values before closing session
             if not job.event_id:
                 raise NonRetryableJobError("Meeting summary requires event_id", "invalid_data")
+            if job.status == JobStatus.COMPLETED:
+                return {
+                    "status": "completed",
+                    "job_id": job_id,
+                    "job_type": str(DealJobType.MEETING_SUMMARY),
+                }
 
             deal_id = job.deal_id
             event_id = job.event_id
             job_type_str = str(job.job_type)
             user_id = job.user_id
             job_metadata = job.job_metadata or {}
+            stored_result = job.result_data
+
+            # Every source can create a differently scoped DealJobs row, but
+            # the expensive output belongs to the event. This is the final
+            # single-flight boundary if legacy duplicate rows reach the queue.
+            lock_key = f"task_lock:meeting_summary_event:{org_uuid}:{event_id}"
+            if not acquire_task_lock(lock_key, ttl=700):
+                logger.info(
+                    "Meeting summary event already running, skipping",
+                    extra={
+                        "event": "meeting_summary_job_skipped",
+                        "organisation_id": str(org_uuid),
+                        "job_id": str(job_uuid),
+                        "event_id": str(event_id),
+                        "failure_reason": "already_running",
+                    },
+                )
+                return {"status": "skipped", "reason": "already_running"}
+            lock_acquired = True
 
             # Mark as IN_PROGRESS
             job.status = JobStatus.IN_PROGRESS
@@ -297,23 +363,23 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
             publisher=publisher,
         )
         try:
-            logger.info(
-                "Generating meeting summary",
-                extra={
-                    "event": "meeting_summary_generating",
-                    "organisation_id": str(org_uuid),
-                    "job_id": str(job_uuid),
-                    "deal_id": str(deal_id) if deal_id else None,
-                    "event_id": str(event_id),
-                    "automated": is_automated,
-                },
-            )
-            if deal_id:
-                result = await service.generate()
-            else:
-                # Non-deal Recall meetings still get a summary, but the result is
-                # stored on Meeting and must not trigger any deal insight pipeline.
+            if stored_result is None:
+                logger.info(
+                    "Generating meeting summary",
+                    extra={
+                        "event": "meeting_summary_generating",
+                        "organisation_id": str(org_uuid),
+                        "job_id": str(job_uuid),
+                        "deal_id": str(deal_id) if deal_id else None,
+                        "event_id": str(event_id),
+                        "automated": is_automated,
+                    },
+                )
+                # Deal linkage controls SSE and downstream fanout, not summary
+                # content. One subject-centric artifact is shared by all links.
                 result = await service.generate_meeting_level_summary()
+            else:
+                result = stored_result
 
         except NonRetryableJobError as e:
             logger.info(
@@ -373,12 +439,12 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
                 publisher.publish_finalize("error")
             raise
 
-        # Phase 3: Save result and costing (fresh session)
-        token_usage = service.last_token_usage
+        # Persist the expensive artifact before broker-backed fanout. A retry can
+        # reuse it while the job stays IN_PROGRESS until downstream dispatch succeeds.
+        token_usage = service.last_token_usage if stored_result is None else None
         async for session in acquire_org_async_session(org_uuid):
             job = await session.get(DealJobs, job_uuid)
             if job:
-                job.status = JobStatus.COMPLETED
                 job.result_data = result
                 if token_usage:
                     job.token_usage = token_usage.to_dict()
@@ -393,6 +459,41 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
 
         if publisher:
             publisher.publish_result(result)
+
+        if _should_dispatch_summary_ready_notification(job_metadata):
+            await _dispatch_summary_ready_notification(org_uuid, deal_id, event_id, job_uuid)
+
+        # Recall/manual jobs own the full event fanout. Scheduled chains already
+        # own their initiating deal, so the worker dispatches only the other links.
+        if _should_dispatch_insight_pipeline_after_summary(user_id, job_metadata):
+            fanout_source = (
+                "recall_webhook"
+                if job_metadata.get("source") == "recall_webhook"
+                else "transcript_upload"
+            )
+            await _dispatch_event_deal_insight_pipelines(
+                org_uuid,
+                event_id,
+                job_uuid,
+                source=fanout_source,
+                exclude_deal_id=None,
+            )
+        elif job_metadata.get("source") == "automated_pipeline" and deal_id:
+            await _dispatch_event_deal_insight_pipelines(
+                org_uuid,
+                event_id,
+                job_uuid,
+                source="automated_pipeline",
+                exclude_deal_id=deal_id,
+            )
+
+        async for session in acquire_org_async_session(org_uuid):
+            job = await session.get(DealJobs, job_uuid)
+            if job:
+                job.status = JobStatus.COMPLETED
+                await session.commit()
+
+        if publisher:
             publisher.publish_finalize("done")
 
         logger.info(
@@ -406,37 +507,6 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
                 "automated": is_automated,
             },
         )
-
-        if _should_dispatch_summary_ready_notification(job_metadata):
-            await _dispatch_summary_ready_notification(org_uuid, deal_id, event_id, job_uuid)
-
-        # Recall webhook jobs bypass the old process_deal_pipeline chain, so this
-        # summary task must continue the downstream insight pipeline for that source.
-        if deal_id and _should_dispatch_insight_pipeline_after_summary(user_id, job_metadata):
-            source = (
-                "recall_webhook"
-                if job_metadata.get("source") == "recall_webhook"
-                else "transcript_upload"
-            )
-            association_id = None
-            raw_association_id = job_metadata.get("association_id")
-            if raw_association_id:
-                try:
-                    association_id = UUID(str(raw_association_id))
-                except ValueError:
-                    logger.warning(
-                        "Ignoring invalid meeting association id %s for summary job %s",
-                        raw_association_id,
-                        job_uuid,
-                    )
-            await _dispatch_insight_pipeline_for_manual_summary(
-                org_uuid,
-                deal_id,
-                event_id=event_id,
-                association_id=association_id,
-                summary_job_id=job_uuid,
-                source=source,
-            )
 
         return {
             "status": "completed",
@@ -471,4 +541,5 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
         )
         raise self.retry(exc=e, countdown=60 * (2**self.request.retries)) from e
     finally:
-        release_task_lock(lock_key)
+        if lock_acquired and lock_key:
+            release_task_lock(lock_key)

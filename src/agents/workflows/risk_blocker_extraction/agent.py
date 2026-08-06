@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import TYPE_CHECKING
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from agno.agent import Agent
 from agno.models.azure.openai_chat import AzureOpenAI
@@ -41,6 +41,10 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# Bump this code-owned identity whenever the extraction or lifecycle prompt changes
+# in a way that can change persisted risk/blocker inference.
+RISK_BLOCKER_PROMPT_VERSION = "risk-blocker-extraction-v1"
+
 
 class RiskBlockerExtractionAgent:
     """Agent for extracting risks and blockers from deal communications.
@@ -62,6 +66,7 @@ class RiskBlockerExtractionAgent:
         publisher: DealJobRedisPublisher | None = None,
         org_name: str | None = None,
         organisation_profile: str | None = None,
+        inference_run_id: UUID | None = None,
     ):
         """Initialize the agent with organisation and deal context.
 
@@ -83,6 +88,11 @@ class RiskBlockerExtractionAgent:
         self.publisher = publisher
         self.last_token_usage: TokenUsageData | None = None
 
+        config = agent_config.get_config("risk_blocker_extraction_agent")
+        self.model_name = config.model
+        self.prompt_version = RISK_BLOCKER_PROMPT_VERSION
+        self.inference_run_id = inference_run_id or uuid4()
+
         # Build context for tools (no session - tools acquire on-demand)
         # SECURITY: Both organisation_id and deal_id are immutable in context
         self.context = AgentContext(
@@ -90,15 +100,22 @@ class RiskBlockerExtractionAgent:
             deal_id=deal_id,
             org_name=org_name or "Our Organization",
             organisation_profile=organisation_profile,
+            metadata={
+                "source": "ai_extraction",
+                "automation_model_name": self.model_name,
+                "automation_prompt_version": self.prompt_version,
+                "automation_inference_run_id": str(self.inference_run_id),
+                "automation_correlation_id": str(self.inference_run_id),
+                "automation_causation_depth": 0,
+            },
         )
 
-        # Get tools for this agent
+        # Resolve tools through the central registry so every tool inherits the
+        # immutable organisation/deal context owned by this agent.
         tools = self._get_tools()
 
-        # Get model config
-        config = agent_config.get_config("risk_blocker_extraction_agent")
-
-        # Create agent with tools
+        # Keep the configured model and provenance metadata on the agent that
+        # performs extraction; downstream writes use the same inference identity.
         self.agent = Agent(
             model=AzureOpenAI(
                 id=config.model,
@@ -125,7 +142,8 @@ class RiskBlockerExtractionAgent:
 
         Tools are defined in AGENT_TOOLS["RiskBlockerExtractionAgent"] in registry.py.
         """
-        # Get tools from central registry (no capabilities - not streaming to chat)
+        # Extraction tools do not need chat capabilities, so the registry can
+        # build them with a no-op capability provider while preserving context.
         return get_tools_for_agent("RiskBlockerExtractionAgent", self.context, lambda: None)
 
     def _publish_progress(self, message: str, step: str, progress: float) -> None:
@@ -150,6 +168,7 @@ class RiskBlockerExtractionAgent:
             f"Analyze deal {self.deal_id} for risks and blockers. Follow the steps exactly:\n"
             "1. Read the deal memory first — this is your primary context.\n"
             "2. Read ALL existing risks/blockers (include dismissed). For each: leave it as-is if still valid, update it if the assessment changed but it is still active, resolve it if the issue was real and later got addressed, and dismiss it if current evidence shows it should no longer be tracked as an active issue. Take action via tools.\n"
+            "2a. Every lifecycle tool call must include the exact source_record_id returned by a source tool as evidence_id and your confidence from 0 to 1.\n"
             "3. For any technical concerns, search internal knowledge to verify if they are actual gaps.\n"
             "4. Only drill into specific transcripts/emails if you need a direct quote or to verify an ambiguous signal.\n"
             "4a. When a tool returns source_record_id, copy that exact value into the new item.\n"
@@ -180,11 +199,20 @@ class RiskBlockerExtractionAgent:
                 self.deal_id,
                 str(content),
             )
-            return RiskBlockerExtractionResult()
+            return RiskBlockerExtractionResult(
+                items=[],
+                sources_analyzed=[],
+                total_risks=0,
+                total_blockers=0,
+                new_items_count=0,
+                duplicate_items_count=0,
+                analysis_summary="",
+            )
 
         result = content
 
-        # Update counts
+        # Derive aggregate counts from the returned items rather than trusting
+        # model-supplied totals, so the result reflects the records we will write.
         result.total_risks = sum(1 for i in result.items if i.item_type.value == "RISK")
         result.total_blockers = sum(1 for i in result.items if i.item_type.value == "BLOCKER")
         result.new_items_count = sum(1 for i in result.items if not i.is_duplicate)

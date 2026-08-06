@@ -1,3 +1,5 @@
+"""Regression tests for test custom field source isolation; these cases lock the backend contract used by the changed feature."""
+
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -31,9 +33,11 @@ class _FieldRowsResult:
         self._rows = rows
 
     def scalars(self) -> "_FieldRowsResult":
+        """Expose the scalars operation expected by the Field Rows Result test double."""
         return self
 
     def all(self) -> list[object]:
+        """Expose the all operation expected by the Field Rows Result test double."""
         return self._rows
 
 
@@ -44,18 +48,23 @@ class _CustomFieldSession:
         self.committed = 0
 
     def add(self, obj: object) -> None:
+        """Expose the add operation expected by the Custom Field Session test double."""
         self.added.append(obj)
 
     async def flush(self) -> None:
+        """Expose the flush operation expected by the Custom Field Session test double."""
         self.flushed += 1
 
     async def commit(self) -> None:
+        """Expose the commit operation expected by the Custom Field Session test double."""
         self.committed += 1
 
     async def refresh(self, _obj: object) -> None:
+        """Expose the refresh operation expected by the Custom Field Session test double."""
         return None
 
     async def close(self) -> None:
+        """Expose the close operation expected by the Custom Field Session test double."""
         return None
 
 
@@ -111,6 +120,7 @@ def _custom_field_row(
 
 @pytest.mark.asyncio
 async def test_custom_field_write_service_list_fields_filters_internal_source() -> None:
+    """Verify the contract that custom field write service list fields filters internal source."""
     session = AsyncMock()
     session.execute = AsyncMock(
         return_value=type("R", (), {"scalars": lambda self: self, "all": lambda self: []})()
@@ -132,6 +142,7 @@ async def test_custom_field_write_service_list_fields_filters_internal_source() 
 
 @pytest.mark.asyncio
 async def test_custom_field_write_service_load_field_filters_internal_source() -> None:
+    """Verify the contract that custom field write service load field filters internal source."""
     session = AsyncMock()
     session.execute = AsyncMock(
         return_value=type("R", (), {"scalar_one_or_none": lambda self: None})()
@@ -153,6 +164,7 @@ async def test_custom_field_write_service_load_field_filters_internal_source() -
 
 @pytest.mark.asyncio
 async def test_legacy_custom_field_service_filters_internal_source_for_field_map() -> None:
+    """Verify the contract that legacy custom field service filters internal source for field map."""
     session = AsyncMock()
     session.execute = AsyncMock(
         return_value=type("R", (), {"scalars": lambda self: self, "all": lambda self: []})()
@@ -169,6 +181,7 @@ async def test_legacy_custom_field_service_filters_internal_source_for_field_map
 
 @pytest.mark.asyncio
 async def test_deal_write_service_custom_property_validation_filters_internal_source() -> None:
+    """Verify the contract that deal write service custom property validation filters internal source."""
     org_session = AsyncMock()
     org_session.execute = AsyncMock(
         return_value=type("R", (), {"scalars": lambda self: self, "all": lambda self: []})()
@@ -190,10 +203,12 @@ async def test_deal_write_service_custom_property_validation_filters_internal_so
 
 
 def test_deal_custom_property_key_normalizer_accepts_custom_prefix() -> None:
+    """Verify the contract that deal custom property key normalizer accepts custom prefix."""
     assert DealCustomFieldWriteService.normalize_custom_key(" custom_Our Revenue ") == "our_revenue"
 
 
 def test_custom_field_request_accepts_lead_entity() -> None:
+    """Verify the contract that custom field request accepts lead entity."""
     request = CreateCustomFieldRequest(entity="lead", key="company_size", label="Company size")
 
     assert request.entity == CRMCustomFieldEntity("lead")
@@ -201,6 +216,7 @@ def test_custom_field_request_accepts_lead_entity() -> None:
 
 @pytest.mark.asyncio
 async def test_deal_custom_property_required_create_rejects_missing_internal_fields() -> None:
+    """Verify the contract that deal custom property required create rejects missing internal fields."""
     session = AsyncMock()
     session.execute = AsyncMock(
         return_value=_FieldRowsResult(
@@ -223,6 +239,7 @@ async def test_deal_custom_property_required_create_rejects_missing_internal_fie
 
 @pytest.mark.asyncio
 async def test_deal_custom_property_required_create_treats_typed_falsey_values_as_present() -> None:
+    """Verify the contract that deal custom property required create treats typed falsey values as present."""
     session = AsyncMock()
     session.execute = AsyncMock(
         return_value=_FieldRowsResult(
@@ -247,6 +264,7 @@ async def test_deal_custom_property_required_create_treats_typed_falsey_values_a
 async def test_deal_custom_property_required_create_ignores_inactive_provider_and_formula_fields() -> (
     None
 ):
+    """Verify the contract that deal custom property required create ignores inactive provider and formula fields."""
     session = AsyncMock()
     session.execute = AsyncMock(
         return_value=_FieldRowsResult(
@@ -268,6 +286,7 @@ async def test_deal_custom_property_required_create_ignores_inactive_provider_an
 
 @pytest.mark.asyncio
 async def test_deal_custom_property_required_update_rejects_clearing_required_field() -> None:
+    """Verify the contract that deal custom property required update rejects clearing required field."""
     session = AsyncMock()
     session.execute = AsyncMock(
         return_value=_FieldRowsResult([_custom_field("procurement_stage", required=True)])
@@ -283,6 +302,7 @@ async def test_deal_custom_property_required_update_rejects_clearing_required_fi
 
 @pytest.mark.asyncio
 async def test_deal_custom_property_required_terminal_transition_rejects_missing_values() -> None:
+    """Verify the contract that deal custom property required terminal transition rejects missing values."""
     session = AsyncMock()
     session.execute = AsyncMock(
         return_value=_FieldRowsResult([_custom_field("procurement_stage", required=True)])
@@ -298,6 +318,7 @@ async def test_deal_custom_property_required_terminal_transition_rejects_missing
 
 @pytest.mark.asyncio
 async def test_deal_custom_property_validation_rejects_duplicate_normalized_keys() -> None:
+    """Verify the contract that deal custom property validation rejects duplicate normalized keys."""
     session = AsyncMock()
     session.execute = AsyncMock(
         return_value=type("R", (), {"scalars": lambda self: self, "all": lambda self: []})()
@@ -319,6 +340,7 @@ async def test_deal_custom_property_validation_rejects_duplicate_normalized_keys
 
 @pytest.mark.asyncio
 async def test_deal_custom_property_validation_rejects_empty_normalized_keys() -> None:
+    """Verify the contract that deal custom property validation rejects empty normalized keys."""
     session = AsyncMock()
     session.execute = AsyncMock(
         return_value=type("R", (), {"scalars": lambda self: self, "all": lambda self: []})()
@@ -335,6 +357,7 @@ async def test_deal_custom_property_validation_rejects_empty_normalized_keys() -
 
 @pytest.mark.asyncio
 async def test_deal_custom_property_validation_accepts_exact_returned_custom_prefixed_key() -> None:
+    """Verify the contract that deal custom property validation accepts exact returned custom prefixed key."""
     org_id = uuid4()
     field = type(
         "Field",
@@ -358,6 +381,7 @@ async def test_deal_custom_property_validation_accepts_exact_returned_custom_pre
 
 @pytest.mark.asyncio
 async def test_deal_custom_property_select_validation_rejects_unknown_option() -> None:
+    """Verify the contract that deal custom property select validation rejects unknown option."""
     session = AsyncMock()
     session.execute = AsyncMock(
         return_value=_FieldRowsResult(
@@ -381,6 +405,7 @@ async def test_deal_custom_property_select_validation_rejects_unknown_option() -
 
 @pytest.mark.asyncio
 async def test_deal_custom_property_select_validation_accepts_configured_option() -> None:
+    """Verify the contract that deal custom property select validation accepts configured option."""
     session = AsyncMock()
     session.execute = AsyncMock(
         return_value=_FieldRowsResult(
@@ -402,6 +427,7 @@ async def test_deal_custom_property_select_validation_accepts_configured_option(
 
 @pytest.mark.asyncio
 async def test_deal_custom_property_multiselect_validation_rejects_unknown_option() -> None:
+    """Verify the contract that deal custom property multiselect validation rejects unknown option."""
     session = AsyncMock()
     session.execute = AsyncMock(
         return_value=_FieldRowsResult(
@@ -427,6 +453,7 @@ async def test_deal_custom_property_multiselect_validation_rejects_unknown_optio
 
 @pytest.mark.asyncio
 async def test_deal_custom_property_multiselect_validation_accepts_configured_options() -> None:
+    """Verify the contract that deal custom property multiselect validation accepts configured options."""
     session = AsyncMock()
     session.execute = AsyncMock(
         return_value=_FieldRowsResult(
@@ -450,6 +477,7 @@ async def test_deal_custom_property_multiselect_validation_accepts_configured_op
 
 @pytest.mark.asyncio
 async def test_deal_custom_property_multiselect_validation_allows_empty_value() -> None:
+    """Verify the contract that deal custom property multiselect validation allows empty value."""
     session = AsyncMock()
     session.execute = AsyncMock(
         return_value=_FieldRowsResult(
@@ -471,6 +499,7 @@ async def test_deal_custom_property_multiselect_validation_allows_empty_value() 
 
 @pytest.mark.asyncio
 async def test_deal_custom_property_select_validation_rejects_removed_option() -> None:
+    """Verify the contract that deal custom property select validation rejects removed option."""
     session = AsyncMock()
     session.execute = AsyncMock(
         return_value=_FieldRowsResult(
@@ -498,6 +527,7 @@ async def test_deal_custom_property_select_validation_rejects_removed_option() -
 
 
 def test_deal_custom_property_coercion_parses_percentage_as_number() -> None:
+    """Verify the contract that deal custom property coercion parses percentage as number."""
     service = DealCustomFieldWriteService(session=AsyncMock(), organisation_id=uuid4())
 
     value = service.coerce_custom_value(
@@ -521,6 +551,7 @@ def test_deal_custom_property_coercion_parses_percentage_as_number() -> None:
 def test_deal_custom_property_numeric_coercion_rejects_boolean_values(
     data_type: CRMCustomFieldDataType,
 ) -> None:
+    """Verify the contract that deal custom property numeric coercion rejects boolean values."""
     service = DealCustomFieldWriteService(session=AsyncMock(), organisation_id=uuid4())
 
     with pytest.raises(DealWriteServiceError):
@@ -529,6 +560,7 @@ def test_deal_custom_property_numeric_coercion_rejects_boolean_values(
 
 @pytest.mark.parametrize("value", [1.2, "1.2"])
 def test_deal_custom_property_integer_coercion_rejects_fractional_values(value: object) -> None:
+    """Verify the contract that deal custom property integer coercion rejects fractional values."""
     service = DealCustomFieldWriteService(session=AsyncMock(), organisation_id=uuid4())
 
     with pytest.raises(DealWriteServiceError):
@@ -543,6 +575,7 @@ def test_deal_custom_property_integer_coercion_rejects_fractional_values(value: 
 def test_deal_custom_property_percentage_coercion_rejects_out_of_range_values(
     value: object,
 ) -> None:
+    """Verify the contract that deal custom property percentage coercion rejects out of range values."""
     service = DealCustomFieldWriteService(session=AsyncMock(), organisation_id=uuid4())
 
     with pytest.raises(DealWriteServiceError):
@@ -557,6 +590,7 @@ def test_deal_custom_property_percentage_coercion_rejects_out_of_range_values(
 def test_deal_custom_property_boolean_coercion_rejects_non_binary_numbers(
     value: object,
 ) -> None:
+    """Verify the contract that deal custom property boolean coercion rejects non binary numbers."""
     service = DealCustomFieldWriteService(session=AsyncMock(), organisation_id=uuid4())
 
     with pytest.raises(DealWriteServiceError):
@@ -569,6 +603,7 @@ def test_deal_custom_property_boolean_coercion_rejects_non_binary_numbers(
 
 @pytest.mark.asyncio
 async def test_deal_schema_custom_column_keys_filter_internal_source() -> None:
+    """Verify the contract that deal schema custom column keys filter internal source."""
     session = AsyncMock()
     session.execute = AsyncMock(
         return_value=type("R", (), {"scalars": lambda self: self, "all": lambda self: []})()
@@ -585,6 +620,7 @@ async def test_deal_schema_custom_column_keys_filter_internal_source() -> None:
 
 @pytest.mark.asyncio
 async def test_custom_field_write_service_reorders_complete_field_list() -> None:
+    """Verify the contract that custom field write service reorders complete field list."""
     session = _CustomFieldSession()
     service = CustomFieldWriteService(
         session=session,  # type: ignore[arg-type]
@@ -619,6 +655,7 @@ async def test_custom_field_write_service_reorders_complete_field_list() -> None
 
 @pytest.mark.asyncio
 async def test_custom_field_write_service_reorder_rejects_stale_version() -> None:
+    """Verify the contract that custom field write service reorder rejects stale version."""
     session = _CustomFieldSession()
     service = CustomFieldWriteService(
         session=session,  # type: ignore[arg-type]
@@ -649,6 +686,7 @@ async def test_custom_field_write_service_reorder_rejects_stale_version() -> Non
 
 @pytest.mark.asyncio
 async def test_custom_field_write_service_reorder_rejects_partial_or_foreign_ids() -> None:
+    """Verify the contract that custom field write service reorder rejects partial or foreign ids."""
     session = _CustomFieldSession()
     service = CustomFieldWriteService(
         session=session,  # type: ignore[arg-type]
@@ -679,6 +717,7 @@ async def test_custom_field_write_service_reorder_rejects_partial_or_foreign_ids
 
 @pytest.mark.asyncio
 async def test_custom_field_write_service_reorder_rejects_duplicate_ids() -> None:
+    """Verify the contract that custom field write service reorder rejects duplicate ids."""
     session = _CustomFieldSession()
     service = CustomFieldWriteService(
         session=session,  # type: ignore[arg-type]
@@ -703,6 +742,7 @@ async def test_custom_field_write_service_reorder_rejects_duplicate_ids() -> Non
 
 @pytest.mark.asyncio
 async def test_custom_field_write_service_update_rejects_stale_version_precondition() -> None:
+    """Verify the contract that custom field write service update rejects stale version precondition."""
     session = _CustomFieldSession()
     service = CustomFieldWriteService(
         session=session,  # type: ignore[arg-type]
@@ -741,6 +781,7 @@ async def test_custom_field_write_service_update_rejects_stale_version_precondit
 
 @pytest.mark.asyncio
 async def test_custom_field_write_service_update_requires_version_precondition() -> None:
+    """Verify the contract that custom field write service update requires version precondition."""
     session = _CustomFieldSession()
     service = CustomFieldWriteService(
         session=session,  # type: ignore[arg-type]
@@ -776,6 +817,7 @@ async def test_custom_field_write_service_update_requires_version_precondition()
 
 @pytest.mark.asyncio
 async def test_custom_field_create_records_settings_mutation_event() -> None:
+    """Verify the contract that custom field create records settings mutation event."""
     session = _CustomFieldSession()
     service = CustomFieldWriteService(
         session=session,  # type: ignore[arg-type]
@@ -799,6 +841,7 @@ async def test_custom_field_create_records_settings_mutation_event() -> None:
 
 @pytest.mark.asyncio
 async def test_custom_field_create_allows_lead_entity() -> None:
+    """Verify the contract that custom field create allows lead entity."""
     session = _CustomFieldSession()
     service = CustomFieldWriteService(
         session=session,  # type: ignore[arg-type]
@@ -818,11 +861,14 @@ async def test_custom_field_create_allows_lead_entity() -> None:
 
 @pytest.mark.asyncio
 async def test_custom_field_update_records_archive_settings_mutation_event() -> None:
+    """Verify the contract that custom field update records archive settings mutation event."""
     session = _CustomFieldSession()
+    reconciler = SimpleNamespace(reconcile_custom_field_changes=AsyncMock(return_value=1))
     service = CustomFieldWriteService(
         session=session,  # type: ignore[arg-type]
         organisation_id=uuid4(),
         user_id=uuid4(),
+        automation_reconciler=reconciler,
     )
     field = SimpleNamespace(
         field_id=uuid4(),
@@ -854,10 +900,92 @@ async def test_custom_field_update_records_archive_settings_mutation_event() -> 
     assert event.operation == "custom_field.update"
     assert event.changed_fields["is_active"] == {"old": True, "new": False}
     assert event.semantic_event_types == ["crm.settings.custom_field.updated"]
+    reconciler.reconcile_custom_field_changes.assert_awaited_once_with({"priority"})
+
+
+@pytest.mark.asyncio
+async def test_custom_field_label_change_does_not_reconcile_automation_bindings() -> None:
+    """Verify the contract that custom field label change does not reconcile automation bindings."""
+    session = _CustomFieldSession()
+    reconciler = SimpleNamespace(reconcile_custom_field_changes=AsyncMock())
+    service = CustomFieldWriteService(
+        session=session,  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        user_id=uuid4(),
+        automation_reconciler=reconciler,
+    )
+    field = SimpleNamespace(
+        field_id=uuid4(),
+        key="priority",
+        label="Priority",
+        entity_type=CRMCustomFieldEntity.DEAL,
+        data_type=CRMCustomFieldDataType.TEXT,
+        required=False,
+        is_active=True,
+        display_order=1,
+        description=None,
+        options={},
+        validation={},
+        formula=None,
+        updated_at=datetime(2026, 1, 1, 10, 0, tzinfo=UTC),
+    )
+    service._load_field = AsyncMock(return_value=field)  # type: ignore[method-assign]
+    service._validate_definition = AsyncMock()  # type: ignore[method-assign]
+
+    await service.update_field(
+        field.field_id,
+        UpdateCustomFieldRequest(
+            label="Deal priority",
+            if_updated_at=datetime(2026, 1, 1, 10, 0, tzinfo=UTC),
+        ),
+    )
+
+    reconciler.reconcile_custom_field_changes.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_formula_result_type_change_reconciles_automation_bindings() -> None:
+    """Verify the contract that formula result type change reconciles automation bindings."""
+    session = _CustomFieldSession()
+    reconciler = SimpleNamespace(reconcile_custom_field_changes=AsyncMock())
+    service = CustomFieldWriteService(
+        session=session,  # type: ignore[arg-type]
+        organisation_id=uuid4(),
+        user_id=uuid4(),
+        automation_reconciler=reconciler,
+    )
+    field = SimpleNamespace(
+        field_id=uuid4(),
+        key="score",
+        label="Score",
+        entity_type=CRMCustomFieldEntity.DEAL,
+        data_type=CRMCustomFieldDataType.FORMULA,
+        required=False,
+        is_active=True,
+        display_order=1,
+        description=None,
+        options={},
+        validation={},
+        formula={"result_type": "text"},
+        updated_at=datetime(2026, 1, 1, 10, 0, tzinfo=UTC),
+    )
+    service._load_field = AsyncMock(return_value=field)  # type: ignore[method-assign]
+    service._validate_definition = AsyncMock()  # type: ignore[method-assign]
+
+    await service.update_field(
+        field.field_id,
+        UpdateCustomFieldRequest(
+            formula={"result_type": "number"},
+            if_updated_at=datetime(2026, 1, 1, 10, 0, tzinfo=UTC),
+        ),
+    )
+
+    reconciler.reconcile_custom_field_changes.assert_awaited_once_with({"score"})
 
 
 @pytest.mark.asyncio
 async def test_custom_field_restore_reactivates_archived_field_and_records_event() -> None:
+    """Verify the contract that custom field restore reactivates archived field and records event."""
     session = _CustomFieldSession()
     service = CustomFieldWriteService(
         session=session,  # type: ignore[arg-type]
@@ -896,6 +1024,7 @@ async def test_custom_field_restore_reactivates_archived_field_and_records_event
 
 @pytest.mark.asyncio
 async def test_deal_schema_custom_column_definitions_filter_internal_source() -> None:
+    """Verify the contract that deal schema custom column definitions filter internal source."""
     session = AsyncMock()
     session.execute = AsyncMock(
         return_value=type("R", (), {"scalars": lambda self: self, "all": lambda self: []})()
@@ -911,6 +1040,7 @@ async def test_deal_schema_custom_column_definitions_filter_internal_source() ->
 
 
 def test_custom_field_response_preserves_option_metadata_for_future_option_ids() -> None:
+    """Verify the contract that custom field response preserves option metadata for future option ids."""
     field = type(
         "Field",
         (),
@@ -939,6 +1069,7 @@ def test_custom_field_response_preserves_option_metadata_for_future_option_ids()
 
 
 def test_custom_field_response_includes_usage_count() -> None:
+    """Verify the contract that custom field response includes usage count."""
     field = type(
         "Field",
         (),
@@ -967,6 +1098,7 @@ def test_custom_field_response_includes_usage_count() -> None:
 
 
 def test_custom_field_response_includes_last_changed_metadata() -> None:
+    """Verify the contract that custom field response includes last changed metadata."""
     actor_id = uuid4()
     field = type(
         "Field",
@@ -1007,6 +1139,7 @@ def test_custom_field_response_includes_last_changed_metadata() -> None:
 
 @pytest.mark.asyncio
 async def test_custom_field_write_service_counts_deal_usage_by_field_key() -> None:
+    """Verify the contract that custom field write service counts deal usage by field key."""
     session = AsyncMock()
     session.execute = AsyncMock(
         return_value=type("R", (), {"all": lambda self: [("priority", 1), ("risk", 3)]})()
@@ -1027,6 +1160,7 @@ async def test_custom_field_write_service_counts_deal_usage_by_field_key() -> No
 
 @pytest.mark.asyncio
 async def test_custom_field_write_service_deletes_lead_field_without_deal_usage_check() -> None:
+    """Verify the contract that custom field write service deletes lead field without deal usage check."""
     session = _CustomFieldSession()
     service = CustomFieldWriteService(
         session=session,  # type: ignore[arg-type]
@@ -1056,6 +1190,7 @@ async def test_custom_field_write_service_deletes_lead_field_without_deal_usage_
 
 @pytest.mark.asyncio
 async def test_custom_field_write_service_clears_values_for_archived_field() -> None:
+    """Verify the contract that custom field write service clears values for archived field."""
     session = _CustomFieldSession()
     session.execute = AsyncMock()
     service = CustomFieldWriteService(
@@ -1082,6 +1217,7 @@ async def test_custom_field_write_service_clears_values_for_archived_field() -> 
 
 @pytest.mark.asyncio
 async def test_custom_field_write_service_clears_lead_values_for_archived_lead_field() -> None:
+    """Verify the contract that custom field write service clears lead values for archived lead field."""
     session = _CustomFieldSession()
     session.execute = AsyncMock()
     service = CustomFieldWriteService(
@@ -1112,6 +1248,7 @@ async def test_custom_field_write_service_clears_lead_values_for_archived_lead_f
 
 @pytest.mark.asyncio
 async def test_custom_field_write_service_rejects_clearing_active_field_values() -> None:
+    """Verify the contract that custom field write service rejects clearing active field values."""
     session = _CustomFieldSession()
     session.execute = AsyncMock()
     service = CustomFieldWriteService(
@@ -1133,6 +1270,7 @@ async def test_custom_field_write_service_rejects_clearing_active_field_values()
 
 @pytest.mark.asyncio
 async def test_custom_field_write_service_rejects_duplicate_select_option_values() -> None:
+    """Verify the contract that custom field write service rejects duplicate select option values."""
     session = _CustomFieldSession()
     service = CustomFieldWriteService(
         session=session,  # type: ignore[arg-type]
@@ -1158,6 +1296,7 @@ async def test_custom_field_write_service_rejects_duplicate_select_option_values
 
 @pytest.mark.asyncio
 async def test_custom_field_write_service_rejects_empty_select_option_values() -> None:
+    """Verify the contract that custom field write service rejects empty select option values."""
     session = _CustomFieldSession()
     service = CustomFieldWriteService(
         session=session,  # type: ignore[arg-type]

@@ -19,6 +19,7 @@ from src.service.crm.mutations.event_service import (
     CRMMutationEventService,
 )
 from src.service.crm.mutations.json_safe import changed_field
+from src.service.crm.mutations.policies import DealMutationPolicy
 
 __all__ = ["DealMutationEventService", "changed_field"]
 
@@ -49,6 +50,7 @@ class DealMutationEventService:
         semantic_event_types: list[str],
         context: DealWriteContext,
         summary: str | None,
+        record: dict[str, Any] | None = None,
     ) -> CRMMutationRecordResult:
         """Persist one deal mutation and enqueue supported semantics atomically."""
 
@@ -60,6 +62,7 @@ class DealMutationEventService:
             operation=operation,
             changed_fields=changed_fields,
             semantic_event_types=semantic_event_types,
+            record=record if record is not None else DealMutationPolicy.automation_record(deal),
             context=CRMMutationContext(
                 source=context.source,
                 actor_user_id=context.actor_user_id,
@@ -67,6 +70,9 @@ class DealMutationEventService:
                 approval_state_id=context.approval_state_id,
                 correlation_id=context.correlation_id,
                 idempotency_key=context.idempotency_key,
+                source_mode=context.source_mode,
+                caused_by_run_id=context.caused_by_run_id,
+                causation_depth=context.causation_depth,
             ),
             summary=summary,
             integration_id=getattr(deal, "integration_id", None),

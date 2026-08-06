@@ -98,7 +98,10 @@ def extract_deal_risks_blockers_task(
                     await session.commit()
 
         # Phase 2: Call service (service manages its own sessions)
-        service = RiskBlockerExtractionService(org_uuid)
+        service = RiskBlockerExtractionService(
+            org_uuid,
+            inference_run_id=job_uuid,
+        )
         try:
             result = await service.process_deal(deal_uuid, force=force)
         except Exception as e:
@@ -181,7 +184,8 @@ def trigger_extraction_all_orgs(self: Task) -> dict[str, int]:
     async def _run() -> dict[str, int]:
         provider = get_async_provider()
         async with provider.master_session() as master_session:
-            # Get all active organisations
+            # Read the approved organisation catalogue with the master session;
+            # each organisation is handled later through its own tenant session.
             result = await master_session.execute(
                 select(Organisation).where(col(Organisation.status) == OrganisationStatus.APPROVED)
             )
@@ -192,7 +196,8 @@ def trigger_extraction_all_orgs(self: Task) -> dict[str, int]:
             try:
                 # Queue extraction for each org's deals
                 async for session in acquire_org_async_session(org.organisation_id):
-                    # Get only OPEN deals (skip won/lost/closed deals)
+                    # Analyze only open deals because closed outcomes no longer
+                    # need active risk/blocker extraction.
                     deal_result = await session.execute(
                         select(col(CRMDeal.deal_id))
                         .where(
@@ -205,7 +210,8 @@ def trigger_extraction_all_orgs(self: Task) -> dict[str, int]:
                     deal_ids = [str(row[0]) for row in deal_result.all()]
 
                     for d_id in deal_ids:
-                        # Create job before dispatching
+                        # Persist the job before dispatching so a retry can find
+                        # the durable work item instead of creating another one.
                         risk_job = DealJobs(
                             organisation_id=org.organisation_id,
                             user_id=AUTOMATED_PIPELINE_USER_ID,

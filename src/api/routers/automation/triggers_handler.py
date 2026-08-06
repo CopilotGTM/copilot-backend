@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi import Response as FastAPIResponse
 from fastapi import status as http_status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,26 +15,45 @@ from src.api.dependencies.organisation_dependencies import (
     get_current_user,
     get_org_async_session,
 )
-from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
+from src.api.dependencies.rate_limit import (
+    enforce_automation_webhook_rate_limit,
+    rate_limit_user_read,
+    rate_limit_user_write,
+)
 from src.api.schemas.automation_trigger_models import (
+    AutomationManualInvocationRequest,
+    AutomationManualInvocationResponse,
     AutomationTriggerCatalog,
     AutomationTriggerCreateRequest,
     AutomationTriggerDetail,
     AutomationTriggerListResponse,
     AutomationTriggerRefreshRequest,
     AutomationTriggerUpdateRequest,
+    AutomationWebhookCredentials,
+    AutomationWebhookIngressResponse,
+    AutomationWebhookRotateRequest,
 )
 from src.api.schemas.base_models import GenericResponse
 from src.api.utils.http_response import Response
+from src.domain.models.master_tables import UserAppRole
 from src.domain.models.organisation_tables import AutomationTriggerStatus
+from src.infra.config.configs import security_secrets_config
+from src.infra.database.sessions import acquire_org_async_session
+from src.infra.security.request_body import read_bounded_request_body
 from src.infra.utils.logger import get_logger
 from src.service.automation.errors import AutomationServiceError
 from src.service.automation.triggers.service import AutomationTriggerService
+from src.service.automation.triggers.webhook import (
+    WEBHOOK_MAX_BODY_BYTES,
+    WebhookIngressService,
+    organisation_id_from_endpoint_token,
+)
 
 logger = get_logger("automation_triggers_handler")
 _UNEXPECTED_ERROR_MESSAGE = "An unexpected error occurred while processing your request"
 
 automation_triggers_router = APIRouter()
+automation_webhooks_router = APIRouter()
 
 
 async def get_automation_trigger_service(
@@ -43,11 +62,95 @@ async def get_automation_trigger_service(
 ) -> AsyncIterator[AutomationTriggerService]:
     """Bind trigger access to authenticated organization and owner identity."""
 
-    service = AutomationTriggerService(org_session, user_ids.organisation_id, user_ids.user_id)
+    service = AutomationTriggerService(
+        org_session,
+        user_ids.organisation_id,
+        user_ids.user_id,
+        is_admin=user_ids.user_role == UserAppRole.ADMIN,
+    )
     try:
         yield service
     finally:
         await service.close()
+
+
+async def get_automation_webhook_service(
+    endpoint_token: str,
+) -> AsyncIterator[WebhookIngressService]:
+    """Derive tenant and verification authority from the opaque public route."""
+
+    try:
+        organisation_id = organisation_id_from_endpoint_token(endpoint_token)
+        root_secret = await security_secrets_config.get_automation_webhook_root_secret()
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(
+            status_code=404, detail="Automation webhook endpoint not found"
+        ) from exc
+    async for session in acquire_org_async_session(organisation_id):
+        yield WebhookIngressService(
+            session,
+            organisation_id,
+            endpoint_token,
+            root_secret=root_secret,
+            previous_root_secrets=(
+                security_secrets_config.get_automation_webhook_previous_root_secrets()
+            ),
+        )
+        return
+    raise HTTPException(status_code=503, detail="Automation webhook service unavailable")
+
+
+def rate_limit_automation_webhook(request: Request, endpoint_token: str) -> None:
+    """Apply the public-ingress quota before opening a tenant session."""
+
+    enforce_automation_webhook_rate_limit(request, endpoint_token)
+
+
+@automation_webhooks_router.post(
+    "/{endpoint_token}",
+    response_model=GenericResponse[AutomationWebhookIngressResponse],
+    status_code=http_status.HTTP_202_ACCEPTED,
+    summary="Receive signed automation webhook",
+)
+async def receive_automation_webhook(
+    endpoint_token: str,
+    request: Request,
+    response: FastAPIResponse,
+    _rate_limit: None = Depends(rate_limit_automation_webhook),
+    service: WebhookIngressService = Depends(get_automation_webhook_service),
+) -> GenericResponse[AutomationWebhookIngressResponse]:
+    """Verify exact request bytes and atomically enqueue one direct event."""
+
+    _ = endpoint_token  # FastAPI binds the same token into the service dependency.
+    raw_body = await read_bounded_request_body(
+        request,
+        max_bytes=WEBHOOK_MAX_BODY_BYTES,
+        label="Automation webhook",
+    )
+    try:
+        item = await service.ingest(
+            raw_body=raw_body,
+            timestamp=request.headers.get("x-copilotgtm-timestamp", ""),
+            signature=request.headers.get("x-copilotgtm-signature", ""),
+            dedupe_key=request.headers.get("x-copilotgtm-delivery-id"),
+        )
+        await service.session.commit()
+        return Response.accepted_response(
+            "Automation webhook accepted",
+            data=AutomationWebhookIngressResponse(event_id=item.envelope.event_id),
+            response=response,
+        )
+    except AutomationServiceError as exc:
+        await service.session.rollback()
+        return Response.error_response(
+            status_code=exc.status_code,
+            message=exc.message,
+            response=response,
+        )
+    except Exception:
+        await service.session.rollback()
+        logger.exception("Unexpected automation webhook ingress failure")
+        return Response.internal_server_error_response(_UNEXPECTED_ERROR_MESSAGE, response=response)
 
 
 @automation_triggers_router.get(
@@ -157,6 +260,73 @@ async def get_agent_trigger(
         )
     except Exception:
         logger.exception("Unexpected error retrieving automation trigger")
+        return Response.internal_server_error_response(_UNEXPECTED_ERROR_MESSAGE, response=response)
+
+
+@automation_triggers_router.post(
+    "/agents/{agent_id}/triggers/{trigger_id}/invoke",
+    response_model=GenericResponse[AutomationManualInvocationResponse],
+    summary="Invoke agent trigger",
+)
+async def invoke_agent_trigger(
+    agent_id: UUID,
+    trigger_id: UUID,
+    body: AutomationManualInvocationRequest,
+    response: FastAPIResponse,
+    service: AutomationTriggerService = Depends(get_automation_trigger_service),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[AutomationManualInvocationResponse]:
+    """Atomically enqueue a global or subject-isolated manual invocation."""
+
+    try:
+        item = await service.invoke_manual_trigger(agent_id, trigger_id, body)
+        await service.session.commit()
+        return Response.success_response("Trigger invoked successfully", data=item)
+    except AutomationServiceError as exc:
+        await service.session.rollback()
+        return Response.error_response(
+            status_code=exc.status_code,
+            message=exc.message,
+            response=response,
+        )
+    except Exception:
+        await service.session.rollback()
+        logger.exception("Unexpected error invoking automation trigger")
+        return Response.internal_server_error_response(_UNEXPECTED_ERROR_MESSAGE, response=response)
+
+
+@automation_triggers_router.post(
+    "/agents/{agent_id}/triggers/{trigger_id}/rotate-webhook-secret",
+    response_model=GenericResponse[AutomationWebhookCredentials],
+    summary="Rotate agent webhook secret",
+)
+async def rotate_agent_webhook_secret(
+    agent_id: UUID,
+    trigger_id: UUID,
+    body: AutomationWebhookRotateRequest,
+    response: FastAPIResponse,
+    service: AutomationTriggerService = Depends(get_automation_trigger_service),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[AutomationWebhookCredentials]:
+    """Rotate a signing secret and return its plaintext value exactly once."""
+
+    try:
+        credentials = await service.rotate_webhook_secret(agent_id, trigger_id, body)
+        await service.session.commit()
+        return Response.success_response(
+            "Webhook secret rotated successfully",
+            data=credentials,
+        )
+    except AutomationServiceError as exc:
+        await service.session.rollback()
+        return Response.error_response(
+            status_code=exc.status_code,
+            message=exc.message,
+            response=response,
+        )
+    except Exception:
+        await service.session.rollback()
+        logger.exception("Unexpected error rotating automation webhook secret")
         return Response.internal_server_error_response(_UNEXPECTED_ERROR_MESSAGE, response=response)
 
 

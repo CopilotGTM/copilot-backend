@@ -54,10 +54,17 @@ class EmptyRegistry:
 def agent_context() -> AgentContext:
     """Build immutable org, owner, and deal boundaries for the runtime tests."""
 
+    run_id = uuid4()
+    agent_id = uuid4()
     return AgentContext(
         organisation_id=uuid4(),
         deal_id=uuid4(),
         user_id=uuid4(),
+        metadata={
+            "automation_agent_id": str(agent_id),
+            "automation_agent_revision": 4,
+            "automation_inference_run_id": str(run_id),
+        },
     )
 
 
@@ -73,6 +80,7 @@ async def test_agent_uses_only_pinned_configuration(tmp_path: Path) -> None:
     )
     registry = FakeRegistry()
     created: list[FakeAgent] = []
+    tool_contexts: list[AgentContext] = []
     runtime = UserConfiguredAgent(
         context=agent_context(),
         prompt="Act as a deal coach.",
@@ -86,7 +94,7 @@ async def test_agent_uses_only_pinned_configuration(tmp_path: Path) -> None:
         skills_dir=tmp_path,
         agent_factory=lambda **kwargs: created.append(FakeAgent(**kwargs)) or created[-1],
         model_factory=lambda **kwargs: SimpleNamespace(**kwargs),
-        tool_registry_factory=lambda _context: registry,
+        tool_registry_factory=lambda context: tool_contexts.append(context) or registry,
     )
 
     response = await runtime.run('{"event": "deal.stage_changed"}')
@@ -101,6 +109,8 @@ async def test_agent_uses_only_pinned_configuration(tmp_path: Path) -> None:
     }
     assert created[0].kwargs["skills"].get_skill_names() == ["pipeline-review"]
     assert created[0].inputs == ['{"event": "deal.stage_changed"}']
+    assert tool_contexts[0].metadata["automation_model_name"] == "gpt-5-mini"
+    assert tool_contexts[0].metadata["automation_prompt_version"].endswith(":r4")
 
 
 def test_agent_rejects_a_missing_pinned_tool(tmp_path: Path) -> None:

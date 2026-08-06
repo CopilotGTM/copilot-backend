@@ -16,9 +16,10 @@ The Celery task delegates to this service for the actual work.
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from src.agents.workflows.risk_blocker_extraction import (
+    RISK_BLOCKER_PROMPT_VERSION,
     ExtractedRiskBlocker,
     RiskBlockerExtractionAgent,
     RiskBlockerExtractionResult,
@@ -27,10 +28,15 @@ from src.domain.models.organisation_tables.sync.risk_blocker_models import (
     DealRiskBlocker,
     RiskBlockerSource,
 )
+from src.infra.config.agent_config import agent_config
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.crm.jobs.deal_job_event_publisher import DealJobRedisPublisher
-from src.service.crm.risks.contracts import RiskBlockerActor, RiskBlockerWriteContext
+from src.service.crm.risks.contracts import (
+    RiskBlockerActor,
+    RiskBlockerInference,
+    RiskBlockerWriteContext,
+)
 from src.service.crm.risks.write_service import (
     RiskBlockerWriteService,
     build_extraction_risk_blocker,
@@ -105,6 +111,7 @@ class RiskBlockerExtractionService:
         self,
         organisation_id: UUID,
         publisher: DealJobRedisPublisher | None = None,
+        inference_run_id: UUID | None = None,
     ):
         """Initialize the service.
 
@@ -117,6 +124,8 @@ class RiskBlockerExtractionService:
         self.organisation_id = organisation_id
         self.publisher = publisher
         self.last_token_usage: Any = None
+        self.inference_run_id = inference_run_id or uuid4()
+        self.model_name = agent_config.get_config("risk_blocker_extraction_agent").model
 
     def _publish_progress(self, message: str, step: str, progress: float) -> None:
         """Publish progress update if publisher is available."""
@@ -143,7 +152,10 @@ class RiskBlockerExtractionService:
         Returns:
             Created DealRiskBlocker
         """
-        context = self._extraction_context()
+        context = self._extraction_context(
+            evidence_id=source_record_id,
+            confidence=extracted.confidence,
+        )
         item = build_extraction_risk_blocker(
             organisation_id=self.organisation_id,
             deal_id=deal_id,
@@ -158,7 +170,25 @@ class RiskBlockerExtractionService:
 
         return item
 
-    def _extraction_context(self) -> RiskBlockerWriteContext:
+    def _extraction_context(
+        self,
+        *,
+        evidence_id: str | None = None,
+        confidence: float | None = None,
+    ) -> RiskBlockerWriteContext:
+        inference = (
+            RiskBlockerInference(
+                transition_id=uuid4(),
+                evidence_id=evidence_id,
+                confidence=confidence,
+                model_name=self.model_name,
+                prompt_version=RISK_BLOCKER_PROMPT_VERSION,
+                inference_run_id=self.inference_run_id,
+                correlation_id=str(self.inference_run_id),
+            )
+            if evidence_id and confidence is not None
+            else None
+        )
         return RiskBlockerWriteContext(
             source="ai_extraction",
             actor=RiskBlockerActor(
@@ -166,6 +196,7 @@ class RiskBlockerExtractionService:
                 actor_id=AUTOMATED_PIPELINE_USER_ID,
                 actor_name=AI_EXTRACTION_ACTOR_NAME,
             ),
+            inference=inference,
         )
 
     async def run_extraction(
@@ -237,7 +268,9 @@ class RiskBlockerExtractionService:
             publisher=self.publisher,
             org_name=org_name,
             organisation_profile=organisation_profile,
+            inference_run_id=self.inference_run_id,
         )
+        self.model_name = agent.model_name
         result = await agent.extract()
         self.last_token_usage = agent.last_token_usage
 
@@ -247,7 +280,8 @@ class RiskBlockerExtractionService:
         created_count = 0
 
         async for session in acquire_org_async_session(self.organisation_id):
-            # Create records for non-duplicate items
+            # Persist only new findings; skipping duplicates keeps a retried
+            # extraction from creating a second durable risk/blocker record.
             for extracted_item in result.items:
                 if not extracted_item.is_duplicate:
                     # Use source_type from agent output (agent specifies exact platform)
@@ -257,8 +291,12 @@ class RiskBlockerExtractionService:
                     await writer.create_from_extraction(
                         deal_id=deal_id,
                         extracted=extracted_item,
-                        context=self._extraction_context(),
+                        context=self._extraction_context(
+                            evidence_id=extracted_item.source_record_id,
+                            confidence=extracted_item.confidence,
+                        ),
                         source_type=source_type,
+                        source_record_id=extracted_item.source_record_id,
                     )
                     created_count += 1
 

@@ -302,6 +302,20 @@ def enforce_private_lead_ingestion_rate_limit(
     )
 
 
+def enforce_automation_webhook_rate_limit(request: Request, endpoint_token: str) -> None:
+    """Limit public automation ingress without retaining its bearer route token."""
+
+    token_hash = sha256(endpoint_token.encode("utf-8")).hexdigest()
+    subject_id = f"{token_hash}:{client_ip_for_external_ingress(request)}"
+    _enforce_rate_limit_for_limits(
+        "automation_webhook",
+        subject_id,
+        "ingress",
+        per_minute_limit=getattr(rate_limit_config, "AUTOMATION_WEBHOOK_PER_MINUTE", 60),
+        per_hour_limit=getattr(rate_limit_config, "AUTOMATION_WEBHOOK_PER_HOUR", 1_000),
+    )
+
+
 async def rate_limit_login(request: Request) -> None:
     """Limit login attempts by a combination of email and client IP.
 

@@ -5,6 +5,7 @@ from deal communications (meetings, emails, Slack messages).
 """
 
 from src.agents.workflows.risk_blocker_extraction.agent import (
+    RISK_BLOCKER_PROMPT_VERSION,
     RiskBlockerExtractionAgent,
 )
 from src.agents.workflows.risk_blocker_extraction.models import (
@@ -14,6 +15,7 @@ from src.agents.workflows.risk_blocker_extraction.models import (
 
 __all__ = [
     "RiskBlockerExtractionAgent",
+    "RISK_BLOCKER_PROMPT_VERSION",
     "ExtractedRiskBlocker",
     "RiskBlockerExtractionResult",
 ]

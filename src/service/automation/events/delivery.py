@@ -42,7 +42,7 @@ _delivery_futures: set[Future[bool]] = set()
 @dataclass(frozen=True)
 class _StagedDelivery:
     organisation_id: UUID
-    dispatch_id: UUID
+    event_id: UUID
 
 
 async def publish_task_with_backoff(
@@ -144,18 +144,18 @@ def stage_automation_event_delivery(
             sync_session.info.setdefault(_NESTED_DELIVERIES_KEY, {})
         )
         pending = nested_pending.setdefault(nested, {})
-    identity = (dispatch.organisation_id, dispatch.dispatch_id)
+    identity = (dispatch.organisation_id, dispatch.event_id)
     pending[identity] = _StagedDelivery(*identity)
 
 
-def _publish_staged_delivery(organisation_id: UUID, dispatch_id: UUID) -> bool:
+def _publish_staged_delivery(organisation_id: UUID, event_id: UUID) -> bool:
     """Deliver the minimal identity needed by the organization-scoped worker."""
 
     return publish_task_sync_with_backoff(
         "chat.activate_automation_event",
         kwargs={
             "organisation_id": str(organisation_id),
-            "dispatch_id": str(dispatch_id),
+            "event_id": str(event_id),
         },
         queue="chat_processing",
     )
@@ -180,7 +180,7 @@ def _submit_staged_delivery(item: _StagedDelivery) -> None:
     future = _get_delivery_executor().submit(
         _publish_staged_delivery,
         item.organisation_id,
-        item.dispatch_id,
+        item.event_id,
     )
     # The set keeps queued work alive until its final broker attempt completes.
     _delivery_futures.add(future)
@@ -200,9 +200,9 @@ def _deliver_after_commit(session: Session) -> None:
             # PostgreSQL has already committed. Report the delivery failure but
             # never return a false write failure that callers may retry blindly.
             logger.exception(
-                "Could not submit committed automation dispatch org=%s dispatch=%s",
+                "Could not submit committed automation event org=%s event=%s",
                 item.organisation_id,
-                item.dispatch_id,
+                item.event_id,
             )
     session.info.pop(_NESTED_DELIVERIES_KEY, None)
     session.info.pop(_ROLLED_BACK_TRANSACTIONS_KEY, None)
@@ -249,8 +249,6 @@ def _finish_nested_transaction(
         root_pending.update(pending)
 
 
-# TODO(nikhil, 2026-07-22): Add low-frequency recovery for dispatch rows left
-# pending after the process exits or all direct broker publication retries fail.
 if not event.contains(Session, "after_commit", _deliver_after_commit):
     event.listen(Session, "after_commit", _deliver_after_commit)
 if not event.contains(Session, "after_rollback", _drop_after_rollback):

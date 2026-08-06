@@ -180,6 +180,30 @@ class AgentSummary(BaseModel):
     updated_at: datetime
 
 
+class AutomationEligibilityMode(BaseModel):
+    """Whether the current caller may bind this agent to one execution principal."""
+
+    available: bool
+    reason_code: (
+        Literal[
+            "retry_unsafe_tools",
+            "organisation_requires_admin",
+            "organisation_tools_not_supported",
+            "organisation_skills_not_supported",
+            "no_compatible_principal_mode",
+        ]
+        | None
+    ) = None
+    reason: str | None = None
+
+
+class AgentAutomationEligibility(BaseModel):
+    """Caller-specific automation principal eligibility for an agent."""
+
+    personal: AutomationEligibilityMode
+    organisation: AutomationEligibilityMode
+
+
 class AgentDetail(AgentSummary):
     """Complete owned definition returned after selection or mutation."""
 
@@ -192,6 +216,7 @@ class AgentDetail(AgentSummary):
     max_turns: int | None
     input_schema: dict[str, Any] | None
     output_schema: dict[str, Any] | None
+    automation_eligibility: AgentAutomationEligibility
 
 
 class AgentListResponse(BaseModel):

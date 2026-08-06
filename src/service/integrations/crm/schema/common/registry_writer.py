@@ -16,6 +16,10 @@ from src.domain.models.organisation_tables.sync.crm.custom_fields import (
     CRMCustomFieldSource,
 )
 from src.infra.utils.logger import get_logger
+from src.service.automation.triggers.crm_schema import custom_field_type
+from src.service.automation.triggers.service import (
+    AutomationTriggerSchemaReconciliationService,
+)
 from src.service.integrations.crm.schema.common.types import (
     NormalizedSchemaField,
     NormalizedSchemaOption,
@@ -40,6 +44,7 @@ class CRMRegistryWriter:
         provider_name: str,
         options_serializer: OptionsSerializer,
         log_label: str,
+        automation_reconciler: AutomationTriggerSchemaReconciliationService | None = None,
     ) -> None:
         self.session = session
         self.organisation_id = organisation_id
@@ -48,6 +53,9 @@ class CRMRegistryWriter:
         self.provider_name = provider_name
         self.options_serializer = options_serializer
         self.log_label = log_label
+        self.automation_reconciler = automation_reconciler or (
+            AutomationTriggerSchemaReconciliationService(session, organisation_id)
+        )
 
     async def apply(
         self,
@@ -61,6 +69,7 @@ class CRMRegistryWriter:
 
         result = RegistryWriteResult()
         incoming_keys: set[str] = set()
+        breaking_automation_keys: set[str] = set()
 
         for field in fields:
             incoming_keys.add(field.provider_field_key)
@@ -73,8 +82,17 @@ class CRMRegistryWriter:
                 continue
 
             was_active = bool(row.is_active)
+            previous_key = row.key
+            previous_type = _value(row.data_type)
+            previous_automation_type = custom_field_type(row)
             self._apply_fields(row, field, now=now)
             row.is_active = True
+            if (
+                previous_key != row.key
+                or previous_type != _value(row.data_type)
+                or previous_automation_type != custom_field_type(row)
+            ):
+                breaking_automation_keys.add(previous_key)
             result.rows.append(row)
             if was_active:
                 result.updated += 1
@@ -87,8 +105,13 @@ class CRMRegistryWriter:
             if row.is_active:
                 row.is_active = False
                 result.deactivated += 1
+                breaking_automation_keys.add(row.key)
 
         await self.session.flush()
+        if self.entity_type == CRMCustomFieldEntity.DEAL and breaking_automation_keys:
+            await self.automation_reconciler.reconcile_custom_field_changes(
+                breaking_automation_keys
+            )
         logger.info(
             f"{self.log_label} registry write applied",
             extra={
@@ -164,3 +187,7 @@ class CRMRegistryWriter:
         row.data_payload = field.data_payload or None
         row.source_modified_at = field.source_modified_at
         row.last_seen_at = now
+
+
+def _value(value: Any) -> Any:
+    return getattr(value, "value", value)

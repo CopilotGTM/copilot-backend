@@ -10,49 +10,48 @@ from src.api.schemas.automation_trigger_models import (
     AutomationTriggerCreateRequest,
     AutomationTriggerUpdateRequest,
 )
-from src.domain.models.organisation_tables import (
-    AutomationTriggerStatus,
-    AutomationTriggerType,
-)
+from src.domain.models.organisation_tables import AutomationTriggerStatus
 
 
 def _schedule_payload() -> dict:
     return {
         "name": "  Friday pipeline review  ",
         "status": AutomationTriggerStatus.ACTIVE,
-        "trigger_type": AutomationTriggerType.SCHEDULE,
-        "source_domain": None,
-        "event_type": None,
-        "trigger_config": {
+        "trigger_key": "time.schedule.due",
+        "config": {
             "timezone": "Asia/Kolkata",
             "starts_at": "2026-07-17T09:00:00+05:30",
             "recurrence": "weekly",
         },
-        "filter_config": {},
-        "scope_config": {"entity": "deal", "statuses": ["open"]},
-        "task_config": {"goal": "  Rank my open deals by risk.  "},
+        "principal_mode": "personal",
+        "scope": {"type": "owned_or_created_by_principal"},
+        "audience": {"mode": "principal"},
+        "task": {"goal": "  Rank my open deals by risk.  "},
     }
 
 
 def test_create_contract_normalizes_user_editable_trigger_fields() -> None:
+    """Verify the contract that create contract normalizes user editable trigger fields."""
     body = AutomationTriggerCreateRequest(**_schedule_payload())
 
     assert body.name == "Friday pipeline review"
-    assert body.task_config == {"goal": "Rank my open deals by risk."}
+    assert body.task.goal == "Rank my open deals by risk."
 
 
 @pytest.mark.parametrize(
     "field_name",
     [
         "organisation_id",
-        "owner_user_id",
+        "created_by_user_id",
         "target_type",
         "target_id",
         "target_revision",
         "target_snapshot",
-        "scope_type",
+        "family",
+        "match_event_keys",
+        "execution_principal_type",
+        "execution_principal_id",
         "config_schema_version",
-        "delivery_config",
         "config_hash",
         "next_trigger_at",
         "last_triggered_at",
@@ -62,6 +61,7 @@ def test_create_contract_normalizes_user_editable_trigger_fields() -> None:
     ],
 )
 def test_create_contract_rejects_server_owned_fields(field_name: str) -> None:
+    """Verify the contract that create contract rejects server owned fields."""
     payload = {**_schedule_payload(), field_name: "client-controlled"}
 
     with pytest.raises(ValidationError):
@@ -69,6 +69,7 @@ def test_create_contract_rejects_server_owned_fields(field_name: str) -> None:
 
 
 def test_trigger_write_contract_rejects_archived_status() -> None:
+    """Verify the contract that trigger write contract rejects archived status."""
     payload = {**_schedule_payload(), "status": AutomationTriggerStatus.ARCHIVED}
 
     with pytest.raises(ValidationError, match="archived status is only available through DELETE"):
@@ -76,6 +77,7 @@ def test_trigger_write_contract_rejects_archived_status() -> None:
 
 
 def test_update_contract_requires_complete_body_and_aware_concurrency_token() -> None:
+    """Verify the contract that update contract requires complete body and aware concurrency token."""
     with pytest.raises(ValidationError):
         AutomationTriggerUpdateRequest(expected_updated_at=datetime.now(UTC))
 

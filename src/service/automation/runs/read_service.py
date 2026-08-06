@@ -16,6 +16,7 @@ from src.api.schemas.agent_run_models import (
 from src.domain.models.organisation_tables import AgentRun, AgentRunStatus
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
+from src.service.automation.events.contracts import AutomationEventEnvelope
 from src.service.automation.runs.read_access import AgentRunReadAccess
 
 logger = get_logger("agent_run_read")
@@ -51,7 +52,7 @@ class AgentRunReadService:
         self,
         session: AsyncSession,
         organisation_id: UUID,
-        owner_user_id: UUID,
+        audience_user_id: UUID,
         *,
         access: ReadAccess | None = None,
     ) -> None:
@@ -59,7 +60,7 @@ class AgentRunReadService:
         self.access = access or AgentRunReadAccess(
             session,
             organisation_id,
-            owner_user_id,
+            audience_user_id,
         )
 
     async def close(self) -> None:
@@ -119,6 +120,7 @@ class AgentRunReadService:
 
 
 def _summary(row: AgentRun) -> AgentRunSummary:
+    event = AutomationEventEnvelope.model_validate(row.input_snapshot)
     preview = row.output_text[:300] if row.output_text else None
     return AgentRunSummary(
         run_id=row.run_id,
@@ -126,7 +128,13 @@ def _summary(row: AgentRun) -> AgentRunSummary:
         trigger_id=row.trigger_id,
         agent_revision=row.agent_revision,
         status=row.status,
-        event_type=row.event_type,
+        event_id=row.event_id,
+        event_key=row.event_key,
+        correlation_id=row.correlation_id,
+        execution_principal_type=row.execution_principal_type,
+        audience_mode=row.audience_mode,
+        subject_type=event.subject.type,
+        subject_id=event.subject.id,
         attempt_count=row.attempt_count,
         model_name=row.model_name,
         latency_ms=row.latency_ms,
@@ -140,30 +148,28 @@ def _summary(row: AgentRun) -> AgentRunSummary:
 
 
 def _detail(row: AgentRun) -> AgentRunDetail:
+    summary = _summary(row)
+    event = AutomationEventEnvelope.model_validate(row.input_snapshot)
     return AgentRunDetail(
-        run_id=row.run_id,
-        agent_id=row.agent_id,
-        trigger_id=row.trigger_id,
-        agent_revision=row.agent_revision,
-        status=row.status,
-        source_domain=row.source_domain,
-        event_type=row.event_type,
-        source_event_id=row.source_event_id,
+        **summary.model_dump(),
+        created_by_user_id=row.created_by_user_id,
+        execution_principal_id=row.execution_principal_id,
+        audience_config=dict(row.audience_config),
         scheduled_for=row.scheduled_for,
-        attempt_count=row.attempt_count,
+        caused_by_run_id=row.caused_by_run_id,
+        causation_depth=row.causation_depth,
+        source_domain=event.source.domain,
+        source_system=event.source.system,
+        source_operation=event.source.operation.value,
+        source_event_id=event.source.source_event_id,
+        actor_type=event.actor.type.value,
+        actor_id=event.actor.id,
         claimed_at=row.claimed_at,
         claimed_by=row.claimed_by,
-        model_name=row.model_name,
         token_usage=row.token_usage,
         cost=row.cost,
-        latency_ms=row.latency_ms,
-        error_code=row.error_code,
-        error_message=row.error_message,
         output_text=row.output_text,
         output_json=row.output_json,
-        created_at=row.created_at,
-        started_at=row.started_at,
-        completed_at=row.completed_at,
         trigger_snapshot=dict(row.trigger_snapshot),
         agent_snapshot=dict(row.agent_snapshot),
         input_snapshot=dict(row.input_snapshot),

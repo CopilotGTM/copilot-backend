@@ -84,6 +84,11 @@ class DealSchemaService:
         fields = await self._load_internal_custom_fields()
         return [field.key for field in fields if field.key]
 
+    async def active_custom_field_definitions(self) -> list[CRMCustomFieldDefinition]:
+        """Return the active deal definitions used by schema-aware backend consumers."""
+
+        return await self._load_custom_fields()
+
     async def deal_detail_custom_column_definitions(
         self,
         *,

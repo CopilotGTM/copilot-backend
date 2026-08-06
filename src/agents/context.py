@@ -30,11 +30,19 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 from uuid import UUID
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+class AutomationCausation(TypedDict):
+    """Trusted lineage fields accepted by CRM write-context dataclasses."""
+
+    correlation_id: str | None
+    caused_by_run_id: UUID | None
+    causation_depth: int
 
 
 @dataclass
@@ -137,5 +145,35 @@ class AgentContext:
             metadata=new_metadata,
         )
 
+    def automation_causation(self) -> AutomationCausation:
+        """Validate automation lineage before a tool hands it to a durable write."""
 
-__all__ = ["AgentContext"]
+        raw_run_id = self.metadata.get("automation_caused_by_run_id")
+        if raw_run_id is None:
+            return {
+                "correlation_id": None,
+                "caused_by_run_id": None,
+                "causation_depth": 0,
+            }
+        try:
+            run_id = raw_run_id if isinstance(raw_run_id, UUID) else UUID(str(raw_run_id))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("automation caused_by_run_id must be a UUID") from exc
+        depth = self.metadata.get("automation_causation_depth")
+        if isinstance(depth, bool) or not isinstance(depth, int) or not 1 <= depth <= 3:
+            raise ValueError("automation causation_depth must be between 1 and 3")
+        correlation_id = self.metadata.get("automation_correlation_id")
+        if (
+            not isinstance(correlation_id, str)
+            or not correlation_id.strip()
+            or len(correlation_id) > 512
+        ):
+            raise ValueError("automation correlation_id must contain at most 512 characters")
+        return {
+            "correlation_id": correlation_id,
+            "caused_by_run_id": run_id,
+            "causation_depth": depth,
+        }
+
+
+__all__ = ["AgentContext", "AutomationCausation"]

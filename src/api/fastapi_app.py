@@ -48,7 +48,11 @@ from src.api.routers.app_preferences.meeting_recording_policy_handler import (
 from src.api.routers.app_preferences.membership_handler import membership_policy_router
 from src.api.routers.app_preferences.navigation_handler import navigation_preferences_router
 from src.api.routers.app_preferences.onboarding_handler import onboarding_preferences_router
-from src.api.routers.automation import agent_runs_router, automation_triggers_router
+from src.api.routers.automation import (
+    agent_runs_router,
+    automation_triggers_router,
+    automation_webhooks_router,
+)
 from src.api.routers.bots import bots_router
 from src.api.routers.chat.messages_handler import router as chat_messages_router
 from src.api.routers.chat.sessions_handler import router as chat_sessions_router
@@ -375,6 +379,11 @@ def create_fastapi_app():
         agent_runs_router,
         prefix="/users/v1",
         tags=["agent-runs"],
+    )
+    fastapp.include_router(
+        automation_webhooks_router,
+        prefix="/webhooks/v1/automation",
+        tags=["automation-webhooks"],
     )
 
     # Integration routers

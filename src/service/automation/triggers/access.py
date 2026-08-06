@@ -6,10 +6,11 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.organisation_tables import (
     AgentStatus,
+    AutomationPrincipalType,
     AutomationTargetType,
     AutomationTrigger,
     AutomationTriggerStatus,
@@ -19,13 +20,20 @@ from src.domain.models.organisation_tables import (
 _MUTABLE_COLUMNS = {
     "name",
     "status",
-    "trigger_type",
-    "source_domain",
-    "event_type",
+    "trigger_key",
+    "family",
+    "match_event_keys",
     "trigger_config",
+    "watch_config",
     "filter_config",
+    "execution_principal_type",
+    "execution_principal_id",
+    "scope_type",
     "scope_config",
+    "audience_mode",
+    "audience_config",
     "task_config",
+    "delivery_config",
     "next_trigger_at",
     "config_hash",
     "target_revision",
@@ -36,18 +44,35 @@ _MUTABLE_COLUMNS = {
 class AutomationTriggerAccess:
     """Run all trigger SQL inside one immutable organization and owner boundary."""
 
-    def __init__(self, session: AsyncSession, organisation_id: UUID, owner_user_id: UUID) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        organisation_id: UUID,
+        created_by_user_id: UUID,
+        *,
+        is_admin: bool = False,
+    ) -> None:
         self.session = session
         self.organisation_id = organisation_id
-        self.owner_user_id = owner_user_id
+        self.created_by_user_id = created_by_user_id
+        self.is_admin = is_admin
 
     def _owned_conditions(self, target_id: UUID | None = None) -> list[Any]:
         columns = cast(Any, AutomationTrigger).__table__.c
         conditions = [
             columns.organisation_id == self.organisation_id,
-            columns.owner_user_id == self.owner_user_id,
             columns.target_type == AutomationTargetType.AGENT.value,
         ]
+        if self.is_admin:
+            conditions.append(
+                or_(
+                    columns.created_by_user_id == self.created_by_user_id,
+                    columns.execution_principal_type
+                    == AutomationPrincipalType.ORGANISATION_SERVICE.value,
+                )
+            )
+        else:
+            conditions.append(columns.created_by_user_id == self.created_by_user_id)
         if target_id is not None:
             conditions.append(columns.target_id == target_id)
         return conditions
@@ -56,20 +81,14 @@ class AutomationTriggerAccess:
         """Resolve a non-archived target through the same owner boundary."""
 
         columns = cast(Any, UserAgent).__table__.c
-        return (
-            (
-                await self.session.execute(
-                    select(UserAgent).where(
-                        columns.organisation_id == self.organisation_id,
-                        columns.owner_user_id == self.owner_user_id,
-                        columns.agent_id == agent_id,
-                        columns.status != AgentStatus.ARCHIVED.value,
-                    )
-                )
-            )
-            .scalars()
-            .first()
-        )
+        conditions = [
+            columns.organisation_id == self.organisation_id,
+            columns.agent_id == agent_id,
+            columns.status != AgentStatus.ARCHIVED.value,
+        ]
+        if not self.is_admin:
+            conditions.append(columns.owner_user_id == self.created_by_user_id)
+        return (await self.session.execute(select(UserAgent).where(*conditions))).scalars().first()
 
     async def list_triggers(
         self, agent_id: UUID, *, status: AutomationTriggerStatus | None, limit: int, offset: int
@@ -185,3 +204,35 @@ class AutomationTriggerAccess:
             expected_updated_at=expected_updated_at,
             values={"status": AutomationTriggerStatus.ARCHIVED.value},
         )
+
+
+class AutomationScheduleAccess:
+    """Claim bounded due schedule rows inside one tenant transaction."""
+
+    def __init__(self, session: AsyncSession, organisation_id: UUID) -> None:
+        self.session = session
+        self.organisation_id = organisation_id
+
+    async def claim_due_schedules(
+        self,
+        *,
+        now: datetime,
+        limit: int,
+    ) -> list[AutomationTrigger]:
+        """Lock one due batch without blocking another scheduler worker."""
+
+        columns = cast(Any, AutomationTrigger).__table__.c
+        statement = (
+            select(AutomationTrigger)
+            .where(
+                columns.organisation_id == self.organisation_id,
+                columns.status == AutomationTriggerStatus.ACTIVE.value,
+                columns.family == "schedule",
+                columns.next_trigger_at.is_not(None),
+                columns.next_trigger_at <= now,
+            )
+            .order_by(columns.next_trigger_at, columns.trigger_id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        return list((await self.session.execute(statement)).scalars().all())

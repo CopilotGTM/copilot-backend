@@ -1,343 +1,726 @@
-"""Orchestration tests for CRM event activation into pending agent runs."""
+"""Regression tests for test activation; these cases lock the backend contract used by the changed feature."""
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
-from src.agents.context import AgentContext
 from src.domain.models.organisation_tables import (
     AgentRun,
-    AgentRunStatus,
     AutomationTrigger,
+    CRMCustomFieldDataType,
+    CRMCustomFieldDefinition,
 )
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealMutationEvent
-from src.service.automation.errors import AutomationServiceError
-from src.service.automation.runs.runtime_executor import AgentRunExecutor
+from src.service.automation.events.contracts import AutomationEventEnvelope
 from src.service.automation.triggers.activation import AutomationTriggerActivationService
-from src.service.automation.triggers.runtime import map_agent_run_runtime
+from src.service.automation.triggers.crm_schema import merge_deal_custom_fields
+from src.service.automation.triggers.registry import AUTOMATION_REGISTRY
+
+HASH = "a" * 64
+
+
+def agent_snapshot(agent_id: UUID, revision: int = 1) -> dict:
+    """Build the agent snapshot fixture used by the surrounding regression cases."""
+    return {
+        "agent_id": str(agent_id),
+        "revision": revision,
+        "agent_type": "general",
+        "prompt": "Handle this event.",
+        "model_name": None,
+        "model_config": {},
+        "allowed_tools": [],
+        "allowed_skills": [],
+        "max_turns": None,
+        "input_schema": None,
+        "output_mode": "text",
+        "output_schema": None,
+    }
+
+
+def trigger(
+    organisation_id: UUID,
+    principal_id: UUID,
+    *,
+    trigger_key: str = "crm.contact.updated",
+    family: str = "event",
+    match_event_keys: list[str] | None = None,
+    principal_type: str = "user",
+    scope_type: str = "owned_or_created_by_principal",
+    audience_mode: str = "principal",
+    audience_config: dict | None = None,
+    watch_config: dict | None = None,
+    filter_config: dict | None = None,
+    config_hash: str = HASH,
+) -> AutomationTrigger:
+    """Build the trigger fixture used by the surrounding regression cases."""
+    agent_id = uuid4()
+    return AutomationTrigger(
+        organisation_id=organisation_id,
+        created_by_user_id=principal_id,
+        name="Automation",
+        target_id=agent_id,
+        target_revision=1,
+        target_snapshot=agent_snapshot(agent_id),
+        trigger_key=trigger_key,
+        family=family,
+        match_event_keys=match_event_keys or [trigger_key],
+        trigger_config={},
+        watch_config=watch_config,
+        filter_config=filter_config,
+        execution_principal_type=principal_type,
+        execution_principal_id=(
+            organisation_id if principal_type == "organisation_service" else principal_id
+        ),
+        scope_type=scope_type,
+        audience_mode=audience_mode,
+        audience_config=audience_config or {},
+        config_hash=config_hash,
+    )
+
+
+def contact_event(
+    organisation_id: UUID,
+    owner_id: UUID,
+    *,
+    event_key: str = "crm.contact.updated",
+    source_mode: str = "interactive",
+    caused_by_run_id: UUID | None = None,
+    causation_depth: int | None = None,
+) -> AutomationEventEnvelope:
+    """Build the contact event fixture used by the surrounding regression cases."""
+    event_id = uuid4()
+    subject_id = uuid4()
+    operation = "create" if event_key.endswith(".created") else "update"
+    return AutomationEventEnvelope.model_validate(
+        {
+            "event_id": str(event_id),
+            "organisation_id": str(organisation_id),
+            "event_key": event_key,
+            "route": {"mode": "match"},
+            "occurred_at": datetime(2026, 8, 5, tzinfo=UTC),
+            "source": {
+                "domain": "crm",
+                "system": "internal",
+                "operation": operation,
+                "mode": source_mode,
+                "source_event_id": str(event_id),
+            },
+            "actor": {"type": "user", "id": str(owner_id)},
+            "subject": {"type": "contact", "id": str(subject_id)},
+            "record": {
+                "id": str(subject_id),
+                "owner_id": str(owner_id),
+                "created_by_user_id": str(owner_id),
+                "email": "buyer@example.com",
+            },
+            "changes": (
+                {"email": {"before": None, "after": "buyer@example.com"}}
+                if operation == "update"
+                else {}
+            ),
+            "correlation_id": "request-123",
+            "caused_by_run_id": str(caused_by_run_id) if caused_by_run_id else None,
+            "causation_depth": (
+                causation_depth if causation_depth is not None else 1 if caused_by_run_id else 0
+            ),
+            "idempotency_key": f"{event_key}:{event_id}",
+        }
+    )
+
+
+def manual_event(binding: AutomationTrigger) -> AutomationEventEnvelope:
+    """Build the manual event fixture used by the surrounding regression cases."""
+    event_id = uuid4()
+    return AutomationEventEnvelope.model_validate(
+        {
+            "event_id": str(event_id),
+            "organisation_id": str(binding.organisation_id),
+            "event_key": "system.manual.invoked",
+            "route": {
+                "mode": "direct",
+                "trigger_id": str(binding.trigger_id),
+                "config_hash": binding.config_hash,
+            },
+            "occurred_at": datetime(2026, 8, 5, tzinfo=UTC),
+            "source": {
+                "domain": "system",
+                "system": "agent_studio",
+                "operation": "invoke",
+                "mode": "interactive",
+                "source_event_id": str(event_id),
+            },
+            "actor": {"type": "user", "id": str(binding.execution_principal_id)},
+            "subject": {"type": None, "id": None},
+            "idempotency_key": f"manual:{binding.trigger_id}:{event_id}",
+        }
+    )
+
+
+def deal_custom_event(
+    organisation_id: UUID,
+    owner_id: UUID,
+    *,
+    field_key: str,
+    before: object,
+    after: object,
+) -> AutomationEventEnvelope:
+    """Build a queued deal update containing one historical custom-field fact."""
+    event_id, deal_id = uuid4(), uuid4()
+    return AutomationEventEnvelope.model_validate(
+        {
+            "event_id": event_id,
+            "organisation_id": organisation_id,
+            "event_key": "crm.deal.updated",
+            "route": {"mode": "match"},
+            "occurred_at": datetime(2026, 8, 5, tzinfo=UTC),
+            "source": {
+                "domain": "crm",
+                "system": "internal",
+                "operation": "update",
+                "mode": "interactive",
+                "source_event_id": str(event_id),
+            },
+            "actor": {"type": "user", "id": str(owner_id)},
+            "subject": {"type": "deal", "id": str(deal_id)},
+            "record": {
+                "id": str(deal_id),
+                "deal_status": "open",
+                "owner_id": str(owner_id),
+                "created_by_user_id": str(owner_id),
+                "custom_properties": {field_key: after},
+            },
+            "changes": {f"custom_properties.{field_key}": {"before": before, "after": after}},
+            "idempotency_key": f"crm.deal.updated:{event_id}",
+        }
+    )
 
 
 class FakeAccess:
-    def __init__(
-        self,
-        event: CRMDealMutationEvent,
-        deal: CRMDeal,
-        triggers: list[AutomationTrigger],
-        *,
-        insert_created: bool = True,
-    ) -> None:
-        self.event = event
-        self.deal = deal
-        self.triggers = triggers
-        self.insert_created = insert_created
+    """Represent the Fake Access test double used by the surrounding regression cases."""
+
+    def __init__(self, candidates: list[AutomationTrigger]) -> None:
+        self.candidates = candidates
+        self.active_agent_ids = {item.target_id for item in candidates}
+        self.active_user_ids = {
+            item.execution_principal_id
+            for item in candidates
+            if str(item.execution_principal_type) in {"user", "AutomationPrincipalType.USER"}
+        }
+        self.causation_trigger_ids: set[UUID] = set()
+        self.subject_participant_ids: set[UUID] = set()
+        self.invalid_options: set[tuple[str, frozenset[str]]] = set()
+        self.paused: list[tuple[UUID, str, str]] = []
         self.runs: list[AgentRun] = []
+        self.existing: AgentRun | None = None
+        self.inserted = True
 
-    async def get_crm_event(self, event_id: UUID) -> CRMDealMutationEvent | None:
-        return self.event if event_id == self.event.event_id else None
+    async def list_event_candidates(self, event_key: str) -> list[AutomationTrigger]:
+        """Expose the list event candidates operation expected by the Fake Access test double."""
+        return [item for item in self.candidates if event_key in item.match_event_keys]
 
-    async def get_deal(self, deal_id: UUID) -> CRMDeal | None:
-        return self.deal if deal_id == self.deal.deal_id else None
+    async def get_direct_candidate(self, trigger_id: UUID) -> AutomationTrigger | None:
+        """Expose the get direct candidate operation expected by the Fake Access test double."""
+        return next((item for item in self.candidates if item.trigger_id == trigger_id), None)
 
-    async def get_crm_entity(self, entity_type: str, entity_id: UUID) -> object | None:
-        if entity_type == self.event.entity_type and entity_id == self.event.entity_id:
-            return self.deal
-        return None
+    async def list_active_agent_ids(self, agent_ids: set[UUID]) -> set[UUID]:
+        """Expose the list active agent ids operation expected by the Fake Access test double."""
+        return agent_ids & self.active_agent_ids
 
-    async def list_crm_event_candidates(
-        self, *, owner_user_id: UUID, source_domain: str, event_type: str
-    ) -> list[AutomationTrigger]:
-        assert owner_user_id == self.deal.owner_id
-        assert source_domain == "crm"
-        assert event_type == self.event.semantic_event_types[0]
-        return self.triggers
+    async def list_active_user_ids(self, user_ids: set[UUID]) -> set[UUID]:
+        """Expose the list active user ids operation expected by the Fake Access test double."""
+        return user_ids & self.active_user_ids
+
+    async def validate_option_selection(self, source: str, values: set[str]) -> None:
+        """Expose the validate option selection operation expected by the Fake Access test double."""
+        if (source, frozenset(values)) in self.invalid_options:
+            raise ValueError("saved option no longer exists")
+
+    async def list_subject_participant_user_ids(
+        self,
+        _subject_type: str,
+        _subject_id: UUID,
+    ) -> set[UUID]:
+        """Expose the list subject participant user ids operation expected by the Fake Access test double."""
+        return set(self.subject_participant_ids)
+
+    async def pause_invalid_trigger(
+        self,
+        trigger_id: UUID,
+        *,
+        error_code: str,
+        message: str,
+    ) -> bool:
+        """Expose the pause invalid trigger operation expected by the Fake Access test double."""
+        self.paused.append((trigger_id, error_code, message))
+        return True
+
+    async def list_causation_trigger_ids(self, caused_by_run_id: UUID | None) -> set[UUID]:
+        """Expose the list causation trigger ids operation expected by the Fake Access test double."""
+        return set(self.causation_trigger_ids) if caused_by_run_id else set()
 
     async def insert_run_if_absent(self, run: AgentRun) -> bool:
+        """Expose the insert run if absent operation expected by the Fake Access test double."""
         self.runs.append(run)
-        return self.insert_created
+        return self.inserted
 
-    async def get_run_by_idempotency_key(self, idempotency_key: str) -> AgentRun | None:
-        return self.runs[-1] if self.runs[-1].idempotency_key == idempotency_key else None
-
-
-def fixtures() -> tuple[CRMDealMutationEvent, CRMDeal, AutomationTrigger]:
-    organisation_id, owner_id, deal_id = uuid4(), uuid4(), uuid4()
-    pipeline_id, from_stage_id, to_stage_id = uuid4(), uuid4(), uuid4()
-    agent_id = uuid4()
-    event = CRMDealMutationEvent(
-        event_id=uuid4(),
-        organisation_id=organisation_id,
-        event_type="crm.deal.updated",
-        semantic_event_types=["crm.deal.stage_changed"],
-        entity_type="deal",
-        entity_id=deal_id,
-        deal_id=deal_id,
-        operation="move_stage",
-        occurred_at=datetime(2026, 7, 13, tzinfo=UTC),
-        changed_fields={"stage_id": {"old": str(from_stage_id), "new": str(to_stage_id)}},
-        source="api",
-    )
-    deal = CRMDeal(
-        organisation_id=organisation_id,
-        integration_id=uuid4(),
-        deal_id=deal_id,
-        owner_id=owner_id,
-        pipeline_id=pipeline_id,
-        stage_id=to_stage_id,
-        deal_status="open",
-    )
-    trigger = AutomationTrigger(
-        organisation_id=organisation_id,
-        owner_user_id=owner_id,
-        name="Negotiation coach",
-        target_id=agent_id,
-        target_revision=5,
-        target_snapshot={
-            "agent_id": str(agent_id),
-            "revision": 5,
-            "agent_type": "general",
-            "prompt": "Coach this deal.",
-            "model_name": None,
-            "model_config": {},
-            "allowed_tools": [],
-            "allowed_skills": [],
-            "max_turns": None,
-            "input_schema": None,
-            "output_mode": "text",
-            "output_schema": None,
-        },
-        trigger_type="event",
-        source_domain="crm",
-        event_type="crm.deal.stage_changed",
-        filter_config={
-            "schema_key": "crm.deal.stage_changed.v1",
-            "pipeline_ids": [str(pipeline_id)],
-            "stage_change_mode": "specific_stage",
-            "from_stage_ids": [str(from_stage_id)],
-            "to_stage_ids": [str(to_stage_id)],
-            "outcome": "any",
-        },
-        task_config={"goal": "Recommend the next action"},
-        config_hash="hash",
-    )
-    return event, deal, trigger
+    async def get_run(self, *, trigger_id: UUID, event_id: UUID) -> AgentRun | None:
+        """Expose the get run operation expected by the Fake Access test double."""
+        if (
+            self.existing is not None
+            and self.existing.trigger_id == trigger_id
+            and self.existing.event_id == event_id
+        ):
+            return self.existing
+        return None
 
 
 @pytest.mark.asyncio
-async def test_activation_creates_complete_pending_run_without_commit_or_publish() -> None:
-    event, deal, trigger = fixtures()
-    session = AsyncMock()
-    access = FakeAccess(event, deal, [trigger])
-    service = AutomationTriggerActivationService(
-        session,
-        event.organisation_id,
-        access=access,  # type: ignore[arg-type]
-    )
-
-    result = await service.activate_crm_event(event.event_id)
-
-    assert result.matched_count == 1
-    assert len(result.created_run_ids) == 1
-    assert result.replayed_run_ids == ()
-    run = access.runs[0]
-    assert run.status == AgentRunStatus.PENDING
-    assert run.owner_user_id == deal.owner_id
-    assert run.agent_snapshot == trigger.target_snapshot
-    assert run.trigger_snapshot["filter_config"] == trigger.filter_config
-    assert run.input_snapshot["deal"] == {
-        "deal_id": str(deal.deal_id),
-        "pipeline_id": str(deal.pipeline_id),
-        "stage_id": str(deal.stage_id),
-        "outcome": "open",
-    }
-    assert run.input_snapshot["subject"] == {
-        "type": "deal",
-        "id": str(deal.deal_id),
-    }
-    assert run.idempotency_key == (
-        f"trigger:{trigger.trigger_id}:crm:crm.deal.stage_changed:{event.event_id}"
-    )
-    session.commit.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_generic_activation_routes_crm_event_by_persisted_identity() -> None:
-    """The worker entry point must select exactly the semantic type in its dispatch row."""
-
-    event, deal, trigger = fixtures()
-    access = FakeAccess(event, deal, [trigger])
-    service = AutomationTriggerActivationService(
-        AsyncMock(),
-        event.organisation_id,
-        access=access,  # type: ignore[arg-type]
-    )
-
-    result = await service.activate_event(
-        source_domain="crm",
-        source_event_id=str(event.event_id),
-        event_type="crm.deal.stage_changed",
-    )
-
-    assert result.created_run_ids == (access.runs[0].run_id,)
-
-
-@pytest.mark.asyncio
-async def test_generic_activation_rejects_unknown_domain_and_semantic_mismatch() -> None:
-    """A forged dispatch cannot route to another domain or semantic on the source row."""
-
-    event, deal, trigger = fixtures()
-    service = AutomationTriggerActivationService(
-        AsyncMock(),
-        event.organisation_id,
-        access=FakeAccess(event, deal, [trigger]),  # type: ignore[arg-type]
-    )
-
-    with pytest.raises(AutomationServiceError, match="Unsupported automation source domain"):
-        await service.activate_event(
-            source_domain="gmail",
-            source_event_id="message-1",
-            event_type="gmail.message.received",
-        )
-    with pytest.raises(AutomationServiceError, match="does not contain dispatched event type"):
-        await service.activate_event(
-            source_domain="crm",
-            source_event_id=str(event.event_id),
-            event_type="crm.contact.created",
-        )
-
-
-@pytest.mark.asyncio
-async def test_activation_replay_returns_existing_run_and_unsupported_event_is_noop() -> None:
-    event, deal, trigger = fixtures()
-    access = FakeAccess(event, deal, [trigger], insert_created=False)
-    service = AutomationTriggerActivationService(
-        AsyncMock(),
-        event.organisation_id,
-        access=access,  # type: ignore[arg-type]
-    )
-
-    replay = await service.activate_crm_event(event.event_id)
-    assert replay.created_run_ids == ()
-    assert replay.replayed_run_ids == (access.runs[0].run_id,)
-
-    event.semantic_event_types = ["crm.deal.amount_changed"]
-    skipped = await service.activate_crm_event(event.event_id)
-    assert skipped.matched_count == 0
-    assert skipped.skipped_reason == "unsupported_event"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("event_type", "entity_type", "identity_field"),
-    [
-        ("crm.deal.created", "deal", "deal_id"),
-        ("crm.contact.created", "contact", "contact_id"),
-        ("crm.contact.deleted", "contact", "contact_id"),
-        ("crm.account.created", "account", "account_id"),
-        ("crm.account.deleted", "account", "account_id"),
-    ],
-)
-async def test_activation_creates_run_for_supported_crm_lifecycle_event(
-    event_type: str, entity_type: str, identity_field: str
-) -> None:
-    organisation_id, owner_id, entity_id, agent_id = uuid4(), uuid4(), uuid4(), uuid4()
-    event = CRMDealMutationEvent(
-        event_id=uuid4(),
-        organisation_id=organisation_id,
-        event_type=event_type,
-        semantic_event_types=[event_type],
-        entity_type=entity_type,
-        entity_id=entity_id,
-        deal_id=entity_id if entity_type == "deal" else None,
-        operation=event_type.rsplit(".", 1)[-1],
-        occurred_at=datetime(2026, 7, 21, tzinfo=UTC),
-        changed_fields={"id": {"old": None, "new": str(entity_id)}},
-        source="api",
-    )
-    entity = SimpleNamespace(owner_id=owner_id)
-    if entity_type == "deal":
-        entity.deal_id = entity_id
-        entity.pipeline_id = None
-        entity.stage_id = None
-        entity.deal_status = "open"
-    elif entity_type == "contact":
-        entity.contact_id = entity_id
-        entity.company_id = None
-    else:
-        entity.company_id = entity_id
-
-    trigger = AutomationTrigger(
-        organisation_id=organisation_id,
-        owner_user_id=owner_id,
-        name="Lifecycle agent",
-        target_id=agent_id,
-        target_revision=1,
-        target_snapshot={
-            "agent_id": str(agent_id),
-            "revision": 1,
-            "agent_type": "general",
-            "prompt": "Handle the CRM lifecycle event.",
-            "model_name": None,
-            "model_config": {},
-            "allowed_tools": [],
-            "allowed_skills": [],
-            "max_turns": None,
-            "input_schema": None,
-            "output_mode": "text",
-            "output_schema": None,
-        },
-        trigger_type="event",
-        source_domain="crm",
-        event_type=event_type,
-        filter_config={"schema_key": f"{event_type}.v1"},
-        config_hash="hash",
-    )
-    access = FakeAccess(event, entity, [trigger])  # type: ignore[arg-type]
-    service = AutomationTriggerActivationService(
-        AsyncMock(),
+async def test_match_route_applies_scope_watch_filter_and_builds_pinned_run() -> None:
+    """Verify the contract that match route applies scope watch filter and builds pinned run."""
+    organisation_id, principal_id = uuid4(), uuid4()
+    binding = trigger(
         organisation_id,
-        access=access,  # type: ignore[arg-type]
+        principal_id,
+        watch_config={"mode": "any", "paths": ["email"]},
+        filter_config={
+            "all": [
+                {
+                    "path": "changes.email.after",
+                    "operator": "eq",
+                    "value": "buyer@example.com",
+                }
+            ]
+        },
+    )
+    event = contact_event(organisation_id, principal_id)
+    access = FakeAccess([binding])
+    service = AutomationTriggerActivationService(
+        object(),  # type: ignore[arg-type]
+        organisation_id,
+        access=access,
+        registry=AUTOMATION_REGISTRY,
     )
 
-    result = await service.activate_crm_event(event.event_id)
+    result = await service.activate(event)
+
+    assert result.candidate_count == 1
+    assert result.matched_count == 1
+    assert result.correlation_id == "request-123"
+    assert result.latency_ms >= 0
+    assert len(result.created_run_ids) == 1
+    assert [(item.status, item.reason) for item in result.outcomes] == [("created", None)]
+    run = access.runs[0]
+    assert run.execution_principal_id == principal_id
+    assert run.event_id == event.event_id
+    assert run.event_key == event.event_key
+    assert run.correlation_id == "request-123"
+    assert run.agent_snapshot == binding.target_snapshot
+    assert run.input_snapshot == event.model_dump(mode="json")
+    assert run.idempotency_key == f"trigger:{binding.trigger_id}:event:{event.event_id}"
+    assert (
+        result.outcomes[0].as_dict(
+            correlation_id=result.correlation_id,
+            latency_ms=result.latency_ms,
+        )["matched"]
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_personal_scope_fails_closed_while_organisation_scope_runs_once() -> None:
+    """Verify the contract that personal scope fails closed while organisation scope runs once."""
+    organisation_id = uuid4()
+    event_owner, other_user = uuid4(), uuid4()
+    personal = trigger(organisation_id, other_user)
+    shared = trigger(
+        organisation_id,
+        uuid4(),
+        principal_type="organisation_service",
+        scope_type="organisation",
+        audience_mode="none",
+    )
+    access = FakeAccess([personal, shared])
+
+    result = await AutomationTriggerActivationService(
+        object(),  # type: ignore[arg-type]
+        organisation_id,
+        access=access,
+        registry=AUTOMATION_REGISTRY,
+    ).activate(contact_event(organisation_id, event_owner))
+
+    assert result.candidate_count == 2
+    assert result.matched_count == 1
+    assert [item.reason for item in result.outcomes] == ["scope_mismatch", None]
+    assert access.runs[0].trigger_id == shared.trigger_id
+
+
+@pytest.mark.asyncio
+async def test_direct_route_requires_the_exact_active_config_hash() -> None:
+    """Verify the contract that direct route requires the exact active config hash."""
+    organisation_id, principal_id = uuid4(), uuid4()
+    binding = trigger(
+        organisation_id,
+        principal_id,
+        trigger_key="system.manual.invoked",
+        family="manual",
+    )
+    access = FakeAccess([binding])
+    service = AutomationTriggerActivationService(
+        object(),  # type: ignore[arg-type]
+        organisation_id,
+        access=access,
+        registry=AUTOMATION_REGISTRY,
+    )
+
+    success = await service.activate(manual_event(binding))
+    stale = await service.activate(
+        manual_event(binding).model_copy(
+            update={
+                "route": manual_event(binding).route.model_copy(
+                    update={"trigger_id": binding.trigger_id, "config_hash": "b" * 64}
+                )
+            }
+        )
+    )
+
+    assert success.matched_count == 1
+    assert stale.matched_count == 0
+    assert stale.outcomes[0].reason == "stale_config"
+
+
+@pytest.mark.asyncio
+async def test_direct_route_rejects_an_event_not_declared_by_the_selected_trigger() -> None:
+    """Bind a direct envelope to both the selected trigger and its declared event key."""
+    organisation_id, principal_id = uuid4(), uuid4()
+    binding = trigger(
+        organisation_id,
+        principal_id,
+        trigger_key="system.manual.invoked",
+        family="manual",
+    )
+    event_data = manual_event(binding).model_dump(mode="json")
+    event_data.update(
+        {
+            "event_key": "time.schedule.due",
+            "source": {
+                "domain": "time",
+                "system": "automation_scheduler",
+                "operation": "schedule",
+                "mode": "system",
+                "source_event_id": event_data["source"]["source_event_id"],
+            },
+            "actor": {"type": "system", "id": None},
+            "attributes": {
+                "scheduled_for": "2026-08-05T00:00:00+00:00",
+                "timezone": "UTC",
+            },
+        }
+    )
+    access = FakeAccess([binding])
+
+    result = await AutomationTriggerActivationService(
+        object(),  # type: ignore[arg-type]
+        organisation_id,
+        access=access,
+        registry=AUTOMATION_REGISTRY,
+    ).activate(AutomationEventEnvelope.model_validate(event_data))
+
+    assert result.matched_count == 0
+    assert result.outcomes[0].reason == "direct_event_mismatch"
+    assert not access.runs
+
+
+@pytest.mark.asyncio
+async def test_imports_inactive_authority_and_repeat_causation_skip_independently() -> None:
+    """Verify the contract that imports inactive authority and repeat causation skip independently."""
+    organisation_id, principal_id = uuid4(), uuid4()
+    import_binding = trigger(organisation_id, principal_id)
+    import_access = FakeAccess([import_binding])
+    import_result = await AutomationTriggerActivationService(
+        object(),  # type: ignore[arg-type]
+        organisation_id,
+        access=import_access,
+        registry=AUTOMATION_REGISTRY,
+    ).activate(contact_event(organisation_id, principal_id, source_mode="initial_sync"))
+    assert import_result.outcomes[0].reason == "source_mode_denied"
+
+    inactive_access = FakeAccess([import_binding])
+    inactive_access.active_user_ids.clear()
+    inactive_result = await AutomationTriggerActivationService(
+        object(),  # type: ignore[arg-type]
+        organisation_id,
+        access=inactive_access,
+        registry=AUTOMATION_REGISTRY,
+    ).activate(contact_event(organisation_id, principal_id))
+    assert inactive_result.outcomes[0].reason == "principal_inactive"
+
+    caused_by = uuid4()
+    repeated_access = FakeAccess([import_binding])
+    repeated_access.causation_trigger_ids.add(import_binding.trigger_id)
+    repeated_result = await AutomationTriggerActivationService(
+        object(),  # type: ignore[arg-type]
+        organisation_id,
+        access=repeated_access,
+        registry=AUTOMATION_REGISTRY,
+    ).activate(contact_event(organisation_id, principal_id, caused_by_run_id=caused_by))
+    assert repeated_result.outcomes[0].reason == "causation_repeat"
+
+    depth_access = FakeAccess([import_binding])
+    depth_result = await AutomationTriggerActivationService(
+        object(),  # type: ignore[arg-type]
+        organisation_id,
+        access=depth_access,
+        registry=AUTOMATION_REGISTRY,
+    ).activate(
+        contact_event(
+            organisation_id,
+            principal_id,
+            caused_by_run_id=caused_by,
+            causation_depth=3,
+        )
+    )
+    assert depth_result.outcomes[0].reason == "causation_depth_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_invalid_saved_matcher_pauses_only_that_binding_and_replay_resolves_run() -> None:
+    """Verify the contract that invalid saved matcher pauses only that binding and replay resolves run."""
+    organisation_id, principal_id = uuid4(), uuid4()
+    invalid = trigger(
+        organisation_id,
+        principal_id,
+        filter_config={"path": "record.unknown", "operator": "eq", "value": "x"},
+    )
+    valid = trigger(organisation_id, principal_id)
+    event = contact_event(organisation_id, principal_id)
+    access = FakeAccess([invalid, valid])
+    service = AutomationTriggerActivationService(
+        object(),  # type: ignore[arg-type]
+        organisation_id,
+        access=access,
+        registry=AUTOMATION_REGISTRY,
+    )
+
+    first = await service.activate(event)
+
+    assert first.matched_count == 1
+    assert [item.status for item in first.outcomes] == ["paused", "created"]
+    assert [item.reason for item in first.outcomes] == ["binding_contract_invalid", None]
+    assert access.paused[0][:2] == (invalid.trigger_id, "binding_contract_invalid")
+
+    existing = access.runs[-1]
+    access.inserted = False
+    access.existing = existing
+    replay = await service.activate(event)
+    assert replay.created_run_ids == ()
+    assert replay.replayed_run_ids == (existing.run_id,)
+    assert replay.outcomes[-1].status == "replayed"
+
+
+@pytest.mark.asyncio
+async def test_deleted_custom_field_does_not_poison_unrelated_queued_candidates() -> None:
+    """Validate historical facts independently from the current candidate schema."""
+    organisation_id, principal_id = uuid4(), uuid4()
+    stale = trigger(
+        organisation_id,
+        principal_id,
+        trigger_key="crm.deal.updated",
+        watch_config={"mode": "any", "paths": ["custom_properties.score"]},
+    )
+    valid = trigger(
+        organisation_id,
+        principal_id,
+        trigger_key="crm.deal.updated",
+    )
+    access = FakeAccess([stale, valid])
+
+    result = await AutomationTriggerActivationService(
+        object(),  # type: ignore[arg-type]
+        organisation_id,
+        access=access,
+        registry=merge_deal_custom_fields([]).registry,
+    ).activate(
+        deal_custom_event(
+            organisation_id,
+            principal_id,
+            field_key="score",
+            before="8.0",
+            after="9.0",
+        )
+    )
+
+    assert [(item.status, item.reason) for item in result.outcomes] == [
+        ("paused", "binding_contract_invalid"),
+        ("created", None),
+    ]
+    assert [run.trigger_id for run in access.runs] == [valid.trigger_id]
+
+
+@pytest.mark.asyncio
+async def test_changed_custom_field_type_isolated_to_the_affected_candidate() -> None:
+    """Treat a historical value mismatch as one invalid binding, not a dispatch failure."""
+    organisation_id, principal_id = uuid4(), uuid4()
+    current_field = CRMCustomFieldDefinition(
+        organisation_id=organisation_id,
+        key="score",
+        label="Score",
+        data_type=CRMCustomFieldDataType.BOOLEAN,
+        options={},
+    )
+    affected = trigger(
+        organisation_id,
+        principal_id,
+        trigger_key="crm.deal.updated",
+        filter_config={
+            "path": "record.custom_properties.score",
+            "operator": "eq",
+            "value": True,
+        },
+    )
+    valid = trigger(
+        organisation_id,
+        principal_id,
+        trigger_key="crm.deal.updated",
+    )
+    access = FakeAccess([affected, valid])
+
+    result = await AutomationTriggerActivationService(
+        object(),  # type: ignore[arg-type]
+        organisation_id,
+        access=access,
+        registry=merge_deal_custom_fields([current_field]).registry,
+    ).activate(
+        deal_custom_event(
+            organisation_id,
+            principal_id,
+            field_key="score",
+            before="8.0",
+            after="9.0",
+        )
+    )
+
+    assert [(item.status, item.reason) for item in result.outcomes] == [
+        ("paused", "binding_contract_invalid"),
+        ("created", None),
+    ]
+    assert [run.trigger_id for run in access.runs] == [valid.trigger_id]
+
+
+@pytest.mark.asyncio
+async def test_activation_resolves_and_persists_subject_participant_audience() -> None:
+    """Verify the contract that activation resolves and persists subject participant audience."""
+    organisation_id = uuid4()
+    audience_user_id = uuid4()
+    binding = trigger(
+        organisation_id,
+        uuid4(),
+        trigger_key="email.message.received",
+        match_event_keys=["email.message.received"],
+        principal_type="organisation_service",
+        scope_type="organisation",
+        audience_mode="subject_participants",
+    )
+    access = FakeAccess([binding])
+    access.active_user_ids.add(audience_user_id)
+
+    event_data = contact_event(organisation_id, uuid4()).model_dump(mode="json")
+    event_data.update(
+        {
+            "event_key": "email.message.received",
+            "source": {
+                "domain": "email",
+                "system": "gmail",
+                "operation": "signal",
+                "mode": "incremental_sync",
+                "source_event_id": event_data["subject"]["id"],
+            },
+            "subject": {"type": "email", "id": event_data["subject"]["id"]},
+            "record": {
+                "id": event_data["subject"]["id"],
+                "direction": "inbound",
+                "sender_email": "buyer@example.com",
+                "sender_domain": "example.com",
+                "recipient_emails": ["owner@example.com"],
+                "has_attachments": False,
+                "thread_id": None,
+                "owner_id": str(uuid4()),
+                "deal_id": None,
+            },
+            "changes": {},
+            "attributes": {"direction": "inbound"},
+            "references": {"email_id": event_data["subject"]["id"]},
+            "audience_user_ids": [str(audience_user_id)],
+        }
+    )
+    event = AutomationEventEnvelope.model_validate(event_data)
+
+    result = await AutomationTriggerActivationService(
+        object(),  # type: ignore[arg-type]
+        organisation_id,
+        access=access,
+        registry=AUTOMATION_REGISTRY,
+    ).activate(event)
 
     assert result.matched_count == 1
-    run = access.runs[0]
-    assert run.event_type == event_type
-    assert run.input_snapshot["schema_key"] == f"{event_type}.v1"
-    assert run.input_snapshot[entity_type][identity_field] == str(entity_id)
-    run.attempt_count = 1
-    run.claimed_by = "test-worker"
+    assert access.runs[0].audience_config == {"user_ids": [str(audience_user_id)]}
 
-    envelope = map_agent_run_runtime(run)
 
-    assert envelope.subject_type == entity_type
-    assert envelope.subject_id == str(entity_id)
-    assert envelope.deal_id == (entity_id if entity_type == "deal" else None)
+@pytest.mark.asyncio
+async def test_inactive_explicit_audience_skips_without_creating_a_run() -> None:
+    """Verify the contract that inactive explicit audience skips without creating a run."""
+    organisation_id = uuid4()
+    audience_user_id = uuid4()
+    binding = trigger(
+        organisation_id,
+        uuid4(),
+        principal_type="organisation_service",
+        scope_type="organisation",
+        audience_mode="explicit_users",
+        audience_config={"user_ids": [str(audience_user_id)]},
+    )
+    access = FakeAccess([binding])
 
-    if event_type == "crm.contact.created":
-        messages: list[str] = []
+    result = await AutomationTriggerActivationService(
+        object(),  # type: ignore[arg-type]
+        organisation_id,
+        access=access,
+        registry=AUTOMATION_REGISTRY,
+    ).activate(contact_event(organisation_id, uuid4()))
 
-        class ContactAgent:
-            model_name = "test-model"
+    assert result.matched_count == 0
+    assert result.outcomes[0].reason == "audience_inactive"
+    assert not access.runs
 
-            async def run(self, message: str) -> SimpleNamespace:
-                messages.append(message)
-                return SimpleNamespace(content="contact handled", metrics=None, model=None)
 
-        execution = await AgentRunExecutor(agent_factory=lambda **_kwargs: ContactAgent()).execute(
-            envelope,
-            context=AgentContext(
-                organisation_id=organisation_id,
-                user_id=owner_id,
-                subject_type="contact",
-                subject_id=str(entity_id),
-            ),
-        )
+@pytest.mark.asyncio
+async def test_deleted_saved_option_pauses_binding_before_match() -> None:
+    """Verify the contract that deleted saved option pauses binding before match."""
+    organisation_id, principal_id = uuid4(), uuid4()
+    binding = trigger(
+        organisation_id,
+        principal_id,
+        filter_config={
+            "all": [
+                {
+                    "path": "record.owner_id",
+                    "operator": "eq",
+                    "value": str(principal_id),
+                }
+            ]
+        },
+    )
+    access = FakeAccess([binding])
+    access.invalid_options.add(("crm_users", frozenset({str(principal_id)})))
 
-        assert execution.output_text == "contact handled"
-        assert json.loads(messages[0])["event"]["contact"]["contact_id"] == str(entity_id)
+    result = await AutomationTriggerActivationService(
+        object(),  # type: ignore[arg-type]
+        organisation_id,
+        access=access,
+        registry=AUTOMATION_REGISTRY,
+    ).activate(contact_event(organisation_id, principal_id))
+
+    assert result.outcomes[0].status == "paused"
+    assert result.outcomes[0].reason == "binding_contract_invalid"
+    assert access.paused[0][0] == binding.trigger_id
+    assert not access.runs

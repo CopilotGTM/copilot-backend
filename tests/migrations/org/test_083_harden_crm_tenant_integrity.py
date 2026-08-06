@@ -29,6 +29,15 @@ MIGRATION_PATH = (
     / "versions"
     / "3c7f79637716_083_harden_crm_tenant_integrity.py"
 )
+REVISION_087_CRM_TENANT_FOREIGN_KEYS = {
+    (
+        "crm_mutation_events",
+        "caused_by_run_id",
+        "agent_runs",
+        "run_id",
+        "RESTRICT",
+    ),
+}
 
 
 def _load_migration() -> ModuleType:
@@ -152,7 +161,9 @@ def test_revision_083_matches_the_model_derived_relationship_inventory() -> None
 
     migration = _load_migration()
     tables = {table.name: table for table in _organisation_tables()}
-    relationships = _crm_foreign_key_specs()
+    current_relationships = _crm_foreign_key_specs()
+    assert current_relationships >= REVISION_087_CRM_TENANT_FOREIGN_KEYS
+    relationships = current_relationships - REVISION_087_CRM_TENANT_FOREIGN_KEYS
 
     assert migration.revision == "3c7f79637716"
     assert migration.down_revision == "3c7f79637717"

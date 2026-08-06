@@ -7,16 +7,85 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from src.domain.models.organisation_tables.job_models import DealJobType
+import src.service.crm.jobs.deal_meeting_job_service as job_service_module
+from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync.meeting_intelligence import MeetingStatus
 from src.service.crm.jobs.deal_meeting_job_service import (
     DealMeetingJobService,
     DealMeetingJobServiceError,
 )
+from src.workers.deal_worker.services.meeting_insight_services import (
+    transcript_upload_service as upload_module,
+)
+from src.workers.deal_worker.services.meeting_insight_services.transcript_upload_service import (
+    TranscriptUploadService,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_transcript_upload_reuses_the_event_level_summary_job(monkeypatch) -> None:
+    """Manual uploads must participate in the shared meeting summary lock."""
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    event_id = uuid4()
+    active_job = DealJobs(
+        organisation_id=organisation_id,
+        user_id=uuid4(),
+        job_type=DealJobType.MEETING_SUMMARY,
+        deal_id=deal_id,
+        event_id=event_id,
+        status=JobStatus.PENDING,
+    )
+
+    class Session:
+        def __init__(self) -> None:
+            self.added: list[object] = []
+
+        def add(self, value: object) -> None:
+            self.added.append(value)
+
+        async def commit(self) -> None:
+            return None
+
+        async def refresh(self, _value: object) -> None:
+            return None
+
+    session = Session()
+
+    async def session_scope(_organisation_id):
+        yield session
+
+    lock_job = AsyncMock(return_value=active_job)
+    enqueue = AsyncMock()
+    monkeypatch.setattr(upload_module, "acquire_org_async_session", session_scope)
+    monkeypatch.setattr(
+        upload_module,
+        "lock_and_get_active_meeting_summary_job",
+        lock_job,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "src.workers.deal_worker.client.send_deal_task_async",
+        enqueue,
+    )
+    service = TranscriptUploadService(
+        organisation_id,
+        deal_id,
+        event_id,
+        uuid4(),
+        SimpleNamespace(),
+    )
+
+    summary_job_id = await service._trigger_meeting_summary()
+
+    assert summary_job_id == active_job.job_id
+    assert session.added == []
+    lock_job.assert_awaited_once_with(session, organisation_id, event_id)
+    enqueue.assert_awaited_once()
 
 
 class _ScalarResult:
@@ -195,20 +264,29 @@ class TestCreateMeetingJobTranscriptCheck:
 
     @pytest.mark.asyncio
     async def test_active_job_returns_existing_without_verify(
-        self, org_id, user_id, deal_id, event_id
+        self, monkeypatch, org_id, user_id, deal_id, event_id
     ):
         """Active job found → return it immediately, skip transcript verify."""
         session = AsyncMock()
         svc = DealMeetingJobService(session, org_id, user_id)
 
-        existing_job = SimpleNamespace(job_id=uuid4())
+        existing_job = SimpleNamespace(job_id=uuid4(), deal_id=deal_id)
         svc._require_active_association = AsyncMock()
         svc.get_active_job = AsyncMock(return_value=existing_job)
         svc._verify_transcript_for_summary = AsyncMock()
+        locked_lookup = AsyncMock(return_value=existing_job)
+        monkeypatch.setattr(
+            job_service_module,
+            "lock_and_get_active_meeting_summary_job",
+            locked_lookup,
+            raising=False,
+        )
 
         result = await svc.create_meeting_job(deal_id, event_id, DealJobType.MEETING_SUMMARY)
 
         assert result == existing_job
+        locked_lookup.assert_awaited_once_with(session, org_id, event_id)
+        svc.get_active_job.assert_not_awaited()
         svc._verify_transcript_for_summary.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -231,19 +309,30 @@ class TestCreateMeetingJobTranscriptCheck:
         svc.get_active_job.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_no_active_job_calls_verify_for_summary(self, org_id, user_id, deal_id, event_id):
+    async def test_no_active_job_calls_verify_for_summary(
+        self, monkeypatch, org_id, user_id, deal_id, event_id
+    ):
         """No active job + summary type → verify transcript before creating."""
         session = AsyncMock()
         svc = DealMeetingJobService(session, org_id, user_id)
 
         svc._require_active_association = AsyncMock()
-        svc.get_active_job = AsyncMock(return_value=None)
+        svc.get_active_job = AsyncMock()
         svc._verify_transcript_for_summary = AsyncMock()
         svc.create_job = AsyncMock(return_value=SimpleNamespace(job_id=uuid4()))
         svc._has_completed_meeting_summary = AsyncMock(return_value=False)
+        locked_lookup = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            job_service_module,
+            "lock_and_get_active_meeting_summary_job",
+            locked_lookup,
+            raising=False,
+        )
 
         await svc.create_meeting_job(deal_id, event_id, DealJobType.MEETING_SUMMARY)
 
+        locked_lookup.assert_awaited_once_with(session, org_id, event_id)
+        svc.get_active_job.assert_not_awaited()
         svc._verify_transcript_for_summary.assert_awaited_once_with(event_id)
         svc.create_job.assert_awaited_once_with(
             job_type=DealJobType.MEETING_SUMMARY,
@@ -254,17 +343,24 @@ class TestCreateMeetingJobTranscriptCheck:
 
     @pytest.mark.asyncio
     async def test_summary_regeneration_marks_job_to_skip_pipeline(
-        self, org_id, user_id, deal_id, event_id
+        self, monkeypatch, org_id, user_id, deal_id, event_id
     ):
         """Existing completed summary should create a regeneration job that skips insight fan-out."""
         session = AsyncMock()
         svc = DealMeetingJobService(session, org_id, user_id)
 
         svc._require_active_association = AsyncMock()
-        svc.get_active_job = AsyncMock(return_value=None)
+        svc.get_active_job = AsyncMock()
         svc._verify_transcript_for_summary = AsyncMock()
         svc.create_job = AsyncMock(return_value=SimpleNamespace(job_id=uuid4()))
         svc._has_completed_meeting_summary = AsyncMock(return_value=True)
+        locked_lookup = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            job_service_module,
+            "lock_and_get_active_meeting_summary_job",
+            locked_lookup,
+            raising=False,
+        )
 
         await svc.create_meeting_job(deal_id, event_id, DealJobType.MEETING_SUMMARY)
 
@@ -278,6 +374,30 @@ class TestCreateMeetingJobTranscriptCheck:
                 "skip_insight_pipeline": True,
             },
         )
+
+    @pytest.mark.asyncio
+    async def test_active_summary_for_another_deal_returns_conflict(
+        self, monkeypatch, org_id, user_id, deal_id, event_id
+    ):
+        """A shared event job must not be returned through an incompatible deal SSE route."""
+        session = AsyncMock()
+        svc = DealMeetingJobService(session, org_id, user_id)
+        existing_job = SimpleNamespace(job_id=uuid4(), deal_id=uuid4())
+        svc._require_active_association = AsyncMock()
+        svc.get_active_job = AsyncMock(return_value=existing_job)
+        locked_lookup = AsyncMock(return_value=existing_job)
+        monkeypatch.setattr(
+            job_service_module,
+            "lock_and_get_active_meeting_summary_job",
+            locked_lookup,
+            raising=False,
+        )
+
+        with pytest.raises(DealMeetingJobServiceError) as exc_info:
+            await svc.create_meeting_job(deal_id, event_id, DealJobType.MEETING_SUMMARY)
+
+        assert exc_info.value.status_code == 409
+        locked_lookup.assert_awaited_once_with(session, org_id, event_id)
 
     @pytest.mark.asyncio
     async def test_briefing_job_skips_verify_transcript(self, org_id, user_id, deal_id, event_id):

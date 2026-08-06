@@ -12,6 +12,13 @@ from uuid import UUID
 
 CRMEntityType = Literal["contact", "account", "deal", "custom_field", "pipeline", "stage"]
 CRMMutationSource = str
+CRMMutationSourceMode = Literal[
+    "interactive",
+    "incremental_sync",
+    "initial_sync",
+    "backfill",
+    "system",
+]
 
 
 @dataclass(frozen=True)
@@ -41,6 +48,9 @@ class CRMMutationContext:
     correlation_id: str | None = None
     idempotency_key: str | None = None
     mutation_group_id: UUID | None = None
+    source_mode: CRMMutationSourceMode | None = None
+    caused_by_run_id: UUID | None = None
+    causation_depth: int = 0
 
 
 @dataclass(frozen=True)
@@ -59,6 +69,7 @@ class CRMMutationRecordCommand:
     changed_fields: dict[str, dict[str, Any]]
     semantic_event_types: list[str]
     context: CRMMutationContext
+    record: dict[str, Any] = field(default_factory=dict)
     summary: str | None = None
     deal_id: UUID | None = None
     integration_id: UUID | None = None

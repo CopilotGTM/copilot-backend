@@ -8,19 +8,17 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlmodel import col
 from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
-from src.domain.models.organisation_tables.sync.calendar import (
-    AssociationStatus,
-    CalendarEventDealAssociation,
-    GenerationStatus,
-)
+from src.domain.models.organisation_tables.sync.calendar import GenerationStatus
 from src.domain.models.organisation_tables.sync.meeting_intelligence import Meeting
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.infra.utils.task_lock import acquire_task_lock, release_task_lock
+from src.service.crm.jobs.deal_meeting_job_service import (
+    lock_and_get_active_meeting_summary_job,
+)
 from src.service.integrations.transcripts.service import TranscriptService
 from src.workers.deal_worker.client import send_deal_task_async
 
-_SUMMARY_ACTIVE_STATUSES = (JobStatus.PENDING, JobStatus.IN_PROGRESS)
 AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 logger = get_logger(__name__)
@@ -34,7 +32,7 @@ class MeetingSummaryTriggerService:
         self.transcript_service = TranscriptService(organisation_id)
 
     async def handle_transcript_ready(self, event_id: UUID) -> dict[str, Any]:
-        """Download the Recall transcript and enqueue summary jobs for one event."""
+        """Download a Recall transcript and enqueue its one canonical summary job."""
         lock_key = f"task_lock:recall_transcript_materialize:{self.organisation_id}:{event_id}"
         if not acquire_task_lock(lock_key, ttl=300):
             return {
@@ -99,107 +97,56 @@ class MeetingSummaryTriggerService:
             release_task_lock(lock_key)
 
     async def _create_meeting_summary_jobs(self, event_id: UUID) -> dict[str, Any]:
-        """Create or reuse summary jobs after a Recall transcript becomes durable."""
+        """Create or reuse the event-level job after a Recall transcript is durable."""
         job_ids_to_enqueue: list[UUID] = []
         created = 0
         skipped = 0
 
         async for session in acquire_org_async_session(self.organisation_id):
-            assoc_stmt = select(CalendarEventDealAssociation).where(
-                col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
-                col(CalendarEventDealAssociation.event_id) == event_id,
-                col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE,
+            active_job = await lock_and_get_active_meeting_summary_job(
+                session,
+                self.organisation_id,
+                event_id,
             )
-            associations = list((await session.execute(assoc_stmt)).scalars().all())
-            for association in associations:
+            if active_job:
+                skipped = 1
+                if active_job.status == JobStatus.PENDING:
+                    job_ids_to_enqueue.append(active_job.job_id)
+            else:
+                # Meeting is the canonical summary fact. Deal associations are
+                # compatibility copies and must never multiply generation work.
+                meeting_stmt = select(Meeting).where(
+                    col(Meeting.organisation_id) == self.organisation_id,
+                    col(Meeting.calendar_event_id) == event_id,
+                    col(Meeting.is_deleted).is_(False),
+                )
+                meeting = (await session.execute(meeting_stmt)).scalars().first()
                 if (
-                    association.meeting_summary_status == GenerationStatus.COMPLETED
-                    and association.meeting_summary_data
+                    meeting
+                    and meeting.meeting_summary_status == GenerationStatus.COMPLETED
+                    and meeting.meeting_summary_data
                 ):
-                    skipped += 1
-                    continue
-
-                active_job_stmt = select(DealJobs).where(
-                    col(DealJobs.organisation_id) == self.organisation_id,
-                    col(DealJobs.deal_id) == association.deal_id,
-                    col(DealJobs.event_id) == event_id,
-                    col(DealJobs.job_type) == DealJobType.MEETING_SUMMARY,
-                    col(DealJobs.status).in_(_SUMMARY_ACTIVE_STATUSES),
-                )
-                active_job = (await session.execute(active_job_stmt)).scalars().first()
-                if active_job:
-                    skipped += 1
-                    if active_job.status == JobStatus.PENDING:
-                        job_ids_to_enqueue.append(active_job.job_id)
-                    continue
-
-                job = DealJobs(
-                    organisation_id=self.organisation_id,
-                    deal_id=association.deal_id,
-                    event_id=event_id,
-                    job_type=DealJobType.MEETING_SUMMARY,
-                    status=JobStatus.PENDING,
-                    user_id=AUTOMATED_PIPELINE_USER_ID,
-                    job_metadata={
-                        "source": "recall_webhook",
-                        "trigger": "transcript_done",
-                        "send_summary_notification": True,
-                        "event_id": str(event_id),
-                        "association_id": str(association.association_id),
-                    },
-                )
-                session.add(job)
-                await session.flush()
-                job_ids_to_enqueue.append(job.job_id)
-                created += 1
-
-            if not associations:
-                active_job_stmt = select(DealJobs).where(
-                    col(DealJobs.organisation_id) == self.organisation_id,
-                    col(DealJobs.deal_id).is_(None),
-                    col(DealJobs.event_id) == event_id,
-                    col(DealJobs.job_type) == DealJobType.MEETING_SUMMARY,
-                    col(DealJobs.status).in_(_SUMMARY_ACTIVE_STATUSES),
-                )
-                active_job = (await session.execute(active_job_stmt)).scalars().first()
-                if active_job:
-                    skipped += 1
-                    if active_job.status == JobStatus.PENDING:
-                        job_ids_to_enqueue.append(active_job.job_id)
+                    skipped = 1
                 else:
-                    meeting_stmt = select(Meeting).where(
-                        col(Meeting.organisation_id) == self.organisation_id,
-                        col(Meeting.calendar_event_id) == event_id,
-                        col(Meeting.is_deleted).is_(False),
+                    job = DealJobs(
+                        organisation_id=self.organisation_id,
+                        deal_id=None,
+                        event_id=event_id,
+                        job_type=DealJobType.MEETING_SUMMARY,
+                        status=JobStatus.PENDING,
+                        user_id=AUTOMATED_PIPELINE_USER_ID,
+                        job_metadata={
+                            "source": "recall_webhook",
+                            "trigger": "transcript_done",
+                            "send_summary_notification": True,
+                            "summary_scope": "meeting",
+                            "event_id": str(event_id),
+                        },
                     )
-                    meeting = (await session.execute(meeting_stmt)).scalars().first()
-                    if (
-                        meeting
-                        and meeting.meeting_summary_status == GenerationStatus.COMPLETED
-                        and meeting.meeting_summary_data
-                    ):
-                        skipped += 1
-                    else:
-                        job = DealJobs(
-                            organisation_id=self.organisation_id,
-                            deal_id=None,
-                            event_id=event_id,
-                            job_type=DealJobType.MEETING_SUMMARY,
-                            status=JobStatus.PENDING,
-                            user_id=AUTOMATED_PIPELINE_USER_ID,
-                            job_metadata={
-                                "source": "recall_webhook",
-                                "trigger": "transcript_done",
-                                "send_summary_notification": True,
-                                "summary_scope": "meeting",
-                                "event_id": str(event_id),
-                                "skip_insight_pipeline": True,
-                            },
-                        )
-                        session.add(job)
-                        await session.flush()
-                        job_ids_to_enqueue.append(job.job_id)
-                        created += 1
+                    session.add(job)
+                    await session.flush()
+                    job_ids_to_enqueue.append(job.job_id)
+                    created = 1
 
             await session.commit()
 

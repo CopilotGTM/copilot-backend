@@ -14,6 +14,16 @@ from src.service.integrations.email_sync_service import EmailSyncService
 from src.workers.integrations_worker.utils.sync_metadata import SyncAction
 
 
+class _FakeAutomationEvents:
+    def __init__(self) -> None:
+        self.events: list[object] = []
+
+    async def enqueue(self, envelope: object) -> object:
+        """Build the enqueue fixture used by the surrounding regression cases."""
+        self.events.append(envelope)
+        return object()
+
+
 class _FakeScalarResult:
     def __init__(self, rows):
         self._rows = rows
@@ -188,6 +198,44 @@ def _has_meaningful_message_changes(existing, incoming, provider) -> bool:
 
 
 class TestEmailIncrementalBatchWrites:
+    """Group regression cases for Email Incremental Batch Writes behavior."""
+
+    @pytest.mark.asyncio
+    async def test_email_audience_directory_is_loaded_once_per_sync_service(self) -> None:
+        """Verify the contract that email audience directory is loaded once per sync service."""
+        organisation_id = uuid4()
+
+        class EmptyRows:
+            """Represent the Empty Rows test double used by the surrounding regression cases."""
+
+            def all(self):
+                """Build the all fixture used by the surrounding regression cases."""
+                return []
+
+            def scalars(self):
+                """Build the scalars fixture used by the surrounding regression cases."""
+                return self
+
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=EmptyRows())
+        service = EmailSyncService(
+            session,
+            organisation_id,
+            automation_events=AsyncMock(),
+        )
+        integration = SimpleNamespace(created_by_user_id=uuid4())
+        message = SimpleNamespace(
+            from_email="buyer@example.com",
+            to_emails=[],
+            cc_emails=[],
+            bcc_emails=[],
+        )
+
+        await service._email_audience_user_ids(message, integration)
+        await service._email_audience_user_ids(message, integration)
+
+        assert session.execute.await_count == 1
+
     """Regression tests for the incremental email N+1 write path."""
 
     @pytest.mark.asyncio
@@ -201,7 +249,9 @@ class TestEmailIncrementalBatchWrites:
         ]
         session = AsyncMock()
         session.execute = AsyncMock(return_value=_FakeExecuteResult(rows))
-        service = EmailSyncService(session, organisation_id)
+        service = EmailSyncService(
+            session, organisation_id, automation_events=_FakeAutomationEvents()
+        )
 
         result = await service._batch_upsert_folders(
             integration_id,
@@ -236,7 +286,9 @@ class TestEmailIncrementalBatchWrites:
                 _FakeExecuteResult(rows),
             ]
         )
-        service = EmailSyncService(session, organisation_id)
+        service = EmailSyncService(
+            session, organisation_id, automation_events=_FakeAutomationEvents()
+        )
 
         result = await service._batch_upsert_messages(
             integration_id,
@@ -268,7 +320,9 @@ class TestEmailIncrementalBatchWrites:
         ]
         session = AsyncMock()
         session.execute = AsyncMock(return_value=_FakeExecuteResult(rows))
-        service = EmailSyncService(session, organisation_id)
+        service = EmailSyncService(
+            session, organisation_id, automation_events=_FakeAutomationEvents()
+        )
 
         result = await service._load_folder_ids_by_external_ids(
             integration_id,
@@ -294,7 +348,10 @@ class TestEmailIncrementalBatchWrites:
         session = AsyncMock()
         session.commit = AsyncMock()
         session.add = MagicMock()
-        service = EmailSyncService(session, organisation_id)
+        service = EmailSyncService(
+            session, organisation_id, automation_events=_FakeAutomationEvents()
+        )
+        service._enqueue_email_event = AsyncMock()
         service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
         service._sync_history.complete = AsyncMock()
 
@@ -380,7 +437,10 @@ class TestEmailIncrementalBatchWrites:
         session.rollback = AsyncMock()
         session.in_transaction = MagicMock(return_value=True)
         session.add = MagicMock()
-        service = EmailSyncService(session, organisation_id)
+        service = EmailSyncService(
+            session, organisation_id, automation_events=_FakeAutomationEvents()
+        )
+        service._enqueue_email_event = AsyncMock()
         service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
         service._sync_history.complete = AsyncMock()
         service._sync_history.fail = AsyncMock()
@@ -412,6 +472,91 @@ class TestEmailIncrementalBatchWrites:
         service._sync_history.fail.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_incremental_draft_to_sent_update_emits_sent_event(self) -> None:
+        """Verify the contract that incremental draft to sent update emits sent event."""
+        organisation_id = uuid4()
+        integration = _make_integration(organisation_id=organisation_id)
+        existing = SimpleNamespace(
+            subject="Draft",
+            from_email="sender@example.com",
+            is_read="false",
+            is_starred="false",
+            is_important="false",
+            is_draft="true",
+            labels=[],
+            email_metadata={"parent_folder_id": "folder-1"},
+        )
+        persisted = SimpleNamespace(
+            email_id=uuid4(),
+            external_message_id="msg-draft",
+            is_draft="false",
+            direction="outbound",
+        )
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        session.add = MagicMock()
+        service = EmailSyncService(
+            session,
+            organisation_id,
+            automation_events=_FakeAutomationEvents(),
+        )
+        service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
+        service._sync_history.complete = AsyncMock()
+        service._load_existing_messages_by_external_ids = AsyncMock(
+            return_value={"msg-draft": existing}
+        )
+        service._has_meaningful_message_changes = MagicMock(return_value=True)
+        service._batch_upsert_messages = AsyncMock(return_value={"msg-draft": persisted})
+        service._enqueue_email_event = AsyncMock()
+
+        await service.sync_messages_incremental(
+            integration=integration,
+            provider="outlook",
+            messages=[
+                {
+                    **_outlook_message(message_id="msg-draft"),
+                    "isDraft": False,
+                }
+            ],
+        )
+
+        service._enqueue_email_event.assert_awaited_once_with(
+            persisted,
+            integration=integration,
+            provider="outlook",
+            source_mode="incremental_sync",
+        )
+
+    @pytest.mark.asyncio
+    async def test_initial_message_sync_does_not_build_guaranteed_noop_events(self) -> None:
+        """Verify the contract that initial message sync does not build guaranteed noop events."""
+        organisation_id = uuid4()
+        integration = _make_integration(organisation_id=organisation_id)
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        session.add = MagicMock()
+        service = EmailSyncService(
+            session,
+            organisation_id,
+            automation_events=_FakeAutomationEvents(),
+        )
+        service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
+        service._sync_history.complete = AsyncMock()
+        service._upsert_message = AsyncMock(
+            return_value=SimpleNamespace(email_id=uuid4(), created_at=1, updated_at=1)
+        )
+        service._enqueue_email_event = AsyncMock()
+
+        await service.sync_messages(
+            integration=integration,
+            provider="outlook",
+            messages=[_outlook_message(message_id="msg-initial")],
+            source_mode="initial_sync",
+        )
+
+        service._enqueue_email_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_full_message_sync_returns_changed_email_ids(self) -> None:
         """Full sync reports local email IDs for every successful message write."""
         organisation_id = uuid4()
@@ -420,9 +565,15 @@ class TestEmailIncrementalBatchWrites:
         first_email_id = uuid4()
         second_email_id = uuid4()
         session = AsyncMock()
-        session.commit = AsyncMock()
+        call_order: list[str] = []
+        session.commit = AsyncMock(side_effect=lambda: call_order.append("commit"))
         session.add = MagicMock()
-        service = EmailSyncService(session, organisation_id)
+        service = EmailSyncService(
+            session, organisation_id, automation_events=_FakeAutomationEvents()
+        )
+        service._enqueue_email_event = AsyncMock(
+            side_effect=lambda *args, **kwargs: call_order.append("enqueue")
+        )
         service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
         service._sync_history.complete = AsyncMock()
         service._upsert_message = AsyncMock(
@@ -452,9 +603,11 @@ class TestEmailIncrementalBatchWrites:
 
         assert result["records_processed"] == 2
         assert result["changed_email_ids"] == [str(first_email_id), str(second_email_id)]
+        assert call_order[0] == "enqueue"
 
     @pytest.mark.asyncio
     async def test_full_message_sync_fails_when_any_row_is_not_persisted(self) -> None:
+        """Verify the contract that full message sync fails when any row is not persisted."""
         organisation_id = uuid4()
         integration = _make_integration(organisation_id=organisation_id)
         session = AsyncMock()
@@ -462,7 +615,10 @@ class TestEmailIncrementalBatchWrites:
         session.rollback = AsyncMock()
         session.in_transaction = MagicMock(return_value=True)
         session.add = MagicMock()
-        service = EmailSyncService(session, organisation_id)
+        service = EmailSyncService(
+            session, organisation_id, automation_events=_FakeAutomationEvents()
+        )
+        service._enqueue_email_event = AsyncMock()
         service._sync_history.start = AsyncMock(return_value=SimpleNamespace())
         service._sync_history.complete = AsyncMock()
         service._sync_history.fail = AsyncMock()
