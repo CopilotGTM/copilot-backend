@@ -8,12 +8,13 @@ with the automation service.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from agno.agent import Agent as AgnoAgent
-from agno.models.azure import AzureOpenAI
+from agno.models.azure.openai_chat import AzureOpenAI
 from agno.skills import LocalSkills, SkillLoader, Skills
 
 from src.agents.context import AgentContext
@@ -54,6 +55,20 @@ class UserConfiguredAgent:
             request_params={**model_settings, "parallel_tool_calls": True},
         )
 
+        agent_id = context.metadata.get("automation_agent_id")
+        agent_revision = context.metadata.get("automation_agent_revision")
+        prompt_version = (
+            f"user-agent:{agent_id}:r{agent_revision}"
+            if isinstance(agent_id, str)
+            and agent_id
+            and isinstance(agent_revision, int)
+            and not isinstance(agent_revision, bool)
+            else f"sha256:{hashlib.sha256(prompt.encode('utf-8')).hexdigest()}"
+        )
+        context = context.with_metadata(
+            automation_model_name=effective_model,
+            automation_prompt_version=prompt_version,
+        )
         registry_factory = tool_registry_factory or (lambda item: ToolRegistry(item, lambda: None))
         registry = registry_factory(context)
         tool_names = [ToolName(key) for key in allowed_tools]

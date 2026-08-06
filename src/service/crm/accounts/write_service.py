@@ -38,7 +38,6 @@ from src.service.crm.mutations.contracts import (
     CRMMutationRecordCommand,
 )
 from src.service.crm.mutations.event_service import CRMMutationEventService
-from src.service.crm.mutations.json_safe import changed_field
 from src.service.crm.mutations.policies import AccountMutationPolicy
 from src.service.crm.utils.account import (
     ACCOUNT_LINKEDIN_URL_ERROR,
@@ -546,8 +545,9 @@ class AccountWriteService:
                 entity_id=company.company_id,
                 event_type="crm.account.deleted",
                 operation="archive_account",
-                changed_fields={"is_deleted": changed_field(False, True)},
+                changed_fields={"is_deleted": {"old": False, "new": True}},
                 semantic_event_types=["crm.account.deleted"],
+                record=AccountMutationPolicy.automation_record(company),
                 context=self._mutation_context(context),
                 summary=f"Account archived: {company.name or company.domain or company.company_id}",
                 integration_id=company.integration_id,
@@ -561,7 +561,7 @@ class AccountWriteService:
         if actor is None or actor.is_admin:
             return
         event = CRMDealMutationEvent
-        stmt = select(event.event_id).where(
+        stmt = select(col(event.event_id)).where(
             col(event.organisation_id) == self.organisation_id,
             col(event.entity_type) == "account",
             col(event.entity_id) == company_id,
@@ -841,6 +841,7 @@ class AccountWriteService:
             operation="create_account",
             changed_fields=changed_fields,
             semantic_event_types=AccountMutationPolicy.semantic_for_create(),
+            record=AccountMutationPolicy.automation_record(account),
             context=self._mutation_context(context),
             summary=f"Account created: {account.name or account.domain or account.company_id}",
             integration_id=account.integration_id,
@@ -862,6 +863,7 @@ class AccountWriteService:
             operation="update_account",
             changed_fields=changed_fields,
             semantic_event_types=AccountMutationPolicy.semantic_for_update(changed_fields),
+            record=AccountMutationPolicy.automation_record(account),
             context=self._mutation_context(context),
             summary=f"Account updated: {account.name or account.domain or account.company_id}",
             integration_id=account.integration_id,
@@ -887,4 +889,8 @@ class AccountWriteService:
             source=context.source,
             actor_user_id=context.actor_user_id,
             source_label=context.source_label,
+            source_mode=context.source_mode,
+            correlation_id=context.correlation_id,
+            caused_by_run_id=context.caused_by_run_id,
+            causation_depth=context.causation_depth,
         )

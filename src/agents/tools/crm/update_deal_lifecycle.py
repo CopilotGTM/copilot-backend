@@ -16,7 +16,7 @@ from uuid import UUID
 from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
 from src.agents.tools.crm.update_deal_fields import _deal_context_fields, _resolve_deal_id
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
-from src.service.crm.deals.contracts import DealWriteServiceError
+from src.service.crm.deals.contracts import DealWriteContext, DealWriteServiceError
 from src.service.crm.deals.write_service import DealWriteService
 from src.service.crm.internal.deal_update_policy import classify_deal_update_policy
 
@@ -149,9 +149,20 @@ def create_update_deal_lifecycle(
                     actor_user_id=actor_user_id,
                     access_actor=access_actor,
                 )
+                write_context = DealWriteContext(
+                    source="agent",
+                    actor_user_id=actor_user_id,
+                    source_label="Agent",
+                    **context.automation_causation(),
+                )
                 try:
                     if action == "move_stage":
-                        deal = await service.move_stage(resolved_deal_id, parsed_stage_id)
+                        assert parsed_stage_id is not None
+                        deal = await service.move_stage(
+                            resolved_deal_id,
+                            parsed_stage_id,
+                            context=write_context,
+                        )
                     elif action == "close_won":
                         deal = await service.close_deal(
                             resolved_deal_id,
@@ -159,6 +170,7 @@ def create_update_deal_lifecycle(
                             closed_reason=closed_reason,
                             close_date=parsed_close_date,
                             stage_id=parsed_stage_id,
+                            context=write_context,
                         )
                     elif action == "close_lost":
                         deal = await service.close_deal(
@@ -167,12 +179,14 @@ def create_update_deal_lifecycle(
                             closed_reason=closed_reason,
                             close_date=parsed_close_date,
                             stage_id=parsed_stage_id,
+                            context=write_context,
                         )
                     else:
                         deal = await service.reopen_deal(
                             resolved_deal_id,
                             stage_id=parsed_stage_id,
                             clear_closed_reason=clear_closed_reason,
+                            context=write_context,
                         )
                     await org_session.commit()
                     return _result(

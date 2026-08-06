@@ -6,8 +6,14 @@ module keeps that implementation detail behind the public `agent_model_config` f
 
 from __future__ import annotations
 
-from src.api.schemas.agent_models import AgentDetail, AgentSummary
+from src.api.schemas.agent_models import (
+    AgentAutomationEligibility,
+    AgentDetail,
+    AgentSummary,
+    AutomationEligibilityMode,
+)
 from src.domain.models.organisation_tables import UserAgent
+from src.service.automation.triggers.capabilities import RETRY_UNSAFE_AUTOMATION_TOOLS
 
 
 def agent_summary(agent: UserAgent) -> AgentSummary:
@@ -30,7 +36,40 @@ def agent_summary(agent: UserAgent) -> AgentSummary:
     )
 
 
-def agent_detail(agent: UserAgent) -> AgentDetail:
+def _automation_eligibility(agent: UserAgent, *, is_admin: bool) -> AgentAutomationEligibility:
+    if set(agent.allowed_tools) & RETRY_UNSAFE_AUTOMATION_TOOLS:
+        unavailable = AutomationEligibilityMode(
+            available=False,
+            reason_code="retry_unsafe_tools",
+            reason="Automation is unavailable while this agent has tools that are not retry-safe.",
+        )
+        return AgentAutomationEligibility(personal=unavailable, organisation=unavailable)
+
+    personal = AutomationEligibilityMode(available=True)
+    if not is_admin:
+        organisation = AutomationEligibilityMode(
+            available=False,
+            reason_code="organisation_requires_admin",
+            reason="Organisation execution requires an organisation admin.",
+        )
+    elif agent.allowed_tools:
+        organisation = AutomationEligibilityMode(
+            available=False,
+            reason_code="organisation_tools_not_supported",
+            reason="Organisation execution is unavailable while this agent has tools.",
+        )
+    elif agent.allowed_skills:
+        organisation = AutomationEligibilityMode(
+            available=False,
+            reason_code="organisation_skills_not_supported",
+            reason="Organisation execution is unavailable while this agent has skills.",
+        )
+    else:
+        organisation = AutomationEligibilityMode(available=True)
+    return AgentAutomationEligibility(personal=personal, organisation=organisation)
+
+
+def agent_detail(agent: UserAgent, *, is_admin: bool = False) -> AgentDetail:
     """Build the complete runnable definition returned to its owner."""
 
     summary = agent_summary(agent)
@@ -45,6 +84,7 @@ def agent_detail(agent: UserAgent) -> AgentDetail:
         max_turns=agent.max_turns,
         input_schema=agent.input_schema,
         output_schema=agent.output_schema,
+        automation_eligibility=_automation_eligibility(agent, is_admin=is_admin),
     )
 
 

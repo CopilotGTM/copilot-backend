@@ -72,6 +72,26 @@ class DealMutationPolicy:
         return changed_fields
 
     @staticmethod
+    def automation_record(deal: CRMDeal) -> dict[str, Any]:
+        """Return the bounded event-time fields promised by the trigger registry."""
+
+        return {
+            "id": deal.deal_id,
+            "name": deal.name,
+            "pipeline_id": deal.pipeline_id,
+            "stage_id": deal.stage_id,
+            "deal_status": deal.deal_status,
+            "amount": deal.amount,
+            "currency": deal.currency,
+            "owner_id": deal.owner_id,
+            "created_by_user_id": deal.created_by_user_id,
+            "expected_close_date": deal.expected_close_date,
+            "account_id": deal.company_id,
+            "primary_contact_id": deal.primary_contact_id,
+            "custom_properties": deal.properties or {},
+        }
+
+    @staticmethod
     def semantic_for_event(
         event_type: str,
         changed_fields: dict[str, dict[str, Any]],
@@ -153,6 +173,20 @@ class AccountMutationPolicy:
         return changed_fields
 
     @staticmethod
+    def automation_record(account: CRMCompany) -> dict[str, Any]:
+        """Return the bounded event-time fields promised by the trigger registry."""
+
+        return {
+            "id": account.company_id,
+            "name": account.name,
+            "domain": account.domain,
+            "owner_id": account.owner_id,
+            "lifecycle_stage": account.lifecycle_stage,
+            "tier": (account.properties or {}).get("tier"),
+            "annual_revenue": account.annual_revenue,
+        }
+
+    @staticmethod
     def semantic_for_create() -> list[str]:
         """Account creation is a curated workflow trigger in V1."""
         return ["crm.account.created"]
@@ -224,6 +258,21 @@ class ContactMutationPolicy:
             if value is not None:
                 changed_fields[field_name] = {"old": None, "new": value}
         return changed_fields
+
+    @staticmethod
+    def automation_record(contact: CRMContact) -> dict[str, Any]:
+        """Return the bounded event-time fields promised by the trigger registry."""
+
+        return {
+            "id": contact.contact_id,
+            "first_name": contact.first_name,
+            "last_name": contact.last_name,
+            "email": contact.email,
+            "phone": contact.phone,
+            "owner_id": contact.owner_id,
+            "account_id": contact.company_id,
+            "lifecycle_stage": contact.lifecycle_stage,
+        }
 
     @staticmethod
     def semantic_for_create() -> list[str]:

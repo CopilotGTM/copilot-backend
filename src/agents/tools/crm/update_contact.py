@@ -205,6 +205,7 @@ async def update_contact_direct(
                     actor_name=_actor_name(context),
                     actor_email=context.user_email,
                     created_via="chat_tool",
+                    **context.automation_causation(),
                 ),
             )
             # Commit after the service returns so mutation events and row changes

@@ -206,7 +206,7 @@ VOICE_REALTIME_WRITE_EXCLUDED_TOOLS = {
 # WhatsApp payloads can contain forwarded text or attachment-derived content that
 # looks imperative. Hide every mutating tool unless the current turn itself, or a
 # short-lived explicit continuation, supplies authority for a side effect.
-WHATSAPP_MUTATING_TOOLS = {
+MUTATING_TOOLS = {
     ToolName.CREATE_DEAL,
     ToolName.CREATE_LEAD,
     ToolName.CREATE_DRAFT_LEAD_FORM,
@@ -241,6 +241,7 @@ WHATSAPP_MUTATING_TOOLS = {
     ToolName.UPDATE_REMINDER,
     ToolName.CANCEL_REMINDER,
 }
+WHATSAPP_MUTATING_TOOLS = MUTATING_TOOLS
 
 
 # =============================================================================
@@ -1191,6 +1192,7 @@ __all__ = [
     "TOOL_CATEGORIES",
     "REMINDER_MANAGEMENT_TOOLS",
     "VOICE_REALTIME_WRITE_EXCLUDED_TOOLS",
+    "MUTATING_TOOLS",
     "WHATSAPP_MUTATING_TOOLS",
     "get_excluded_tools_for_context",
     "get_tools_for_agent",

@@ -22,6 +22,7 @@ from src.domain.models.organisation_tables.sync.risk_blocker_models import (
 from src.workers.deal_worker.services.deal_insight_services.risk_blocker_extraction_service import (
     AI_EXTRACTION_ACTOR_NAME,
     AUTOMATED_PIPELINE_USER_ID,
+    RISK_BLOCKER_PROMPT_VERSION,
     RiskBlockerExtractionService,
 )
 
@@ -33,6 +34,7 @@ class _CapturingSession:
         self.added: list[object] = []
 
     def add(self, obj: object) -> None:
+        """Expose the add operation expected by the Capturing Session test double."""
         self.added.append(obj)
 
 
@@ -116,7 +118,7 @@ def test_extraction_seeds_opened_audit_entry_with_system_actor() -> None:
 
 
 def test_extraction_adds_only_risk_blocker_record() -> None:
-    """The legacy sync helper no longer writes timeline rows."""
+    """The extraction path writes the activity-feed projection, not the retired timeline row."""
     service = RiskBlockerExtractionService(organisation_id=uuid4())
 
     session = _CapturingSession()
@@ -133,3 +135,29 @@ def test_extraction_adds_only_risk_blocker_record() -> None:
 def test_automated_pipeline_user_id_is_the_project_sentinel() -> None:
     """Sanity-check the sentinel matches the codebase-wide convention."""
     assert UUID("00000000-0000-0000-0000-000000000001") == AUTOMATED_PIPELINE_USER_ID
+
+
+def test_extraction_persists_source_model_prompt_and_run_identity() -> None:
+    """Verify the contract that extraction persists source model prompt and run identity."""
+    inference_run_id = uuid4()
+    service = RiskBlockerExtractionService(
+        organisation_id=uuid4(),
+        inference_run_id=inference_run_id,
+    )
+
+    item = service.create_risk_blocker_from_extracted(
+        session=_CapturingSession(),
+        deal_id=uuid4(),
+        extracted=_build_extracted(confidence=0.82),
+        source_type=RiskBlockerSource.MEETING_GOOGLE,
+        source_record_id="meeting-123",
+    )
+
+    signal = item.risk_blocker_data["automation_signal"]
+    assert item.source_record_id == "meeting-123"
+    assert item.extraction_run_id == inference_run_id
+    assert signal["evidence_id"] == "meeting-123"
+    assert signal["confidence"] == 0.82
+    assert signal["model_name"]
+    assert signal["prompt_version"] == RISK_BLOCKER_PROMPT_VERSION
+    assert signal["inference_run_id"] == str(inference_run_id)

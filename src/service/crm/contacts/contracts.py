@@ -7,6 +7,7 @@ from typing import Literal
 from uuid import UUID
 
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.service.crm.mutations.contracts import CRMMutationSourceMode
 
 ContactMatchedBy = Literal["email", "linkedin", "apollo", "explicit_id", "created"]
 
@@ -40,6 +41,10 @@ class ContactWriteContext:
     actor_email: str | None = None
     source_label: str | None = None
     created_via: str | None = None
+    source_mode: CRMMutationSourceMode | None = None
+    correlation_id: str | None = None
+    caused_by_run_id: UUID | None = None
+    causation_depth: int = 0
 
 
 @dataclass(frozen=True)

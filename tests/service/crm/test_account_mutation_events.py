@@ -98,6 +98,12 @@ def _events(session: _AccountSession) -> list[CRMDealMutationEvent]:
     return [obj for obj in session.added if isinstance(obj, CRMDealMutationEvent)]
 
 
+def _service(session: _AccountSession, org_id) -> AccountWriteService:  # noqa: ANN001
+    service = AccountWriteService(session, org_id)
+    service._mutation_events._automation_events = AsyncMock()
+    return service
+
+
 def test_account_create_policy_records_audit_safe_initial_fields() -> None:
     org_id = uuid4()
     account = _company(
@@ -163,8 +169,7 @@ async def test_create_account_records_account_created_mutation_event() -> None:
     integration = _integration(org_id)
     actor_id = uuid4()
     session = _AccountSession(_FakeResult(all_rows=[]), _FakeResult(first=integration))
-    service = AccountWriteService(session, org_id)
-    service._mutation_events._automation_events = AsyncMock()
+    service = _service(session, org_id)
 
     result = await service.create_account(
         AccountCreateCommand(
@@ -194,8 +199,7 @@ async def test_create_account_records_normalized_domain_not_raw_input() -> None:
     org_id = uuid4()
     integration = _integration(org_id)
     session = _AccountSession(_FakeResult(all_rows=[]), _FakeResult(first=integration))
-    service = AccountWriteService(session, org_id)
-    service._mutation_events._automation_events = AsyncMock()
+    service = _service(session, org_id)
 
     await service.create_account(
         AccountCreateCommand(name=None, domain="HTTPS://WWW.Acme.COM/path"),
@@ -212,7 +216,7 @@ async def test_create_account_duplicate_domain_records_no_mutation_event() -> No
     org_id = uuid4()
     existing = _company(org_id, domain="acme.com")
     session = _AccountSession(_FakeResult(all_rows=[existing]))
-    service = AccountWriteService(session, org_id)
+    service = _service(session, org_id)
 
     with pytest.raises(AccountWriteServiceError):
         await service.create_account(
@@ -228,7 +232,7 @@ async def test_create_account_duplicate_name_records_no_mutation_event() -> None
     org_id = uuid4()
     existing = _company(org_id, name="Acme", domain=None)
     session = _AccountSession(_FakeResult(all_rows=[existing]))
-    service = AccountWriteService(session, org_id)
+    service = _service(session, org_id)
 
     with pytest.raises(AccountWriteServiceError):
         await service.create_account(
@@ -244,7 +248,7 @@ async def test_update_account_profile_edit_records_audit_only_mutation_event() -
     org_id = uuid4()
     account = _company(org_id, industry="Services")
     session = _AccountSession(_FakeResult(first=account))
-    service = AccountWriteService(session, org_id)
+    service = _service(session, org_id)
 
     await service.update_account(
         account.company_id,
@@ -265,7 +269,7 @@ async def test_update_account_domain_change_emits_domain_changed_event() -> None
     org_id = uuid4()
     account = _company(org_id, domain="old-acme.com")
     session = _AccountSession(_FakeResult(first=account), _FakeResult(first=None))
-    service = AccountWriteService(session, org_id)
+    service = _service(session, org_id)
 
     await service.update_account(
         account.company_id,
@@ -283,7 +287,7 @@ async def test_update_account_website_derived_domain_records_both_changed_fields
     org_id = uuid4()
     account = _company(org_id, domain="old-acme.com", website="https://old-acme.com")
     session = _AccountSession(_FakeResult(first=account), _FakeResult(first=None))
-    service = AccountWriteService(session, org_id)
+    service = _service(session, org_id)
 
     await service.update_account(
         account.company_id,
@@ -306,7 +310,7 @@ async def test_update_account_owner_id_change_emits_owner_changed_event() -> Non
     owner_id = uuid4()
     account = _company(org_id, owner_id=None, owner_name=None, owner_email=None)
     session = _AccountSession(_FakeResult(first=account))
-    service = AccountWriteService(session, org_id)
+    service = _service(session, org_id)
 
     await service.update_account(
         account.company_id,
@@ -326,7 +330,7 @@ async def test_update_account_owner_display_only_is_audit_only() -> None:
     org_id = uuid4()
     account = _company(org_id, owner_id=uuid4(), owner_name="Old Owner")
     session = _AccountSession(_FakeResult(first=account))
-    service = AccountWriteService(session, org_id)
+    service = _service(session, org_id)
 
     await service.update_account(
         account.company_id,
@@ -344,7 +348,7 @@ async def test_update_account_lifecycle_stage_change_emits_lifecycle_stage_event
     org_id = uuid4()
     account = _company(org_id, lifecycle_stage="lead")
     session = _AccountSession(_FakeResult(first=account))
-    service = AccountWriteService(session, org_id)
+    service = _service(session, org_id)
 
     await service.update_account(
         account.company_id,
@@ -362,7 +366,7 @@ async def test_update_account_same_value_records_no_mutation_event() -> None:
     org_id = uuid4()
     account = _company(org_id, industry="Software")
     session = _AccountSession(_FakeResult(first=account))
-    service = AccountWriteService(session, org_id)
+    service = _service(session, org_id)
 
     await service.update_account(
         account.company_id,
@@ -379,7 +383,7 @@ async def test_update_account_duplicate_domain_records_no_mutation_event() -> No
     account = _company(org_id, domain="old-acme.com")
     duplicate = _company(org_id, domain="acme.com")
     session = _AccountSession(_FakeResult(first=account), _FakeResult(first=duplicate))
-    service = AccountWriteService(session, org_id)
+    service = _service(session, org_id)
 
     with pytest.raises(AccountWriteServiceError):
         await service.update_account(

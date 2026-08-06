@@ -102,6 +102,8 @@ def _agent(
     owner_user_id: UUID,
     revision: int = 1,
     status: AgentStatus = AgentStatus.ACTIVE,
+    allowed_tools: list[str] | None = None,
+    allowed_skills: list[str] | None = None,
 ) -> UserAgent:
     return UserAgent(
         organisation_id=organisation_id,
@@ -114,8 +116,8 @@ def _agent(
         description="Reviews open deals.",
         prompt="Rank the owner's open deals.",
         model_settings={"temperature": 0.2},
-        allowed_tools=[ToolName.SEARCH_DEALS.value],
-        allowed_skills=["pipeline-review"],
+        allowed_tools=([ToolName.SEARCH_DEALS.value] if allowed_tools is None else allowed_tools),
+        allowed_skills=(["pipeline-review"] if allowed_skills is None else allowed_skills),
         max_turns=6,
         input_schema={"type": "object"},
         output_mode=AgentOutputMode.JSON,
@@ -124,13 +126,17 @@ def _agent(
     )
 
 
-def _service() -> tuple[AgentDefinitionService, _Access, _Validator, UUID, UUID]:
+def _service(
+    *,
+    is_admin: bool = False,
+) -> tuple[AgentDefinitionService, _Access, _Validator, UUID, UUID]:
     organisation_id = uuid4()
     owner_user_id = uuid4()
     service = AgentDefinitionService(
         _Session(),  # type: ignore[arg-type]
         organisation_id,
         owner_user_id,
+        is_admin=is_admin,
     )
     access = _Access()
     validator = _Validator()
@@ -223,6 +229,53 @@ async def test_get_agent_maps_absent_cross_owner_or_archived_rows_to_not_found()
         await service.get_agent(uuid4())
 
     assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("is_admin", "allowed_tools", "allowed_skills", "organisation_reason"),
+    [
+        (False, [], [], "organisation_requires_admin"),
+        (True, [ToolName.SEARCH_DEALS.value], [], "organisation_tools_not_supported"),
+        (True, [], ["pipeline-review"], "organisation_skills_not_supported"),
+        (True, [], [], None),
+    ],
+)
+async def test_get_agent_exposes_execution_eligibility(
+    is_admin: bool,
+    allowed_tools: list[str],
+    allowed_skills: list[str],
+    organisation_reason: str | None,
+) -> None:
+    service, access, _validator, organisation_id, owner_user_id = _service(is_admin=is_admin)
+    access.current = _agent(
+        organisation_id=organisation_id,
+        owner_user_id=owner_user_id,
+        allowed_tools=allowed_tools,
+        allowed_skills=allowed_skills,
+    )
+
+    result = await service.get_agent(access.current.agent_id)
+
+    assert result.automation_eligibility.personal.available is True
+    assert result.automation_eligibility.organisation.available is (organisation_reason is None)
+    assert result.automation_eligibility.organisation.reason_code == organisation_reason
+
+
+@pytest.mark.asyncio
+async def test_retry_unsafe_tools_disable_every_execution_mode() -> None:
+    service, access, _validator, organisation_id, owner_user_id = _service(is_admin=True)
+    access.current = _agent(
+        organisation_id=organisation_id,
+        owner_user_id=owner_user_id,
+        allowed_tools=[ToolName.CREATE_DEAL.value],
+        allowed_skills=[],
+    )
+
+    result = await service.get_agent(access.current.agent_id)
+
+    assert result.automation_eligibility.personal.reason_code == "retry_unsafe_tools"
+    assert result.automation_eligibility.organisation.reason_code == "retry_unsafe_tools"
 
 
 @pytest.mark.asyncio

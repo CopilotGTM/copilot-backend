@@ -98,6 +98,20 @@ def realtime_client(mocker):
     mocker.patch("src.api.fastapi_app.close_redis_pool", return_value=None)
     mocker.patch("src.api.fastapi_app.initialize_async_redis_pool", new=AsyncMock())
     mocker.patch("src.api.fastapi_app.close_async_redis_pool", new=AsyncMock())
+    mocker.patch("src.api.fastapi_app.close_database_providers", new=AsyncMock())
+    mocker.patch(
+        "src.api.fastapi_app.validate_current_shared_tenant_runtime_startup",
+        return_value=None,
+    )
+    mocker.patch(
+        "src.api.fastapi_app.validate_current_shared_tenant_runtime_password",
+        new=AsyncMock(),
+    )
+    mocker.patch(
+        "src.api.fastapi_app.security_secrets_config.preload_required",
+        new=AsyncMock(),
+    )
+    mocker.patch("src.api.fastapi_app.init_sentry", return_value=None)
     mocker.patch("src.api.fastapi_app.async_init_otel", new=AsyncMock())
     mocker.patch(
         "src.infra.auth.supabase_admin_client.supabase_admin_client.initialize",

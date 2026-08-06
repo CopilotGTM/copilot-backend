@@ -29,6 +29,7 @@ from src.api.schemas.agent_models import (
 )
 from src.api.schemas.base_models import GenericResponse
 from src.api.utils.http_response import Response
+from src.domain.models.master_tables import UserAppRole
 from src.domain.models.organisation_tables import AgentStatus
 from src.infra.utils.logger import get_logger
 from src.service.agents.definition_service import AgentDefinitionService
@@ -51,6 +52,7 @@ async def get_agent_definition_service(
         org_session,
         user_ids.organisation_id,
         user_ids.user_id,
+        is_admin=user_ids.user_role == UserAppRole.ADMIN,
     )
     try:
         yield service

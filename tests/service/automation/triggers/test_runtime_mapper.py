@@ -1,27 +1,77 @@
-"""Pinned agent-run snapshot mapping tests for the future execution worker."""
+"""Pinned agent-run snapshot mapping tests for the execution worker."""
 
 from __future__ import annotations
 
-from uuid import uuid4
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
 
 import pytest
 from src.domain.models.organisation_tables import AgentRun
+from src.service.automation.events.contracts import AutomationEventEnvelope
 from src.service.automation.triggers.runtime import map_agent_run_runtime
 
 
-def run() -> AgentRun:
-    agent_id, deal_id = uuid4(), uuid4()
+def event(
+    organisation_id: UUID,
+    *,
+    event_id: UUID | None = None,
+    subject_type: str = "deal",
+) -> AutomationEventEnvelope:
+    """Build the event fixture used by the surrounding regression cases."""
+    event_id = event_id or uuid4()
+    subject_id = uuid4()
+    return AutomationEventEnvelope.model_validate(
+        {
+            "event_id": str(event_id),
+            "organisation_id": str(organisation_id),
+            "event_key": f"crm.{subject_type}.created",
+            "route": {"mode": "match"},
+            "occurred_at": datetime(2026, 8, 5, tzinfo=UTC),
+            "source": {
+                "domain": "crm",
+                "system": "internal",
+                "operation": "create",
+                "mode": "interactive",
+                "source_event_id": str(event_id),
+            },
+            "actor": {"type": "user", "id": str(uuid4())},
+            "subject": {"type": subject_type, "id": str(subject_id)},
+            "record": {"id": str(subject_id), "name": "Acme"},
+            "correlation_id": "request-123",
+            "idempotency_key": f"crm.{subject_type}.created:{event_id}",
+        }
+    )
+
+
+def run(*, subject_type: str = "deal") -> AgentRun:
+    """Build the run fixture used by the surrounding regression cases."""
+    organisation_id, principal_id, agent_id, trigger_id = (
+        uuid4(),
+        uuid4(),
+        uuid4(),
+        uuid4(),
+    )
+    source_event = event(organisation_id, subject_type=subject_type)
     return AgentRun(
-        organisation_id=uuid4(),
-        owner_user_id=uuid4(),
+        organisation_id=organisation_id,
+        created_by_user_id=principal_id,
+        execution_principal_type="user",
+        execution_principal_id=principal_id,
+        audience_mode="principal",
+        audience_config={},
         agent_id=agent_id,
-        trigger_id=uuid4(),
+        trigger_id=trigger_id,
         agent_revision=4,
-        idempotency_key="trigger:event",
-        source_domain="crm",
-        event_type="crm.deal.stage_changed",
-        source_event_id=str(uuid4()),
-        trigger_snapshot={"task_config": {"goal": "Prepare next steps"}},
+        idempotency_key=f"trigger:{trigger_id}:event:{source_event.event_id}",
+        event_id=source_event.event_id,
+        event_key=source_event.event_key,
+        correlation_id="request-123",
+        caused_by_run_id=None,
+        causation_depth=0,
+        trigger_snapshot={
+            "trigger_id": str(trigger_id),
+            "task_config": {"goal": "Prepare next steps"},
+        },
         agent_snapshot={
             "agent_id": str(agent_id),
             "revision": 4,
@@ -36,18 +86,14 @@ def run() -> AgentRun:
             "output_mode": "text",
             "output_schema": None,
         },
-        input_snapshot={
-            "schema_key": "crm.deal.stage_changed.v1",
-            "subject": {"type": "deal", "id": str(deal_id)},
-            "deal": {"deal_id": str(deal_id)},
-            "event": {"event_id": str(uuid4())},
-        },
+        input_snapshot=source_event.model_dump(mode="json"),
         attempt_count=1,
         claimed_by="agent-worker-1",
     )
 
 
 def test_runtime_mapper_uses_only_pinned_run_snapshots() -> None:
+    """Verify the contract that runtime mapper uses only pinned run snapshots."""
     agent_run = run()
     agent_run.attempt_count = 2
     agent_run.claimed_by = "agent-worker-2"
@@ -57,15 +103,15 @@ def test_runtime_mapper_uses_only_pinned_run_snapshots() -> None:
     assert envelope.run_id == agent_run.run_id
     assert envelope.attempt_number == 2
     assert envelope.worker_id == "agent-worker-2"
-    assert envelope.agent_id == agent_run.agent_id
-    assert envelope.agent_revision == 4
-    assert envelope.trigger_id == agent_run.trigger_id
-    assert envelope.source_domain == "crm"
-    assert envelope.event_type == "crm.deal.stage_changed"
-    assert envelope.source_event_id == agent_run.source_event_id
+    assert envelope.execution_principal_type == "user"
+    assert envelope.principal_user_id == agent_run.execution_principal_id
+    assert envelope.audience_mode == "principal"
+    assert envelope.event_id == agent_run.event_id
+    assert envelope.event_key == "crm.deal.created"
+    assert envelope.correlation_id == "request-123"
     assert envelope.subject_type == "deal"
     assert envelope.subject_id == agent_run.input_snapshot["subject"]["id"]
-    assert str(envelope.deal_id) == agent_run.input_snapshot["deal"]["deal_id"]
+    assert str(envelope.deal_id) == envelope.subject_id
     assert envelope.prompt == "Act as a deal coach."
     assert envelope.allowed_tools == ("search_deals",)
     assert envelope.task_goal == "Prepare next steps"
@@ -81,9 +127,10 @@ def test_runtime_mapper_uses_only_pinned_run_snapshots() -> None:
         ({"prompt": ""}, "prompt"),
     ],
 )
-def test_runtime_mapper_fails_closed_on_inconsistent_snapshot(
+def test_runtime_mapper_fails_closed_on_inconsistent_agent_snapshot(
     snapshot_change: dict[str, object], message: str
 ) -> None:
+    """Verify the contract that runtime mapper fails closed on inconsistent agent snapshot."""
     agent_run = run()
     agent_run.agent_snapshot = {**agent_run.agent_snapshot, **snapshot_change}
 
@@ -92,30 +139,59 @@ def test_runtime_mapper_fails_closed_on_inconsistent_snapshot(
 
 
 def test_runtime_mapper_accepts_contact_subject_without_deal() -> None:
-    """A contact lifecycle trigger must reach execution without inventing deal scope."""
-
-    agent_run = run()
-    contact_id = uuid4()
-    agent_run.event_type = "crm.contact.created"
-    agent_run.input_snapshot = {
-        "schema_key": "crm.contact.created.v1",
-        "subject": {"type": "contact", "id": str(contact_id)},
-        "contact": {"contact_id": str(contact_id), "company_id": None},
-        "event": {"semantic_event_type": "crm.contact.created"},
-    }
+    """Verify the contract that runtime mapper accepts contact subject without deal."""
+    agent_run = run(subject_type="contact")
 
     envelope = map_agent_run_runtime(agent_run)
 
     assert envelope.subject_type == "contact"
-    assert envelope.subject_id == str(contact_id)
+    assert envelope.subject_id == agent_run.input_snapshot["subject"]["id"]
     assert envelope.deal_id is None
 
 
-def test_runtime_mapper_rejects_deal_subject_identity_mismatch() -> None:
-    """Pinned subject and deal boundaries cannot point to different CRM records."""
-
+def test_runtime_mapper_rejects_event_row_mismatch() -> None:
+    """Verify the contract that runtime mapper rejects event row mismatch."""
     agent_run = run()
-    agent_run.input_snapshot["subject"]["id"] = str(uuid4())
+    agent_run.event_key = "crm.contact.created"
 
-    with pytest.raises(ValueError, match="subject id does not match deal_id"):
+    with pytest.raises(ValueError, match="event_key"):
+        map_agent_run_runtime(agent_run)
+
+
+def test_runtime_mapper_rejects_tools_for_organisation_service_principal() -> None:
+    """Verify the contract that runtime mapper rejects tools for organisation service principal."""
+    agent_run = run()
+    agent_run.execution_principal_type = "organisation_service"
+    agent_run.execution_principal_id = agent_run.organisation_id
+    agent_run.audience_mode = "none"
+
+    with pytest.raises(ValueError, match="organisation service agent cannot use"):
+        map_agent_run_runtime(agent_run)
+
+
+def test_runtime_mapper_rejects_skills_for_organisation_service_principal() -> None:
+    """Verify the contract that runtime mapper rejects skills for organisation service principal."""
+    agent_run = run()
+    agent_run.execution_principal_type = "organisation_service"
+    agent_run.execution_principal_id = agent_run.organisation_id
+    agent_run.audience_mode = "none"
+    agent_run.agent_snapshot = {
+        **agent_run.agent_snapshot,
+        "allowed_tools": [],
+        "allowed_skills": ["crm"],
+    }
+
+    with pytest.raises(ValueError, match="cannot use skills"):
+        map_agent_run_runtime(agent_run)
+
+
+def test_runtime_mapper_rejects_retry_unsafe_personal_mutations() -> None:
+    """Verify the contract that runtime mapper rejects retry unsafe personal mutations."""
+    agent_run = run()
+    agent_run.agent_snapshot = {
+        **agent_run.agent_snapshot,
+        "allowed_tools": ["update_deal_fields"],
+    }
+
+    with pytest.raises(ValueError, match="retry-safe"):
         map_agent_run_runtime(agent_run)

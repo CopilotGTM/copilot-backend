@@ -17,7 +17,7 @@ from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_acces
 from src.agents.tools.crm.update_deal_fields import _deal_context_fields, _resolve_deal_id
 from src.contracts.crm.deal_write import DealAccountUpdateRequest
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
-from src.service.crm.deals.contracts import DealWriteServiceError
+from src.service.crm.deals.contracts import DealWriteContext, DealWriteServiceError
 from src.service.crm.deals.write_service import DealWriteService
 from src.service.crm.internal.deal_update_policy import classify_deal_update_policy
 
@@ -179,7 +179,16 @@ def create_update_deal_account(
                 # Guard write consistency by committing only after the service
                 # mutation succeeds; rollback every failure path.
                 try:
-                    deal = await service.update_account(resolved_deal_id, effective_account)
+                    deal = await service.update_account(
+                        resolved_deal_id,
+                        effective_account,
+                        context=DealWriteContext(
+                            source="agent",
+                            actor_user_id=actor_user_id,
+                            source_label="Agent",
+                            **context.automation_causation(),
+                        ),
+                    )
                     await org_session.commit()
                     return _result(
                         "applied",

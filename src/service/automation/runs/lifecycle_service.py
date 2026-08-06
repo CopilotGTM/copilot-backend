@@ -12,14 +12,17 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.domain.models.organisation_tables import AgentRunStatus
+from src.domain.models.organisation_tables import AgentRun, AgentRunStatus
+from src.service.automation.events.contracts import AutomationEventEnvelope
+from src.service.automation.events.service import AutomationEventDispatchService
+from src.service.automation.producers.agent import AgentRunEventAdapter
 from src.service.automation.runs.access import AgentRunClaimAccess
 
 
 class LifecycleAccess(Protocol):
     """Persistence operations required by the lifecycle service."""
 
-    async def complete_run(self, run_id: UUID, **kwargs: Any) -> bool:
+    async def complete_run(self, run_id: UUID, **kwargs: Any) -> AgentRun | None:
         """Write a terminal state while the supplied claim fence still owns the run."""
 
         ...
@@ -27,6 +30,18 @@ class LifecycleAccess(Protocol):
     async def release_for_retry(self, run_id: UUID, **kwargs: Any) -> bool:
         """Return an owned running attempt to pending."""
 
+        ...
+
+    async def record_trigger_outcome(self, trigger_id: UUID, **kwargs: Any) -> None:
+        """Record trigger outcome as part of the durable automation lifecycle."""
+        ...
+
+
+class AutomationEventEnqueuer(Protocol):
+    """Transaction-local event append required after a fenced terminal write."""
+
+    async def enqueue(self, envelope: AutomationEventEnvelope) -> object:
+        """Queue the current Automation Event Enqueuer work while preserving its tenant and idempotency boundaries."""
         ...
 
 
@@ -39,8 +54,14 @@ class AgentRunLifecycleService:
         organisation_id: UUID,
         *,
         access: LifecycleAccess | None = None,
+        automation_events: AutomationEventEnqueuer | None = None,
     ) -> None:
         self.access = access or AgentRunClaimAccess(session, organisation_id)
+        self.organisation_id = organisation_id
+        self._automation_events = automation_events or AutomationEventDispatchService(
+            session,
+            organisation_id,
+        )
 
     async def mark_succeeded(
         self,
@@ -64,7 +85,7 @@ class AgentRunLifecycleService:
             completed_at=completed_at,
             latency_ms=latency_ms,
         )
-        return await self.access.complete_run(
+        return await self._complete_and_enqueue(
             run_id,
             attempt_number=attempt_number,
             worker_id=worker_id.strip(),
@@ -101,7 +122,7 @@ class AgentRunLifecycleService:
             latency_ms=latency_ms,
         )
         status = AgentRunStatus.VALIDATION_FAILED if validation_failure else AgentRunStatus.FAILED
-        return await self.access.complete_run(
+        return await self._complete_and_enqueue(
             run_id,
             attempt_number=attempt_number,
             worker_id=worker_id.strip(),
@@ -116,6 +137,22 @@ class AgentRunLifecycleService:
             cost=None,
             latency_ms=latency_ms,
         )
+
+    async def _complete_and_enqueue(self, run_id: UUID, **kwargs: Any) -> bool:
+        run = await self.access.complete_run(run_id, **kwargs)
+        if run is None:
+            return False
+        envelope = AgentRunEventAdapter(self.organisation_id).from_run(run)
+        if envelope is not None:
+            await self._automation_events.enqueue(envelope)
+        await self.access.record_trigger_outcome(
+            run.trigger_id,
+            succeeded=kwargs["status"] == AgentRunStatus.SUCCEEDED.value,
+            completed_at=kwargs["completed_at"],
+            error_code=kwargs["error_code"],
+            error_message=kwargs["error_message"],
+        )
+        return True
 
     async def release_for_retry(
         self,

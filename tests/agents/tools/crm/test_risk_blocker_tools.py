@@ -1,3 +1,5 @@
+"""Regression tests for test risk blocker tools; these cases lock the backend contract used by the changed feature."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -21,6 +23,7 @@ class _Session:
         self.committed = False
 
     async def commit(self) -> None:
+        """Expose the commit operation expected by the Session test double."""
         self.committed = True
 
 
@@ -40,8 +43,10 @@ class _Context:
     organisation_id: Any
     deal_id: Any
     session: _Session
+    metadata: dict[str, Any] | None = None
 
     def acquire_session(self) -> _SessionContext:
+        """Build the acquire session fixture used by the surrounding regression cases."""
         return _SessionContext(self.session)
 
 
@@ -66,6 +71,7 @@ class _Item:
 async def test_get_existing_risks_blockers_uses_read_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verify the contract that get existing risks blockers uses read service."""
     item_id = uuid4()
 
     class _ReadService:
@@ -74,6 +80,7 @@ async def test_get_existing_risks_blockers_uses_read_service(
             self.organisation_id = organisation_id
 
         async def list_models_for_deal(self, **kwargs: Any) -> list[_Item]:
+            """Expose the list models for deal operation expected by the Read Service test double."""
             assert kwargs["statuses"] == [
                 RiskBlockerStatus.OPEN,
                 RiskBlockerStatus.IN_PROGRESS,
@@ -93,6 +100,7 @@ async def test_get_existing_risks_blockers_uses_read_service(
 
 @pytest.mark.asyncio
 async def test_update_risk_blocker_uses_write_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify the contract that update risk blocker uses write service."""
     item_id = uuid4()
 
     class _WriteService:
@@ -100,18 +108,37 @@ async def test_update_risk_blocker_uses_write_service(monkeypatch: pytest.Monkey
             self.last_changes: dict[str, dict[str, str]] = {}
 
         async def update_fields(self, risk_blocker_id: Any, updates: dict[str, Any], context: Any):
+            """Expose the update fields operation expected by the Write Service test double."""
             assert risk_blocker_id == item_id
             assert updates["severity"] == RiskBlockerSeverity.CRITICAL
-            assert context.actor.actor_type == "system"
+            assert context.actor.actor_type == "workflow"
+            assert context.inference.evidence_id == "meeting-7"
+            assert context.inference.confidence == 0.93
             self.last_changes = {"severity": {"old": "HIGH", "new": "CRITICAL"}}
             return object()
 
     monkeypatch.setattr(manage_risks_blockers, "RiskBlockerWriteService", _WriteService)
-    context = _Context(organisation_id=uuid4(), deal_id=uuid4(), session=_Session())
+    run_id = uuid4()
+    context = _Context(
+        organisation_id=uuid4(),
+        deal_id=uuid4(),
+        session=_Session(),
+        metadata={
+            "source": "agent_trigger",
+            "automation_model_name": "gpt-5-mini",
+            "automation_prompt_version": "user-agent:7",
+            "automation_inference_run_id": str(run_id),
+            "automation_caused_by_run_id": str(run_id),
+            "automation_correlation_id": "chain-9",
+            "automation_causation_depth": 2,
+        },
+    )
 
     result = await manage_risks_blockers.update_risk_blocker_impl(
         context=context,
         risk_blocker_id=str(item_id),
+        evidence_id="meeting-7",
+        confidence=0.93,
         severity=RiskBlockerSeverity.CRITICAL.value,
     )
 
@@ -123,19 +150,34 @@ async def test_update_risk_blocker_uses_write_service(monkeypatch: pytest.Monkey
 
 @pytest.mark.asyncio
 async def test_resolve_risk_blocker_skips_closed_items(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify the contract that resolve risk blocker skips closed items."""
+
     class _LifecycleService:
         def __init__(self, session: _Session, organisation_id: Any) -> None:
             pass
 
         async def get_status(self, risk_blocker_id: Any) -> RiskBlockerStatus:
+            """Expose the get status operation expected by the Lifecycle Service test double."""
             return RiskBlockerStatus.RESOLVED
 
     monkeypatch.setattr(manage_risks_blockers, "RiskBlockerLifecycleService", _LifecycleService)
-    context = _Context(organisation_id=uuid4(), deal_id=uuid4(), session=_Session())
+    run_id = uuid4()
+    context = _Context(
+        organisation_id=uuid4(),
+        deal_id=uuid4(),
+        session=_Session(),
+        metadata={
+            "automation_model_name": "gpt-5-mini",
+            "automation_prompt_version": "risk-blocker-extraction-v1",
+            "automation_inference_run_id": str(run_id),
+        },
+    )
 
     result = await manage_risks_blockers.resolve_risk_blocker_impl(
         context=context,
         risk_blocker_id=str(uuid4()),
+        evidence_id="email-3",
+        confidence=0.89,
         resolution_notes="Budget approved by CFO",
     )
 
@@ -152,6 +194,7 @@ async def test_risk_blocker_lifecycle_results_include_deal_id(
     action: str,
     expected_status: str,
 ) -> None:
+    """Verify the contract that risk blocker lifecycle results include deal id."""
     item_id = uuid4()
 
     class _LifecycleService:
@@ -159,29 +202,69 @@ async def test_risk_blocker_lifecycle_results_include_deal_id(
             pass
 
         async def get_status(self, risk_blocker_id: Any) -> RiskBlockerStatus:
+            """Expose the get status operation expected by the Lifecycle Service test double."""
             return RiskBlockerStatus.OPEN
 
         async def dismiss(self, risk_blocker_id: Any, **kwargs: Any) -> None:
+            """Expose the dismiss operation expected by the Lifecycle Service test double."""
             return None
 
         async def resolve(self, risk_blocker_id: Any, *args: Any, **kwargs: Any) -> None:
+            """Expose the resolve operation expected by the Lifecycle Service test double."""
             return None
 
     monkeypatch.setattr(manage_risks_blockers, "RiskBlockerLifecycleService", _LifecycleService)
-    context = _Context(organisation_id=uuid4(), deal_id=uuid4(), session=_Session())
+    run_id = uuid4()
+    context = _Context(
+        organisation_id=uuid4(),
+        deal_id=uuid4(),
+        session=_Session(),
+        metadata={
+            "automation_model_name": "gpt-5-mini",
+            "automation_prompt_version": "risk-blocker-extraction-v1",
+            "automation_inference_run_id": str(run_id),
+        },
+    )
 
     if action == "dismiss":
         result = await manage_risks_blockers.dismiss_risk_blocker_impl(
             context=context,
             risk_blocker_id=str(item_id),
+            evidence_id="meeting-2",
+            confidence=0.9,
             reason="No longer relevant",
         )
     else:
         result = await manage_risks_blockers.resolve_risk_blocker_impl(
             context=context,
             risk_blocker_id=str(item_id),
+            evidence_id="meeting-2",
+            confidence=0.9,
             resolution_notes="Issue resolved",
         )
 
     assert result["status"] == expected_status
     assert result["deal_id"] == str(context.deal_id)
+
+
+@pytest.mark.asyncio
+async def test_ai_mutation_rejects_missing_durable_provenance_before_opening_session() -> None:
+    """Verify the contract that ai mutation rejects missing durable provenance before opening session."""
+    context = _Context(
+        organisation_id=uuid4(),
+        deal_id=uuid4(),
+        session=_Session(),
+        metadata={},
+    )
+
+    result = await manage_risks_blockers.update_risk_blocker_impl(
+        context=context,
+        risk_blocker_id=str(uuid4()),
+        evidence_id="meeting-9",
+        confidence=0.8,
+        severity=RiskBlockerSeverity.HIGH.value,
+    )
+
+    assert result["status"] == "error"
+    assert "provenance" in result["message"].lower()
+    assert context.session.committed is False

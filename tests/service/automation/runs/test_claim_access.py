@@ -12,30 +12,39 @@ from src.service.automation.runs.access import AgentRunClaimAccess
 
 
 class Result:
+    """Represent the Result test double used by the surrounding regression cases."""
+
     def __init__(self, returned: object) -> None:
         self.returned = returned
 
     def scalar_one_or_none(self) -> object:
+        """Expose the scalar one or none operation expected by the Result test double."""
         return self.returned
 
     def scalars(self):
+        """Expose the scalars operation expected by the Result test double."""
         return self
 
     def all(self):
+        """Expose the all operation expected by the Result test double."""
         return self.returned
 
 
 class RecordingSession:
+    """Represent the Recording Session test double used by the surrounding regression cases."""
+
     def __init__(self, returned: object = None) -> None:
         self.returned = returned
         self.statements: list[Any] = []
 
     async def execute(self, statement: Any) -> Result:
+        """Expose the execute operation expected by the Recording Session test double."""
         self.statements.append(statement)
         return Result(self.returned)
 
 
 def compile_statement(statement: Any) -> Any:
+    """Build the compile statement fixture used by the surrounding regression cases."""
     return statement.compile(dialect=postgresql.dialect())
 
 
@@ -43,6 +52,7 @@ def compile_statement(statement: Any) -> Any:
 async def test_claim_is_one_org_scoped_conditional_update() -> None:
     # A single conditional UPDATE is the concurrency boundary: duplicate workers
     # cannot both move the same pending or expired run into active execution.
+    """Verify the contract that claim is one org scoped conditional update."""
     claimed_run = object()
     session = RecordingSession(returned=claimed_run)
     organisation_id = uuid4()
@@ -86,7 +96,9 @@ async def test_claim_is_one_org_scoped_conditional_update() -> None:
 @pytest.mark.asyncio
 async def test_terminal_write_is_fenced_by_attempt_and_worker() -> None:
     # A stale worker must not overwrite a newer retry after its lease has been reclaimed.
-    session = RecordingSession(returned=uuid4())
+    """Verify the contract that terminal write is fenced by attempt and worker."""
+    returned_run = object()
+    session = RecordingSession(returned=returned_run)
     organisation_id = uuid4()
     run_id = uuid4()
     completed_at = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
@@ -108,7 +120,7 @@ async def test_terminal_write_is_fenced_by_attempt_and_worker() -> None:
         latency_ms=1500,
     )
 
-    assert updated is True
+    assert updated is returned_run
     compiled = compile_statement(session.statements[0])
     statement_sql = " ".join(str(compiled).lower().split())
     parameter_values = list(compiled.params.values())
@@ -123,10 +135,12 @@ async def test_terminal_write_is_fenced_by_attempt_and_worker() -> None:
     assert "agent-worker-3" in parameter_values
     assert "running" in parameter_values
     assert "succeeded" in parameter_values
+    assert "returning agent_runs.run_id" in statement_sql
 
 
 @pytest.mark.asyncio
 async def test_retry_release_is_fenced_and_returns_run_to_pending() -> None:
+    """Verify the contract that retry release is fenced and returns run to pending."""
     session = RecordingSession(returned=uuid4())
     access = AgentRunClaimAccess(session, uuid4())  # type: ignore[arg-type]
 
@@ -150,6 +164,7 @@ async def test_retry_release_is_fenced_and_returns_run_to_pending() -> None:
 
 @pytest.mark.asyncio
 async def test_dispatch_scan_returns_pending_and_expired_running_ids() -> None:
+    """Verify the contract that dispatch scan returns pending and expired running ids."""
     run_ids = [uuid4(), uuid4()]
     session = RecordingSession(returned=run_ids)
     organisation_id = uuid4()

@@ -14,7 +14,11 @@ from uuid import UUID
 
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.domain.models.organisation_tables import AgentRun, AgentRunStatus
+from src.domain.models.organisation_tables import (
+    AgentRun,
+    AgentRunStatus,
+    AutomationTrigger,
+)
 
 
 class AgentRunClaimAccess:
@@ -90,7 +94,7 @@ class AgentRunClaimAccess:
         token_usage: dict[str, Any] | None,
         cost: Decimal | None,
         latency_ms: int,
-    ) -> bool:
+    ) -> AgentRun | None:
         """Write one terminal result only while the caller still owns the claim."""
 
         columns = cast(Any, AgentRun).__table__.c
@@ -117,10 +121,10 @@ class AgentRunClaimAccess:
                 cost=cost,
                 latency_ms=latency_ms,
             )
-            .returning(columns.run_id)
+            .returning(AgentRun)
             .execution_options(synchronize_session=False)
         )
-        return (await self.session.execute(statement)).scalar_one_or_none() is not None
+        return (await self.session.execute(statement)).scalar_one_or_none()
 
     async def release_for_retry(
         self,
@@ -154,6 +158,33 @@ class AgentRunClaimAccess:
             .execution_options(synchronize_session=False)
         )
         return (await self.session.execute(statement)).scalar_one_or_none() is not None
+
+    async def record_trigger_outcome(
+        self,
+        trigger_id: UUID,
+        *,
+        succeeded: bool,
+        completed_at: datetime,
+        error_code: str | None,
+        error_message: str | None,
+    ) -> None:
+        """Record trigger outcome as part of the durable automation lifecycle."""
+        columns = cast(Any, AutomationTrigger).__table__.c
+        values: dict[str, Any] = {
+            "last_triggered_at": completed_at,
+            "trigger_count": columns.trigger_count + 1,
+            "last_error_code": None if succeeded else error_code,
+            "last_error": None if succeeded else error_message,
+        }
+        values["consecutive_failures"] = 0 if succeeded else columns.consecutive_failures + 1
+        await self.session.execute(
+            update(AutomationTrigger)
+            .where(
+                columns.organisation_id == self.organisation_id,
+                columns.trigger_id == trigger_id,
+            )
+            .values(values)
+        )
 
     async def list_dispatchable_run_ids(
         self,

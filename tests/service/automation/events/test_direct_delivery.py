@@ -12,6 +12,18 @@ from src.domain.models.organisation_tables import AutomationEventDispatch
 from src.infra.utils.async_runner import run_async
 
 
+def _dispatch(organisation_id=None) -> AutomationEventDispatch:
+    event_id = uuid4()
+    return AutomationEventDispatch(
+        event_id=event_id,
+        organisation_id=organisation_id or uuid4(),
+        event_key="crm.contact.created",
+        route_mode="match",
+        idempotency_key=f"crm.contact.created:{event_id}",
+        envelope={},
+    )
+
+
 def test_commit_schedules_dispatch_but_rollback_drops_it(monkeypatch) -> None:
     """Only committed source transactions may become visible to the activation worker."""
 
@@ -19,19 +31,15 @@ def test_commit_schedules_dispatch_but_rollback_drops_it(monkeypatch) -> None:
     published: list[tuple[str, str]] = []
     completed = Event()
 
-    def publish(organisation_id, dispatch_id) -> bool:
-        published.append((str(organisation_id), str(dispatch_id)))
+    def publish(organisation_id, event_id) -> bool:
+        """Build the publish fixture used by the surrounding regression cases."""
+        published.append((str(organisation_id), str(event_id)))
         completed.set()
         return True
 
     monkeypatch.setattr(delivery, "_publish_staged_delivery", publish)
     organisation_id = uuid4()
-    committed = AutomationEventDispatch(
-        organisation_id=organisation_id,
-        source_domain="crm",
-        source_event_id=str(uuid4()),
-        event_type="crm.contact.created",
-    )
+    committed = _dispatch(organisation_id)
     committed_session = Session()
     delivery.stage_automation_event_delivery(
         SimpleNamespace(sync_session=committed_session), committed
@@ -41,14 +49,9 @@ def test_commit_schedules_dispatch_but_rollback_drops_it(monkeypatch) -> None:
     committed_session.commit()
     assert completed.wait(1)
 
-    assert published == [(str(organisation_id), str(committed.dispatch_id))]
+    assert published == [(str(organisation_id), str(committed.event_id))]
 
-    rolled_back = AutomationEventDispatch(
-        organisation_id=organisation_id,
-        source_domain="crm",
-        source_event_id=str(uuid4()),
-        event_type="crm.contact.created",
-    )
+    rolled_back = _dispatch(organisation_id)
     rolled_back_session = Session()
     rolled_back_session.begin()
     delivery.stage_automation_event_delivery(
@@ -56,7 +59,7 @@ def test_commit_schedules_dispatch_but_rollback_drops_it(monkeypatch) -> None:
     )
     rolled_back_session.rollback()
 
-    assert published == [(str(organisation_id), str(committed.dispatch_id))]
+    assert published == [(str(organisation_id), str(committed.event_id))]
 
 
 def test_worker_loop_cleanup_cannot_cancel_post_commit_submission(monkeypatch) -> None:
@@ -65,14 +68,10 @@ def test_worker_loop_cleanup_cannot_cancel_post_commit_submission(monkeypatch) -
     delivery = importlib.import_module("src.service.automation.events.delivery")
     submitted: list[object] = []
     monkeypatch.setattr(delivery, "_submit_staged_delivery", submitted.append)
-    dispatch = AutomationEventDispatch(
-        organisation_id=uuid4(),
-        source_domain="crm",
-        source_event_id=str(uuid4()),
-        event_type="crm.contact.created",
-    )
+    dispatch = _dispatch()
 
     async def commit_source() -> None:
+        """Build the commit source fixture used by the surrounding regression cases."""
         session = Session()
         delivery.stage_automation_event_delivery(SimpleNamespace(sync_session=session), dispatch)
         session.commit()
@@ -88,15 +87,11 @@ def test_submission_failure_does_not_fail_an_already_committed_write(monkeypatch
     delivery = importlib.import_module("src.service.automation.events.delivery")
 
     def fail_submission(_item) -> None:
+        """Build the fail submission fixture used by the surrounding regression cases."""
         raise RuntimeError("publisher is shutting down")
 
     monkeypatch.setattr(delivery, "_submit_staged_delivery", fail_submission)
-    dispatch = AutomationEventDispatch(
-        organisation_id=uuid4(),
-        source_domain="crm",
-        source_event_id=str(uuid4()),
-        event_type="crm.contact.created",
-    )
+    dispatch = _dispatch()
     session = Session()
     delivery.stage_automation_event_delivery(SimpleNamespace(sync_session=session), dispatch)
 
@@ -112,31 +107,21 @@ def test_savepoints_wait_for_outer_commit_and_drop_only_the_failed_row(monkeypat
     session = Session()
     outer = session.begin()
 
-    valid = AutomationEventDispatch(
-        organisation_id=uuid4(),
-        source_domain="crm",
-        source_event_id=str(uuid4()),
-        event_type="crm.contact.created",
-    )
+    valid = _dispatch()
     valid_savepoint = session.begin_nested()
     delivery.stage_automation_event_delivery(SimpleNamespace(sync_session=session), valid)
     valid_savepoint.commit()
 
     assert submitted == []
 
-    invalid = AutomationEventDispatch(
-        organisation_id=uuid4(),
-        source_domain="crm",
-        source_event_id=str(uuid4()),
-        event_type="crm.contact.created",
-    )
+    invalid = _dispatch()
     invalid_savepoint = session.begin_nested()
     delivery.stage_automation_event_delivery(SimpleNamespace(sync_session=session), invalid)
     invalid_savepoint.rollback()
     outer.commit()
 
     assert len(submitted) == 1
-    assert submitted[0].dispatch_id == valid.dispatch_id
+    assert submitted[0].event_id == valid.event_id
 
 
 def test_direct_publish_retries_with_exponential_delays() -> None:
@@ -147,17 +132,19 @@ def test_direct_publish_retries_with_exponential_delays() -> None:
     delays: list[float] = []
 
     def publish(_task_name, **_kwargs):
+        """Build the publish fixture used by the surrounding regression cases."""
         nonlocal attempts
         attempts += 1
         if attempts < 3:
             raise RuntimeError("redis unavailable")
 
     def sleep(delay: float) -> None:
+        """Build the sleep fixture used by the surrounding regression cases."""
         delays.append(delay)
 
     published = delivery.publish_task_sync_with_backoff(
         "chat.activate_automation_event",
-        kwargs={"organisation_id": str(uuid4()), "dispatch_id": str(uuid4())},
+        kwargs={"organisation_id": str(uuid4()), "event_id": str(uuid4())},
         queue="chat_processing",
         publisher=publish,
         retry_delays=(1.0, 2.0, 4.0),

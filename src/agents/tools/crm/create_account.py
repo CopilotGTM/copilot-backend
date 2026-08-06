@@ -231,6 +231,7 @@ async def create_account_direct(
                         actor_email=context.user_email,
                         created_via="chat_tool",
                         duplicate_scope="internal_only",
+                        **context.automation_causation(),
                     ),
                 )
                 account = write_result.account

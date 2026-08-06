@@ -52,6 +52,29 @@ RETIRED_TABLES = {
     "integration_participant_identities",
     "messaging_thread_summaries",
 }
+REVISION_087_REMAINING_TENANT_FOREIGN_KEYS = {
+    (
+        "automation_event_dispatches",
+        "direct_trigger_id",
+        "automation_triggers",
+        "trigger_id",
+        "RESTRICT",
+    ),
+    (
+        "agent_runs",
+        "event_id",
+        "automation_event_dispatches",
+        "event_id",
+        "RESTRICT",
+    ),
+    (
+        "agent_runs",
+        "caused_by_run_id",
+        "agent_runs",
+        "run_id",
+        "RESTRICT",
+    ),
+}
 
 
 def _load_migration() -> ModuleType:
@@ -169,7 +192,9 @@ def test_revision_084_matches_model_derived_relationships() -> None:
 
     migration = _load_migration()
     tables = {table.name: table for table in _organisation_tables()}
-    relationships = _remaining_foreign_key_specs()
+    current_relationships = _remaining_foreign_key_specs()
+    assert current_relationships >= REVISION_087_REMAINING_TENANT_FOREIGN_KEYS
+    relationships = current_relationships - REVISION_087_REMAINING_TENANT_FOREIGN_KEYS
     active_migration_relationships = {
         relationship
         for relationship in migration.REMAINING_TENANT_FOREIGN_KEYS

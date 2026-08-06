@@ -108,7 +108,6 @@ def test_cleanup_is_one_revision_after_forced_rls_head() -> None:
 
     assert migration.revision == "3c7f79637713"
     assert migration.down_revision == "3c7f79637714"
-    assert not tuple(VERSIONS.glob("*_087_*.py"))
     assert not tuple(VERSIONS.glob("*_088_*.py"))
     assert not tuple(VERSIONS.glob("*_089_*.py"))
     assert not tuple(VERSIONS.glob("*_090_*.py"))

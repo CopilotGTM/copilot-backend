@@ -34,6 +34,12 @@ from src.infra.config.microsoft_integration_scopes import (
 )
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.automation.events.service import AutomationEventDispatchService
+from src.service.automation.producers.meeting import (
+    MeetingEventAdapter,
+    load_meeting_event_context,
+)
+from src.service.automation.triggers.registry import AUTOMATION_REGISTRY
 from src.service.integrations.providers.token_resolution import IntegrationTokenInfo
 from src.service.meeting_bot.providers import (
     RecallMeetingRecordingProvider,
@@ -443,6 +449,7 @@ class TranscriptService:
             transcript_payload = await provider.fetch_transcript(download_url)
             full_transcript, segments = self._parse_recall_transcript(
                 transcript_payload,
+                self.organisation_id,
                 meeting.meeting_id,
             )
             if not full_transcript:
@@ -524,6 +531,7 @@ class TranscriptService:
     @staticmethod
     def _parse_recall_transcript(
         payload: list[dict[str, Any]],
+        organisation_id: UUID,
         meeting_id: UUID,
     ) -> tuple[str, list[TranscriptSegment]]:
         """Convert Recall's word/participant JSON into our transcript schema."""
@@ -553,6 +561,7 @@ class TranscriptService:
             )
             segments.append(
                 TranscriptSegment(
+                    organisation_id=organisation_id,
                     meeting_id=meeting_id,
                     segment_index=index,
                     speaker_external_id=str(speaker_external_id) if speaker_external_id else None,
@@ -854,11 +863,19 @@ class TranscriptService:
             if not meeting:
                 return
 
+            adapter = MeetingEventAdapter(self.organisation_id)
+            previous_source_event_id = adapter.transcript_source_event_id(meeting)
+            previous_fetched_at = meeting.transcript_fetched_at
             meeting.status = MeetingStatus.READY
             meeting.full_transcript = full_transcript
-            meeting.transcript_fetched_at = datetime.now(UTC)
             meeting.transcript_language = language
             meeting.source_data = source_data
+            meeting.transcript_fetched_at = (
+                previous_fetched_at
+                if previous_fetched_at
+                and previous_source_event_id == adapter.transcript_source_event_id(meeting)
+                else datetime.now(UTC)
+            )
 
             if delete_old_segments:
                 old_stmt = select(TranscriptSegment).where(
@@ -870,6 +887,20 @@ class TranscriptService:
             for segment in segments:
                 session.add(segment)
 
+            context = await load_meeting_event_context(
+                session,
+                self.organisation_id,
+                meeting,
+            )
+            envelope = adapter.transcript_ready(
+                meeting,
+                context=context,
+            )
+            await AutomationEventDispatchService(
+                session,
+                self.organisation_id,
+                registry=AUTOMATION_REGISTRY,
+            ).enqueue(envelope)
             await session.commit()
             return
 

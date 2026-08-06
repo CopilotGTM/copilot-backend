@@ -26,6 +26,15 @@ async def test_delete_deal_uses_delete_semantic_only() -> None:
         synced_at=None,
         last_seen_at=None,
         name="Delete Me",
+        pipeline_id=uuid4(),
+        stage_id=uuid4(),
+        amount=100,
+        currency="USD",
+        owner_id=uuid4(),
+        created_by_user_id=uuid4(),
+        expected_close_date=None,
+        company_id=uuid4(),
+        primary_contact_id=uuid4(),
     )
     service._load_internal_deal = AsyncMock(return_value=deal)
     service._record_mutation_event = AsyncMock()
@@ -35,3 +44,4 @@ async def test_delete_deal_uses_delete_semantic_only() -> None:
     kwargs = service._record_mutation_event.await_args.kwargs
     assert kwargs["event_type"] == "crm.deal.deleted"
     assert set(kwargs["changed_fields"]) == {"is_deleted", "deal_status"}
+    assert kwargs["record"]["deal_status"] == CRMDealStatus.OPEN

@@ -322,14 +322,23 @@ class SecuritySecretsConfig:
 
     SECRET_NAME_SESSION_SECRET: str = "session-secret"
     SECRET_NAME_OAUTH_STATE_SECRET: str = "oauth-state-secret-key"
+    SECRET_NAME_AUTOMATION_WEBHOOK_ROOT_SECRET: str = "automation-webhook-root-secret"
     SECRET_NAME_VOICE_REALTIME_CONFIG_SECRET: str = "voice-realtime-config-secret"
 
     _session_secret: str = os.getenv("SESSION_SECRET", "").strip()
     _oauth_state_secret: str = os.getenv("SECRET_KEY", "").strip()
+    _automation_webhook_root_secret: str = os.getenv("AUTOMATION_WEBHOOK_ROOT_SECRET", "").strip()
+    _automation_webhook_previous_root_secrets: tuple[str, ...] = tuple(
+        value.strip()
+        for value in os.getenv("AUTOMATION_WEBHOOK_PREVIOUS_ROOT_SECRETS", "").split(",")
+        if value.strip()
+    )
     _voice_realtime_config_secret: str = os.getenv("VOICE_REALTIME_CONFIG_SECRET", "").strip()
 
     _session_secret_from_env: bool = bool(_session_secret)
     _oauth_state_secret_from_env: bool = bool(_oauth_state_secret)
+    _automation_webhook_root_secret_from_env: bool = bool(_automation_webhook_root_secret)
+    _automation_webhook_root_loaded_at: float | None = None
     _voice_realtime_config_secret_from_env: bool = bool(_voice_realtime_config_secret)
 
     _credentials_ttl_hours: float = float(os.getenv("SECURITY_SECRET_TTL_HOURS", "6"))
@@ -366,6 +375,39 @@ class SecuritySecretsConfig:
             "SECRET_KEY unavailable from env or Key Vault secret "
             f"'{self.SECRET_NAME_OAUTH_STATE_SECRET}'"
         )
+
+    async def get_automation_webhook_root_secret(self) -> str:
+        """Return the dedicated root used only for automation webhook derivation."""
+
+        if self._automation_webhook_root_secret_from_env:
+            return self._automation_webhook_root_secret
+        import time
+
+        if (
+            self._automation_webhook_root_secret
+            and self._automation_webhook_root_loaded_at is not None
+            and (time.time() - self._automation_webhook_root_loaded_at) / 3600
+            < self._credentials_ttl_hours
+        ):
+            return self._automation_webhook_root_secret
+        from src.infra.secrets.manager import master_secrets_manager
+
+        value = (
+            await master_secrets_manager.get(self.SECRET_NAME_AUTOMATION_WEBHOOK_ROOT_SECRET) or ""
+        ).strip()
+        if not value:
+            raise RuntimeError(
+                "Automation webhook root secret unavailable from env or Key Vault secret "
+                f"'{self.SECRET_NAME_AUTOMATION_WEBHOOK_ROOT_SECRET}'"
+            )
+        self._automation_webhook_root_secret = value
+        self._automation_webhook_root_loaded_at = time.time()
+        return value
+
+    def get_automation_webhook_previous_root_secrets(self) -> tuple[str, ...]:
+        """Return explicitly retained roots used during credential rotation."""
+
+        return self._automation_webhook_previous_root_secrets
 
     async def get_voice_realtime_config_secret(self) -> str:
         """Return voice-realtime secret when voice endpoints authenticate calls."""

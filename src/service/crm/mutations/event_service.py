@@ -18,20 +18,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealMutationEvent
 from src.service.automation.errors import AutomationServiceError
+from src.service.automation.events.contracts import AutomationEventEnvelope
 from src.service.automation.events.service import AutomationEventDispatchService
-from src.service.automation.triggers.crm_events import CRM_AGENT_EVENT_SCHEMAS
+from src.service.automation.producers.crm import CRMEventAdapter
 from src.service.crm.mutations.contracts import (
     CRMMutationEventServiceError,
     CRMMutationRecordCommand,
     CRMMutationRecordResult,
 )
-from src.service.crm.mutations.json_safe import normalize_changed_fields
+from src.service.crm.mutations.json_safe import normalize_changed_fields, normalize_json_value
 
 
 class AutomationEventEnqueuer(Protocol):
     """Transaction-local outbox registration for supported source events."""
 
-    async def enqueue(self, *, source_domain: str, source_event_id: str, event_type: str) -> object:
+    async def enqueue(self, envelope: AutomationEventEnvelope) -> object:
         """Append one source occurrence without committing or publishing."""
 
         ...
@@ -71,10 +72,17 @@ class CRMMutationEventService:
         # Normalize before hashing so semantically identical retries compare on
         # the exact JSON-safe payload that will be stored in the audit table.
         changed_fields = normalize_changed_fields(command.changed_fields)
+        record_snapshot = normalize_json_value(command.record, field_name="record")
+        if not isinstance(record_snapshot, dict):
+            raise CRMMutationEventServiceError(
+                "CRM automation record must be an object",
+                status_code=400,
+            )
         scoped_idempotency_key = self._scoped_idempotency_key(command)
         payload_hash = self._payload_hash(
             command=command,
             changed_fields=changed_fields,
+            record_snapshot=record_snapshot,
             scoped_idempotency_key=scoped_idempotency_key,
         )
 
@@ -92,7 +100,7 @@ class CRMMutationEventService:
                     )
                     # Replay outbox registration too. Its source identity is unique, so this
                     # repairs a missing dispatch without duplicating worker activation.
-                    await self._enqueue_supported_events(result)
+                    await self._enqueue_automation_event(existing)
                     return result
                 raise CRMMutationEventServiceError(
                     "Idempotency key was already used for a different CRM mutation",
@@ -114,6 +122,7 @@ class CRMMutationEventService:
             operation=command.operation,
             occurred_at=datetime.now(UTC),
             changed_fields=changed_fields,
+            record_snapshot=record_snapshot,
             summary=command.summary,
             integration_id=command.integration_id,
             provider=command.provider,
@@ -123,6 +132,9 @@ class CRMMutationEventService:
             source_label=command.context.source_label,
             approval_state_id=command.context.approval_state_id,
             correlation_id=command.context.correlation_id,
+            automation_source_mode=self._source_mode(command),
+            caused_by_run_id=command.context.caused_by_run_id,
+            causation_depth=command.context.causation_depth,
             idempotency_key=scoped_idempotency_key,
             payload_hash=payload_hash,
         )
@@ -134,28 +146,43 @@ class CRMMutationEventService:
             changed_fields=changed_fields,
             semantic_event_types=event.semantic_event_types,
         )
-        await self._enqueue_supported_events(result)
+        await self._enqueue_automation_event(event)
         return result
 
-    async def _enqueue_supported_events(self, result: CRMMutationRecordResult) -> None:
-        """Append supported semantics before the source transaction can commit."""
+    async def _enqueue_automation_event(self, event: CRMDealMutationEvent) -> None:
+        """Append one base lifecycle fact before the source transaction commits."""
 
-        if result.event_id is None:
+        try:
+            envelope = CRMEventAdapter(self.organisation_id).from_mutation(event)
+        except ValueError as exc:
+            raise CRMMutationEventServiceError(
+                "Failed to build CRM agent automation event", status_code=500
+            ) from exc
+        if envelope is None:
             return
         try:
-            for event_type in result.semantic_event_types:
-                if event_type in CRM_AGENT_EVENT_SCHEMAS:
-                    # Mutation and dispatch share this session. A rollback removes both,
-                    # so recovery can never activate an event whose CRM write failed.
-                    await self._automation_events.enqueue(
-                        source_domain="crm",
-                        source_event_id=str(result.event_id),
-                        event_type=event_type,
-                    )
-        except AutomationServiceError as exc:
+            # Mutation and dispatch share this session. A rollback removes both,
+            # so recovery cannot activate an event whose CRM write failed.
+            await self._automation_events.enqueue(envelope)
+        except (AutomationServiceError, ValueError) as exc:
             raise CRMMutationEventServiceError(
                 "Failed to enqueue CRM agent automation", status_code=500
             ) from exc
+
+    @staticmethod
+    def _source_mode(command: CRMMutationRecordCommand) -> str:
+        if command.context.source_mode is not None:
+            return command.context.source_mode
+        source = command.context.source.casefold()
+        if "backfill" in source:
+            return "backfill"
+        if "import" in source or "initial" in source:
+            return "initial_sync"
+        if "sync" in source:
+            return "incremental_sync"
+        if source in {"api", "agent", "workflow", "bot_form"}:
+            return "interactive"
+        return "system"
 
     async def _get_existing_idempotency_event(
         self, scoped_idempotency_key: str
@@ -194,6 +221,7 @@ class CRMMutationEventService:
         *,
         command: CRMMutationRecordCommand,
         changed_fields: dict[str, dict[str, object]],
+        record_snapshot: dict[str, object],
         scoped_idempotency_key: str | None,
     ) -> str:
         """Hash the retry-relevant mutation envelope stored in the audit row.
@@ -208,6 +236,7 @@ class CRMMutationEventService:
             "event_type": command.event_type,
             "operation": command.operation,
             "changed_fields": changed_fields,
+            "record_snapshot": record_snapshot,
             "semantic_event_types": command.semantic_event_types,
             "source": command.context.source,
             "idempotency_key": scoped_idempotency_key,

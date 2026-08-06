@@ -1,169 +1,450 @@
 # Agent Triggers API V1
 
-The trigger API lets an authenticated user configure when one of their agents should run. Supported
-CRM events activate matching triggers and dispatch durable runs. Schedule definitions are stored
-and validated, but their due-schedule dispatcher is not implemented in this worktree yet.
+This is the frontend implementation contract for configuring and operating registry-backed agent
+triggers. Authenticated routes use `/users/v1`; signed webhook delivery uses the public
+`/webhooks/v1/automation` path.
 
-## Supported Triggers
+The backend owns trigger availability, validation, defaults, event matching, execution authority,
+target snapshots, schedules, webhook credentials, and runtime health. The frontend owns how those
+backend definitions are presented.
 
-- `schedule`: one-time, daily, weekdays, weekly, biweekly, or monthly in an IANA timezone.
-- `crm.deal.created`: a new owned deal, optionally narrowed to selected pipelines.
-- `crm.deal.stage_changed`: any stage movement, won/lost outcomes, or selected stages from one
-  organization-owned pipeline.
-- `crm.contact.created` and `crm.contact.deleted`: lifecycle events for an owned contact.
-- `crm.account.created` and `crm.account.deleted`: lifecycle events for an owned account.
+## Endpoint Map
 
-Email, meeting, Twitter/X, and webhook triggers are intentionally absent until those domains emit a
-durable semantic event the trigger matcher can consume.
+| Method | Path | Success | Frontend use |
+| --- | --- | --- | --- |
+| `GET` | `/users/v1/automation-trigger-catalog` | `200` | Build the trigger picker and forms |
+| `GET` | `/users/v1/agents/{agent_id}/triggers` | `200` | List one agent's non-archived triggers |
+| `POST` | `/users/v1/agents/{agent_id}/triggers` | `201` | Create and pin a trigger |
+| `GET` | `/users/v1/agents/{agent_id}/triggers/{trigger_id}` | `200` | Read the complete saved definition |
+| `PUT` | `/users/v1/agents/{agent_id}/triggers/{trigger_id}` | `200` | Fully replace user decisions |
+| `POST` | `/users/v1/agents/{agent_id}/triggers/{trigger_id}/refresh-target` | `200` | Repin to the current agent revision |
+| `POST` | `/users/v1/agents/{agent_id}/triggers/{trigger_id}/invoke` | `200` | Invoke a manual trigger |
+| `POST` | `/users/v1/agents/{agent_id}/triggers/{trigger_id}/rotate-webhook-secret` | `200` | Rotate a webhook signing secret |
+| `DELETE` | `/users/v1/agents/{agent_id}/triggers/{trigger_id}` | `204` | Archive a trigger |
+| `POST` | `/webhooks/v1/automation/{endpoint_token}` | `202` | Deliver a signed external webhook |
 
-## Routes
+All routes except webhook delivery require the normal authenticated user context. Organisation,
+creator, target, principal, and snapshot identities are derived by the backend and must not come
+from frontend form state.
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/users/v1/automation-trigger-catalog` | Supported contracts and CRM options |
-| `GET` | `/users/v1/agents/{agent_id}/triggers` | List the user's non-archived triggers |
-| `POST` | `/users/v1/agents/{agent_id}/triggers` | Create and pin a trigger |
-| `GET` | `/users/v1/agents/{agent_id}/triggers/{trigger_id}` | Get a trigger |
-| `PUT` | `/users/v1/agents/{agent_id}/triggers/{trigger_id}` | Fully replace user-editable fields |
-| `POST` | `/users/v1/agents/{agent_id}/triggers/{trigger_id}/refresh-target` | Repin to current agent revision |
-| `DELETE` | `/users/v1/agents/{agent_id}/triggers/{trigger_id}` | Soft archive a trigger |
+## Build The UI From The Catalog
 
-All resource queries bind both the authenticated organization and user. Foreign IDs return the
-same `404` as missing IDs.
+Fetch the catalog when the trigger builder opens:
 
-## Schedule Example
+```http
+GET /users/v1/automation-trigger-catalog
+```
+
+The response hierarchy is:
+
+```text
+data
+├── schema_version
+├── categories[]
+│   ├── category_key
+│   ├── label
+│   └── resources[]
+│       ├── resource_key
+│       ├── label
+│       └── triggers[]
+└── option_sets
+    ├── pipelines[] -> stages[]
+    └── enums
+```
+
+`categories[].resources[].triggers[]` contains only definitions whose event producers are
+available. Do not maintain a second frontend list of supported trigger keys.
+
+The useful TypeScript projection is:
+
+```ts
+type TriggerFamily = "event" | "manual" | "schedule" | "webhook";
+type PrincipalMode = "personal" | "organisation";
+type ScopeType = "owned_or_created_by_principal" | "organisation";
+type AudienceMode =
+  | "principal"
+  | "none"
+  | "explicit_users"
+  | "subject_participants";
+
+type TriggerCatalogDefinition = {
+  trigger_key: string;
+  family: TriggerFamily;
+  event_label: string;
+  description: string;
+  match_event_keys: string[];
+  subject_type: string | null;
+  subject_required: boolean;
+  allow_user_watch: boolean;
+  watch_paths: string[];
+  fixed_watch: { mode: "any" | "all"; paths: string[] } | null;
+  fixed_filter: FilterNode | null;
+  default_config: Record<string, unknown>;
+  config_fields: Array<{
+    key: string;
+    label: string;
+    value_type: string;
+    input_type: string;
+    required: boolean;
+    default: unknown;
+    options: string[];
+    option_source: string | null;
+    depends_on: string | null;
+  }>;
+  fields: Array<{
+    path: string;
+    label: string;
+    description: string;
+    value_type: string;
+    operators: string[];
+    option_source: string | null;
+    required: boolean;
+    exact: boolean;
+  }>;
+  principal_modes: PrincipalMode[];
+  scope_types: ScopeType[];
+  audience_modes: AudienceMode[];
+  output_schema: Record<string, unknown> | null;
+};
+
+type FilterNode =
+  | { all: FilterNode[] }
+  | { any: FilterNode[] }
+  | { path: string; operator: string; value?: unknown };
+```
+
+Render a definition as follows:
+
+1. Use `trigger_key` as the stable identity and labels only for display.
+2. Initialize `config` from `default_config`, then render every `config_fields` entry using its
+   `input_type`, `required`, `options`, `option_source`, and `depends_on` metadata.
+3. Render optional event predicates from `fields`. Send only a field's advertised `operators` and
+   use its `value_type` to choose the value control.
+4. Display `fixed_watch` and `fixed_filter` as non-removable preset behavior. Do not copy either
+   value into the user `watch` or `filter`; the backend compiles and combines them.
+5. Show a watch editor only when `allow_user_watch` is true. Its paths must come from
+   `watch_paths`.
+6. Offer only the listed principal, scope, and audience values, subject to the authority pairing
+   below.
+
+Filters support at most two group levels and 20 leaf conditions. `is_empty` and `not_empty` omit
+`value`; every other operator requires it. Treat paths as opaque backend keys rather than parsing
+them in the client.
+
+### Option-source adapters
+
+| Catalog metadata | Frontend option source |
+| --- | --- |
+| `config_fields[].options` | Use the literal stable values |
+| `option_source = pipelines` | `data.option_sets.pipelines` |
+| `option_source = pipeline_stages` | Flatten or group `data.option_sets.pipelines[].stages` |
+| `option_source = deal_statuses` | `data.option_sets.enums.deal_statuses` |
+| `option_source = custom_field:{field_id}` | Matching `data.option_sets.enums` entry |
+| `option_source = crm_users` | Search `GET /users/crm/users?q={query}&limit=20` |
+| `input_type = record_multi_select` | Use the deal, contact, or account search route selected by `subject_type` |
+
+Record search routes are `/users/crm/deals/search`, `/users/crm/contacts/search`, and
+`/users/crm/accounts/search`. Send their stable record IDs, never labels.
+
+`explicit_users` expects active, approved application-user IDs, not CRM-user IDs. The automation
+API does not currently expose an organisation-member discovery route. Use an existing trusted
+organisation-member data source in the application; if the frontend has none, do not expose that
+audience option yet.
+
+Catalog `schema_version` versions the catalog response. A saved trigger's
+`config_schema_version` versions its compiled configuration. Neither is the agent
+`target_revision`.
+
+## Create And Replace Contract
+
+Both create and replace use the same decision fields. `PUT` additionally requires the last-read
+`expected_updated_at` and is a complete replacement.
+
+```ts
+type TriggerWrite = {
+  name: string;
+  trigger_key: string;
+  status: "active" | "paused";
+  config: Record<string, unknown>;
+  watch: { mode: "any" | "all"; paths: string[] } | null;
+  filter: FilterNode | null;
+  principal_mode: PrincipalMode;
+  scope: { type: ScopeType; config: Record<string, unknown> };
+  audience: { mode: AudienceMode; user_ids: string[] };
+  task: { goal?: string };
+  delivery: { mode: "none" };
+};
+```
+
+Current trigger scope configuration is always `{}`. `task.goal` is optional and may contain at
+most 4,000 characters. JSON configuration is size-bounded and credential-like keys are rejected.
+Archive is not a writable status; use `DELETE`.
+
+Example personal event trigger:
+
+```http
+POST /users/v1/agents/{agent_id}/triggers
+Content-Type: application/json
+```
 
 ```json
 {
-  "name": "Morning pipeline review",
+  "name": "Review material deal stage changes",
+  "trigger_key": "crm.deal.stage_changed",
   "status": "active",
-  "trigger_type": "schedule",
-  "source_domain": null,
-  "event_type": null,
-  "trigger_config": {
-    "timezone": "Asia/Kolkata",
-    "starts_at": "2026-07-14T09:00:00+05:30",
-    "recurrence": "weekdays"
+  "config": {},
+  "watch": null,
+  "filter": {
+    "all": [
+      {"path": "record.amount", "operator": "gte", "value": "50000"}
+    ]
   },
-  "filter_config": {},
-  "scope_config": {"entity": "deal", "statuses": ["open"]},
-  "task_config": {"goal": "Prioritize deals that need action today."}
+  "principal_mode": "personal",
+  "scope": {"type": "owned_or_created_by_principal", "config": {}},
+  "audience": {"mode": "principal", "user_ids": []},
+  "task": {"goal": "Review the deal and recommend the next action."},
+  "delivery": {"mode": "none"}
 }
 ```
 
-The backend validates the timezone and aware start time, then owns `next_trigger_at` in UTC. A past
-one-time schedule is rejected. A recurring schedule advances to its first future occurrence.
+The backend derives `family`, `match_event_keys`, the fixed stage watch, execution-principal IDs,
+target identity and snapshot, schema version, canonical hash, schedule projection, and health
+counters.
 
-## CRM Deal Stage Example
+### Authority pairing
+
+| Principal mode | Required scope | Allowed audience | Additional rule |
+| --- | --- | --- | --- |
+| `personal` | `owned_or_created_by_principal` | `principal` | Executes as the authenticated user |
+| `organisation` | `organisation` | `none`, `explicit_users`, or catalog-advertised `subject_participants` | Create/manage requires an organisation admin |
+
+Automation bindings currently reject agents with mutation-capable tools because a retried run
+cannot yet give each tool action a deterministic idempotency key. Organisation-service bindings
+additionally reject all tools and skills. Disable trigger creation and target refresh for those
+agent capability sets, and show the backend validation message if the agent changes concurrently.
+An organisation run with audience `none` is intentionally absent from the user run-history API. For
+`subject_participants`, the backend resolves visible participant user IDs from the event snapshot.
+
+## Manual Triggers
+
+Create `system.manual.invoked` using the normal write contract. Saving it does not run the agent.
+Invoke the active trigger separately:
+
+```http
+POST /users/v1/agents/{agent_id}/triggers/{trigger_id}/invoke
+Content-Type: application/json
+```
 
 ```json
 {
-  "name": "Review deals entering negotiation",
-  "status": "active",
-  "trigger_type": "event",
-  "source_domain": "crm",
-  "event_type": "crm.deal.stage_changed",
-  "trigger_config": {},
-  "filter_config": {
-    "schema_key": "crm.deal.stage_changed.v1",
-    "pipeline_ids": ["11111111-1111-1111-1111-111111111111"],
-    "stage_change_mode": "specific_stage",
-    "from_stage_ids": [],
-    "to_stage_ids": ["22222222-2222-2222-2222-222222222222"],
-    "outcome": "any"
-  },
-  "scope_config": {},
-  "task_config": {"goal": "Prepare the rep for the negotiation."}
+  "invocation_id": "ui:019f8c35-f31b-7fe9-a76b-06ef7ba6d9a1",
+  "subjects": [
+    {"type": "deal", "id": "11111111-1111-1111-1111-111111111111"}
+  ]
 }
 ```
 
-`any_change` cannot contain stages or an outcome. `outcome` requires `won` or `lost` and cannot
-contain stages. `specific_stage` requires exactly one pipeline and at least one from/to stage. CRM
-IDs are checked against non-deleted metadata in the authenticated organization.
+`subjects` may contain up to 100 unique deal, contact, or account identities. An empty array creates
+one global run. The backend validates every subject inside the saved principal scope and commits
+the fan-out atomically. Personal bindings can be invoked only by their owner; any current
+organisation admin can invoke an organisation-service binding, including one created by another
+admin.
 
-## Other CRM Event Configurations
-
-Deal creation supports an optional pipeline filter:
+Generate `invocation_id` once per deliberate UI action. Reuse the same value and subject set when
+retrying an ambiguous network result; this is the idempotency boundary.
 
 ```json
 {
-  "event_type": "crm.deal.created",
-  "filter_config": {
-    "schema_key": "crm.deal.created.v1",
-    "pipeline_ids": []
+  "status": "SUCCESS",
+  "data": {
+    "invocation_id": "ui:019f8c35-f31b-7fe9-a76b-06ef7ba6d9a1",
+    "correlation_id": "manual:{trigger_id}:{invocation_id}",
+    "items": [
+      {
+        "event_id": "22222222-2222-2222-2222-222222222222",
+        "subject": {"type": "deal", "id": "11111111-1111-1111-1111-111111111111"}
+      }
+    ]
   }
 }
 ```
 
-Contact and account lifecycle events have no additional V1 predicates. Their `filter_config`
-contains only the matching versioned schema key, for example:
+The returned event IDs represent accepted durable events, not completed agent runs.
+
+## Scheduled Triggers
+
+`time.schedule.due` is operational. The due dispatcher creates direct events and advances each
+schedule atomically.
 
 ```json
 {
-  "event_type": "crm.contact.created",
-  "filter_config": {"schema_key": "crm.contact.created.v1"}
+  "name": "Friday pipeline review",
+  "trigger_key": "time.schedule.due",
+  "status": "active",
+  "config": {
+    "timezone": "Asia/Kolkata",
+    "starts_at": "2026-08-07T09:00:00+05:30",
+    "recurrence": "weekly",
+    "subject_type": "deal",
+    "subject_ids": ["11111111-1111-1111-1111-111111111111"]
+  },
+  "watch": null,
+  "filter": null,
+  "principal_mode": "personal",
+  "scope": {"type": "owned_or_created_by_principal", "config": {}},
+  "audience": {"mode": "principal", "user_ids": []},
+  "task": {"goal": "Rank these deals by risk."},
+  "delivery": {"mode": "none"}
 }
 ```
 
-The same shape applies to `crm.contact.deleted`, `crm.account.created`, and `crm.account.deleted`,
-using `<event_type>.v1` as the schema key. Clients should render definitions and defaults from
-`GET /users/v1/automation-trigger-catalog` rather than hard-coding this list.
+Supported recurrence values are `none`, `daily`, `weekdays`, `weekly`, `biweekly`, `monthly`, and
+`custom`. `custom` requires `interval_days` from 1 through 365; other values forbid it.
+`starts_at` must include an offset and `timezone` must be an IANA name. A one-time start must be in
+the future. `subject_type` and `subject_ids` must be provided together, with at most 100 subjects.
 
-## Target Pinning And Updates
+Responses expose the backend-owned UTC `next_trigger_at`. After a one-time occurrence is queued,
+the trigger remains `active` with `next_trigger_at: null` so its asynchronous direct event fanout
+can still activate; render that combination as completed rather than due. An invalid or unavailable
+saved subject pauses a due trigger; render `last_error_code` and the sanitized `last_error` in its
+health state.
 
-Creation stores a server-owned execution snapshot and `target_revision`. Editing the agent does not
-silently change existing triggers. Responses expose `target_update_available`; the explicit
-`refresh-target` route is the only way to repin.
+## Webhook Triggers
 
-`PUT`, refresh, and delete require the last-read timezone-aware `expected_updated_at`. A stale value
-returns `409`, preventing two browser tabs from silently overwriting each other. `PUT` is a complete
-replacement; `DELETE` is the only way to archive.
+Create `integration.webhook.received` with a Draft 2020-12 JSON Schema in
+`config.payload_schema`. External schema references are rejected; local `#` references are
+allowed.
 
-## Server-Owned Fields
+```json
+{
+  "name": "External risk signal",
+  "trigger_key": "integration.webhook.received",
+  "status": "active",
+  "config": {
+    "payload_schema": {
+      "type": "object",
+      "properties": {"risk": {"type": "string", "maxLength": 20}},
+      "required": ["risk"],
+      "additionalProperties": false
+    }
+  },
+  "watch": null,
+  "filter": null,
+  "principal_mode": "personal",
+  "scope": {"type": "owned_or_created_by_principal", "config": {}},
+  "audience": {"mode": "principal", "user_ids": []},
+  "task": {},
+  "delivery": {"mode": "none"}
+}
+```
 
-Clients cannot set organization/owner identity, target identity or snapshot, owner scope, schema
-version, delivery config, canonical hash, schedule projection, or operational counters. JSON config
-is bounded and credential-like keys are rejected.
+On first provisioning, `data.webhook_credentials` contains `endpoint_token` and `secret`. These
+plaintext values are returned only in that response. Show a copy/download step immediately; never
+put them in logs, analytics, URLs other than the endpoint token's path, or normal frontend cache.
+Later trigger reads return the public payload schema but not credentials.
 
-Expected failures are `400` for invalid trigger configuration, `404` for inaccessible resources,
-`409` for stale writes/duplicates/invalid activation, `422` for malformed HTTP bodies, and `429`
-for rate limiting.
+The sender posts the exact JSON bytes to:
 
-## Execution Boundary
+```http
+POST /webhooks/v1/automation/{endpoint_token}
+X-CopilotGTM-Timestamp: 1785924000
+X-CopilotGTM-Signature: sha256={hex_hmac}
+X-CopilotGTM-Delivery-ID: provider-event-123
+Content-Type: application/json
+```
 
-Saving an active trigger does not itself create an `agent_runs` row, publish Redis work, or run the
-agent. A supported source event creates the run.
+Compute `hex_hmac` as HMAC-SHA256 using the secret over:
 
-## Event Activation
+```text
+{timestamp}.{exact raw request body bytes}
+```
 
-A supported CRM write stores its immutable mutation event and one automation dispatch in the same
-organization transaction. After that transaction commits, the producer immediately publishes the
-dispatch identity to the chat worker with bounded exponential retries. Trigger matching remains
-asynchronous, keeping trigger queries and Redis work out of the CRM transaction.
+The timestamp is Unix seconds and must be within five minutes. The body limit is 61,440 bytes
+(60 KiB), and the payload must be a JSON object with at most 64 top-level fields. Always send a stable delivery
+ID of at most 200 characters. Reusing it with a different payload returns `409`; omitting it scopes
+the canonical payload hash to the signed timestamp, so exact signed retries dedupe but later
+deliveries do not.
 
-For each dispatch, activation:
+A valid request returns `202` and `data.event_id`. Processing remains asynchronous.
 
-1. Loads the exact source event and owner-bearing entity inside the same organization.
-2. Uses the entity's canonical `owner_id` to select that user's active matching triggers.
-3. Excludes triggers whose current target agent is paused or archived.
-4. Applies the event-specific pipeline or stage filters when present.
-5. Creates one pending `agent_runs` row per match using the trigger's pinned agent snapshot.
-6. Marks the dispatch processed in the same commit as the new runs, then publishes the runs with
-   bounded exponential retries.
+Rotate a secret with the trigger's last-read timestamp:
 
-Zero matches is a successful terminal activation. One source event may create several runs. Dispatch
-and run uniqueness make broker redelivery safe, while terminal failures stop endlessly reprocessing
-malformed events. A future low-frequency recovery relay will repair dispatches left pending when a
-producer process exits or exhausts all direct broker publication retries.
+```http
+POST /users/v1/agents/{agent_id}/triggers/{trigger_id}/rotate-webhook-secret
+Content-Type: application/json
 
-Each run uses
-`trigger:{trigger_id}:{source_domain}:{event_type}:{source_event_id}` as its idempotency key. The run
-contains exact trigger, agent, input, and subject snapshots. Subject IDs are opaque strings so CRM
-UUIDs and future provider IDs use the same contract; `deal_id` is present only for deal-scoped runs.
+{"expected_updated_at": "2026-08-05T10:00:00Z"}
+```
 
-The execution task atomically claims a committed run, releases the tenant session before model/tool
-work, resolves only pinned capabilities, and stores a fenced terminal result. If post-commit Redis
-publication fails, `chat.recover_agent_runs` republishes the durable pending run.
+The response returns only the new `secret`; the endpoint token does not change. The previous
+secret remains valid for 24 hours. Refetch the trigger after rotation to obtain its new
+`updated_at` concurrency token.
 
-Run state and captured metadata are available through `GET /users/v1/agent-runs` and
-`GET /users/v1/agent-runs/{run_id}`.
+Backend operators must configure the dedicated Key Vault secret
+`automation-webhook-root-secret`. During a root rotation, retain old root values temporarily in
+`AUTOMATION_WEBHOOK_PREVIOUS_ROOT_SECRETS` (comma-separated) until every credential derived from
+them has been rotated or retired.
+
+## Saved Trigger State And Concurrency
+
+List responses are offset-paginated with `limit` (default 20, maximum 100), `offset`, and optional
+`status=active|paused`. Archived triggers are not listable.
+
+Use these fields in trigger rows:
+
+- `family` and `trigger_key` for identity;
+- `status`, `next_trigger_at`, `last_triggered_at`, and `trigger_count` for state;
+- `consecutive_failures`, `last_error_code`, and `last_error` for health;
+- `target_revision` and `target_update_available` for agent-definition drift;
+- `updated_at` as the next write's concurrency token.
+
+Editing an agent does not silently change an existing trigger's pinned `target_snapshot`. Repin only
+after an explicit user action:
+
+```http
+POST /users/v1/agents/{agent_id}/triggers/{trigger_id}/refresh-target
+Content-Type: application/json
+
+{"expected_updated_at": "2026-08-05T10:00:00Z"}
+```
+
+`PUT`, refresh, rotate, and archive require the last-read timezone-aware `updated_at`. A stale value
+returns `409`; refetch and let the user review the newer state rather than overwriting it.
+
+## Runs And Polling
+
+Accepted events create runs asynchronously. Use:
+
+```http
+GET /users/v1/agent-runs?agent_id={agent_id}&trigger_id={trigger_id}&limit=20
+GET /users/v1/agent-runs/{run_id}
+```
+
+There is no trigger push/stream response. Poll while a visible run is `pending` or `running`, then
+stop at `succeeded`, `failed`, `delivery_failed`, `validation_failed`, or `cancelled`. See
+[Agent Runs API](./v1-agent-runs-api.md) for the response fields and audience rules.
+
+## Response And Error Handling
+
+Except for `204`, bodies use the common envelope:
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Request successful",
+  "code": null,
+  "data": {}
+}
+```
+
+| Status | Meaning | Frontend action |
+| --- | --- | --- |
+| `400` | Invalid trigger decision, authority combination, or configuration | Show the backend message near the relevant action |
+| `401` | Invalid webhook signature | Check signing configuration; do not retry unchanged credentials forever |
+| `403` | Caller cannot manage an organisation binding | Disable organisation management for non-admins |
+| `404` | Missing, archived, inaccessible resource, or webhook endpoint | Remove stale local state or re-check the endpoint |
+| `409` | Stale write, duplicate trigger, invalid activation state, or dedupe conflict | Refetch; never overwrite silently |
+| `413` | Webhook body exceeds 61,440 bytes (60 KiB) | Reduce the sender payload |
+| `422` | Malformed HTTP body, field bounds, or webhook payload-schema mismatch | Treat as a contract/validation error |
+| `429` | Authenticated-user or public-webhook rate limit | Back off and avoid request loops |
+| `503` | Webhook credential or verification service unavailable | Keep current state and offer a deliberate retry |

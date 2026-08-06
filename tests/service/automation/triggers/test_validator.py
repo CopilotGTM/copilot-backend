@@ -1,4 +1,4 @@
-"""Validation tests for the two trigger contracts supported in V1."""
+"""Registry-backed binding validation and compilation tests."""
 
 from __future__ import annotations
 
@@ -7,42 +7,152 @@ from uuid import UUID, uuid4
 
 import pytest
 from src.api.schemas.automation_trigger_models import AutomationTriggerCreateRequest
-from src.domain.models.organisation_tables import AutomationTriggerType
 from src.service.automation.triggers.validator import AutomationTriggerValidator
 
 
 class FakeOptions:
-    def __init__(self, pipeline_id: UUID, stage_ids: set[UUID]) -> None:
-        self.pipeline_id = pipeline_id
-        self.stage_ids = stage_ids
+    """Represent the Fake Options test double used by the surrounding regression cases."""
 
-    async def validate_crm_selection(self, pipeline_ids: set[UUID], stage_ids: set[UUID]) -> None:
-        if pipeline_ids - {self.pipeline_id}:
-            raise ValueError("Unknown CRM pipeline")
-        if stage_ids - self.stage_ids:
+    def __init__(self) -> None:
+        self.stage_ids: set[UUID] = set()
+        self.audience_ids: set[UUID] = set()
+        self.validated_options: list[tuple[str, set[str]]] = []
+        self.schedule_subjects: set[tuple[str, UUID]] = set()
+        self.validated_schedule_subjects: list[tuple[str, set[UUID], UUID, bool]] = []
+
+    async def validate_option_selection(self, source: str, values: set[str]) -> None:
+        """Expose the validate option selection operation expected by the Fake Options test double."""
+        self.validated_options.append((source, values))
+        if source == "pipeline_stages" and {UUID(value) for value in values} - self.stage_ids:
             raise ValueError("Unknown CRM stage")
 
+    async def validate_audience_user_ids(self, user_ids: set[UUID]) -> None:
+        """Expose the validate audience user ids operation expected by the Fake Options test double."""
+        if user_ids - self.audience_ids:
+            raise ValueError("Unknown or inactive audience user")
 
-def schedule_body(**overrides: object) -> AutomationTriggerCreateRequest:
+    async def validate_schedule_subjects(
+        self,
+        subject_type: str,
+        subject_ids: set[UUID],
+        *,
+        principal_id: UUID,
+        organisation_scope: bool,
+    ) -> None:
+        """Expose the validate schedule subjects operation expected by the Fake Options test double."""
+        self.validated_schedule_subjects.append(
+            (subject_type, subject_ids, principal_id, organisation_scope)
+        )
+        if {(subject_type, item) for item in subject_ids} - self.schedule_subjects:
+            raise ValueError("Unknown or unavailable scheduled subject")
+
+
+def personal_body(
+    trigger_key: str,
+    **overrides: object,
+) -> AutomationTriggerCreateRequest:
+    """Build the personal body fixture used by the surrounding regression cases."""
     payload: dict[str, object] = {
-        "name": "Morning review",
-        "trigger_type": AutomationTriggerType.SCHEDULE,
-        "trigger_config": {
-            "timezone": "Asia/Kolkata",
-            "starts_at": "2026-07-14T09:00:00+05:30",
-            "recurrence": "daily",
-        },
-        "scope_config": {"entity": "deal", "statuses": ["open"]},
-        "task_config": {"goal": "Review deals"},
+        "name": "Review event",
+        "trigger_key": trigger_key,
+        "principal_mode": "personal",
+        "scope": {"type": "owned_or_created_by_principal"},
+        "audience": {"mode": "principal"},
+        "task": {"goal": "Review the durable fact"},
     }
     payload.update(overrides)
     return AutomationTriggerCreateRequest.model_validate(payload)
 
 
+def validator(options: FakeOptions | None = None, *, is_admin: bool = False):
+    """Build the validator fixture used by the surrounding regression cases."""
+    return AutomationTriggerValidator(
+        options or FakeOptions(),
+        organisation_id=uuid4(),
+        user_id=uuid4(),
+        is_admin=is_admin,
+    )
+
+
+@pytest.mark.asyncio
+async def test_preset_compiles_fixed_matcher_and_ands_typed_user_filter() -> None:
+    """Verify the contract that preset compiles fixed matcher and ands typed user filter."""
+    result = await validator().validate(
+        personal_body(
+            "crm.deal.amount_crossed",
+            config={"direction": "up", "threshold": "100000.00"},
+            filter={"all": [{"path": "record.currency", "operator": "eq", "value": "USD"}]},
+        )
+    )
+
+    assert result.trigger_config == {"direction": "up", "threshold": "100000.00"}
+    assert result.watch_config == {"mode": "any", "paths": ["amount"]}
+    assert result.filter_config == {
+        "all": [
+            {
+                "all": [
+                    {
+                        "path": "changes.amount.before",
+                        "operator": "lt",
+                        "value": "100000.00",
+                    },
+                    {
+                        "path": "changes.amount.after",
+                        "operator": "gte",
+                        "value": "100000.00",
+                    },
+                ]
+            },
+            {"all": [{"path": "record.currency", "operator": "eq", "value": "USD"}]},
+        ]
+    }
+
+
+@pytest.mark.asyncio
+async def test_only_generic_update_definition_accepts_user_watch() -> None:
+    """Verify the contract that only generic update definition accepts user watch."""
+    result = await validator().validate(
+        personal_body(
+            "crm.contact.updated",
+            watch={"mode": "all", "paths": ["email", "phone"]},
+        )
+    )
+    assert result.watch_config == {"mode": "all", "paths": ["email", "phone"]}
+
+    with pytest.raises(ValueError, match="does not accept a user watch"):
+        await validator().validate(
+            personal_body(
+                "crm.contact.email_changed",
+                watch={"mode": "any", "paths": ["email"]},
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_filter_paths_operators_and_values_are_registry_typed() -> None:
+    """Verify the contract that filter paths operators and values are registry typed."""
+    with pytest.raises(ValueError, match="decimal string"):
+        await validator().validate(
+            personal_body(
+                "crm.deal.created",
+                filter={"all": [{"path": "record.amount", "operator": "gte", "value": 100000}]},
+            )
+        )
+
+
 @pytest.mark.asyncio
 async def test_schedule_normalizes_and_projects_next_occurrence() -> None:
-    result = await AutomationTriggerValidator(FakeOptions(uuid4(), set())).validate(
-        schedule_body(), now=datetime(2026, 7, 13, 12, tzinfo=UTC)
+    """Verify the contract that schedule normalizes and projects next occurrence."""
+    result = await validator().validate(
+        personal_body(
+            "time.schedule.due",
+            config={
+                "timezone": "Asia/Kolkata",
+                "starts_at": "2026-07-14T09:00:00+05:30",
+                "recurrence": "daily",
+            },
+        ),
+        now=datetime(2026, 7, 13, 12, tzinfo=UTC),
     )
 
     assert result.trigger_config == {
@@ -54,179 +164,181 @@ async def test_schedule_normalizes_and_projects_next_occurrence() -> None:
 
 
 @pytest.mark.asyncio
-async def test_schedule_keeps_month_end_anchor_and_weekdays_skip_weekends() -> None:
-    validator = AutomationTriggerValidator(FakeOptions(uuid4(), set()))
-    monthly = await validator.validate(
-        schedule_body(
-            trigger_config={
+async def test_schedule_subjects_are_tenant_and_principal_validated() -> None:
+    """Verify the contract that schedule subjects are tenant and principal validated."""
+    options = FakeOptions()
+    subject_id = uuid4()
+    options.schedule_subjects.add(("deal", subject_id))
+    item = validator(options)
+
+    result = await item.validate(
+        personal_body(
+            "time.schedule.due",
+            config={
                 "timezone": "UTC",
-                "starts_at": "2026-01-31T09:00:00+00:00",
-                "recurrence": "monthly",
-            }
-        ),
-        now=datetime(2026, 3, 1, tzinfo=UTC),
-    )
-    weekday = await validator.validate(
-        schedule_body(
-            trigger_config={
-                "timezone": "UTC",
-                "starts_at": "2026-07-18T09:00:00+00:00",
-                "recurrence": "weekdays",
-            }
-        ),
-        now=datetime(2026, 7, 17, tzinfo=UTC),
-    )
-
-    assert monthly.next_trigger_at == datetime(2026, 3, 31, 9, tzinfo=UTC)
-    assert weekday.next_trigger_at == datetime(2026, 7, 20, 9, tzinfo=UTC)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("trigger_config", "message"),
-    [
-        (
-            {
-                "timezone": "Mars/Base",
-                "starts_at": "2026-07-14T09:00:00+05:30",
-                "recurrence": "none",
+                "starts_at": "2026-08-06T09:00:00+00:00",
+                "recurrence": "daily",
+                "subject_type": "deal",
+                "subject_ids": [str(subject_id)],
             },
-            "timezone",
         ),
-        ({"timezone": "UTC", "starts_at": "2026-07-14T09:00:00", "recurrence": "none"}, "timezone"),
-        (
-            {"timezone": "UTC", "starts_at": "2026-07-12T09:00:00+00:00", "recurrence": "none"},
-            "future",
-        ),
-    ],
-)
-async def test_schedule_rejects_unrunnable_configuration(
-    trigger_config: dict[str, object], message: str
-) -> None:
-    with pytest.raises(ValueError, match=message):
-        await AutomationTriggerValidator(FakeOptions(uuid4(), set())).validate(
-            schedule_body(trigger_config=trigger_config),
-            now=datetime(2026, 7, 13, 12, tzinfo=UTC),
-        )
-
-
-@pytest.mark.asyncio
-async def test_crm_specific_stage_requires_one_owned_pipeline_and_owned_stages() -> None:
-    pipeline_id, from_stage, to_stage = uuid4(), uuid4(), uuid4()
-    body = AutomationTriggerCreateRequest.model_validate(
-        {
-            "name": "Stage review",
-            "trigger_type": "event",
-            "source_domain": "crm",
-            "event_type": "crm.deal.stage_changed",
-            "filter_config": {
-                "schema_key": "crm.deal.stage_changed.v1",
-                "pipeline_ids": [str(pipeline_id)],
-                "stage_change_mode": "specific_stage",
-                "from_stage_ids": [str(from_stage)],
-                "to_stage_ids": [str(to_stage)],
-                "outcome": "any",
-            },
-        }
+        now=datetime(2026, 8, 5, 12, tzinfo=UTC),
     )
 
-    result = await AutomationTriggerValidator(
-        FakeOptions(pipeline_id, {from_stage, to_stage})
-    ).validate(body, now=datetime(2026, 7, 13, tzinfo=UTC))
+    assert result.trigger_config["subject_ids"] == [str(subject_id)]
+    assert options.validated_schedule_subjects == [("deal", {subject_id}, item.user_id, False)]
 
-    assert result.next_trigger_at is None
-    assert result.filter_config["pipeline_ids"] == [str(pipeline_id)]
-
-
-@pytest.mark.asyncio
-async def test_crm_rejects_wrong_identity_and_invalid_mode_combinations() -> None:
-    validator = AutomationTriggerValidator(FakeOptions(uuid4(), set()))
-    base = {
-        "schema_key": "crm.deal.stage_changed.v1",
-        "pipeline_ids": [],
-        "stage_change_mode": "outcome",
-        "from_stage_ids": [],
-        "to_stage_ids": [],
-        "outcome": "any",
-    }
-    with pytest.raises(ValueError, match="source_domain"):
-        await validator.validate(
-            AutomationTriggerCreateRequest.model_validate(
-                {
-                    "name": "Wrong source",
-                    "trigger_type": "event",
-                    "source_domain": "email",
-                    "event_type": "crm.deal.stage_changed",
-                    "filter_config": base,
-                }
+    options.schedule_subjects.clear()
+    with pytest.raises(ValueError, match="unavailable"):
+        await item.validate(
+            personal_body(
+                "time.schedule.due",
+                config=result.trigger_config,
             ),
-            now=datetime.now(UTC),
-        )
-    with pytest.raises(ValueError, match="outcome"):
-        await validator.validate(
-            AutomationTriggerCreateRequest.model_validate(
-                {
-                    "name": "Missing outcome",
-                    "trigger_type": "event",
-                    "source_domain": "crm",
-                    "event_type": "crm.deal.stage_changed",
-                    "filter_config": base,
-                }
-            ),
-            now=datetime.now(UTC),
+            now=datetime(2026, 8, 5, 12, tzinfo=UTC),
         )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "event_type",
-    [
-        "crm.contact.created",
-        "crm.contact.deleted",
-        "crm.account.created",
-        "crm.account.deleted",
-    ],
-)
-async def test_crm_lifecycle_events_accept_only_their_versioned_schema(event_type: str) -> None:
-    validator = AutomationTriggerValidator(FakeOptions(uuid4(), set()))
-    body = AutomationTriggerCreateRequest.model_validate(
-        {
-            "name": "Lifecycle agent",
-            "trigger_type": "event",
-            "source_domain": "crm",
-            "event_type": event_type,
-            "filter_config": {"schema_key": f"{event_type}.v1"},
-        }
+async def test_stage_config_is_tenant_validated() -> None:
+    """Verify the contract that stage config is tenant validated."""
+    options = FakeOptions()
+    stage_id = uuid4()
+    options.stage_ids.add(stage_id)
+
+    result = await validator(options).validate(
+        personal_body("crm.deal.entered_stage", config={"stage_id": str(stage_id)})
     )
 
-    result = await validator.validate(body)
-
-    assert result.filter_config == {"schema_key": f"{event_type}.v1"}
-
-    body.filter_config = {"schema_key": "crm.deal.created.v1"}
-    with pytest.raises(ValueError, match="schema_key"):
-        await validator.validate(body)
+    assert result.trigger_config == {"stage_id": str(stage_id)}
+    assert options.validated_options == [("pipeline_stages", {str(stage_id)})]
 
 
 @pytest.mark.asyncio
-async def test_crm_deal_created_validates_pipeline_filter() -> None:
-    pipeline_id = uuid4()
+async def test_organisation_binding_requires_admin_safe_target_and_explicit_audience() -> None:
+    """Verify the contract that organisation binding requires admin safe target and explicit audience."""
+    audience_id = uuid4()
+    options = FakeOptions()
+    options.audience_ids.add(audience_id)
     body = AutomationTriggerCreateRequest.model_validate(
         {
-            "name": "New deal agent",
-            "trigger_type": "event",
-            "source_domain": "crm",
-            "event_type": "crm.deal.created",
-            "filter_config": {
-                "schema_key": "crm.deal.created.v1",
-                "pipeline_ids": [str(pipeline_id)],
-            },
+            "name": "Shared review",
+            "trigger_key": "crm.deal.created",
+            "principal_mode": "organisation",
+            "scope": {"type": "organisation"},
+            "audience": {"mode": "explicit_users", "user_ids": [str(audience_id)]},
         }
     )
 
-    result = await AutomationTriggerValidator(FakeOptions(pipeline_id, set())).validate(body)
+    with pytest.raises(ValueError, match="admin"):
+        await validator(options).validate(body)
+    with pytest.raises(ValueError, match="user-scoped tools"):
+        await validator(options, is_admin=True).validate(
+            body,
+            target_allowed_tools=("search_deals",),
+        )
 
-    assert result.filter_config == {
-        "schema_key": "crm.deal.created.v1",
-        "pipeline_ids": [str(pipeline_id)],
+    result = await validator(options, is_admin=True).validate(body)
+
+    assert result.execution_principal_type == "organisation_service"
+    assert result.audience_config == {"user_ids": [str(audience_id)]}
+
+
+@pytest.mark.asyncio
+async def test_automation_bindings_reject_retry_unsafe_mutating_tools() -> None:
+    """Verify the contract that automation bindings reject retry unsafe mutating tools."""
+    with pytest.raises(ValueError, match="retry-safe"):
+        await validator().validate(
+            personal_body("crm.deal.updated"),
+            target_allowed_tools=("update_deal_fields",),
+        )
+
+
+@pytest.mark.asyncio
+async def test_organisation_bindings_reject_skills_until_service_policy_exists() -> None:
+    """Verify the contract that organisation bindings reject skills until service policy exists."""
+    body = AutomationTriggerCreateRequest.model_validate(
+        {
+            "name": "Shared review",
+            "trigger_key": "crm.deal.created",
+            "principal_mode": "organisation",
+            "scope": {"type": "organisation"},
+            "audience": {"mode": "none"},
+        }
+    )
+
+    with pytest.raises(ValueError, match="skills"):
+        await validator(is_admin=True).validate(
+            body,
+            target_allowed_skills=("deal-health-check",),
+        )
+
+
+@pytest.mark.asyncio
+async def test_unavailable_registry_trigger_cannot_be_saved() -> None:
+    """Verify the contract that unavailable registry trigger cannot be saved."""
+    with pytest.raises(ValueError, match="producer is not available"):
+        await validator().validate(personal_body("email.message.replied"))
+
+
+@pytest.mark.asyncio
+async def test_subject_participant_audience_requires_registry_backed_resolution() -> None:
+    """Verify the contract that subject participant audience requires registry backed resolution."""
+    supported = AutomationTriggerCreateRequest.model_validate(
+        {
+            "name": "Shared email review",
+            "trigger_key": "email.message.received",
+            "principal_mode": "organisation",
+            "scope": {"type": "organisation"},
+            "audience": {"mode": "subject_participants"},
+        }
+    )
+
+    result = await validator(is_admin=True).validate(supported)
+    assert result.audience_config == {}
+    for trigger_key in ("email.message.received", "meeting.transcript.ready"):
+        resolved = await validator(is_admin=True).validate(
+            supported.model_copy(update={"trigger_key": trigger_key})
+        )
+        assert resolved.audience_config == {}
+    for trigger_key in (
+        "agent.run.completed",
+        "crm.deal.created",
+        "ai.deal_risk.detected",
+    ):
+        with pytest.raises(ValueError, match="audience"):
+            await validator(is_admin=True).validate(
+                supported.model_copy(update={"trigger_key": trigger_key})
+            )
+
+
+@pytest.mark.asyncio
+async def test_webhook_schema_allows_local_refs_but_rejects_external_resolution() -> None:
+    """Verify the contract that webhook schema allows local refs but rejects external resolution."""
+    local_schema = {
+        "$defs": {"risk": {"type": "string"}},
+        "type": "object",
+        "properties": {"risk": {"$ref": "#/$defs/risk"}},
     }
+
+    result = await validator().validate(
+        personal_body(
+            "integration.webhook.received",
+            config={"payload_schema": local_schema},
+        )
+    )
+
+    assert result.trigger_config["payload_schema"] == local_schema
+    for reference in ("https://example.invalid/risk.json", "risk.json"):
+        with pytest.raises(ValueError, match="external references"):
+            await validator().validate(
+                personal_body(
+                    "integration.webhook.received",
+                    config={
+                        "payload_schema": {
+                            "type": "object",
+                            "properties": {"risk": {"$ref": reference}},
+                        }
+                    },
+                )
+            )

@@ -23,7 +23,7 @@ import logging
 from collections.abc import Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from src.agents.tools.base import execute_with_capabilities
 from src.domain.models.organisation_tables.sync.risk_blocker_models import (
@@ -33,6 +33,7 @@ from src.domain.models.organisation_tables.sync.risk_blocker_models import (
 )
 from src.service.crm.risks.contracts import (
     RiskBlockerActor,
+    RiskBlockerInference,
     RiskBlockerNotFoundError,
     RiskBlockerWriteContext,
 )
@@ -51,19 +52,78 @@ AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 AI_EXTRACTION_ACTOR_NAME = "AI Extraction Agent"
 
 
-def _tool_context() -> RiskBlockerWriteContext:
+def _tool_context(
+    context: AgentContext,
+    *,
+    evidence_id: str | None,
+    confidence: float | None,
+) -> RiskBlockerWriteContext:
+    metadata = getattr(context, "metadata", None) or {}
+    durable_evidence_id = evidence_id or metadata.get("automation_evidence_id")
+    if not isinstance(durable_evidence_id, str) or not durable_evidence_id.strip():
+        raise ValueError("evidence identity is missing")
+    if confidence is None:
+        raise ValueError("confidence is missing")
+    model_name = _metadata_text(metadata, "automation_model_name")
+    prompt_version = _metadata_text(metadata, "automation_prompt_version")
+    inference_run_id = _metadata_uuid(metadata, "automation_inference_run_id")
+    if inference_run_id is None:
+        raise ValueError("inference run id is missing")
+    caused_by_run_id = _metadata_uuid(
+        metadata,
+        "automation_caused_by_run_id",
+        required=False,
+    )
+    correlation_id = metadata.get("automation_correlation_id") or str(inference_run_id)
+    causation_depth = metadata.get("automation_causation_depth", 0)
+    inference = RiskBlockerInference(
+        transition_id=uuid4(),
+        evidence_id=durable_evidence_id,
+        confidence=confidence,
+        model_name=model_name,
+        prompt_version=prompt_version,
+        inference_run_id=inference_run_id,
+        correlation_id=correlation_id,
+        caused_by_run_id=caused_by_run_id,
+        causation_depth=causation_depth,
+    )
     return RiskBlockerWriteContext(
-        source="ai_extraction_tool",
+        source=str(metadata.get("source") or "ai_extraction_tool"),
         actor=RiskBlockerActor(
-            actor_type="system",
-            actor_id=AUTOMATED_PIPELINE_USER_ID,
-            actor_name=AI_EXTRACTION_ACTOR_NAME,
+            actor_type="workflow" if caused_by_run_id else "system",
+            actor_id=caused_by_run_id or AUTOMATED_PIPELINE_USER_ID,
+            actor_name="Agent run" if caused_by_run_id else AI_EXTRACTION_ACTOR_NAME,
         ),
+        inference=inference,
     )
 
 
+def _metadata_uuid(
+    metadata: dict[str, Any],
+    key: str,
+    *,
+    required: bool = True,
+) -> UUID | None:
+    value = metadata.get(key)
+    if value is None and not required:
+        return None
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError) as exc:
+        label = key.removeprefix("automation_").replace("_", " ")
+        raise ValueError(f"{label} is missing or invalid") from exc
+
+
+def _metadata_text(metadata: dict[str, Any], key: str) -> str:
+    value = metadata.get(key)
+    if not isinstance(value, str) or not value.strip():
+        label = key.removeprefix("automation_").replace("_", " ")
+        raise ValueError(f"{label} is missing or invalid")
+    return value.strip()
+
+
 def _status_value(status: RiskBlockerStatus | str) -> str:
-    return status.value if hasattr(status, "value") else str(status)
+    return status.value if isinstance(status, RiskBlockerStatus) else status
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +140,8 @@ async def update_risk_blocker_impl(
     description: str | None = None,
     reasoning: str | None = None,
     recommended_next_step: str | None = None,
+    evidence_id: str | None = None,
+    confidence: float | None = None,
 ) -> dict[str, Any]:
     """Update an existing risk/blocker with new evidence or changed assessment.
 
@@ -93,6 +155,15 @@ async def update_risk_blocker_impl(
         rb_uuid = UUID(risk_blocker_id)
     except ValueError:
         return {"status": "error", "message": f"Invalid risk_blocker_id: {risk_blocker_id}"}
+
+    try:
+        write_context = _tool_context(
+            context,
+            evidence_id=evidence_id,
+            confidence=confidence,
+        )
+    except (TypeError, ValueError) as exc:
+        return {"status": "error", "message": f"Missing durable AI provenance: {exc}"}
 
     async with context.acquire_session() as session:
         updates: dict[str, Any] = {}
@@ -114,7 +185,7 @@ async def update_risk_blocker_impl(
             updates["recommended_next_step"] = recommended_next_step
 
         service = RiskBlockerWriteService(session, organisation_id)
-        item = await service.update_fields(rb_uuid, updates, _tool_context())
+        item = await service.update_fields(rb_uuid, updates, write_context)
         if not item:
             return {"status": "not_found", "message": f"Risk/blocker {risk_blocker_id} not found"}
 
@@ -139,6 +210,8 @@ async def dismiss_risk_blocker_impl(
     context: AgentContext,
     risk_blocker_id: str,
     reason: str,
+    evidence_id: str | None = None,
+    confidence: float | None = None,
 ) -> dict[str, Any]:
     """Dismiss a risk/blocker that is no longer relevant.
 
@@ -152,6 +225,15 @@ async def dismiss_risk_blocker_impl(
         rb_uuid = UUID(risk_blocker_id)
     except ValueError:
         return {"status": "error", "message": f"Invalid risk_blocker_id: {risk_blocker_id}"}
+
+    try:
+        write_context = _tool_context(
+            context,
+            evidence_id=evidence_id,
+            confidence=confidence,
+        )
+    except (TypeError, ValueError) as exc:
+        return {"status": "error", "message": f"Missing durable AI provenance: {exc}"}
 
     async with context.acquire_session() as session:
         service = RiskBlockerLifecycleService(session, organisation_id)
@@ -168,7 +250,7 @@ async def dismiss_risk_blocker_impl(
 
         previous_status = current_status
         try:
-            await service.dismiss(rb_uuid, context=_tool_context(), reason=reason)
+            await service.dismiss(rb_uuid, context=write_context, reason=reason)
         except RiskBlockerNotFoundError:
             return {"status": "not_found", "message": f"Risk/blocker {risk_blocker_id} not found"}
         await session.commit()
@@ -190,6 +272,8 @@ async def resolve_risk_blocker_impl(
     context: AgentContext,
     risk_blocker_id: str,
     resolution_notes: str,
+    evidence_id: str | None = None,
+    confidence: float | None = None,
 ) -> dict[str, Any]:
     """Mark a risk/blocker as resolved based on deal evidence.
 
@@ -203,6 +287,15 @@ async def resolve_risk_blocker_impl(
         rb_uuid = UUID(risk_blocker_id)
     except ValueError:
         return {"status": "error", "message": f"Invalid risk_blocker_id: {risk_blocker_id}"}
+
+    try:
+        write_context = _tool_context(
+            context,
+            evidence_id=evidence_id,
+            confidence=confidence,
+        )
+    except (TypeError, ValueError) as exc:
+        return {"status": "error", "message": f"Missing durable AI provenance: {exc}"}
 
     async with context.acquire_session() as session:
         service = RiskBlockerLifecycleService(session, organisation_id)
@@ -219,7 +312,7 @@ async def resolve_risk_blocker_impl(
 
         previous_status = current_status
         try:
-            await service.resolve(rb_uuid, resolution_notes, context=_tool_context())
+            await service.resolve(rb_uuid, resolution_notes, context=write_context)
         except RiskBlockerNotFoundError:
             return {"status": "not_found", "message": f"Risk/blocker {risk_blocker_id} not found"}
         await session.commit()
@@ -248,6 +341,8 @@ def create_update_risk_blocker(
 
     async def update_risk_blocker_tool(
         risk_blocker_id: str,
+        confidence: float,
+        evidence_id: str | None = None,
         item_type: str | None = None,
         severity: str | None = None,
         description: str | None = None,
@@ -268,6 +363,8 @@ def create_update_risk_blocker(
 
         Args:
             risk_blocker_id: UUID of the item to update (from get_existing_risks_blockers)
+            confidence: Confidence in this changed assessment, from 0 to 1
+            evidence_id: Exact source_record_id returned by the supporting source tool
             item_type: New classification if changed: RISK | BLOCKER
             severity: New severity level if changed: CRITICAL | HIGH | MEDIUM | LOW
             description: Updated description incorporating new evidence
@@ -285,6 +382,8 @@ def create_update_risk_blocker(
                 parameters={
                     "context": context,
                     "risk_blocker_id": risk_blocker_id,
+                    "evidence_id": evidence_id,
+                    "confidence": confidence,
                     "item_type": item_type,
                     "severity": severity,
                     "description": description,
@@ -311,6 +410,8 @@ def create_dismiss_risk_blocker(
     async def dismiss_risk_blocker_tool(
         risk_blocker_id: str,
         reason: str,
+        confidence: float,
+        evidence_id: str | None = None,
     ) -> dict[str, Any]:
         """Dismiss a risk/blocker that was NEVER a real issue or is NO LONGER applicable.
 
@@ -324,6 +425,8 @@ def create_dismiss_risk_blocker(
         Args:
             risk_blocker_id: UUID of the item to dismiss (from get_existing_risks_blockers)
             reason: Why this is being dismissed — cite the evidence. Example: "Prospect dropped competitor evaluation per email on Feb 3"
+            confidence: Confidence in the dismissal assessment, from 0 to 1
+            evidence_id: Exact source_record_id returned by the supporting source tool
         """
         logger.info("[TOOL CALLED] dismiss_risk_blocker - id=%s", risk_blocker_id)
 
@@ -337,6 +440,8 @@ def create_dismiss_risk_blocker(
                     "context": context,
                     "risk_blocker_id": risk_blocker_id,
                     "reason": reason,
+                    "evidence_id": evidence_id,
+                    "confidence": confidence,
                 },
                 description="Dismissing risk or blocker",
                 fallback_value={"status": "error", "message": "Tool execution failed"},
@@ -358,6 +463,8 @@ def create_resolve_risk_blocker(
     async def resolve_risk_blocker_tool(
         risk_blocker_id: str,
         resolution_notes: str,
+        confidence: float,
+        evidence_id: str | None = None,
     ) -> dict[str, Any]:
         """Mark a risk/blocker as resolved — the issue WAS real and IS now fixed.
 
@@ -369,6 +476,8 @@ def create_resolve_risk_blocker(
         Args:
             risk_blocker_id: UUID of the item to resolve (from get_existing_risks_blockers)
             resolution_notes: What resolved it, when, and who was involved. Example: "CFO approved $120K budget in Feb 15 meeting after ROI presentation"
+            confidence: Confidence in the resolution assessment, from 0 to 1
+            evidence_id: Exact source_record_id returned by the supporting source tool
         """
         logger.info("[TOOL CALLED] resolve_risk_blocker - id=%s", risk_blocker_id)
 
@@ -382,6 +491,8 @@ def create_resolve_risk_blocker(
                     "context": context,
                     "risk_blocker_id": risk_blocker_id,
                     "resolution_notes": resolution_notes,
+                    "evidence_id": evidence_id,
+                    "confidence": confidence,
                 },
                 description="Resolving risk or blocker",
                 fallback_value={"status": "error", "message": "Tool execution failed"},

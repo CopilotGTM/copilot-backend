@@ -32,7 +32,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 from src.infra.database.sessions import acquire_master_async_session
 from src.service.bots.form_handlers.nonce import create_nonce
 from src.service.bots.teams_bot_service import TeamsBotService
-from src.service.crm.deals.contracts import DealWriteServiceError
+from src.service.crm.deals.contracts import DealWriteContext, DealWriteServiceError
 from src.service.crm.deals.custom_field_service import DealCustomFieldWriteService
 from src.service.crm.deals.write_service import DealWriteService
 from src.service.crm.schema.deal_schema_service import DealSchemaService
@@ -799,7 +799,15 @@ async def create_deal_direct(
                 actor_user_id=user_id,
             )
             try:
-                deal = await service.create_deal(payload)
+                deal = await service.create_deal(
+                    payload,
+                    context=DealWriteContext(
+                        source="agent",
+                        actor_user_id=user_id,
+                        source_label="Agent",
+                        **context.automation_causation(),
+                    ),
+                )
                 await org_session.commit()
                 result = _created_deal_result(deal)
                 channel_payload = _build_deal_created_channel_payload(context, deal)

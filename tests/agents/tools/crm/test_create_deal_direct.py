@@ -1,3 +1,5 @@
+"""Regression tests for test create deal direct; these cases lock the backend contract used by the changed feature."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -9,6 +11,7 @@ from uuid import UUID, uuid4
 import pytest
 from src.agents.context import AgentContext
 from src.agents.tools.crm.create_deal import create_create_deal, create_deal_direct
+from src.service.crm.deals.contracts import DealWriteContext
 from src.service.crm.internal.deal_write_service import DealWriteServiceError
 from src.service.orgnisation.organisation_policy_service import OrganisationPolicyDeniedError
 
@@ -49,6 +52,7 @@ def _allow_crm_write_scope_by_default():
 
 @pytest.mark.asyncio
 async def test_create_deal_direct_requires_name() -> None:
+    """Verify the contract that create deal direct requires name."""
     result = await create_deal_direct(context=_context(), name=" ")
 
     assert result["status"] == "error"
@@ -57,6 +61,7 @@ async def test_create_deal_direct_requires_name() -> None:
 
 @pytest.mark.asyncio
 async def test_create_deal_direct_rejects_when_org_policy_disables_scope() -> None:
+    """Verify the contract that create deal direct rejects when org policy disables scope."""
     context = _context()
 
     with (
@@ -82,7 +87,16 @@ async def test_create_deal_direct_rejects_when_org_policy_disables_scope() -> No
 
 @pytest.mark.asyncio
 async def test_create_deal_direct_creates_name_only_with_defaults_and_context_owner() -> None:
+    """Verify the contract that create deal direct creates name only with defaults and context owner."""
     context = _context()
+    caused_by_run_id = uuid4()
+    context.metadata.update(
+        {
+            "automation_caused_by_run_id": str(caused_by_run_id),
+            "automation_causation_depth": 1,
+            "automation_correlation_id": "automation-chain-2",
+        }
+    )
     org_session = MagicMock()
     org_session.commit = AsyncMock()
     org_session.rollback = AsyncMock()
@@ -132,7 +146,15 @@ async def test_create_deal_direct_creates_name_only_with_defaults_and_context_ow
             "name": "Acme Expansion",
             "owner_user_id": context.user_id,
             "created_via": "agent_create_deal",
-        }
+        },
+        context=DealWriteContext(
+            source="agent",
+            actor_user_id=context.user_id,
+            source_label="Agent",
+            correlation_id="automation-chain-2",
+            caused_by_run_id=caused_by_run_id,
+            causation_depth=1,
+        ),
     )
     org_session.commit.assert_awaited_once()
     org_session.rollback.assert_not_awaited()
@@ -208,6 +230,7 @@ async def test_create_deal_direct_creates_name_only_with_defaults_and_context_ow
 
 @pytest.mark.asyncio
 async def test_create_deal_direct_defaults_currency_when_amount_has_no_currency() -> None:
+    """Verify the contract that create deal direct defaults currency when amount has no currency."""
     context = _context()
     org_session = MagicMock()
     org_session.commit = AsyncMock()
@@ -245,6 +268,7 @@ async def test_create_deal_direct_defaults_currency_when_amount_has_no_currency(
 
 @pytest.mark.asyncio
 async def test_create_deal_direct_passes_custom_columns_to_writer() -> None:
+    """Verify the contract that create deal direct passes custom columns to writer."""
     context = _context()
     org_session = MagicMock()
     org_session.commit = AsyncMock()
@@ -286,6 +310,7 @@ async def test_create_deal_direct_passes_custom_columns_to_writer() -> None:
 
 @pytest.mark.asyncio
 async def test_create_deal_direct_rejects_non_object_custom_columns() -> None:
+    """Verify the contract that create deal direct rejects non object custom columns."""
     result = await create_deal_direct(
         context=_context(),
         name="Bad Custom Columns",
@@ -300,6 +325,7 @@ async def test_create_deal_direct_rejects_non_object_custom_columns() -> None:
 
 @pytest.mark.asyncio
 async def test_create_deal_direct_uses_schema_for_missing_required_custom_fields() -> None:
+    """Verify the contract that create deal direct uses schema for missing required custom fields."""
     context = _context()
     org_session = MagicMock()
     org_session.commit = AsyncMock()
@@ -346,6 +372,7 @@ async def test_create_deal_direct_uses_schema_for_missing_required_custom_fields
 
 @pytest.mark.asyncio
 async def test_create_deal_direct_required_schema_accepts_legacy_custom_key_prefix() -> None:
+    """Verify the contract that create deal direct required schema accepts legacy custom key prefix."""
     context = _context()
     org_session = MagicMock()
     org_session.commit = AsyncMock()
@@ -396,11 +423,13 @@ async def test_create_deal_direct_required_schema_accepts_legacy_custom_key_pref
 
 
 def test_create_deal_direct_contract_does_not_accept_actual_close_date() -> None:
+    """Verify the contract that create deal direct contract does not accept actual close date."""
     assert "close_date" not in signature(create_deal_direct).parameters
 
 
 @pytest.mark.asyncio
 async def test_create_deal_direct_maps_expected_close_date() -> None:
+    """Verify the contract that create deal direct maps expected close date."""
     context = _context()
     org_session = MagicMock()
     org_session.commit = AsyncMock()
@@ -439,6 +468,7 @@ async def test_create_deal_direct_maps_expected_close_date() -> None:
 
 @pytest.mark.asyncio
 async def test_create_deal_direct_returns_structured_failure_for_write_service_error() -> None:
+    """Verify the contract that create deal direct returns structured failure for write service error."""
     context = _context()
     org_session = MagicMock()
     org_session.commit = AsyncMock()
@@ -470,6 +500,7 @@ async def test_create_deal_direct_returns_structured_failure_for_write_service_e
 
 @pytest.mark.asyncio
 async def test_create_deal_tool_uses_direct_create_path() -> None:
+    """Verify the contract that create deal tool uses direct create path."""
     context = _context()
     tool = create_create_deal(context, lambda: None)
     pipeline_id = uuid4()
@@ -498,6 +529,7 @@ async def test_create_deal_tool_uses_direct_create_path() -> None:
 
 @pytest.mark.asyncio
 async def test_create_deal_direct_passes_pipeline_and_stage_ids_to_writer() -> None:
+    """Verify the contract that create deal direct passes pipeline and stage ids to writer."""
     context = _context()
     org_session = MagicMock()
     org_session.commit = AsyncMock()
@@ -543,6 +575,7 @@ async def test_create_deal_direct_passes_pipeline_and_stage_ids_to_writer() -> N
 
 @pytest.mark.asyncio
 async def test_create_deal_direct_builds_slack_success_card() -> None:
+    """Verify the contract that create deal direct builds slack success card."""
     context = _context()
     context.channel = "slack"
     org_session = MagicMock()
@@ -601,6 +634,7 @@ async def test_create_deal_direct_builds_slack_success_card() -> None:
 
 @pytest.mark.asyncio
 async def test_create_deal_direct_builds_whatsapp_text_payload() -> None:
+    """Verify the contract that create deal direct builds whatsapp text payload."""
     context = _context()
     context.channel = "whatsapp"
     org_session = MagicMock()
@@ -659,6 +693,7 @@ async def test_create_deal_direct_builds_whatsapp_text_payload() -> None:
 
 @pytest.mark.asyncio
 async def test_create_deal_direct_web_includes_ui_card_payload() -> None:
+    """Verify the contract that create deal direct web includes ui card payload."""
     context = _context()
     context.channel = "web"
     org_session = MagicMock()
@@ -723,6 +758,7 @@ async def test_create_deal_direct_web_includes_ui_card_payload() -> None:
 
 @pytest.mark.asyncio
 async def test_create_deal_direct_voice_includes_ui_card_payload() -> None:
+    """Verify the contract that create deal direct voice includes ui card payload."""
     context = _context()
     context.channel = "voice"
     org_session = MagicMock()

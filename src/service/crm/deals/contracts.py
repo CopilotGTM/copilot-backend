@@ -7,6 +7,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStageHistory
+from src.service.crm.mutations.contracts import CRMMutationSourceMode
 
 DealWriteSource = Literal["api", "agent", "workflow", "bot_form", "import_assistant"]
 
@@ -21,6 +22,9 @@ class DealWriteContext:
     approval_state_id: UUID | None = None
     correlation_id: str | None = None
     idempotency_key: str | None = None
+    source_mode: CRMMutationSourceMode | None = None
+    caused_by_run_id: UUID | None = None
+    causation_depth: int = 0
 
 
 @dataclass(frozen=True)

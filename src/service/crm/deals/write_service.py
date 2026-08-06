@@ -26,6 +26,7 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import Approval
 from src.infra.utils.logger import get_logger
 from src.service.crm.access.record_access_policy import (
     CRMAccessActor,
+    CRMActor,
     CRMRecordAccessError,
     DealAccessLevel,
     DealAccessPolicy,
@@ -105,7 +106,7 @@ class DealWriteService:
         master_session: AsyncSession,
         organisation_id: UUID,
         actor_user_id: UUID,
-        access_actor: CRMAccessActor | None = None,
+        access_actor: CRMActor | None = None,
     ):
         """Initialize the service with both org and master sessions.
 
@@ -162,6 +163,7 @@ class DealWriteService:
         changed_fields: dict[str, dict[str, Any]],
         summary: str | None,
         context: DealWriteContext | None = None,
+        record: dict[str, Any] | None = None,
     ) -> None:
         semantic_event_types = DealMutationPolicy.semantic_for_event(
             event_type,
@@ -175,6 +177,7 @@ class DealWriteService:
             semantic_event_types=semantic_event_types,
             context=context or self._write_context(),
             summary=summary,
+            record=record,
         )
         if is_last_activity_mutation(semantic_event_types):
             await DealLastActivityService(self.session, self.organisation_id).refresh_deal(
@@ -253,23 +256,17 @@ class DealWriteService:
     async def _store_preferred_deal_currency(self, currency: str | None) -> None:
         if currency is None:
             return
-        get_user = getattr(self.master_session, "get", None)
-        commit = getattr(self.master_session, "commit", None)
-        rollback = getattr(self.master_session, "rollback", None)
-        if not callable(get_user) or not callable(commit):
-            return
         try:
-            user = await get_user(User, self.actor_user_id)
+            user = await self.master_session.get(User, self.actor_user_id)
             if user is None:
                 return
             user.preferences = set_preferred_deal_currency(user.preferences, currency)
-            await commit()
+            await self.master_session.commit()
         except Exception:
-            if callable(rollback):
-                try:
-                    await rollback()
-                except Exception:
-                    logger.debug("Preferred deal currency rollback failed", exc_info=True)
+            try:
+                await self.master_session.rollback()
+            except Exception:
+                logger.debug("Preferred deal currency rollback failed", exc_info=True)
             logger.warning(
                 "Failed to store preferred deal currency for user %s",
                 self.actor_user_id,
@@ -456,25 +453,26 @@ class DealWriteService:
             stage_id = stage.stage_id
 
         # Handle owner assignment
+        human_actor = self._access.actor if isinstance(self._access.actor, CRMAccessActor) else None
         owner_user_id = payload.get("owner_user_id")
-        if "owner_user_id" not in payload and self._access.actor is not None:
-            owner_user_id = self._access.actor.user_id
+        if "owner_user_id" not in payload and human_actor is not None:
+            owner_user_id = human_actor.user_id
         crm_user = None
         creator_crm_user_id = None
 
-        if self._access.actor is not None:
+        if human_actor is not None:
             try:
                 creator_crm_user = await ensure_app_user_crm_identity(
                     org_session=self.session,
                     master_session=self.master_session,
                     organisation_id=self.organisation_id,
-                    app_user_id=self._access.actor.user_id,
+                    app_user_id=human_actor.user_id,
                     actor_user_id=self.actor_user_id,
                 )
             except CRMUserIdentityResolutionError as exc:
                 raise DealWriteServiceError(exc.message, status_code=exc.status_code) from exc
             creator_crm_user_id = creator_crm_user.user_id
-            if owner_user_id == self._access.actor.user_id:
+            if owner_user_id == human_actor.user_id:
                 crm_user = creator_crm_user
 
         if owner_user_id and crm_user is None:
@@ -722,11 +720,15 @@ class DealWriteService:
             updated = True
         if "custom_properties" in payload and payload["custom_properties"] is not None:
             custom_props = payload["custom_properties"]
-            validated_custom_properties = (
-                custom_props
-                if skip_custom_validation
-                else await self._validate_custom_properties(custom_props)
-            )
+            if skip_custom_validation:
+                if not isinstance(custom_props, dict):
+                    raise DealWriteServiceError(
+                        "custom_properties must be an object",
+                        status_code=400,
+                    )
+                validated_custom_properties = custom_props
+            else:
+                validated_custom_properties = await self._validate_custom_properties(custom_props)
             await self._custom_fields.validate_required_not_cleared(validated_custom_properties)
             # New dict so SQLAlchemy detects the JSONB column change.
             updated_properties = {**(deal.properties or {})}
@@ -794,6 +796,9 @@ class DealWriteService:
         """
         await self._require_access(deal_id, "admin")
         deal = await self._load_internal_deal(deal_id)
+        # Deletion filters evaluate pre-delete values; rebuilding this after the
+        # status becomes CLOSED would make saved OPEN filters impossible.
+        record = DealMutationPolicy.automation_record(deal)
         old_values = {
             "is_deleted": deal.is_deleted,
             "deal_status": deal.deal_status,
@@ -816,6 +821,7 @@ class DealWriteService:
             changed_fields=self._collect_changed_fields(old_values=old_values, obj=deal),
             summary=f"Deleted deal {deal.name}" if deal.name else "Deleted deal",
             context=write_context,
+            record=record,
         )
         logger.info("Deleted internal CRM deal %s", deal.deal_id)
         return deal
@@ -1467,15 +1473,15 @@ class DealWriteService:
             )
             return deal
 
-        contact, fallback_name, fallback_email = await self._upsert_contact_from_primary(
+        upserted_contact, fallback_name, fallback_email = await self._upsert_contact_from_primary(
             primary_contact_name=primary_contact_name,
             primary_contact_email=primary_contact_email,
             company_name=company_name or deal.company_name,
             integration_id=deal.integration_id,
             now=now,
         )
-        if contact:
-            await self._replace_primary_contact_participant(deal, contact, now)
+        if upserted_contact:
+            await self._replace_primary_contact_participant(deal, upserted_contact, now)
         else:
             await self._clear_primary_contact_participants(deal, now)
             deal.primary_contact_id = None

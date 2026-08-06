@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
@@ -35,6 +35,39 @@ JOB_TYPE_TO_TASK: dict[DealJobType, str] = {
 }
 
 
+async def lock_and_get_active_meeting_summary_job(
+    session: AsyncSession,
+    organisation_id: UUID,
+    event_id: UUID,
+) -> DealJobs | None:
+    """Serialize summary creation and return the active job for one event.
+
+    Recall, manual API requests, and the scheduled pipeline all call this
+    inside their write transaction. Keeping the advisory lock until commit
+    closes the SELECT-before-INSERT race without adding a schema migration.
+    """
+    await session.execute(
+        select(
+            func.pg_advisory_xact_lock(
+                func.hashtextextended(f"meeting_summary:{organisation_id}:{event_id}", 0)
+            )
+        )
+    )
+    stmt = (
+        select(DealJobs)
+        .where(
+            col(DealJobs.organisation_id) == organisation_id,
+            col(DealJobs.event_id) == event_id,
+            col(DealJobs.job_type) == DealJobType.MEETING_SUMMARY,
+            col(DealJobs.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
+        )
+        # Existing tenants may already contain duplicate active rows. Reusing
+        # the oldest gives every caller the same winner while those rows drain.
+        .order_by(col(DealJobs.created_at).asc(), col(DealJobs.job_id).asc())
+    )
+    return (await session.execute(stmt)).scalars().first()
+
+
 class DealMeetingJobServiceError(Exception):
     """Carry an HTTP-safe message and status from the service to the router."""
 
@@ -47,9 +80,9 @@ class DealMeetingJobServiceError(Exception):
 class DealMeetingJobService:
     """Create and query event-scoped jobs in one organisation.
 
-    Jobs for different types or events may run in parallel. ``create_meeting_job``
-    reuses an active job found for the same deal, event, and type, but the
-    SELECT-before-INSERT path is not atomic under concurrent requests.
+    Jobs for different types or events may run in parallel. Meeting summaries
+    are serialized by event because their durable artifact is shared by every
+    deal association; other meeting job types remain deal-scoped.
     """
 
     def __init__(self, session: AsyncSession, organisation_id: UUID, user_id: UUID):
@@ -141,10 +174,10 @@ class DealMeetingJobService:
         """Return an active equivalent job or create a new meeting job.
 
         Active-job lookup runs before transcript gating to reuse already-visible
-        work across collaborators. It is not user-scoped or concurrency-safe;
-        SSE access is shared only after matching deal, event, and job type. A
-        completed summary is treated as manual regeneration and skips the
-        downstream deal-insight pipeline.
+        work across collaborators. Summary lookup is transaction-locked by event;
+        other job types remain scoped by deal, event, and type. A completed
+        summary is treated as manual regeneration and skips the downstream
+        deal-insight pipeline.
 
         Args:
             deal_id: The deal this job is for
@@ -161,10 +194,23 @@ class DealMeetingJobService:
         # active tenant-local association before even reusing an existing job.
         await self._require_active_association(deal_id, event_id)
 
-        # copilotgtm: this unlocked lookup is best-effort duplicate suppression.
-        # Add a database uniqueness/lock boundary if concurrent duplicate work appears.
-        active_job = await self.get_active_job(deal_id, job_type, event_id=event_id)
+        if job_type == DealJobType.MEETING_SUMMARY:
+            active_job = await lock_and_get_active_meeting_summary_job(
+                self.session,
+                self.organisation_id,
+                event_id,
+            )
+        else:
+            active_job = await self.get_active_job(deal_id, job_type, event_id=event_id)
         if active_job:
+            if job_type == DealJobType.MEETING_SUMMARY and active_job.deal_id != deal_id:
+                # The job is valid event-level work, but its SSE stream is bound
+                # to a different deal route. Refuse duplicate work and let the
+                # caller retry after the canonical summary finishes.
+                raise DealMeetingJobServiceError(
+                    "Summary generation is already in progress for this meeting.",
+                    status_code=409,
+                )
             logger.info(
                 "%s job already in progress for deal %s event %s, returning existing job",
                 job_type.value,
@@ -195,7 +241,7 @@ class DealMeetingJobService:
 
     async def _require_active_association(self, deal_id: UUID, event_id: UUID) -> None:
         """Require the event to be actively associated with the supplied deal."""
-        stmt = select(CalendarEventDealAssociation.association_id).where(
+        stmt = select(col(CalendarEventDealAssociation.association_id)).where(
             col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
             col(CalendarEventDealAssociation.deal_id) == deal_id,
             col(CalendarEventDealAssociation.event_id) == event_id,

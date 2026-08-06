@@ -19,11 +19,13 @@ from src.agents.tools.crm.update_deal_fields import (
 )
 from src.agents.tools.crm.update_deal_lifecycle import create_update_deal_lifecycle
 from src.api.schemas.crm_deal_write_models import DealAccountUpdateRequest, DealUpdateRequest
+from src.service.crm.deals.contracts import DealWriteContext
 from src.service.crm.internal.deal_update_policy import ACCOUNT_FIELDS, SAFE_DIRECT_FIELDS
 
 
 @pytest.mark.asyncio
 async def test_update_deal_fields_rejects_invalid_explicit_deal_id():
+    """Verify the contract that update deal fields rejects invalid explicit deal id."""
     org_id = uuid4()
 
     """Reject malformed resolved IDs before any deal-field mutation starts."""
@@ -60,6 +62,7 @@ async def test_update_deal_fields_rejects_scoped_deal_id_mismatch():
 
 @pytest.mark.asyncio
 async def test_update_deal_fields_rejects_unsupported_field():
+    """Verify the contract that update deal fields rejects unsupported field."""
     org_id = uuid4()
 
     """Reject unsupported fields so only safe updateable attributes can pass."""
@@ -80,6 +83,7 @@ async def test_update_deal_fields_rejects_unsupported_field():
 
 @pytest.mark.asyncio
 async def test_lifecycle_tool_requires_action():
+    """Verify the contract that lifecycle tool requires action."""
     org_id = uuid4()
 
     """Validate lifecycle action presence before branching to mutation logic."""
@@ -96,6 +100,7 @@ async def test_lifecycle_tool_requires_action():
 
 @pytest.mark.asyncio
 async def test_lifecycle_close_lost_without_reason_is_skipped():
+    """Verify the contract that lifecycle close lost without reason is skipped."""
     org_id = uuid4()
 
     """Require close reason for close-lost as a contract-level validation rule."""
@@ -116,6 +121,7 @@ async def test_lifecycle_close_lost_without_reason_is_skipped():
 
 @pytest.mark.asyncio
 async def test_lifecycle_close_lost_rejects_blank_reason_before_approval():
+    """Verify the contract that lifecycle close lost rejects blank reason before approval."""
     org_id = uuid4()
 
     """Whitespace-only lost reasons are invalid and should not be sent to approval."""
@@ -137,6 +143,7 @@ async def test_lifecycle_close_lost_rejects_blank_reason_before_approval():
 
 @pytest.mark.asyncio
 async def test_lifecycle_move_stage_requires_stage_id_before_approval():
+    """Verify the contract that lifecycle move stage requires stage id before approval."""
     org_id = uuid4()
 
     """Do not send an impossible stage move to approval without a target stage."""
@@ -157,6 +164,7 @@ async def test_lifecycle_move_stage_requires_stage_id_before_approval():
 
 @pytest.mark.asyncio
 async def test_lifecycle_move_stage_rejects_invalid_stage_id_before_approval():
+    """Verify the contract that lifecycle move stage rejects invalid stage id before approval."""
     org_id = uuid4()
 
     """Do not ask approval for a stage move with an invalid stage UUID."""
@@ -178,6 +186,7 @@ async def test_lifecycle_move_stage_rejects_invalid_stage_id_before_approval():
 
 @pytest.mark.asyncio
 async def test_lifecycle_close_rejects_invalid_close_date_before_approval():
+    """Verify the contract that lifecycle close rejects invalid close date before approval."""
     org_id = uuid4()
 
     """Do not ask approval for a close action with an invalid actual close date."""
@@ -199,6 +208,7 @@ async def test_lifecycle_close_rejects_invalid_close_date_before_approval():
 
 @pytest.mark.asyncio
 async def test_lifecycle_close_won_approval_payload_clears_closed_reason():
+    """Verify the contract that lifecycle close won approval payload clears closed reason."""
     org_id = uuid4()
 
     """Do not ask approval for won close reasons; closed_reason is lost-only."""
@@ -220,6 +230,7 @@ async def test_lifecycle_close_won_approval_payload_clears_closed_reason():
 
 @pytest.mark.asyncio
 async def test_lifecycle_move_stage_returns_refreshed_deal_context():
+    """Verify the contract that lifecycle move stage returns refreshed deal context."""
     org_id = uuid4()
     deal_id = uuid4()
     target_stage_id = uuid4()
@@ -243,6 +254,7 @@ async def test_lifecycle_move_stage_returns_refreshed_deal_context():
     )
 
     async def single_session(session):
+        """Build the single session fixture used by the surrounding regression cases."""
         yield session
 
     with (
@@ -272,7 +284,15 @@ async def test_lifecycle_move_stage_returns_refreshed_deal_context():
             source="chat",
         )
 
-    service.move_stage.assert_awaited_once_with(deal_id, target_stage_id)
+    service.move_stage.assert_awaited_once_with(
+        deal_id,
+        target_stage_id,
+        context=DealWriteContext(
+            source="agent",
+            actor_user_id=context.user_id,
+            source_label="Agent",
+        ),
+    )
     assert result["status"] == "applied"
     assert result["amount"] == 12000.0
     assert result["predicted_amount"] == 9000.0
@@ -286,6 +306,7 @@ async def test_lifecycle_move_stage_returns_refreshed_deal_context():
 
 @pytest.mark.asyncio
 async def test_account_tool_rejects_empty_payload():
+    """Verify the contract that account tool rejects empty payload."""
     org_id = uuid4()
 
     """Return failed status when an account update tool call has no payload."""
@@ -302,6 +323,7 @@ async def test_account_tool_rejects_empty_payload():
 
 @pytest.mark.asyncio
 async def test_account_tool_rejects_invalid_payload_before_approval():
+    """Verify the contract that account tool rejects invalid payload before approval."""
     org_id = uuid4()
 
     """Validate account field values before approval so bad data is not reviewable."""
@@ -322,6 +344,7 @@ async def test_account_tool_rejects_invalid_payload_before_approval():
 
 @pytest.mark.asyncio
 async def test_account_tool_ignores_inferred_nulls_when_other_fields_need_approval():
+    """Verify the contract that account tool ignores inferred nulls when other fields need approval."""
     org_id = uuid4()
 
     """Ignore inferred empty account values while still reviewing real changes."""
@@ -343,6 +366,7 @@ async def test_account_tool_ignores_inferred_nulls_when_other_fields_need_approv
 
 @pytest.mark.asyncio
 async def test_account_tool_applies_normalized_payload():
+    """Verify the contract that account tool applies normalized payload."""
     org_id = uuid4()
     deal_id = uuid4()
 
@@ -365,6 +389,7 @@ async def test_account_tool_applies_normalized_payload():
     )
 
     async def single_session(session):
+        """Build the single session fixture used by the surrounding regression cases."""
         yield session
 
     with (
@@ -392,6 +417,11 @@ async def test_account_tool_applies_normalized_payload():
     service.update_account.assert_awaited_once_with(
         deal_id,
         {"name": "Acme Corp", "website": None},
+        context=DealWriteContext(
+            source="agent",
+            actor_user_id=context.user_id,
+            source_label="Agent",
+        ),
     )
     assert result["status"] == "applied"
     assert result["applied_fields"] == {"name": "Acme Corp", "website": None}
@@ -407,6 +437,7 @@ async def test_account_tool_applies_normalized_payload():
 
 @pytest.mark.asyncio
 async def test_update_deal_fields_applies_direct_clear_payload():
+    """Verify the contract that update deal fields applies direct clear payload."""
     org_id = uuid4()
     deal_id = uuid4()
 
@@ -429,6 +460,7 @@ async def test_update_deal_fields_applies_direct_clear_payload():
     )
 
     async def single_session(session):
+        """Build the single session fixture used by the surrounding regression cases."""
         yield session
 
     with (
@@ -453,7 +485,15 @@ async def test_update_deal_fields_applies_direct_clear_payload():
             source="chat",
         )
 
-    service.update_deal.assert_awaited_once_with(deal_id, {"description": None})
+    service.update_deal.assert_awaited_once_with(
+        deal_id,
+        {"description": None},
+        context=DealWriteContext(
+            source="agent",
+            actor_user_id=context.user_id,
+            source_label="Agent",
+        ),
+    )
     assert result["status"] == "applied"
     assert result["applied_fields"] == {"description": None}
     assert result["amount"] == 12000.0
@@ -468,6 +508,7 @@ async def test_update_deal_fields_applies_direct_clear_payload():
 
 @pytest.mark.asyncio
 async def test_update_deal_fields_ignores_inferred_nulls_when_other_fields_need_approval():
+    """Verify the contract that update deal fields ignores inferred nulls when other fields need approval."""
     org_id = uuid4()
 
     """Ignore inferred empty field values while still reviewing real changes."""
@@ -522,6 +563,7 @@ def test_update_deal_fields_normalizes_public_update_values():
 
 @pytest.mark.asyncio
 async def test_update_deal_fields_rejects_actual_close_date():
+    """Verify the contract that update deal fields rejects actual close date."""
     org_id = uuid4()
 
     """Reject actual close date in scalar fields; lifecycle close actions own that value."""

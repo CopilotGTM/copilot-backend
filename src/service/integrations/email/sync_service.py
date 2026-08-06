@@ -13,14 +13,21 @@ Email data is stored in dedicated email tables.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
+from src.domain.models.master_tables import AdminUserStatus, SupabaseUserStatus, User
 from src.domain.models.organisation_tables.sync import KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.email_models import Email, EmailFolder
 from src.domain.models.organisation_tables.sync.integration_models import SyncStatus
 from src.infra.utils.logger import get_logger
+from src.service.automation.events.contracts import AutomationEventEnvelope
+from src.service.automation.events.service import AutomationEventDispatchService
+from src.service.automation.producers.email import EmailEventAdapter
+from src.service.automation.triggers.registry import AUTOMATION_REGISTRY
 from src.service.integrations.email.change_detector import (
     has_meaningful_folder_changes,
     has_meaningful_message_changes,
@@ -40,6 +47,19 @@ from src.workers.integrations_worker.utils.sync_metadata import (
 )
 
 logger = get_logger(__name__)
+_SUPPRESSED_AUTOMATION_SOURCE_MODES = frozenset({"initial_sync", "backfill"})
+
+
+def _stored_flag(value: object) -> bool:
+    return value is True or (isinstance(value, str) and value.strip().casefold() == "true")
+
+
+class EmailAutomationEventEnqueuer(Protocol):
+    """Transaction-local automation dispatch boundary used by email writes."""
+
+    async def enqueue(self, envelope: AutomationEventEnvelope) -> object:
+        """Queue the current Email Automation Event Enqueuer work while preserving its tenant and idempotency boundaries."""
+        ...
 
 
 class EmailSyncService:
@@ -61,12 +81,24 @@ class EmailSyncService:
     GMAIL_LABEL_TYPE_MAP = EmailPayloadNormalizer.GMAIL_LABEL_TYPE_MAP
     _GMAIL_LABEL_TYPE_MAP = GMAIL_LABEL_TYPE_MAP
 
-    def __init__(self, session: AsyncSession, organisation_id: UUID) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        organisation_id: UUID,
+        *,
+        automation_events: EmailAutomationEventEnqueuer | None = None,
+    ) -> None:
         self.db = session
         self.organisation_id = organisation_id
         self._sync_history = SyncHistoryManager(session)
         self._normalizer = EmailPayloadNormalizer()
         self._writer = EmailSyncWriter(session, organisation_id)
+        self._automation_events = automation_events or AutomationEventDispatchService(
+            session,
+            organisation_id,
+            registry=AUTOMATION_REGISTRY,
+        )
+        self._audience_user_ids_by_email: dict[str, set[UUID]] | None = None
 
     @property
     def _folder_cache(self) -> dict[tuple[UUID, str], UUID]:
@@ -225,6 +257,7 @@ class EmailSyncService:
         messages: Iterable[dict[str, Any]],
         provider: str,
         folder_id: UUID | None = None,
+        source_mode: str = "system",
     ) -> dict[str, Any]:
         """
         Sync email messages from external provider.
@@ -281,13 +314,21 @@ class EmailSyncService:
                         integration_id, message_data, provider, external_id, folder_id
                     )
 
-                    if message.created_at == message.updated_at:
+                    is_created = message.created_at == message.updated_at
+                    if is_created:
                         created_count += 1
                     else:
                         updated_count += 1
 
                     changed_email_ids.append(str(message.email_id))
                     records_processed += 1
+                    if is_created and source_mode not in _SUPPRESSED_AUTOMATION_SOURCE_MODES:
+                        await self._enqueue_email_event(
+                            message,
+                            integration=integration,
+                            provider=provider,
+                            source_mode=source_mode,
+                        )
 
                     if records_processed % 50 == 0:
                         await self.db.commit()
@@ -793,6 +834,7 @@ class EmailSyncService:
         messages: Iterable[dict[str, Any]],
         provider: str,
         folder_id: UUID | None = None,
+        source_mode: str = "incremental_sync",
     ) -> dict[str, Any]:
         """
         Sync email messages using incremental optimization.
@@ -870,6 +912,7 @@ class EmailSyncService:
             changed_email_ids: list[str] = []
             changed_messages: list[tuple[dict[str, Any], str]] = []
             change_kind_by_external_id: dict[str, str] = {}
+            event_external_ids: set[str] = set()
 
             for idx, message_data in enumerate(message_list):
                 try:
@@ -896,10 +939,16 @@ class EmailSyncService:
                     if is_new or record is None:
                         changed_messages.append((message_data, external_id))
                         change_kind_by_external_id[external_id] = "created"
+                        event_external_ids.add(external_id)
                     else:
                         if self._has_meaningful_message_changes(record, message_data, provider):
                             changed_messages.append((message_data, external_id))
                             change_kind_by_external_id[external_id] = "updated"
+                            normalized = self._normalizer.normalize_message(message_data, provider)
+                            if _stored_flag(record.is_draft) and not _stored_flag(
+                                normalized.fields.get("is_draft")
+                            ):
+                                event_external_ids.add(external_id)
                         else:
                             skipped_count += 1
                             action_counts.unchanged += 1
@@ -926,11 +975,13 @@ class EmailSyncService:
                     updated,
                     persisted_email_ids,
                 ) = await self._persist_incremental_messages(
-                    integration_id,
+                    integration,
                     changed_messages,
                     provider,
                     folder_id,
                     change_kind_by_external_id,
+                    event_external_ids,
+                    source_mode,
                 )
                 records_processed += processed
                 records_failed += failed
@@ -1017,17 +1068,20 @@ class EmailSyncService:
 
     async def _persist_incremental_messages(
         self,
-        integration_id: UUID,
+        integration: KnowledgeIntegration,
         changed_messages: list[tuple[dict[str, Any], str]],
         provider: str,
         folder_id: UUID | None,
         change_kind_by_external_id: dict[str, str],
+        event_external_ids: set[str],
+        source_mode: str,
     ) -> tuple[int, int, int, int, list[str]]:
         """Persist changed messages with batch speed and item-level failure recovery.
 
         The optimistic path keeps the N+1 fix. The fallback restores the old
         failure boundary when one malformed row would otherwise poison the batch.
         """
+        integration_id = integration.integration_id
         try:
             written = await self._batch_upsert_messages(
                 integration_id,
@@ -1035,6 +1089,17 @@ class EmailSyncService:
                 provider,
                 folder_id,
             )
+            for message in written.values():
+                if (
+                    message.external_message_id in event_external_ids
+                    and source_mode not in _SUPPRESSED_AUTOMATION_SOURCE_MODES
+                ):
+                    await self._enqueue_email_event(
+                        message,
+                        integration=integration,
+                        provider=provider,
+                        source_mode=source_mode,
+                    )
             return self._count_written_message_changes(
                 written.values(),
                 change_kind_by_external_id,
@@ -1056,22 +1121,27 @@ class EmailSyncService:
                 await self.db.rollback()
 
         return await self._persist_incremental_messages_individually(
-            integration_id,
+            integration,
             changed_messages,
             provider,
             folder_id,
             change_kind_by_external_id,
+            event_external_ids,
+            source_mode,
         )
 
     async def _persist_incremental_messages_individually(
         self,
-        integration_id: UUID,
+        integration: KnowledgeIntegration,
         changed_messages: list[tuple[dict[str, Any], str]],
         provider: str,
         folder_id: UUID | None,
         change_kind_by_external_id: dict[str, str],
+        event_external_ids: set[str],
+        source_mode: str,
     ) -> tuple[int, int, int, int, list[str]]:
         """Persist changed messages one at a time after batch failure."""
+        integration_id = integration.integration_id
         records_processed = 0
         records_failed = 0
         created_count = 0
@@ -1087,6 +1157,16 @@ class EmailSyncService:
                     external_id,
                     folder_id,
                 )
+                if (
+                    external_id in event_external_ids
+                    and source_mode not in _SUPPRESSED_AUTOMATION_SOURCE_MODES
+                ):
+                    await self._enqueue_email_event(
+                        message,
+                        integration=integration,
+                        provider=provider,
+                        source_mode=source_mode,
+                    )
                 await self.db.commit()
                 records_processed += 1
                 changed_email_ids.append(str(message.email_id))
@@ -1110,6 +1190,58 @@ class EmailSyncService:
                 records_failed += 1
 
         return records_processed, records_failed, created_count, updated_count, changed_email_ids
+
+    async def _enqueue_email_event(
+        self,
+        message: Email,
+        *,
+        integration: KnowledgeIntegration,
+        provider: str,
+        source_mode: str,
+    ) -> None:
+        envelope = EmailEventAdapter(self.organisation_id).from_email(
+            message,
+            integration=integration,
+            provider=provider,
+            source_mode=source_mode,
+            audience_user_ids=await self._email_audience_user_ids(message, integration),
+        )
+        if envelope is not None:
+            await self._automation_events.enqueue(envelope)
+
+    async def _email_audience_user_ids(
+        self,
+        message: Email,
+        integration: KnowledgeIntegration,
+    ) -> set[UUID]:
+        user_ids = {integration.created_by_user_id}
+        emails = {
+            value.strip().casefold()
+            for value in (
+                message.from_email,
+                *message.to_emails,
+                *message.cc_emails,
+                *message.bcc_emails,
+            )
+            if value and value.strip()
+        }
+        if not emails:
+            return user_ids
+        if self._audience_user_ids_by_email is None:
+            rows = await self.db.execute(
+                select(col(User.user_id), col(User.email)).where(
+                    col(User.organisation_id) == self.organisation_id,
+                    col(User.status) == SupabaseUserStatus.ACTIVE,
+                    col(User.admin_status) == AdminUserStatus.APPROVED,
+                )
+            )
+            directory: dict[str, set[UUID]] = {}
+            for user_id, email in rows.all():
+                directory.setdefault(email.strip().casefold(), set()).add(user_id)
+            self._audience_user_ids_by_email = directory
+        for email in emails:
+            user_ids.update(self._audience_user_ids_by_email.get(email, ()))
+        return user_ids
 
     @staticmethod
     def _count_written_message_changes(

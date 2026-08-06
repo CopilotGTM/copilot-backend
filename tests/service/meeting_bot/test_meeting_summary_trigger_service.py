@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from src.domain.models.organisation_tables.job_models import DealJobType, JobStatus
+from src.domain.models.organisation_tables.sync.calendar import GenerationStatus
 from src.service.meeting_bot.summary_trigger_service import MeetingSummaryTriggerService
 
 
@@ -181,3 +183,46 @@ async def test_create_summary_jobs_creates_non_deal_job_when_no_active_associati
     assert job.job_metadata["trigger"] == "transcript_done"
     assert job.job_metadata["send_summary_notification"] is True
     assert job.job_metadata["summary_scope"] == "meeting"
+
+
+@pytest.mark.asyncio
+async def test_create_summary_jobs_creates_one_canonical_job_for_multiple_deals(
+    monkeypatch,
+) -> None:
+    """One calendar event must produce one summary job regardless of deal links."""
+    organisation_id = uuid4()
+    event_id = uuid4()
+    service = MeetingSummaryTriggerService(organisation_id)
+    associations = [
+        SimpleNamespace(
+            association_id=uuid4(),
+            deal_id=uuid4(),
+            meeting_summary_status=GenerationStatus.NOT_STARTED,
+            meeting_summary_data=None,
+        )
+        for _ in range(2)
+    ]
+
+    class MultiDealSession(_SummaryJobSession):
+        async def execute(self, statement):
+            if "calendar_event_deal_associations" in str(statement):
+                return _ExecuteResult(associations)
+            return _ExecuteResult([])
+
+    session = MultiDealSession([])
+
+    async def fake_acquire_org_session(_organisation_id):
+        yield session
+
+    monkeypatch.setattr(
+        "src.service.meeting_bot.summary_trigger_service.acquire_org_async_session",
+        fake_acquire_org_session,
+    )
+
+    result = await service._create_meeting_summary_jobs(event_id)
+
+    assert result["created"] == 1
+    assert len(result["job_ids_to_enqueue"]) == 1
+    assert len(session.added) == 1
+    assert session.added[0].deal_id is None
+    assert session.added[0].event_id == event_id

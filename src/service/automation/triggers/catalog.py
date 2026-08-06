@@ -1,210 +1,197 @@
-"""Backend-owned catalog for trigger-builder rendering.
-
-Only definitions with a real source contract belong here. Adding display metadata without an event
-producer would let users save automation that can never match.
-"""
+"""Serialize the shared automation registry for the generic trigger picker."""
 
 from __future__ import annotations
 
+from collections import OrderedDict
+
 from src.api.schemas.automation_trigger_models import (
     AutomationTriggerCatalog,
+    AutomationTriggerCatalogLimits,
     AutomationTriggerOptionSets,
     TriggerCatalogCategory,
+    TriggerCatalogConfigField,
     TriggerCatalogDefinition,
     TriggerCatalogField,
     TriggerCatalogPipelineOption,
+    TriggerCatalogResource,
+    TriggerCatalogValueOption,
+    TriggerCatalogWatch,
 )
-from src.domain.models.organisation_tables import AutomationTriggerType
+from src.service.automation.triggers.matcher import (
+    MAX_FILTER_GROUP_LEVELS,
+    MAX_FILTER_LEAVES,
+)
+from src.service.automation.triggers.registry import (
+    AUTOMATION_REGISTRY,
+    AutomationRegistry,
+    FieldDefinition,
+    TriggerDefinition,
+)
+from src.service.automation.triggers.webhook import WEBHOOK_MAX_BODY_BYTES
+
+_CATEGORY_ORDER = (
+    "system",
+    "time",
+    "crm",
+    "communication",
+    "conversation",
+    "integration",
+    "ai",
+    "agent",
+)
 
 
 def build_trigger_catalog(
     pipelines: list[TriggerCatalogPipelineOption],
+    *,
+    registry: AutomationRegistry = AUTOMATION_REGISTRY,
+    custom_option_sets: dict[str, tuple[tuple[str, str], ...]] | None = None,
 ) -> AutomationTriggerCatalog:
-    """Build the exact trigger definitions and organization options supported by V1."""
+    """Build only definitions backed by every producer they require."""
 
+    grouped: dict[str, OrderedDict[str, list[TriggerDefinition]]] = {}
+    category_labels: dict[str, str] = {}
+    resource_labels: dict[tuple[str, str], str] = {}
+    for definition in registry.catalog_triggers():
+        category_labels[definition.category_key] = definition.category_label
+        resource_labels[(definition.category_key, definition.resource_key)] = (
+            definition.resource_label
+        )
+        grouped.setdefault(definition.category_key, OrderedDict()).setdefault(
+            definition.resource_key,
+            [],
+        ).append(definition)
+
+    ordered_categories = [key for key in _CATEGORY_ORDER if key in grouped]
+    ordered_categories.extend(key for key in grouped if key not in _CATEGORY_ORDER)
+    categories = [
+        TriggerCatalogCategory(
+            category_key=category_key,
+            label=category_labels[category_key],
+            resources=[
+                TriggerCatalogResource(
+                    resource_key=resource_key,
+                    label=resource_labels[(category_key, resource_key)],
+                    triggers=[_serialize_trigger(item, registry) for item in definitions],
+                )
+                for resource_key, definitions in grouped[category_key].items()
+            ],
+        )
+        for category_key in ordered_categories
+    ]
     return AutomationTriggerCatalog(
-        categories=[
-            TriggerCatalogCategory(
-                category_key="schedule",
-                display_name="Schedule",
-                description="Run an agent once or on a recurring local-time schedule.",
-                triggers=[
-                    TriggerCatalogDefinition(
-                        trigger_key="schedule",
-                        display_name="Scheduled time",
-                        description="Runs at the selected time in the selected IANA timezone.",
-                        trigger_type=AutomationTriggerType.SCHEDULE,
-                        source_domain=None,
-                        event_type=None,
-                        default_trigger_config={
-                            "timezone": "UTC",
-                            "starts_at": None,
-                            "recurrence": "none",
-                        },
-                        default_scope_config={"entity": "deal", "statuses": ["open"]},
-                        fields=[
-                            TriggerCatalogField(
-                                field_key="timezone",
-                                display_name="Timezone",
-                                description="IANA timezone used to preserve recurring local time.",
-                                input_type="timezone",
-                                value_type="string",
-                                allows_any=False,
-                            ),
-                            TriggerCatalogField(
-                                field_key="starts_at",
-                                display_name="Starts at",
-                                description="Timezone-aware first occurrence.",
-                                input_type="datetime",
-                                value_type="date_time",
-                                allows_any=False,
-                            ),
-                            TriggerCatalogField(
-                                field_key="recurrence",
-                                display_name="Repeats",
-                                description="One-time or supported recurring cadence.",
-                                input_type="select",
-                                value_type="string",
-                                options=[
-                                    "none",
-                                    "daily",
-                                    "weekdays",
-                                    "weekly",
-                                    "biweekly",
-                                    "monthly",
-                                ],
-                                allows_any=False,
-                            ),
-                        ],
-                    )
+        categories=categories,
+        limits=AutomationTriggerCatalogLimits(
+            webhook_max_body_bytes=WEBHOOK_MAX_BODY_BYTES,
+            max_direct_subject_ids=100,
+            max_filter_group_levels=MAX_FILTER_GROUP_LEVELS,
+            max_filter_conditions=MAX_FILTER_LEAVES,
+        ),
+        option_sets=AutomationTriggerOptionSets(
+            pipelines=pipelines,
+            enums={
+                "deal_statuses": [
+                    TriggerCatalogValueOption(value=value, label=value.title())
+                    for value in ("open", "won", "lost", "closed")
                 ],
-            ),
-            TriggerCatalogCategory(
-                category_key="crm",
-                display_name="CRM",
-                description="Run an agent from durable semantic CRM events.",
-                triggers=[
-                    TriggerCatalogDefinition(
-                        trigger_key="crm.deal.created",
-                        display_name="Deal created",
-                        description="Runs when a new owned deal is created.",
-                        trigger_type=AutomationTriggerType.EVENT,
-                        source_domain="crm",
-                        event_type="crm.deal.created",
-                        default_filter_config={
-                            "schema_key": "crm.deal.created.v1",
-                            "pipeline_ids": [],
-                        },
-                        fields=[
-                            TriggerCatalogField(
-                                field_key="pipeline_ids",
-                                display_name="Pipeline",
-                                description="Empty means any pipeline; otherwise select organization pipelines.",
-                                input_type="pipeline_multiselect",
-                                value_type="uuid_array",
-                                option_source="pipelines",
-                            )
-                        ],
-                    ),
-                    TriggerCatalogDefinition(
-                        trigger_key="crm.deal.stage_changed",
-                        display_name="Deal stage changed",
-                        description="Runs when an owned deal changes stage or reaches won/lost.",
-                        trigger_type=AutomationTriggerType.EVENT,
-                        source_domain="crm",
-                        event_type="crm.deal.stage_changed",
-                        default_filter_config={
-                            "schema_key": "crm.deal.stage_changed.v1",
-                            "pipeline_ids": [],
-                            "stage_change_mode": "any_change",
-                            "from_stage_ids": [],
-                            "to_stage_ids": [],
-                            "outcome": "any",
-                        },
-                        fields=[
-                            TriggerCatalogField(
-                                field_key="pipeline_ids",
-                                display_name="Pipeline",
-                                description="Empty means any pipeline; otherwise select owned organization pipelines.",
-                                input_type="pipeline_multiselect",
-                                value_type="uuid_array",
-                                option_source="pipelines",
-                            ),
-                            TriggerCatalogField(
-                                field_key="stage_change_mode",
-                                display_name="Change",
-                                description="Choose any movement, a won/lost outcome, or one-pipeline stages.",
-                                input_type="select",
-                                value_type="string",
-                                options=["any_change", "outcome", "specific_stage"],
-                                allows_any=False,
-                            ),
-                            TriggerCatalogField(
-                                field_key="outcome",
-                                display_name="Outcome",
-                                description="Won or lost when outcome mode is selected.",
-                                input_type="select",
-                                value_type="string",
-                                options=["any", "won", "lost"],
-                            ),
-                            TriggerCatalogField(
-                                field_key="from_stage_ids",
-                                display_name="From stage",
-                                description="Optional previous stages for one selected pipeline.",
-                                input_type="stage_multiselect",
-                                value_type="uuid_array",
-                                option_source="pipeline_stages",
-                                depends_on="pipeline_ids",
-                            ),
-                            TriggerCatalogField(
-                                field_key="to_stage_ids",
-                                display_name="To stage",
-                                description="Optional destination stages for one selected pipeline.",
-                                input_type="stage_multiselect",
-                                value_type="uuid_array",
-                                option_source="pipeline_stages",
-                                depends_on="pipeline_ids",
-                            ),
-                        ],
-                    ),
-                    TriggerCatalogDefinition(
-                        trigger_key="crm.contact.created",
-                        display_name="Contact created",
-                        description="Runs when a new owned contact is created.",
-                        trigger_type=AutomationTriggerType.EVENT,
-                        source_domain="crm",
-                        event_type="crm.contact.created",
-                        default_filter_config={"schema_key": "crm.contact.created.v1"},
-                    ),
-                    TriggerCatalogDefinition(
-                        trigger_key="crm.contact.deleted",
-                        display_name="Contact deleted",
-                        description="Runs when an owned contact is deleted.",
-                        trigger_type=AutomationTriggerType.EVENT,
-                        source_domain="crm",
-                        event_type="crm.contact.deleted",
-                        default_filter_config={"schema_key": "crm.contact.deleted.v1"},
-                    ),
-                    TriggerCatalogDefinition(
-                        trigger_key="crm.account.created",
-                        display_name="Account created",
-                        description="Runs when a new owned account is created.",
-                        trigger_type=AutomationTriggerType.EVENT,
-                        source_domain="crm",
-                        event_type="crm.account.created",
-                        default_filter_config={"schema_key": "crm.account.created.v1"},
-                    ),
-                    TriggerCatalogDefinition(
-                        trigger_key="crm.account.deleted",
-                        display_name="Account deleted",
-                        description="Runs when an owned account is deleted.",
-                        trigger_type=AutomationTriggerType.EVENT,
-                        source_domain="crm",
-                        event_type="crm.account.deleted",
-                        default_filter_config={"schema_key": "crm.account.deleted.v1"},
-                    ),
-                ],
-            ),
-        ],
-        option_sets=AutomationTriggerOptionSets(pipelines=pipelines),
+                **{
+                    key: [
+                        TriggerCatalogValueOption(value=value, label=label)
+                        for value, label in values
+                    ]
+                    for key, values in (custom_option_sets or {}).items()
+                },
+            },
+        ),
     )
+
+
+def _serialize_trigger(
+    definition: TriggerDefinition,
+    registry: AutomationRegistry,
+) -> TriggerCatalogDefinition:
+    fields: OrderedDict[str, FieldDefinition] = OrderedDict()
+    watch_paths: OrderedDict[str, None] = OrderedDict()
+    for event_key in definition.match_event_keys:
+        event = registry.event(event_key)
+        for path, field in event.fields.items():
+            if not field.operators:
+                continue
+            existing = fields.get(path)
+            if existing is not None and (
+                existing.value_type != field.value_type
+                or existing.accessor != field.accessor
+                or existing.operators != field.operators
+            ):
+                raise ValueError(f"incompatible field path across trigger events: {path}")
+            fields.setdefault(path, field)
+        if definition.allow_user_watch:
+            for path in event.watch_fields:
+                watch_paths.setdefault(path, None)
+
+    default_config = {
+        item.key: item.default for item in definition.config_fields if item.default is not None
+    }
+    supports_subject_participants = all(
+        registry.event(key).supports_subject_participants for key in definition.match_event_keys
+    )
+    audience_modes = [
+        mode
+        for mode in definition.allowed_audience_modes
+        if mode != "subject_participants" or supports_subject_participants
+    ]
+    return TriggerCatalogDefinition(
+        trigger_key=definition.trigger_key,
+        family=definition.family.value,
+        event_label=definition.event_label,
+        description=definition.description,
+        match_event_keys=list(definition.match_event_keys),
+        subject_type=definition.subject_type,
+        subject_required=definition.subject_required,
+        allow_user_watch=definition.allow_user_watch,
+        watch_paths=list(watch_paths),
+        fixed_watch=(
+            TriggerCatalogWatch(
+                mode=definition.fixed_watch.mode,
+                paths=list(definition.fixed_watch.paths),
+            )
+            if definition.fixed_watch
+            else None
+        ),
+        fixed_filter=definition.fixed_filter,
+        default_config=default_config,
+        config_fields=[
+            TriggerCatalogConfigField(
+                key=item.key,
+                label=item.label,
+                value_type=item.value_type.value,
+                input_type=item.input_type,
+                required=item.required,
+                default=item.default,
+                options=list(item.options),
+                option_source=item.option_source,
+                depends_on=item.depends_on,
+            )
+            for item in definition.config_fields
+        ],
+        fields=[
+            TriggerCatalogField(
+                path=item.path,
+                label=item.label,
+                description=item.description,
+                value_type=item.value_type.value,
+                operators=list(item.operators),
+                option_source=item.option_source,
+                required=item.required,
+                exact=item.exact,
+            )
+            for item in fields.values()
+        ],
+        principal_modes=list(definition.allowed_principal_modes),
+        scope_types=list(definition.allowed_scope_types),
+        audience_modes=audience_modes,
+        output_schema=definition.output_schema,
+    )
+
+
+__all__ = ["build_trigger_catalog"]

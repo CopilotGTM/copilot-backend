@@ -22,6 +22,7 @@ from src.domain.models.organisation_tables.sync.calendar import (
     GenerationStatus,
 )
 from src.domain.models.organisation_tables.sync.meeting_intelligence import Meeting, MeetingStatus
+from src.service.automation.producers.meeting import MeetingEventContext
 
 pytestmark = pytest.mark.unit
 
@@ -34,6 +35,7 @@ class _SummaryPayload:
         self._data = data
 
     def model_dump(self):
+        """Build the model dump fixture used by the surrounding regression cases."""
         return self._data
 
 
@@ -43,7 +45,7 @@ class _SummaryPayload:
 
 
 class TestDispatchInsightPipelineForManualSummary:
-    """Tests for the helper that dispatches the insight pipeline after manual summaries."""
+    """Regression cases for dispatching insight work after manual summaries."""
 
     @pytest.mark.asyncio
     async def test_creates_job_and_dispatches_pipeline(self):
@@ -59,6 +61,7 @@ class TestDispatchInsightPipelineForManualSummary:
         mock_session.commit = AsyncMock()
 
         async def fake_session_gen(org):
+            """Build the fake session gen fixture used by the surrounding regression cases."""
             yield mock_session
 
         with (
@@ -119,6 +122,7 @@ class TestDispatchInsightPipelineForManualSummary:
         mock_session.commit = AsyncMock()
 
         async def fake_session_gen(org):
+            """Build the fake session gen fixture used by the surrounding regression cases."""
             yield mock_session
 
         with (
@@ -152,7 +156,6 @@ class TestDispatchInsightPipelineForManualSummary:
                 summary_job_id=uuid4(),
                 source="recall_webhook",
             )
-
             mock_get_or_create.assert_called_once_with(
                 mock_session,
                 org_id,
@@ -174,6 +177,7 @@ class TestDispatchInsightPipelineForManualSummary:
         mock_session.commit = AsyncMock()
 
         async def fake_session_gen(org):
+            """Build the fake session gen fixture used by the surrounding regression cases."""
             yield mock_session
 
         with (
@@ -226,6 +230,7 @@ class TestDispatchInsightPipelineForManualSummary:
         mock_session.commit = AsyncMock()
 
         async def fake_session_gen(org):
+            """Build the fake session gen fixture used by the surrounding regression cases."""
             yield mock_session
 
         with (
@@ -268,6 +273,7 @@ class TestDispatchInsightPipelineForManualSummary:
         deal_id = uuid4()
 
         async def failing_session_gen(org):
+            """Build the failing session gen fixture used by the surrounding regression cases."""
             raise RuntimeError("DB unavailable")
             yield
 
@@ -301,8 +307,76 @@ class TestDispatchInsightPipelineForManualSummary:
             mock_dispatch.assert_not_called()
 
 
+class TestDispatchEventDealInsightPipelines:
+    """Regression cases for one canonical summary fanning out to linked deals."""
+
+    @pytest.mark.asyncio
+    async def test_dispatches_each_active_link_except_the_scheduled_owner(self):
+        """Scheduled chains own one deal; the worker must dispatch every other link."""
+        org_id = uuid4()
+        event_id = uuid4()
+        summary_job_id = uuid4()
+        scheduled_deal_id = uuid4()
+        other_deal_id = uuid4()
+        scheduled_association_id = uuid4()
+        other_association_id = uuid4()
+        statements = []
+
+        class Result:
+            def all(self):
+                return [
+                    (scheduled_deal_id, scheduled_association_id),
+                    (other_deal_id, other_association_id),
+                ]
+
+        class Session:
+            async def execute(self, statement):
+                statements.append(statement)
+                return Result()
+
+        async def fake_session_gen(_organisation_id):
+            yield Session()
+
+        with (
+            patch(
+                "src.workers.deal_worker.tasks.meeting_insight_tasks"
+                ".meeting_summary_task.acquire_org_async_session",
+                fake_session_gen,
+            ),
+            patch(
+                "src.workers.deal_worker.tasks.meeting_insight_tasks"
+                ".meeting_summary_task._dispatch_insight_pipeline_for_manual_summary",
+                new_callable=AsyncMock,
+            ) as dispatch,
+        ):
+            from src.workers.deal_worker.tasks.meeting_insight_tasks.meeting_summary_task import (
+                _dispatch_event_deal_insight_pipelines,
+            )
+
+            await _dispatch_event_deal_insight_pipelines(
+                org_id,
+                event_id,
+                summary_job_id,
+                source="automated_pipeline",
+                exclude_deal_id=scheduled_deal_id,
+            )
+
+        dispatch.assert_awaited_once_with(
+            org_id,
+            other_deal_id,
+            event_id=event_id,
+            association_id=other_association_id,
+            summary_job_id=summary_job_id,
+            source="automated_pipeline",
+        )
+        assert "calendar_event_deal_associations.event_id" in str(statements[0].whereclause)
+
+
 class TestNonDealMeetingPrompt:
+    """Group regression cases for Non Deal Meeting Prompt behavior."""
+
     def test_non_deal_prompt_lives_in_dedicated_module(self):
+        """Verify the contract that non deal prompt lives in dedicated module."""
         from src.agents.workflows.meeting_level_summary.prompts import (
             build_non_deal_meeting_summary_user_prompt,
             get_non_deal_meeting_summary_system_prompt,
@@ -312,6 +386,7 @@ class TestNonDealMeetingPrompt:
         assert callable(build_non_deal_meeting_summary_user_prompt)
 
     def test_non_deal_prompt_keeps_strong_meeting_summary_sections(self):
+        """Verify the contract that non deal prompt keeps strong meeting summary sections."""
         from src.agents.workflows.meeting_level_summary.prompts import (
             get_non_deal_meeting_summary_system_prompt,
         )
@@ -333,6 +408,7 @@ class TestNonDealMeetingPrompt:
         assert "# Follow-ups / Action Items / Next Steps" in prompt
 
     def test_non_deal_prompt_removes_deal_specific_behavior(self):
+        """Verify the contract that non deal prompt removes deal specific behavior."""
         from src.agents.workflows.meeting_level_summary.prompts import (
             get_non_deal_meeting_summary_system_prompt,
         )
@@ -351,7 +427,10 @@ class TestNonDealMeetingPrompt:
 
 
 class TestMeetingSummaryService:
+    """Group regression cases for Meeting Summary Service behavior."""
+
     def test_summary_workflow_exports_meeting_level_agent(self):
+        """Verify the contract that summary workflow exports meeting level agent."""
         from src.agents.workflows.meeting_level_summary import (
             MeetingLevelSummaryAgent,
             MeetingLevelSummaryInput,
@@ -474,6 +553,7 @@ class TestMeetingSummaryService:
         self,
         monkeypatch,
     ):
+        """Verify the contract that deal linked summary dual writes association and meeting."""
         org_id = uuid4()
         deal_id = uuid4()
         event_id = uuid4()
@@ -491,20 +571,37 @@ class TestMeetingSummaryService:
             calendar_event_id=event_id,
             full_transcript="Speaker: transcript",
         )
+        call_order: list[str] = []
+        envelopes = []
+        statements = []
 
         class FakeMasterResult:
+            """Represent the Fake Master Result test double used by the surrounding regression cases."""
+
             def scalar_one_or_none(self):
+                """Expose the scalar one or none operation expected by the Fake Master Result test double."""
                 return ["example.com"]
 
         class FakeMasterSession:
+            """Represent the Fake Master Session test double used by the surrounding regression cases."""
+
             async def execute(self, _stmt):
+                """Expose the execute operation expected by the Fake Master Session test double."""
                 return FakeMasterResult()
 
         class FakeOrgSession:
+            """Represent the Fake Org Session test double used by the surrounding regression cases."""
+
+            async def execute(self, statement):
+                """Expose the execute operation expected by the Fake Org Session test double."""
+                statements.append(statement)
+
             async def commit(self):
-                return None
+                """Expose the commit operation expected by the Fake Org Session test double."""
+                call_order.append("commit")
 
             async def get(self, model, requested_id):
+                """Expose the get operation expected by the Fake Org Session test double."""
                 if model is CalendarEventDealAssociation and requested_id == association_id:
                     return association
                 if model is Meeting and requested_id == meeting_id:
@@ -512,26 +609,45 @@ class TestMeetingSummaryService:
                 return None
 
         async def fake_master_session():
+            """Build the fake master session fixture used by the surrounding regression cases."""
             yield FakeMasterSession()
 
         async def fake_org_session(_organisation_id):
+            """Build the fake org session fixture used by the surrounding regression cases."""
             yield FakeOrgSession()
 
         class FakeTranscriptService:
+            """Represent the Fake Transcript Service test double used by the surrounding regression cases."""
+
             def __init__(self, _organisation_id):
                 pass
 
             async def ensure_transcript(self, _event_id):
+                """Expose the ensure transcript operation expected by the Fake Transcript Service test double."""
                 return meeting
 
         class FakeSummaryAgent:
+            """Represent the Fake Summary Agent test double used by the surrounding regression cases."""
+
             last_token_usage = None
 
             def __init__(self, **_kwargs):
                 pass
 
             async def generate(self, _input_data):
+                """Expose the generate operation expected by the Fake Summary Agent test double."""
                 return _SummaryPayload({"meeting_summary": "Deal-linked summary"})
+
+        class FakeDispatchService:
+            """Represent the Fake Dispatch Service test double used by the surrounding regression cases."""
+
+            def __init__(self, _session, dispatch_organisation_id, **_kwargs):
+                assert dispatch_organisation_id == org_id
+
+            async def enqueue(self, envelope):
+                """Expose the enqueue operation expected by the Fake Dispatch Service test double."""
+                call_order.append("enqueue")
+                envelopes.append(envelope)
 
         monkeypatch.setattr(
             "src.workers.deal_worker.services.meeting_insight_services"
@@ -578,6 +694,18 @@ class TestMeetingSummaryService:
             ".meeting_summary_service.TranscriptService",
             FakeTranscriptService,
         )
+        monkeypatch.setattr(
+            "src.workers.deal_worker.services.meeting_insight_services"
+            ".meeting_summary_service.load_meeting_event_context",
+            AsyncMock(return_value=MeetingEventContext(deal_id=deal_id)),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "src.workers.deal_worker.services.meeting_insight_services"
+            ".meeting_summary_service.AutomationEventDispatchService",
+            FakeDispatchService,
+            raising=False,
+        )
         monkeypatch.setattr("src.agents.workflows.summary.SummaryAgent", FakeSummaryAgent)
 
         from src.workers.deal_worker.services.meeting_insight_services.meeting_summary_service import (
@@ -595,9 +723,90 @@ class TestMeetingSummaryService:
         assert association.meeting_summary_status == GenerationStatus.COMPLETED
         assert meeting.meeting_summary_data == result
         assert meeting.meeting_summary_status == GenerationStatus.COMPLETED
+        assert call_order[-2:] == ["enqueue", "commit"]
+        assert envelopes[0].event_key == "meeting.summary.ready"
+        assert envelopes[0].source.source_event_id == str(meeting_id)
+        assert any(
+            "UPDATE calendar_event_deal_associations" in str(statement)
+            and "calendar_event_deal_associations.event_id" in str(statement)
+            and "calendar_event_deal_associations.deal_id" not in str(statement.whereclause)
+            for statement in statements
+        )
+
+    @pytest.mark.asyncio
+    async def test_summary_selection_uses_canonical_meeting_state(self, monkeypatch):
+        """Verify the contract that summary selection uses canonical meeting state."""
+        from src.workers.deal_worker.services.meeting_insight_services import (
+            meeting_summary_service as module,
+        )
+
+        captured = []
+
+        class FakeResult:
+            """Represent the Fake Result test double used by the surrounding regression cases."""
+
+            def all(self):
+                """Expose the all operation expected by the Fake Result test double."""
+                return []
+
+        class FakeSession:
+            """Represent the Fake Session test double used by the surrounding regression cases."""
+
+            async def execute(self, statement):
+                """Expose the execute operation expected by the Fake Session test double."""
+                captured.append(statement)
+                return FakeResult()
+
+        async def fake_org_session(_organisation_id):
+            """Build the fake org session fixture used by the surrounding regression cases."""
+            yield FakeSession()
+
+        monkeypatch.setattr(module, "acquire_org_async_session", fake_org_session)
+
+        await module.MeetingSummaryService(uuid4())._get_events_needing_summary(uuid4())
+
+        where_sql = str(captured[0].whereclause)
+        assert "meetings.meeting_summary_data IS NULL" in where_sql
+
+    @pytest.mark.asyncio
+    async def test_active_summary_job_is_locked_and_matched_per_meeting(self):
+        """Verify the contract that active summary job is locked and matched per meeting."""
+        from src.workers.deal_worker.services.meeting_insight_services import (
+            meeting_summary_service as module,
+        )
+
+        statements = []
+
+        class FakeScalars:
+            """Represent the Fake Scalars test double used by the surrounding regression cases."""
+
+            def first(self):
+                """Expose the first operation expected by the Fake Scalars test double."""
+                return None
+
+        class FakeResult:
+            """Represent the Fake Result test double used by the surrounding regression cases."""
+
+            def scalars(self):
+                """Expose the scalars operation expected by the Fake Result test double."""
+                return FakeScalars()
+
+        class FakeSession:
+            """Represent the Fake Session test double used by the surrounding regression cases."""
+
+            async def execute(self, statement):
+                """Expose the execute operation expected by the Fake Session test double."""
+                statements.append(statement)
+                return FakeResult()
+
+        await module.MeetingSummaryService(uuid4())._get_active_job(FakeSession(), uuid4(), uuid4())
+
+        assert "pg_advisory_xact_lock" in str(statements[0])
+        assert "deal_jobs.deal_id =" not in str(statements[1].whereclause)
 
     @pytest.mark.asyncio
     async def test_non_deal_summary_uses_meeting_level_agent(self, monkeypatch):
+        """Verify the contract that non deal summary uses meeting level agent."""
         org_id = uuid4()
         event_id = uuid4()
         meeting_id = uuid4()
@@ -618,41 +827,63 @@ class TestMeetingSummaryService:
             full_transcript="Nikhil: We agreed to ship the webhook path.",
         )
         captured_inputs = []
+        envelopes = []
+        statements = []
 
         class FakeMasterResult:
+            """Represent the Fake Master Result test double used by the surrounding regression cases."""
+
             def scalar_one_or_none(self):
+                """Expose the scalar one or none operation expected by the Fake Master Result test double."""
                 return ["example.com"]
 
         class FakeMasterSession:
+            """Represent the Fake Master Session test double used by the surrounding regression cases."""
+
             async def execute(self, _stmt):
+                """Expose the execute operation expected by the Fake Master Session test double."""
                 return FakeMasterResult()
 
         class FakeMeetingResult:
+            """Represent the Fake Meeting Result test double used by the surrounding regression cases."""
+
             def scalars(self):
+                """Expose the scalars operation expected by the Fake Meeting Result test double."""
                 return self
 
             def first(self):
+                """Expose the first operation expected by the Fake Meeting Result test double."""
                 return meeting
 
         class FakeOrgSession:
-            async def execute(self, _stmt):
+            """Represent the Fake Org Session test double used by the surrounding regression cases."""
+
+            async def execute(self, statement):
+                """Expose the execute operation expected by the Fake Org Session test double."""
+                statements.append(statement)
                 return FakeMeetingResult()
 
             async def get(self, model, requested_id):
+                """Expose the get operation expected by the Fake Org Session test double."""
                 if model is Meeting and requested_id == meeting_id:
                     return meeting
                 return None
 
             async def commit(self):
+                """Expose the commit operation expected by the Fake Org Session test double."""
                 return None
 
         async def fake_master_session():
+            """Build the fake master session fixture used by the surrounding regression cases."""
             yield FakeMasterSession()
 
         async def fake_org_session(_organisation_id):
+            """Build the fake org session fixture used by the surrounding regression cases."""
             yield FakeOrgSession()
 
         class FakeMeetingLevelSummaryAgent:
+            """Represent the Fake Meeting Level Summary Agent test double used by the surrounding regression cases."""
+
             last_token_usage = None
 
             def __init__(self, *, organisation_id, org_name, organisation_profile):
@@ -661,8 +892,19 @@ class TestMeetingSummaryService:
                 assert organisation_profile is None
 
             async def generate(self, input_data):
+                """Expose the generate operation expected by the Fake Meeting Level Summary Agent test double."""
                 captured_inputs.append(input_data)
                 return _SummaryPayload({"meeting_summary": "Meeting-only summary"})
+
+        class FakeDispatchService:
+            """Represent the Fake Dispatch Service test double used by the surrounding regression cases."""
+
+            def __init__(self, _session, dispatch_organisation_id, **_kwargs):
+                assert dispatch_organisation_id == org_id
+
+            async def enqueue(self, envelope):
+                """Expose the enqueue operation expected by the Fake Dispatch Service test double."""
+                envelopes.append(envelope)
 
         monkeypatch.setattr(
             "src.workers.deal_worker.services.meeting_insight_services"
@@ -685,6 +927,18 @@ class TestMeetingSummaryService:
             AsyncMock(return_value=event),
         )
         monkeypatch.setattr(
+            "src.workers.deal_worker.services.meeting_insight_services"
+            ".meeting_summary_service.load_meeting_event_context",
+            AsyncMock(return_value=MeetingEventContext()),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "src.workers.deal_worker.services.meeting_insight_services"
+            ".meeting_summary_service.AutomationEventDispatchService",
+            FakeDispatchService,
+            raising=False,
+        )
+        monkeypatch.setattr(
             "src.agents.workflows.meeting_level_summary.MeetingLevelSummaryAgent",
             FakeMeetingLevelSummaryAgent,
         )
@@ -705,6 +959,14 @@ class TestMeetingSummaryService:
         assert captured_inputs[0].deal_id is None
         assert meeting.meeting_summary_data == result
         assert meeting.meeting_summary_status == GenerationStatus.COMPLETED
+        assert envelopes[0].event_key == "meeting.summary.ready"
+        assert envelopes[0].source.source_event_id == str(meeting_id)
+        assert any(
+            "UPDATE calendar_event_deal_associations" in str(statement)
+            and "calendar_event_deal_associations.event_id" in str(statement.whereclause)
+            for statement in statements
+            if hasattr(statement, "whereclause")
+        )
 
 
 class TestDispatchSummaryReadyNotification:
@@ -720,16 +982,22 @@ class TestDispatchSummaryReadyNotification:
         added_jobs = []
 
         class FakeSession:
+            """Represent the Fake Session test double used by the surrounding regression cases."""
+
             def add(self, row):
+                """Expose the add operation expected by the Fake Session test double."""
                 added_jobs.append(row)
 
             async def flush(self):
+                """Expose the flush operation expected by the Fake Session test double."""
                 return None
 
             async def commit(self):
+                """Expose the commit operation expected by the Fake Session test double."""
                 return None
 
         async def fake_acquire_org_session(_organisation_id):
+            """Build the fake acquire org session fixture used by the surrounding regression cases."""
             yield FakeSession()
 
         with (
@@ -772,16 +1040,22 @@ class TestDispatchSummaryReadyNotification:
         summary_job_id = uuid4()
 
         class FakeSession:
+            """Represent the Fake Session test double used by the surrounding regression cases."""
+
             def add(self, _row):
+                """Expose the add operation expected by the Fake Session test double."""
                 return None
 
             async def flush(self):
+                """Expose the flush operation expected by the Fake Session test double."""
                 return None
 
             async def commit(self):
+                """Expose the commit operation expected by the Fake Session test double."""
                 return None
 
         async def fake_acquire_org_session(_organisation_id):
+            """Build the fake acquire org session fixture used by the surrounding regression cases."""
             yield FakeSession()
 
         with (
@@ -816,16 +1090,22 @@ class TestDispatchSummaryReadyNotification:
         event_id = uuid4()
 
         class FakeSession:
+            """Represent the Fake Session test double used by the surrounding regression cases."""
+
             def add(self, _row):
+                """Expose the add operation expected by the Fake Session test double."""
                 return None
 
             async def flush(self):
+                """Expose the flush operation expected by the Fake Session test double."""
                 return None
 
             async def commit(self):
+                """Expose the commit operation expected by the Fake Session test double."""
                 return None
 
         async def fake_acquire_org_session(_organisation_id):
+            """Build the fake acquire org session fixture used by the surrounding regression cases."""
             yield FakeSession()
 
         with (
@@ -1022,30 +1302,54 @@ class TestMeetingSummaryTaskConfig:
             self.available = False
 
     def test_task_exists(self):
+        """Verify the contract that task exists."""
         if not self.available:
             pytest.skip("Task not importable")
         assert self.task is not None
 
     def test_task_name(self):
+        """Verify the contract that task name."""
         if not self.available:
             pytest.skip("Task not importable")
         assert self.task.name == "meeting_summary_task.process"
 
     def test_task_max_retries(self):
+        """Verify the contract that task max retries."""
         if not self.available:
             pytest.skip("Task not importable")
         assert self.task.max_retries == 3
 
     def test_task_acks_late(self):
+        """Verify the contract that task acks late."""
         if not self.available:
             pytest.skip("Task not importable")
         assert self.task.acks_late is True
 
     def test_task_skips_when_same_job_is_already_running(self):
+        """All jobs for one event share the same expensive-generation lock."""
         if not self.available:
             pytest.skip("Task not importable")
         org_id = uuid4()
+        event_id = uuid4()
         job_id = uuid4()
+        job = DealJobs(
+            job_id=job_id,
+            organisation_id=org_id,
+            user_id=AUTOMATED_PIPELINE_USER_ID,
+            job_type=DealJobType.MEETING_SUMMARY,
+            deal_id=uuid4(),
+            event_id=event_id,
+            status=JobStatus.PENDING,
+        )
+
+        class FakeSession:
+            async def get(self, model, requested_job_id):
+                assert model is DealJobs
+                assert requested_job_id == job_id
+                return job
+
+        async def fake_acquire_org_session(_organisation_id):
+            yield FakeSession()
 
         with (
             patch(
@@ -1057,14 +1361,22 @@ class TestMeetingSummaryTaskConfig:
                 "src.workers.deal_worker.tasks.meeting_insight_tasks"
                 ".meeting_summary_task.release_task_lock",
             ) as release_lock,
+            patch(
+                "src.workers.deal_worker.tasks.meeting_insight_tasks"
+                ".meeting_summary_task.acquire_org_async_session",
+                fake_acquire_org_session,
+            ),
         ):
             result = self.task.run(str(org_id), str(job_id))
 
         assert result == {"status": "skipped", "reason": "already_running"}
-        acquire_lock.assert_called_once_with(f"task_lock:meeting_summary_job:{job_id}", ttl=700)
+        acquire_lock.assert_called_once_with(
+            f"task_lock:meeting_summary_event:{org_id}:{event_id}", ttl=700
+        )
         release_lock.assert_not_called()
 
     def test_non_deal_meeting_summary_job_generates_meeting_level_summary(self):
+        """Verify the contract that non deal meeting summary job generates meeting level summary."""
         if not self.available:
             pytest.skip("Task not importable")
         org_id = uuid4()
@@ -1081,21 +1393,25 @@ class TestMeetingSummaryTaskConfig:
             job_metadata={
                 "source": "recall_webhook",
                 "summary_scope": "meeting",
-                "skip_insight_pipeline": True,
                 "send_summary_notification": True,
             },
         )
 
         class FakeSession:
+            """Represent the Fake Session test double used by the surrounding regression cases."""
+
             async def get(self, model, requested_job_id):
+                """Expose the get operation expected by the Fake Session test double."""
                 assert model is DealJobs
                 assert requested_job_id == job_id
                 return job
 
             async def commit(self):
+                """Expose the commit operation expected by the Fake Session test double."""
                 return None
 
         async def fake_acquire_org_session(_organisation_id):
+            """Build the fake acquire org session fixture used by the surrounding regression cases."""
             yield FakeSession()
 
         summary_result = {"data": {"meeting_summary": "Summary for an unlinked meeting"}}
@@ -1133,6 +1449,12 @@ class TestMeetingSummaryTaskConfig:
                 ".meeting_summary_task._dispatch_insight_pipeline_for_manual_summary",
                 new_callable=AsyncMock,
             ) as dispatch_pipeline,
+            patch(
+                "src.workers.deal_worker.tasks.meeting_insight_tasks"
+                ".meeting_summary_task._dispatch_event_deal_insight_pipelines",
+                new_callable=AsyncMock,
+                create=True,
+            ) as dispatch_event_pipelines,
         ):
             service = service_cls.return_value
             service.generate_meeting_level_summary = AsyncMock(return_value=summary_result)
@@ -1147,6 +1469,13 @@ class TestMeetingSummaryTaskConfig:
         service.generate_meeting_level_summary.assert_awaited_once()
         dispatch_notification.assert_awaited_once_with(org_id, None, event_id, job_id)
         dispatch_pipeline.assert_not_awaited()
+        dispatch_event_pipelines.assert_awaited_once_with(
+            org_id,
+            event_id,
+            job_id,
+            source="recall_webhook",
+            exclude_deal_id=None,
+        )
         publisher_cls.assert_not_called()
         assert job.status == JobStatus.COMPLETED
         assert job.result_data == summary_result
@@ -1155,3 +1484,139 @@ class TestMeetingSummaryTaskConfig:
             "job_id": str(job_id),
             "job_type": str(DealJobType.MEETING_SUMMARY),
         }
+
+    def test_retry_reuses_the_durable_summary_artifact(self):
+        """A downstream retry must not pay for or overwrite the summary again."""
+        if not self.available:
+            pytest.skip("Task not importable")
+        org_id = uuid4()
+        deal_id = uuid4()
+        event_id = uuid4()
+        job_id = uuid4()
+        stored_result = {"data": {"meeting_summary": "Already durable"}}
+        job = DealJobs(
+            job_id=job_id,
+            organisation_id=org_id,
+            user_id=uuid4(),
+            job_type=DealJobType.MEETING_SUMMARY,
+            deal_id=deal_id,
+            event_id=event_id,
+            status=JobStatus.IN_PROGRESS,
+            result_data=stored_result,
+            job_metadata={"skip_insight_pipeline": True},
+        )
+
+        class FakeSession:
+            async def get(self, model, requested_job_id):
+                assert model is DealJobs
+                assert requested_job_id == job_id
+                return job
+
+            async def commit(self):
+                return None
+
+        async def fake_acquire_org_session(_organisation_id):
+            yield FakeSession()
+
+        with (
+            patch(
+                "src.workers.deal_worker.tasks.meeting_insight_tasks"
+                ".meeting_summary_task.acquire_task_lock",
+                return_value=True,
+            ),
+            patch(
+                "src.workers.deal_worker.tasks.meeting_insight_tasks"
+                ".meeting_summary_task.release_task_lock",
+            ),
+            patch(
+                "src.workers.deal_worker.tasks.meeting_insight_tasks"
+                ".meeting_summary_task.acquire_org_async_session",
+                fake_acquire_org_session,
+            ),
+            patch(
+                "src.workers.deal_worker.tasks.meeting_insight_tasks"
+                ".meeting_summary_task.MeetingSummaryService",
+            ) as service_cls,
+            patch(
+                "src.workers.deal_worker.tasks.meeting_insight_tasks"
+                ".meeting_summary_task.DealJobRedisPublisher",
+            ),
+        ):
+            service = service_cls.return_value
+            service.generate_meeting_level_summary = AsyncMock(return_value={"unexpected": True})
+            service.last_token_usage = None
+
+            result = self.task.run(str(org_id), str(job_id))
+
+        service.generate_meeting_level_summary.assert_not_awaited()
+        assert job.result_data == stored_result
+        assert job.status == JobStatus.COMPLETED
+        assert result["status"] == "completed"
+
+    def test_deal_linked_job_generates_the_canonical_meeting_summary(self):
+        """Deal linkage must not select a deal-specific prompt for the shared artifact."""
+        if not self.available:
+            pytest.skip("Task not importable")
+        org_id = uuid4()
+        deal_id = uuid4()
+        event_id = uuid4()
+        job_id = uuid4()
+        job = DealJobs(
+            job_id=job_id,
+            organisation_id=org_id,
+            user_id=uuid4(),
+            job_type=DealJobType.MEETING_SUMMARY,
+            deal_id=deal_id,
+            event_id=event_id,
+            status=JobStatus.PENDING,
+            job_metadata={"skip_insight_pipeline": True},
+        )
+
+        class FakeSession:
+            async def get(self, model, requested_job_id):
+                assert model is DealJobs
+                assert requested_job_id == job_id
+                return job
+
+            async def commit(self):
+                return None
+
+        async def fake_acquire_org_session(_organisation_id):
+            yield FakeSession()
+
+        summary_result = {"data": {"meeting_summary": "Canonical meeting summary"}}
+        with (
+            patch(
+                "src.workers.deal_worker.tasks.meeting_insight_tasks"
+                ".meeting_summary_task.acquire_task_lock",
+                return_value=True,
+            ),
+            patch(
+                "src.workers.deal_worker.tasks.meeting_insight_tasks"
+                ".meeting_summary_task.release_task_lock",
+            ),
+            patch(
+                "src.workers.deal_worker.tasks.meeting_insight_tasks"
+                ".meeting_summary_task.acquire_org_async_session",
+                fake_acquire_org_session,
+            ),
+            patch(
+                "src.workers.deal_worker.tasks.meeting_insight_tasks"
+                ".meeting_summary_task.MeetingSummaryService",
+            ) as service_cls,
+            patch(
+                "src.workers.deal_worker.tasks.meeting_insight_tasks"
+                ".meeting_summary_task.DealJobRedisPublisher",
+            ),
+        ):
+            service = service_cls.return_value
+            service.generate = AsyncMock(return_value=summary_result)
+            service.generate_meeting_level_summary = AsyncMock(return_value=summary_result)
+            service.last_token_usage = None
+
+            result = self.task.run(str(org_id), str(job_id))
+
+        service.generate_meeting_level_summary.assert_awaited_once()
+        service.generate.assert_not_awaited()
+        assert job.status == JobStatus.COMPLETED
+        assert result["status"] == "completed"

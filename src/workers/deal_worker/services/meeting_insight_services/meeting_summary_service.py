@@ -14,10 +14,11 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from celery import signature
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.sql.expression import cast
 from sqlalchemy.types import String
 from sqlmodel import col
+from src.agents.workflows.summary.models import SummaryAttendee
 from src.domain.models.master_tables.organisation_models import Organisation
 from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync.calendar import (
@@ -31,7 +32,16 @@ from src.domain.models.organisation_tables.sync.meeting_intelligence import Meet
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.observability.context import correlation_headers
 from src.infra.utils.logger import get_logger
+from src.service.automation.events.service import AutomationEventDispatchService
+from src.service.automation.producers.meeting import (
+    MeetingEventAdapter,
+    load_meeting_event_context,
+)
+from src.service.automation.triggers.registry import AUTOMATION_REGISTRY
 from src.service.crm.jobs.deal_job_event_publisher import DealJobRedisPublisher
+from src.service.crm.jobs.deal_meeting_job_service import (
+    lock_and_get_active_meeting_summary_job,
+)
 from src.service.crm.meetings.attendee_display import resolve_attendee_display_name
 from src.service.integrations.transcripts import TranscriptService
 from src.workers.deal_worker.utils.deal_job_utils import (
@@ -77,15 +87,15 @@ def _normalize_internal_domains(domains_raw: list[str] | None) -> list[str]:
 
 def _build_summary_attendees(
     attendees: list[CalendarAttendee],
-) -> list[dict[str, str | bool | None]]:
+) -> list[SummaryAttendee]:
     """Convert calendar attendees into the prompt input format."""
     return [
-        {
-            "email": attendee.email,
-            "name": resolve_attendee_display_name(attendee.display_name, attendee.email),
-            "response_status": attendee.response_status,
-            "is_organiser": attendee.is_organiser,
-        }
+        SummaryAttendee(
+            email=attendee.email,
+            name=resolve_attendee_display_name(attendee.display_name, attendee.email),
+            response_status=attendee.response_status,
+            is_organiser=attendee.is_organiser,
+        )
         for attendee in attendees
         if attendee.email
     ]
@@ -206,7 +216,7 @@ class MeetingSummaryService:
         association_id: UUID | None = None
         online_meeting_id: str | None = None
         online_meeting_provider: str | None = None
-        attendee_roster: list[dict[str, str | bool | None]] = []
+        attendee_roster: list[SummaryAttendee] = []
 
         async for master_session in acquire_master_async_session():
             org_name, organisation_profile = await get_organisation_agent_context(
@@ -359,6 +369,18 @@ class MeetingSummaryService:
                 # Short-term compatibility: deal timelines still read the association,
                 # while newer meeting surfaces can read the canonical Meeting row.
                 # Keep both writes in one save phase so the payloads do not drift.
+                await session.execute(
+                    update(CalendarEventDealAssociation)
+                    .where(
+                        col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
+                        col(CalendarEventDealAssociation.event_id) == self.event_id,
+                        col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE,
+                    )
+                    .values(
+                        meeting_summary_data=wrapped_result,
+                        meeting_summary_status=GenerationStatus.COMPLETED,
+                    )
+                )
                 assoc = await session.get(CalendarEventDealAssociation, association_id)
                 if assoc:
                     assoc.meeting_summary_data = wrapped_result
@@ -369,17 +391,33 @@ class MeetingSummaryService:
                         meeting_row.meeting_summary_data = wrapped_result
                         meeting_row.meeting_summary_status = GenerationStatus.COMPLETED
                         meeting_row.meeting_summary_generated_at = datetime.now(UTC)
+                        context = await load_meeting_event_context(
+                            session,
+                            self.organisation_id,
+                            meeting_row,
+                            deal_id=self.deal_id,
+                        )
+                        envelope = MeetingEventAdapter(self.organisation_id).summary_ready(
+                            meeting_row,
+                            summary_fact_id=meeting_row.meeting_id,
+                            context=context,
+                        )
+                        await AutomationEventDispatchService(
+                            session,
+                            self.organisation_id,
+                            registry=AUTOMATION_REGISTRY,
+                        ).enqueue(envelope)
                 if assoc or meeting_id:
                     await session.commit()
 
         return wrapped_result
 
     async def generate_meeting_level_summary(self) -> dict:
-        """Generate summary for a transcribed meeting that is not linked to a deal.
+        """Generate the canonical summary for one transcribed calendar event.
 
-        Called by the Recall webhook summary job path when `DealJobs.deal_id` is
-        null. It stores generated content on the Meeting row and intentionally
-        avoids deal-memory/risk/stakeholder pipelines.
+        Every summary worker calls this regardless of deal linkage. The Meeting
+        row owns the artifact; active deal associations receive compatibility
+        copies in the same transaction, and the worker handles per-deal fanout.
         """
         if not self.event_id:
             raise ValueError("event_id is required for generate_meeting_level_summary()")
@@ -397,7 +435,7 @@ class MeetingSummaryService:
         event: CalendarEvent | None = None
         meeting_id: UUID | None = None
         transcript: str | None = None
-        attendee_roster: list[dict[str, str | bool | None]] = []
+        attendee_roster: list[SummaryAttendee] = []
 
         async for master_session in acquire_master_async_session():
             # Master data is read first, then released before the LLM call below.
@@ -449,6 +487,9 @@ class MeetingSummaryService:
             transcript = meeting.full_transcript
             await session.commit()
 
+        if event is None or meeting_id is None or transcript is None:
+            raise NonRetryableJobError("Missing meeting summary context", "invalid_data")
+
         # The DB sessions above are closed before the model call so LLM latency
         # cannot hold an org connection from the pool.
         self._publish_progress("Generating meeting summary with AI...", "Generation", 0.3)
@@ -460,6 +501,7 @@ class MeetingSummaryService:
         summary_data = await agent.generate(
             MeetingLevelSummaryInput(
                 event_id=str(self.event_id),
+                deal_id=None,
                 title=event.title,
                 start_at=event.start_at.isoformat(),
                 end_at=event.end_at.isoformat(),
@@ -474,13 +516,41 @@ class MeetingSummaryService:
 
         self._publish_progress("Saving results...", "Saving", 0.9)
         async for session in acquire_org_async_session(self.organisation_id):
-            # Re-open a fresh session for the write. The Meeting row is the durable
-            # storage target for summaries that have no deal association.
+            # Re-open a fresh session for the write so the model call never holds
+            # a pooled connection. Meeting stays canonical while deal timelines
+            # continue reading association copies during the migration window.
             meeting = await session.get(Meeting, meeting_id)
             if meeting:
+                await session.execute(
+                    update(CalendarEventDealAssociation)
+                    .where(
+                        col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
+                        col(CalendarEventDealAssociation.event_id) == self.event_id,
+                        col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE,
+                    )
+                    .values(
+                        meeting_summary_data=wrapped_result,
+                        meeting_summary_status=GenerationStatus.COMPLETED,
+                    )
+                )
                 meeting.meeting_summary_data = wrapped_result
                 meeting.meeting_summary_status = GenerationStatus.COMPLETED
                 meeting.meeting_summary_generated_at = datetime.now(UTC)
+                context = await load_meeting_event_context(
+                    session,
+                    self.organisation_id,
+                    meeting,
+                )
+                envelope = MeetingEventAdapter(self.organisation_id).summary_ready(
+                    meeting,
+                    summary_fact_id=meeting.meeting_id,
+                    context=context,
+                )
+                await AutomationEventDispatchService(
+                    session,
+                    self.organisation_id,
+                    registry=AUTOMATION_REGISTRY,
+                ).enqueue(envelope)
                 await session.commit()
 
         return wrapped_result
@@ -517,6 +587,10 @@ class MeetingSummaryService:
                     col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE,
                     col(CalendarEvent.end_at) < now,
                     col(Meeting.status) == MeetingStatus.READY,
+                    or_(
+                        col(Meeting.meeting_summary_data).is_(None),
+                        cast(col(Meeting.meeting_summary_data), String) == "null",
+                    ),
                     # Check for BOTH SQL NULL and JSON null (JSONB 'null' value)
                     or_(
                         col(CalendarEventDealAssociation.meeting_summary_data).is_(None),
@@ -530,18 +604,13 @@ class MeetingSummaryService:
             return [(row[0], row[1], row[2]) for row in result.all()]
         return []
 
-    async def _get_active_job(self, session, deal_id: UUID, event_id: UUID) -> DealJobs | None:
-        """Check if there's already an active job for this event."""
-        stmt = select(DealJobs).where(
-            col(DealJobs.organisation_id) == self.organisation_id,
-            col(DealJobs.deal_id) == deal_id,
-            col(DealJobs.event_id) == event_id,
-            col(DealJobs.job_type) == DealJobType.MEETING_SUMMARY,
-            col(DealJobs.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
+    async def _get_active_job(self, session, _deal_id: UUID, event_id: UUID) -> DealJobs | None:
+        """Lock summary creation and return the event's active job, if any."""
+        return await lock_and_get_active_meeting_summary_job(
+            session,
+            self.organisation_id,
+            event_id,
         )
-        result = await session.execute(stmt)
-        job: DealJobs | None = result.scalars().first()
-        return job
 
     async def _create_job(self, session, deal_id: UUID, event_id: UUID) -> DealJobs:
         """Create a DealJobs record for the meeting summary."""

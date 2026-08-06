@@ -12,6 +12,7 @@ from typing import Literal
 from uuid import UUID
 
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
+from src.service.crm.mutations.contracts import CRMMutationSourceMode
 
 # These literals document the duplicate policy vocabulary before every caller has
 # migrated to the new account module. Not every mode is used in this first slice.
@@ -56,6 +57,10 @@ class AccountWriteContext:
     source_label: str | None = None
     created_via: str | None = None
     duplicate_scope: AccountDuplicateScope = "internal_only"
+    source_mode: CRMMutationSourceMode | None = None
+    correlation_id: str | None = None
+    caused_by_run_id: UUID | None = None
+    causation_depth: int = 0
 
 
 @dataclass(frozen=True)

@@ -727,7 +727,7 @@ class ContactWriteService:
         if actor is None or actor.is_admin:
             return
         event = CRMDealMutationEvent
-        stmt = select(event.event_id).where(
+        stmt = select(col(event.event_id)).where(
             col(event.organisation_id) == self.organisation_id,
             col(event.entity_type) == "contact",
             col(event.entity_id) == contact_id,
@@ -947,7 +947,7 @@ class ContactWriteService:
 
     async def _count_import_rows_retained(self, contact: CRMContact) -> int:
         result = await self.org_session.execute(
-            select(func.count(CRMImportRow.row_id)).where(
+            select(func.count(col(CRMImportRow.row_id))).where(
                 col(CRMImportRow.organisation_id) == self.organisation_id,
                 col(CRMImportRow.contact_id) == contact.contact_id,
             )
@@ -978,6 +978,7 @@ class ContactWriteService:
             operation="create_contact",
             changed_fields=changed_fields,
             semantic_event_types=ContactMutationPolicy.semantic_for_create(),
+            record=ContactMutationPolicy.automation_record(contact),
             context=self._mutation_context(context),
             summary=f"Contact created: {contact.full_name or contact.email or contact.contact_id}",
             integration_id=contact.integration_id,
@@ -1000,6 +1001,7 @@ class ContactWriteService:
             operation="archive_contact",
             changed_fields=changed_fields,
             semantic_event_types=["crm.contact.deleted"],
+            record=ContactMutationPolicy.automation_record(contact),
             context=self._mutation_context(context),
             summary=(
                 "Contact archived and detached: "
@@ -1025,6 +1027,7 @@ class ContactWriteService:
             operation="update_contact",
             changed_fields=changed_fields,
             semantic_event_types=ContactMutationPolicy.semantic_for_update(changed_fields),
+            record=ContactMutationPolicy.automation_record(contact),
             context=self._mutation_context(context),
             summary=f"Contact updated: {contact.full_name or contact.email or contact.contact_id}",
             integration_id=contact.integration_id,
@@ -1050,4 +1053,8 @@ class ContactWriteService:
             source=context.source,
             actor_user_id=context.actor_user_id,
             source_label=context.source_label,
+            source_mode=context.source_mode,
+            correlation_id=context.correlation_id,
+            caused_by_run_id=context.caused_by_run_id,
+            causation_depth=context.causation_depth,
         )
