@@ -20,6 +20,12 @@ from src.api.schemas.automation_trigger_models import (
     AutomationTriggerCreateRequest,
     AutomationTriggerDetail,
     AutomationTriggerListResponse,
+    AutomationTriggerOptionResolveGroupResponse,
+    AutomationTriggerOptionResolveRequest,
+    AutomationTriggerOptionResolveResponse,
+    AutomationTriggerOptionSearchRequest,
+    AutomationTriggerOptionSearchResponse,
+    AutomationTriggerOptionValue,
     AutomationTriggerUpdateRequest,
     AutomationWebhookCredentials,
     AutomationWebhookRotateRequest,
@@ -41,8 +47,19 @@ from src.service.automation.triggers.capabilities import RETRY_UNSAFE_AUTOMATION
 from src.service.automation.triggers.catalog import build_trigger_catalog
 from src.service.automation.triggers.crm_schema import AutomationCRMRegistryService
 from src.service.automation.triggers.direct import ManualInvocationService, ManualSubject
-from src.service.automation.triggers.options import AutomationTriggerOptionAccess
-from src.service.automation.triggers.serializers import trigger_detail, trigger_summary
+from src.service.automation.triggers.options import (
+    AutomationTriggerOptionAccess,
+    TriggerOptionRecord,
+)
+from src.service.automation.triggers.registry import (
+    AutomationRegistry,
+    filter_field_principal_modes,
+)
+from src.service.automation.triggers.serializers import (
+    presentation_option_selections,
+    trigger_detail,
+    trigger_summary,
+)
 from src.service.automation.triggers.validator import (
     AutomationTriggerValidator,
     ValidatedTriggerDefinition,
@@ -112,6 +129,248 @@ class AutomationTriggerService:
             custom_option_sets=snapshot.option_sets,
         )
 
+    async def search_trigger_options(
+        self,
+        body: AutomationTriggerOptionSearchRequest,
+    ) -> AutomationTriggerOptionSearchResponse:
+        """Search active values under the registry and selected execution authority."""
+
+        registry = (await self.registry_service.snapshot()).registry
+        source, authority_scoped = self._option_context(
+            registry,
+            trigger_key=body.trigger_key,
+            control=body.control,
+            field_path=body.field_path,
+            principal_mode=body.principal_mode,
+        )
+        try:
+            offset = int(body.cursor or "0")
+        except ValueError as exc:
+            raise AutomationServiceError("Invalid option cursor", status_code=400) from exc
+        if offset < 0:
+            raise AutomationServiceError("Invalid option cursor", status_code=400)
+        principal_id, organisation_scope = self._option_principal(body.principal_mode)
+        try:
+            items, next_offset = await self.options.search_options(
+                source,
+                query=body.query,
+                limit=body.limit,
+                offset=offset,
+                principal_id=principal_id,
+                organisation_scope=organisation_scope,
+                authority_scoped=authority_scoped,
+            )
+        except ValueError as exc:
+            raise AutomationServiceError(str(exc), status_code=400) from exc
+        return AutomationTriggerOptionSearchResponse(
+            items=[
+                AutomationTriggerOptionValue(
+                    value=item.value,
+                    label=item.label,
+                    status="active",
+                    selectable=True,
+                )
+                for item in items
+            ],
+            next_cursor=str(next_offset) if next_offset is not None else None,
+        )
+
+    async def resolve_trigger_options(
+        self,
+        body: AutomationTriggerOptionResolveRequest,
+    ) -> AutomationTriggerOptionResolveResponse:
+        """Batch-resolve labels and mask values not disclosed by an accessible binding."""
+
+        registry = (await self.registry_service.snapshot()).registry
+        contexts: list[tuple[str, bool, UUID, bool, set[str]]] = []
+        for request in body.requests:
+            source, authority_scoped = self._option_context(
+                registry,
+                trigger_key=request.trigger_key,
+                control=request.control,
+                field_path=request.field_path,
+                principal_mode=request.principal_mode,
+            )
+            principal_id, organisation_scope = self._option_principal(request.principal_mode)
+            disclosed = await self._saved_option_values(request)
+            contexts.append((source, authority_scoped, principal_id, organisation_scope, disclosed))
+
+        batched: dict[tuple[str, bool, UUID, bool], set[str]] = {}
+        for request, context in zip(body.requests, contexts, strict=True):
+            source, authority_scoped, principal_id, organisation_scope, _ = context
+            batched.setdefault(
+                (source, authority_scoped, principal_id, organisation_scope), set()
+            ).update(request.values)
+        resolved_batches = {}
+        try:
+            for key, values in batched.items():
+                source, authority_scoped, principal_id, organisation_scope = key
+                resolved_batches[key] = await self.options.resolve_options(
+                    source,
+                    values,
+                    principal_id=principal_id,
+                    organisation_scope=organisation_scope,
+                    authority_scoped=authority_scoped,
+                )
+        except ValueError as exc:
+            raise AutomationServiceError(str(exc), status_code=400) from exc
+
+        results = []
+        for index, (request, context) in enumerate(zip(body.requests, contexts, strict=True)):
+            source, authority_scoped, principal_id, organisation_scope, disclosed = context
+            resolved = resolved_batches[
+                (source, authority_scoped, principal_id, organisation_scope)
+            ]
+            items = []
+            for value in request.values:
+                item = resolved.get(value)
+                if item is not None and item.selectable:
+                    items.append(
+                        AutomationTriggerOptionValue(
+                            value=value,
+                            label=item.label,
+                            status="active",
+                            selectable=True,
+                        )
+                    )
+                elif item is not None and value in disclosed:
+                    items.append(
+                        AutomationTriggerOptionValue(
+                            value=value,
+                            label=item.label,
+                            status=cast(Any, item.status),
+                            selectable=False,
+                        )
+                    )
+                else:
+                    items.append(
+                        AutomationTriggerOptionValue(
+                            value=value,
+                            label=None,
+                            status="unavailable",
+                            selectable=False,
+                        )
+                    )
+            results.append(
+                AutomationTriggerOptionResolveGroupResponse(
+                    request_index=index,
+                    items=items,
+                )
+            )
+        return AutomationTriggerOptionResolveResponse(results=results)
+
+    def _option_context(
+        self,
+        registry: AutomationRegistry,
+        *,
+        trigger_key: str,
+        control: str,
+        field_path: str | None,
+        principal_mode: str,
+    ) -> tuple[str, bool]:
+        try:
+            definition = registry.trigger(trigger_key)
+        except ValueError as exc:
+            raise AutomationServiceError(str(exc), status_code=400) from exc
+        if principal_mode not in definition.allowed_principal_modes:
+            raise AutomationServiceError(
+                "Principal mode is not allowed for this trigger", status_code=400
+            )
+        if principal_mode == "organisation" and not self.is_admin:
+            raise AutomationServiceError(
+                "Organisation options require an organisation admin", status_code=403
+            )
+        if control == "source_selector":
+            if definition.source_selector is None:
+                raise AutomationServiceError(
+                    "Trigger does not support source selection", status_code=400
+                )
+            return definition.source_selector.option_source, True
+        if control == "audience":
+            if "explicit_users" not in definition.allowed_audience_modes:
+                raise AutomationServiceError(
+                    "Trigger does not support explicit audience selection", status_code=400
+                )
+            return "organisation_users", False
+        if control == "direct_subject":
+            if definition.family.value not in {"manual", "schedule"}:
+                raise AutomationServiceError(
+                    "Trigger does not support direct record selection", status_code=400
+                )
+            sources = {"deal": "deals", "contact": "contacts", "account": "accounts"}
+            if field_path not in sources:
+                raise AutomationServiceError("Unsupported direct record type", status_code=400)
+            return sources[field_path], True
+
+        assert field_path is not None
+        if principal_mode not in filter_field_principal_modes(definition, field_path):
+            raise AutomationServiceError(
+                "Trigger field is not selectable in this principal mode", status_code=400
+            )
+        fields = [
+            registry.event(event_key).fields.get(field_path)
+            for event_key in definition.match_event_keys
+        ]
+        sources = {field.option_source for field in fields if field is not None}
+        if len(sources) != 1 or None in sources:
+            raise AutomationServiceError(
+                "Trigger field has no supported option source", status_code=400
+            )
+        source = cast(str, next(iter(sources)))
+        if (
+            trigger_key.startswith("ai.")
+            and trigger_key.endswith(".resolved")
+            and field_path == "record.status"
+        ):
+            source = "risk_resolution_statuses"
+        return source, False
+
+    def _option_principal(self, principal_mode: str) -> tuple[UUID, bool]:
+        if principal_mode == "organisation":
+            return self.organisation_id, True
+        return self.created_by_user_id, False
+
+    async def _saved_option_values(self, request: Any) -> set[str]:
+        if request.trigger_id is None:
+            return set()
+        trigger = await self.access.get_trigger_by_id(request.trigger_id)
+        if trigger is None:
+            raise AutomationServiceError("Automation trigger not found", status_code=404)
+        actual_mode = (
+            "personal"
+            if trigger.execution_principal_type == AutomationPrincipalType.USER
+            else "organisation"
+        )
+        if trigger.trigger_key != request.trigger_key or actual_mode != request.principal_mode:
+            raise AutomationServiceError("Automation trigger context mismatch", status_code=400)
+        if request.control == "source_selector":
+            selection = trigger.trigger_config.get("selection")
+            if isinstance(selection, dict) and selection.get("mode") == "selected":
+                return {str(value) for value in selection.get("ids", [])}
+            return set()
+        if request.control == "audience":
+            return {str(value) for value in trigger.audience_config.get("user_ids", [])}
+        if request.control == "direct_subject":
+            if trigger.trigger_config.get("subject_type") != request.field_path:
+                return set()
+            return {str(value) for value in trigger.trigger_config.get("subject_ids", [])}
+        return set(self._filter_values(trigger.filter_config, request.field_path))
+
+    @classmethod
+    def _filter_values(cls, tree: Any, path: str | None) -> list[str]:
+        if not isinstance(tree, dict):
+            return []
+        for mode in ("all", "any"):
+            children = tree.get(mode)
+            if isinstance(children, list):
+                return [value for child in children for value in cls._filter_values(child, path)]
+        if tree.get("path") != path:
+            return []
+        value = tree.get("value")
+        if isinstance(value, list):
+            return [str(item) for item in value]
+        return [str(value)] if value is not None else []
+
     async def create_trigger(
         self,
         agent_id: UUID,
@@ -180,7 +439,11 @@ class AutomationTriggerService:
                 "An equivalent trigger already exists",
                 status_code=409,
             ) from exc
-        detail = trigger_detail(trigger, current_target_revision=agent.revision)
+        detail = trigger_detail(
+            trigger,
+            current_target_revision=agent.revision,
+            definition=validated.definition,
+        )
         if issued_webhook_credentials is not None:
             detail.webhook_credentials = AutomationWebhookCredentials(
                 endpoint_token=issued_webhook_credentials.endpoint_token,
@@ -207,8 +470,58 @@ class AutomationTriggerService:
             limit=limit,
             offset=offset,
         )
+        snapshot = await self.registry_service.snapshot()
+        definitions = [snapshot.registry.trigger(row.trigger_key) for row in rows]
+        row_requests: list[tuple[UUID, bool, dict[tuple[str, bool], set[str]]]] = []
+        batches: dict[tuple[str, bool, UUID, bool], set[str]] = {}
+        for row, definition in zip(rows, definitions, strict=True):
+            organisation_scope = (
+                self._enum_value(row.execution_principal_type)
+                == AutomationPrincipalType.ORGANISATION_SERVICE.value
+            )
+            principal_id = row.execution_principal_id
+            selections = presentation_option_selections(
+                row,
+                definition,
+                snapshot.registry,
+            )
+            row_requests.append((principal_id, organisation_scope, selections))
+            for (source, authority_scoped), values in selections.items():
+                batches.setdefault(
+                    (source, authority_scoped, principal_id, organisation_scope), set()
+                ).update(values)
+        resolved_batches: dict[tuple[str, bool, UUID, bool], dict[str, TriggerOptionRecord]] = {}
+        for key, values in batches.items():
+            source, authority_scoped, principal_id, organisation_scope = key
+            resolved_batches[key] = await self.options.resolve_options(
+                source,
+                values,
+                principal_id=principal_id,
+                organisation_scope=organisation_scope,
+                authority_scoped=authority_scoped,
+            )
+        items = []
+        for row, definition, request in zip(rows, definitions, row_requests, strict=True):
+            principal_id, organisation_scope, selections = request
+            resolved = {}
+            for (source, authority_scoped), values in selections.items():
+                batch = resolved_batches[
+                    (source, authority_scoped, principal_id, organisation_scope)
+                ]
+                resolved.update(
+                    {(source, value): batch[value] for value in values if value in batch}
+                )
+            items.append(
+                trigger_summary(
+                    row,
+                    current_target_revision=agent.revision,
+                    definition=definition,
+                    registry=snapshot.registry,
+                    resolved_options=resolved,
+                )
+            )
         return AutomationTriggerListResponse(
-            items=[trigger_summary(row, current_target_revision=agent.revision) for row in rows],
+            items=items,
             total_count=total,
             limit=limit,
             offset=offset,
@@ -221,7 +534,12 @@ class AutomationTriggerService:
         trigger = await self.access.get_trigger(agent_id, trigger_id)
         if trigger is None:
             raise AutomationServiceError("Trigger not found", status_code=404)
-        return trigger_detail(trigger, current_target_revision=agent.revision)
+        registry = (await self.registry_service.snapshot()).registry
+        return trigger_detail(
+            trigger,
+            current_target_revision=agent.revision,
+            definition=registry.trigger(trigger.trigger_key),
+        )
 
     async def invoke_manual_trigger(
         self,
@@ -338,7 +656,11 @@ class AutomationTriggerService:
         )
         if updated is None:
             await self._raise_conditional_failure(agent_id, trigger_id, body.expected_updated_at)
-        detail = trigger_detail(updated, current_target_revision=agent.revision)
+        detail = trigger_detail(
+            updated,
+            current_target_revision=agent.revision,
+            definition=validated.definition,
+        )
         if issued_webhook_credentials is not None:
             detail.webhook_credentials = AutomationWebhookCredentials(
                 endpoint_token=issued_webhook_credentials.endpoint_token,
@@ -442,7 +764,12 @@ class AutomationTriggerService:
         )
         if updated is None:
             await self._raise_conditional_failure(agent_id, trigger_id, expected_updated_at)
-        return trigger_detail(updated, current_target_revision=agent.revision)
+        registry = (await self.registry_service.snapshot()).registry
+        return trigger_detail(
+            updated,
+            current_target_revision=agent.revision,
+            definition=registry.trigger(updated.trigger_key),
+        )
 
     async def archive_trigger(
         self,

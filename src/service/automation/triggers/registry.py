@@ -154,6 +154,7 @@ class RecordField:
     option_source: str | None = None
     filterable: bool = True
     accessor: tuple[str, ...] | None = None
+    watchable: bool = True
 
 
 @dataclass(frozen=True)
@@ -199,6 +200,19 @@ class WatchDefinition:
             raise ValueError("watch mode must be any or all")
         if not self.paths or len(self.paths) != len(set(self.paths)):
             raise ValueError("watch paths must be non-empty and unique")
+
+
+@dataclass(frozen=True)
+class SourceSelectorDefinition:
+    """Backend-owned metadata and matcher path for one optional source selector."""
+
+    label: str
+    all_label_personal: str
+    all_label_organisation: str
+    selected_label: str
+    option_source: str
+    filter_path: str
+    max_selected: int = 100
 
 
 @dataclass(frozen=True)
@@ -276,7 +290,7 @@ class EventDefinition:
                     watchable=True,
                 )
                 for item in self.record_fields
-                if item.filterable
+                if item.filterable and item.watchable
             }
         )
 
@@ -394,29 +408,205 @@ class TriggerDefinition:
     )
     output_schema: dict[str, Any] | None = None
     producer_available: bool = True
+    source_selector: SourceSelectorDefinition | None = None
     preset_compiler: PresetCompiler | None = field(default=None, compare=False, repr=False)
 
     def compile(self, config: Mapping[str, Any]) -> CompiledTrigger:
         """Validate preset options and derive its non-overridable matcher."""
 
+        raw_config = dict(config)
+        selection = None
+        selection_filter = None
+        if self.source_selector is not None:
+            selection, selection_filter = _compile_source_selection(
+                self.source_selector,
+                raw_config.pop("selection", {"mode": "all", "ids": []}),
+            )
         if self.preset_compiler is not None:
-            return self.preset_compiler(config)
-        if config:
+            compiled = self.preset_compiler(raw_config)
+        else:
             allowed = {item.key for item in self.config_fields}
-            unknown = set(config) - allowed
+            unknown = set(raw_config) - allowed
             if unknown:
                 raise ValueError(f"unknown trigger config fields: {sorted(unknown)}")
-        normalized = dict(config)
-        for item in self.config_fields:
-            if item.required and item.key not in normalized:
-                raise ValueError(f"{item.key} is required")
-            if item.key not in normalized and item.default is not None:
-                normalized[item.key] = item.default
+            normalized = dict(raw_config)
+            for item in self.config_fields:
+                if item.required and item.key not in normalized:
+                    raise ValueError(f"{item.key} is required")
+                if item.key not in normalized and item.default is not None:
+                    normalized[item.key] = item.default
+            compiled = CompiledTrigger(
+                config=normalized,
+                watch=self.fixed_watch,
+                filter=self.fixed_filter,
+            )
+        if selection is None:
+            return compiled
         return CompiledTrigger(
-            config=normalized,
-            watch=self.fixed_watch,
-            filter=self.fixed_filter,
+            config={**compiled.config, "selection": selection},
+            watch=compiled.watch,
+            filter=_combine_compiled_filters(compiled.filter, selection_filter),
         )
+
+
+def _compile_source_selection(
+    definition: SourceSelectorDefinition,
+    value: Any,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    if not isinstance(value, Mapping) or set(value) != {"mode", "ids"}:
+        raise ValueError("selection must contain mode and ids")
+    mode = value.get("mode")
+    ids = value.get("ids")
+    if mode not in {"all", "selected"} or type(ids) is not list:
+        raise ValueError("selection mode or ids are invalid")
+    if mode == "all":
+        if ids:
+            raise ValueError("all selection requires an empty ID list")
+        return {"mode": "all", "ids": []}, None
+    if not 1 <= len(ids) <= definition.max_selected:
+        raise ValueError(f"selected selection requires 1 to {definition.max_selected} IDs")
+    if any(type(item) is not str for item in ids) or len(ids) != len(set(ids)):
+        raise ValueError("selected selection IDs must be unique UUID strings")
+    try:
+        normalized_ids = [str(UUID(item)) for item in ids]
+    except ValueError as exc:
+        raise ValueError("selected selection IDs must be unique UUID strings") from exc
+    return (
+        {"mode": "selected", "ids": normalized_ids},
+        {
+            "path": definition.filter_path,
+            "operator": "in",
+            "value": normalized_ids,
+        },
+    )
+
+
+def _combine_compiled_filters(
+    fixed: dict[str, Any] | None,
+    selection: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if fixed is None:
+        return selection
+    if selection is None:
+        return fixed
+    return {"all": [fixed, selection]}
+
+
+_SEMANTIC_HIDDEN_FILTER_PATHS: Mapping[str, frozenset[str]] = MappingProxyType(
+    {
+        "crm.deal.entered_stage": frozenset({"record.stage_id", "changes.stage_id.after"}),
+        "crm.deal.exited_stage": frozenset({"changes.stage_id.before"}),
+        "crm.deal.won": frozenset({"record.deal_status", "changes.deal_status.after"}),
+        "crm.deal.lost": frozenset({"record.deal_status", "changes.deal_status.after"}),
+        "crm.deal.reopened": frozenset({"record.deal_status", "changes.deal_status.after"}),
+        "crm.deal.amount_crossed": frozenset(
+            {"record.amount", "changes.amount.before", "changes.amount.after"}
+        ),
+        "ai.deal_risk.detected": frozenset({"record.status"}),
+        "ai.deal_blocker.detected": frozenset({"record.status"}),
+        "agent.run.completed": frozenset({"record.status"}),
+    }
+)
+
+
+def filter_field_principal_modes(
+    definition: TriggerDefinition,
+    path: str,
+) -> tuple[str, ...]:
+    """Return authority modes in which one condition is business-editable."""
+
+    modes = list(definition.allowed_principal_modes)
+    if (
+        path.startswith(("actor.", "source.", "references."))
+        or path in {"record.id", "changes.id.before", "changes.id.after"}
+        or path in _SEMANTIC_HIDDEN_FILTER_PATHS.get(definition.trigger_key, frozenset())
+        or (definition.trigger_key.endswith("created_or_updated") and path.startswith("changes."))
+    ):
+        return ()
+
+    resource = definition.resource_key
+    if resource == "email" and path in {
+        "record.direction",
+        "record.thread_id",
+        "record.owner_id",
+        "attributes.direction",
+    }:
+        return ()
+    if definition.trigger_key == "email.message.sent" and path in {
+        "record.sender_email",
+        "record.sender_domain",
+    }:
+        return ()
+    if resource == "meeting" and path == "record.team_ids":
+        return ()
+    if resource in {"deal_risk", "deal_blocker"} and path in {
+        "record.signal_id",
+        "record.signal_type",
+        "record.contact_id",
+    }:
+        return ()
+    if definition.family in {TriggerFamily.SCHEDULE, TriggerFamily.WEBHOOK} and path.startswith(
+        "attributes."
+    ):
+        return ()
+
+    if (
+        (
+            resource in {"contact", "account"}
+            and path in {"record.owner_id", "changes.owner_id.after"}
+        )
+        or (resource == "meeting" and path == "record.owner_id")
+        or (resource == "agent_run" and path == "record.created_by_user_id")
+    ):
+        modes = [mode for mode in modes if mode != "personal"]
+    return tuple(modes)
+
+
+def filter_field_group(path: str) -> str:
+    """Map one opaque event path to its backend-owned business group."""
+
+    if path.startswith("changes.") and path.endswith(".before"):
+        return "previous"
+    if path.startswith("changes.") and path.endswith(".after"):
+        return "new"
+    if path.startswith("record."):
+        return "current"
+    return "context"
+
+
+def filter_field_input_type(field: FieldDefinition) -> str:
+    """Choose the typed editor without exposing matcher implementation details."""
+
+    if field.option_source:
+        entity_sources = {
+            "accounts",
+            "agents",
+            "automation_triggers",
+            "contacts",
+            "crm_users",
+            "deals",
+            "organisation_users",
+        }
+        if field.option_source in entity_sources:
+            return (
+                "entity_multi_select"
+                if field.value_type == FieldType.LIST
+                else "entity_single_select"
+            )
+        return "multi_select" if field.value_type == FieldType.LIST else "single_select"
+    if field.value_type == FieldType.EMAIL:
+        return "email"
+    if field.value_type in {FieldType.INTEGER, FieldType.DECIMAL}:
+        return "number"
+    if field.value_type == FieldType.DATE:
+        return "date"
+    if field.value_type == FieldType.DATETIME:
+        return "datetime"
+    if field.value_type == FieldType.BOOLEAN:
+        return "boolean"
+    if field.value_type == FieldType.LIST:
+        return "email_tokens" if field.path.endswith("recipient_emails") else "multi_select"
+    return "text"
 
 
 class AutomationRegistry:
@@ -509,6 +699,7 @@ def _path_field(section: str, item: RecordField) -> FieldDefinition:
         required=item.required,
         exact=item.exact,
         option_source=item.option_source,
+        watchable=item.watchable,
     )
 
 
@@ -690,7 +881,14 @@ _COMMON_EVENT_FIELDS: Mapping[str, FieldDefinition] = MappingProxyType(
 
 
 def _id_field(label: str = "ID") -> RecordField:
-    return RecordField("id", label, FieldType.UUID, required=True, exact=True)
+    return RecordField(
+        "id",
+        label,
+        FieldType.UUID,
+        required=True,
+        exact=True,
+        watchable=False,
+    )
 
 
 _DEAL_FIELDS = (
@@ -727,10 +925,23 @@ _DEAL_FIELDS = (
         FieldType.RELATION,
         exact=True,
         option_source="crm_users",
+        watchable=False,
     ),
     RecordField("expected_close_date", "Expected close date", FieldType.DATETIME),
-    RecordField("account_id", "Account", FieldType.RELATION, exact=True),
-    RecordField("primary_contact_id", "Primary contact", FieldType.RELATION, exact=True),
+    RecordField(
+        "account_id",
+        "Account",
+        FieldType.RELATION,
+        exact=True,
+        option_source="accounts",
+    ),
+    RecordField(
+        "primary_contact_id",
+        "Primary contact",
+        FieldType.RELATION,
+        exact=True,
+        option_source="contacts",
+    ),
     RecordField(
         "custom_properties",
         "Custom properties",
@@ -746,7 +957,13 @@ _CONTACT_FIELDS = (
     RecordField("email", "Email", FieldType.EMAIL),
     RecordField("phone", "Phone", FieldType.TEXT),
     RecordField("owner_id", "Owner", FieldType.RELATION, exact=True, option_source="crm_users"),
-    RecordField("account_id", "Account", FieldType.RELATION, exact=True),
+    RecordField(
+        "account_id",
+        "Account",
+        FieldType.RELATION,
+        exact=True,
+        option_source="accounts",
+    ),
     RecordField("lifecycle_stage", "Lifecycle", FieldType.ENUM, exact=True),
 )
 
@@ -771,7 +988,13 @@ _LEAD_FIELDS = (
     RecordField("source", "Source", FieldType.ENUM, exact=True),
     RecordField("score", "Score", FieldType.DECIMAL),
     RecordField("owner_id", "Owner", FieldType.RELATION, exact=True, option_source="crm_users"),
-    RecordField("created_by_user_id", "Created by", FieldType.RELATION, exact=True),
+    RecordField(
+        "created_by_user_id",
+        "Created by",
+        FieldType.RELATION,
+        exact=True,
+        watchable=False,
+    ),
 )
 
 _TASK_FIELDS = (
@@ -782,13 +1005,25 @@ _TASK_FIELDS = (
     RecordField("due_date", "Due date", FieldType.DATE),
     RecordField("assignee_id", "Assignee", FieldType.RELATION, exact=True),
     RecordField("owner_id", "Owner", FieldType.RELATION, exact=True),
-    RecordField("created_by_user_id", "Created by", FieldType.RELATION, exact=True),
+    RecordField(
+        "created_by_user_id",
+        "Created by",
+        FieldType.RELATION,
+        exact=True,
+        watchable=False,
+    ),
     RecordField("deal_id", "Deal", FieldType.RELATION, exact=True),
 )
 
 _NOTE_FIELDS = (
     _id_field("Note ID"),
-    RecordField("created_by_user_id", "Created by", FieldType.RELATION, exact=True),
+    RecordField(
+        "created_by_user_id",
+        "Created by",
+        FieldType.RELATION,
+        exact=True,
+        watchable=False,
+    ),
     RecordField("deal_id", "Deal", FieldType.RELATION, exact=True),
     RecordField("contact_id", "Contact", FieldType.RELATION, exact=True),
     RecordField("account_id", "Account", FieldType.RELATION, exact=True),
@@ -803,37 +1038,135 @@ _EMAIL_FIELDS = (
     RecordField("has_attachments", "Has attachments", FieldType.BOOLEAN, required=True),
     RecordField("thread_id", "Thread", FieldType.TEXT, exact=True),
     RecordField("owner_id", "Mailbox owner", FieldType.RELATION, exact=True),
-    RecordField("deal_id", "Related deal", FieldType.RELATION, exact=True),
+    RecordField(
+        "deal_id",
+        "Related deal",
+        FieldType.RELATION,
+        exact=True,
+        option_source="deals",
+    ),
 )
 
 _MEETING_FIELDS = (
     _id_field("Meeting ID"),
-    RecordField("provider", "Provider", FieldType.ENUM, exact=True),
-    RecordField("language", "Language", FieldType.ENUM, exact=True),
-    RecordField("owner_id", "Owner", FieldType.RELATION, exact=True),
+    RecordField(
+        "provider",
+        "Provider",
+        FieldType.ENUM,
+        exact=True,
+        option_source="meeting_providers",
+    ),
+    RecordField(
+        "language",
+        "Transcript language",
+        FieldType.ENUM,
+        exact=True,
+        option_source="meeting_languages",
+    ),
+    RecordField(
+        "owner_id",
+        "Organiser",
+        FieldType.RELATION,
+        exact=True,
+        option_source="organisation_users",
+    ),
     RecordField("team_ids", "Teams", FieldType.LIST),
-    RecordField("attendee_ids", "Attendees", FieldType.LIST),
-    RecordField("deal_id", "Related deal", FieldType.RELATION, exact=True),
+    RecordField(
+        "attendee_ids",
+        "Internal attendees",
+        FieldType.LIST,
+        option_source="organisation_users",
+    ),
+    RecordField(
+        "deal_id",
+        "Related deal",
+        FieldType.RELATION,
+        exact=True,
+        option_source="deals",
+    ),
 )
 
 _SIGNAL_FIELDS = (
     _id_field("Subject ID"),
     RecordField("signal_id", "Signal ID", FieldType.UUID, required=True, exact=True),
     RecordField("signal_type", "Signal type", FieldType.ENUM, required=True, exact=True),
-    RecordField("status", "Status", FieldType.ENUM, required=True, exact=True),
-    RecordField("severity", "Severity", FieldType.ENUM, required=True, exact=True),
+    RecordField(
+        "status",
+        "Status",
+        FieldType.ENUM,
+        required=True,
+        exact=True,
+        option_source="risk_statuses",
+    ),
+    RecordField(
+        "severity",
+        "Severity",
+        FieldType.ENUM,
+        required=True,
+        exact=True,
+        option_source="risk_severities",
+    ),
     RecordField("confidence", "Confidence", FieldType.DECIMAL, required=True),
-    RecordField("deal_id", "Deal", FieldType.RELATION, required=True, exact=True),
-    RecordField("contact_id", "Buyer", FieldType.RELATION, exact=True),
+    RecordField(
+        "deal_id",
+        "Deal",
+        FieldType.RELATION,
+        required=True,
+        exact=True,
+        option_source="deals",
+    ),
+    RecordField(
+        "contact_id",
+        "Buyer",
+        FieldType.RELATION,
+        exact=True,
+        option_source="contacts",
+    ),
 )
 
 _RUN_FIELDS = (
     _id_field("Run ID"),
-    RecordField("agent_id", "Agent", FieldType.RELATION, required=True, exact=True),
-    RecordField("trigger_id", "Trigger", FieldType.RELATION, required=True, exact=True),
-    RecordField("status", "Outcome", FieldType.ENUM, required=True, exact=True),
-    RecordField("event_key", "Causing event", FieldType.ENUM, required=True, exact=True),
-    RecordField("created_by_user_id", "Created by", FieldType.RELATION, required=True, exact=True),
+    RecordField(
+        "agent_id",
+        "Agent",
+        FieldType.RELATION,
+        required=True,
+        exact=True,
+        option_source="agents",
+    ),
+    RecordField(
+        "trigger_id",
+        "Triggering automation",
+        FieldType.RELATION,
+        required=True,
+        exact=True,
+        option_source="automation_triggers",
+    ),
+    RecordField(
+        "status",
+        "Failure type",
+        FieldType.ENUM,
+        required=True,
+        exact=True,
+        option_source="agent_run_failure_statuses",
+    ),
+    RecordField(
+        "event_key",
+        "Causing event",
+        FieldType.ENUM,
+        required=True,
+        exact=True,
+        option_source="trigger_event_keys",
+    ),
+    RecordField(
+        "created_by_user_id",
+        "Created by",
+        FieldType.RELATION,
+        required=True,
+        exact=True,
+        watchable=False,
+        option_source="organisation_users",
+    ),
 )
 
 
@@ -1158,6 +1491,22 @@ def _amount_crossed_compiler(config: Mapping[str, Any]) -> CompiledTrigger:
     )
 
 
+def _crm_source_selector(resource: str, label: str) -> SourceSelectorDefinition | None:
+    option_sources = {"deal": "deals", "contact": "contacts", "account": "accounts"}
+    option_source = option_sources.get(resource)
+    if option_source is None:
+        return None
+    personal_scope = "you own or created" if resource == "deal" else "currently assigned to you"
+    return SourceSelectorDefinition(
+        label=f"{label}s",
+        all_label_personal=f"All {label.lower()}s {personal_scope}",
+        all_label_organisation=f"All organisation {label.lower()}s",
+        selected_label=f"Specific {label.lower()}s",
+        option_source=option_source,
+        filter_path="record.id",
+    )
+
+
 def _event_trigger(
     event_key: str,
     *,
@@ -1174,6 +1523,7 @@ def _event_trigger(
     config_fields: tuple[ConfigFieldDefinition, ...] = (),
     fixed_watch: WatchDefinition | None = None,
     fixed_filter: dict[str, Any] | None = None,
+    source_selector: SourceSelectorDefinition | None = None,
 ) -> TriggerDefinition:
     return TriggerDefinition(
         trigger_key=trigger_key or event_key,
@@ -1190,6 +1540,14 @@ def _event_trigger(
         fixed_filter=fixed_filter,
         config_fields=config_fields,
         producer_available=producer_available,
+        source_selector=(
+            source_selector
+            or (
+                _crm_source_selector(resource_key, resource_label)
+                if event_key.endswith(".updated")
+                else None
+            )
+        ),
         preset_compiler=compiler or _empty_compiler(),
     )
 
@@ -1215,6 +1573,10 @@ def _record_triggers(
         for operation in ("created", "updated", "deleted")
     ]
     triggers[1] = replace(triggers[1], allow_user_watch=True)
+    triggers[2] = replace(
+        triggers[2],
+        source_selector=_crm_source_selector(resource, resource_label),
+    )
     triggers.append(
         TriggerDefinition(
             trigger_key=f"{base}.created_or_updated",
@@ -1549,10 +1911,11 @@ def _triggers() -> list[TriggerDefinition]:
         ),
     ):
         triggers.extend(_record_triggers(resource, label))
-        triggers.extend(
-            _field_change_trigger(resource, label, field_key, field_label)
-            for field_key, field_label in changed_fields
-        )
+        for field_key, field_label in changed_fields:
+            item = _field_change_trigger(resource, label, field_key, field_label)
+            if resource == "account" and field_key == "tier":
+                item = replace(item, producer_available=False)
+            triggers.append(item)
     triggers.extend(_record_triggers("note", "Note"))
     triggers.append(
         _event_trigger(
@@ -1580,6 +1943,14 @@ def _triggers() -> list[TriggerDefinition]:
                 event_label=label,
                 description=f"Run when an {label.lower()} fact is durable.",
                 producer_available=key != "email.message.replied",
+                source_selector=SourceSelectorDefinition(
+                    label="Mailboxes",
+                    all_label_personal="All my connected mailboxes",
+                    all_label_organisation="All organisation mailboxes",
+                    selected_label="Specific mailboxes",
+                    option_source="email_mailboxes",
+                    filter_path="actor.id",
+                ),
             )
         )
     for key, label, available in (
@@ -1637,6 +2008,14 @@ def _triggers() -> list[TriggerDefinition]:
                     allowed_principal_modes=("organisation",),
                     allowed_scope_types=("organisation",),
                     allowed_audience_modes=("none", "explicit_users"),
+                    source_selector=SourceSelectorDefinition(
+                        label="Deals",
+                        all_label_personal="All deals in scope",
+                        all_label_organisation="All organisation deals",
+                        selected_label="Specific deals",
+                        option_source="ai_deals",
+                        filter_path="record.deal_id",
+                    ),
                 )
             triggers.append(item)
     for outcome in ("completed", "failed", "cancelled"):
@@ -1649,6 +2028,14 @@ def _triggers() -> list[TriggerDefinition]:
                 resource_label="Run",
                 event_label=outcome.title(),
                 description=f"Run after an agent run is {outcome}.",
+                source_selector=SourceSelectorDefinition(
+                    label="Agents",
+                    all_label_personal="All accessible agents",
+                    all_label_organisation="All organisation agents",
+                    selected_label="Specific agents",
+                    option_source="agents",
+                    filter_path="record.agent_id",
+                ),
             )
         )
     for outcome in ("requested", "granted", "rejected", "expired"):
@@ -1680,6 +2067,7 @@ __all__ = [
     "FieldDefinition",
     "FieldType",
     "RecordField",
+    "SourceSelectorDefinition",
     "TriggerDefinition",
     "TriggerFamily",
     "WatchDefinition",

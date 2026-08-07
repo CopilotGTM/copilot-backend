@@ -45,6 +45,9 @@ class Result:
         """Expose the scalar one or none operation expected by the Result test double."""
         return None
 
+    def all(self) -> list[Any]:
+        return []
+
 
 class RecordingSession:
     """Represent the Recording Session test double used by the surrounding regression cases."""
@@ -100,6 +103,21 @@ async def test_readiness_and_causation_queries_are_tenant_scoped() -> None:
     assert "public.users.admin_status" in user_sql
     assert "agent_runs.organisation_id" in causation_sql
     assert "with recursive" in causation_sql
+
+
+@pytest.mark.asyncio
+async def test_crm_principal_identity_query_is_tenant_scoped_and_active_only() -> None:
+    session = RecordingSession()
+    access = TriggerActivationAccess(session, uuid4())  # type: ignore[arg-type]
+
+    assert await access.list_crm_user_ids_by_principal({uuid4()}) == {}
+
+    statement = sql(session.statements[0])
+    assert "public.users.organisation_id" in statement
+    assert "public.users.status" in statement
+    assert "public.users.admin_status" in statement
+    assert "crm_users.organisation_id" in statement
+    assert "crm_users.is_deleted is false" in statement
 
 
 @pytest.mark.asyncio

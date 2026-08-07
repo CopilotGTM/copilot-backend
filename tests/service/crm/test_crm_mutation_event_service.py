@@ -248,8 +248,8 @@ async def test_shared_recorder_emits_one_base_lifecycle_envelope() -> None:
 
 
 @pytest.mark.asyncio
-async def test_base_lifecycle_event_does_not_depend_on_legacy_semantic_presets() -> None:
-    """Verify the contract that base lifecycle event does not depend on legacy semantic presets."""
+async def test_base_lifecycle_event_does_not_depend_on_semantic_presets() -> None:
+    """Base lifecycle routing is independent from optional semantic projections."""
     enqueuer = _FakeEventEnqueuer()
     service = CRMMutationEventService(_FakeSession(), uuid4(), event_enqueuer=enqueuer)
 

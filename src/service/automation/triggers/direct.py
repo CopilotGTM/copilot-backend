@@ -8,8 +8,9 @@ from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, cast
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.domain.models.master_tables import AdminUserStatus, SupabaseUserStatus, User
 from src.domain.models.organisation_tables import (
     AutomationEventDispatch,
     AutomationPrincipalType,
@@ -20,6 +21,7 @@ from src.domain.models.organisation_tables import (
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
+from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.service.automation.errors import AutomationServiceError
 from src.service.automation.events.access import AutomationEventDispatchAccess
 from src.service.automation.events.contracts import AutomationEventEnvelope
@@ -34,6 +36,27 @@ from src.service.crm.mutations.policies import (
 MANUAL_SUBJECT_LIMIT = 100
 _MANUAL_EVENT_KEY = "system.manual.invoked"
 _SubjectType = Literal["deal", "contact", "account"]
+
+
+def crm_user_ids_for_principal(organisation_id: UUID, principal_id: UUID) -> Any:
+    """Map one workspace principal to active tenant CRM owner identities."""
+
+    user_columns = cast(Any, User).__table__.c
+    crm_user_columns = cast(Any, CRMUser).__table__.c
+    principal_email = select(func.lower(func.trim(user_columns.email))).where(
+        user_columns.organisation_id == organisation_id,
+        user_columns.user_id == principal_id,
+        user_columns.status == SupabaseUserStatus.ACTIVE.value,
+        user_columns.admin_status == AdminUserStatus.APPROVED.value,
+    )
+    return select(crm_user_columns.user_id).where(
+        crm_user_columns.organisation_id == organisation_id,
+        crm_user_columns.is_deleted.is_(False),
+        or_(
+            crm_user_columns.user_id == principal_id,
+            func.lower(func.trim(crm_user_columns.email)).in_(principal_email),
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -132,9 +155,16 @@ class ManualInvocationAccess:
                 columns.is_deleted.is_(False),
             ]
             if not organisation_scope:
-                ownership = columns.owner_id == principal_id
+                crm_user_ids = crm_user_ids_for_principal(
+                    self.organisation_id,
+                    principal_id,
+                )
+                ownership = columns.owner_id.in_(crm_user_ids)
                 if subject_type == "deal":
-                    ownership = or_(ownership, columns.created_by_user_id == principal_id)
+                    ownership = or_(
+                        ownership,
+                        columns.created_by_user_id.in_(crm_user_ids),
+                    )
                 conditions.append(ownership)
             rows = (await self.session.execute(select(model).where(*conditions))).scalars().all()
             for row in rows:

@@ -97,7 +97,14 @@ def collect_option_selections(
             return
         if node.field.option_source is None or node.operator in {"is_empty", "not_empty"}:
             return
-        selections.setdefault(node.field.option_source, set()).update(
+        option_source = node.field.option_source
+        if (
+            definition.trigger_key.startswith("ai.")
+            and definition.trigger_key.endswith(".resolved")
+            and node.field.path == "record.status"
+        ):
+            option_source = "risk_resolution_statuses"
+        selections.setdefault(option_source, set()).update(
             _option_values(node.value, node.field.path)
         )
 
@@ -169,6 +176,28 @@ def combine_filter_trees(
     if user is None:
         return deepcopy(dict(fixed))
     return {"all": [deepcopy(dict(fixed)), deepcopy(dict(user))]}
+
+
+def extract_user_filter(
+    fixed: Mapping[str, Any] | None,
+    effective: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Recover the user-authored filter from the deterministic compiled shape."""
+
+    if fixed is None:
+        return deepcopy(dict(effective)) if effective is not None else None
+    if effective == fixed:
+        return None
+    if (
+        isinstance(effective, Mapping)
+        and set(effective) == {"all"}
+        and isinstance(effective["all"], list)
+        and len(effective["all"]) == 2
+        and effective["all"][0] == fixed
+        and isinstance(effective["all"][1], Mapping)
+    ):
+        return deepcopy(dict(effective["all"][1]))
+    raise ValueError("stored trigger filter cannot be separated from its fixed rule")
 
 
 def matches_binding(

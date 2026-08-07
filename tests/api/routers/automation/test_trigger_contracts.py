@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
 from src.api.schemas.automation_trigger_models import (
     AutomationTriggerCreateRequest,
+    AutomationTriggerOptionResolveRequest,
+    AutomationTriggerOptionSearchRequest,
     AutomationTriggerUpdateRequest,
 )
 from src.domain.models.organisation_tables import AutomationTriggerStatus
@@ -49,6 +52,8 @@ def test_create_contract_normalizes_user_editable_trigger_fields() -> None:
         "target_snapshot",
         "family",
         "match_event_keys",
+        "catalog_schema_version",
+        "schema_version",
         "execution_principal_type",
         "execution_principal_id",
         "config_schema_version",
@@ -92,3 +97,67 @@ def test_update_contract_requires_complete_body_and_aware_concurrency_token() ->
         expected_updated_at=datetime(2026, 7, 13, 9, 0, tzinfo=UTC),
     )
     assert body.expected_updated_at.tzinfo is not None
+
+
+def test_option_search_contract_is_catalog_context_only_and_bounded() -> None:
+    body = AutomationTriggerOptionSearchRequest.model_validate(
+        {
+            "trigger_key": "email.message.received",
+            "control": "source_selector",
+            "principal_mode": "personal",
+            "query": " sales ",
+        }
+    )
+
+    assert body.query == "sales"
+    assert body.limit == 25
+    with pytest.raises(ValidationError):
+        AutomationTriggerOptionSearchRequest.model_validate(
+            {
+                **body.model_dump(),
+                "option_source": "email_mailboxes",
+            }
+        )
+    with pytest.raises(ValidationError):
+        AutomationTriggerOptionSearchRequest.model_validate({**body.model_dump(), "limit": 51})
+
+    audience = AutomationTriggerOptionSearchRequest.model_validate(
+        {
+            "trigger_key": "ai.deal_risk.detected",
+            "control": "audience",
+            "principal_mode": "organisation",
+        }
+    )
+    assert audience.field_path is None
+    direct = AutomationTriggerOptionSearchRequest.model_validate(
+        {
+            "trigger_key": "system.manual.invoked",
+            "control": "direct_subject",
+            "field_path": "deal",
+            "principal_mode": "personal",
+        }
+    )
+    assert direct.field_path == "deal"
+
+
+def test_option_resolve_contract_caps_groups_values_and_total() -> None:
+    request = {
+        "trigger_key": "crm.deal.updated",
+        "control": "source_selector",
+        "principal_mode": "personal",
+        "values": [str(uuid4()) for _ in range(10)],
+    }
+
+    body = AutomationTriggerOptionResolveRequest.model_validate({"requests": [request, request]})
+    assert len(body.requests) == 2
+
+    with pytest.raises(ValidationError, match="200"):
+        AutomationTriggerOptionResolveRequest.model_validate(
+            {
+                "requests": [
+                    {**request, "values": [str(uuid4()) for _ in range(100)]},
+                    {**request, "values": [str(uuid4()) for _ in range(100)]},
+                    {**request, "values": [str(uuid4())]},
+                ]
+            }
+        )

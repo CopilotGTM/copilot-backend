@@ -165,6 +165,56 @@ def test_created_or_updated_is_one_preset_subscribing_to_two_base_events() -> No
     assert definition.allow_user_watch is True
 
 
+def test_source_selection_is_explicit_and_compiles_to_one_hidden_filter() -> None:
+    definition = AUTOMATION_REGISTRY.trigger("crm.deal.updated")
+    deal_id = "11111111-1111-1111-1111-111111111111"
+
+    assert definition.source_selector.option_source == "deals"
+    assert definition.source_selector.filter_path == "record.id"
+    assert definition.compile({"selection": {"mode": "all", "ids": []}}).filter is None
+
+    selected = definition.compile({"selection": {"mode": "selected", "ids": [deal_id]}})
+
+    assert selected.config == {"selection": {"mode": "selected", "ids": [deal_id]}}
+    assert selected.filter == {
+        "path": "record.id",
+        "operator": "in",
+        "value": [deal_id],
+    }
+
+    assert definition.compile({}).config == {"selection": {"mode": "all", "ids": []}}
+    assert definition.compile({}) == definition.compile({"selection": {"mode": "all", "ids": []}})
+    with pytest.raises(ValueError, match="unique"):
+        definition.compile({"selection": {"mode": "selected", "ids": [deal_id, deal_id]}})
+
+
+def test_source_selection_combines_after_a_semantic_fixed_rule() -> None:
+    definition = AUTOMATION_REGISTRY.trigger("crm.deal.entered_stage")
+    deal_id = "11111111-1111-1111-1111-111111111111"
+
+    compiled = definition.compile(
+        {
+            "stage_id": "stage-1",
+            "selection": {"mode": "selected", "ids": [deal_id]},
+        }
+    )
+
+    assert compiled.filter == {
+        "all": [
+            {
+                "all": [
+                    {
+                        "path": "changes.stage_id.after",
+                        "operator": "eq",
+                        "value": "stage-1",
+                    }
+                ]
+            },
+            {"path": "record.id", "operator": "in", "value": [deal_id]},
+        ]
+    }
+
+
 def test_amount_crossed_preset_compiles_up_and_down_without_float_math() -> None:
     """Verify the contract that amount crossed preset compiles up and down without float math."""
     definition = AUTOMATION_REGISTRY.trigger("crm.deal.amount_crossed")

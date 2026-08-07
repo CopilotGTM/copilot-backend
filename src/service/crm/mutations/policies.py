@@ -188,7 +188,7 @@ class AccountMutationPolicy:
 
     @staticmethod
     def semantic_for_create() -> list[str]:
-        """Account creation is a curated workflow trigger in V1."""
+        """Return the account creation semantic in the current trigger contract."""
         return ["crm.account.created"]
 
     @classmethod
@@ -200,7 +200,7 @@ class AccountMutationPolicy:
 
     @staticmethod
     def semantic_for_update(changed_fields: dict[str, dict[str, Any]]) -> list[str]:
-        """Expose only V1 account workflow triggers derived from real field changes."""
+        """Return account trigger semantics derived from real field changes."""
         semantic_event_types: list[str] = []
         if "domain" in changed_fields:
             semantic_event_types.append("crm.account.domain_changed")
@@ -276,7 +276,7 @@ class ContactMutationPolicy:
 
     @staticmethod
     def semantic_for_create() -> list[str]:
-        """Contact creation is a curated workflow trigger in V1."""
+        """Return the contact creation semantic in the current trigger contract."""
         return ["crm.contact.created"]
 
     @classmethod
@@ -298,7 +298,7 @@ class ContactMutationPolicy:
 
     @staticmethod
     def semantic_for_update(changed_fields: dict[str, dict[str, Any]]) -> list[str]:
-        """Expose only V1 contact workflow triggers derived from real field changes."""
+        """Return contact trigger semantics derived from real field changes."""
         semantic_event_types: list[str] = []
         if "email" in changed_fields and changed_fields["email"]["old"] is None:
             semantic_event_types.append("crm.contact.email_added")

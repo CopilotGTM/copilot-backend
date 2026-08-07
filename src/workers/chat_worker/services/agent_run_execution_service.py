@@ -49,6 +49,7 @@ from src.service.automation.runs.runtime_executor import (
     AgentRunExecutor,
     RuntimeAuthorityError,
 )
+from src.service.automation.triggers.direct import crm_user_ids_for_principal
 from src.service.automation.triggers.runtime import AgentRunRuntimeEnvelope
 
 logger = get_logger("agent_run_execution")
@@ -370,6 +371,11 @@ class AgentRunExecutionService:
             raise RuntimeAuthorityError("event subject identity is not a UUID") from exc
 
         principal_id = envelope.principal_user_id
+        crm_user_ids = (
+            crm_user_ids_for_principal(envelope.organisation_id, principal_id)
+            if principal_id is not None
+            else None
+        )
         if envelope.subject_type == "deal":
             conditions = [
                 col(CRMDeal.organisation_id) == envelope.organisation_id,
@@ -380,6 +386,8 @@ class AgentRunExecutionService:
                     or_(
                         col(CRMDeal.owner_id) == principal_id,
                         col(CRMDeal.created_by_user_id) == principal_id,
+                        col(CRMDeal.owner_id).in_(crm_user_ids),
+                        col(CRMDeal.created_by_user_id).in_(crm_user_ids),
                     )
                 )
             statement = select(col(CRMDeal.deal_id)).where(*conditions)
@@ -389,7 +397,12 @@ class AgentRunExecutionService:
                 col(CRMContact.contact_id) == subject_id,
             ]
             if principal_id is not None:
-                conditions.append(col(CRMContact.owner_id) == principal_id)
+                conditions.append(
+                    or_(
+                        col(CRMContact.owner_id) == principal_id,
+                        col(CRMContact.owner_id).in_(crm_user_ids),
+                    )
+                )
             statement = select(col(CRMContact.contact_id)).where(*conditions)
         elif envelope.subject_type == "account":
             conditions = [
@@ -397,7 +410,12 @@ class AgentRunExecutionService:
                 col(CRMCompany.company_id) == subject_id,
             ]
             if principal_id is not None:
-                conditions.append(col(CRMCompany.owner_id) == principal_id)
+                conditions.append(
+                    or_(
+                        col(CRMCompany.owner_id) == principal_id,
+                        col(CRMCompany.owner_id).in_(crm_user_ids),
+                    )
+                )
             statement = select(col(CRMCompany.company_id)).where(*conditions)
         elif envelope.subject_type == "email":
             conditions = [

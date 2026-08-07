@@ -17,6 +17,7 @@ class FakeOptions:
         self.stage_ids: set[UUID] = set()
         self.audience_ids: set[UUID] = set()
         self.validated_options: list[tuple[str, set[str]]] = []
+        self.validated_sources: list[tuple[str, set[str], UUID, bool]] = []
         self.schedule_subjects: set[tuple[str, UUID]] = set()
         self.validated_schedule_subjects: list[tuple[str, set[UUID], UUID, bool]] = []
 
@@ -30,6 +31,16 @@ class FakeOptions:
         """Expose the validate audience user ids operation expected by the Fake Options test double."""
         if user_ids - self.audience_ids:
             raise ValueError("Unknown or inactive audience user")
+
+    async def validate_source_selection(
+        self,
+        source: str,
+        values: set[str],
+        *,
+        principal_id: UUID,
+        organisation_scope: bool,
+    ) -> None:
+        self.validated_sources.append((source, values, principal_id, organisation_scope))
 
     async def validate_schedule_subjects(
         self,
@@ -85,7 +96,11 @@ async def test_preset_compiles_fixed_matcher_and_ands_typed_user_filter() -> Non
         )
     )
 
-    assert result.trigger_config == {"direction": "up", "threshold": "100000.00"}
+    assert result.trigger_config == {
+        "direction": "up",
+        "threshold": "100000.00",
+        "selection": {"mode": "all", "ids": []},
+    }
     assert result.watch_config == {"mode": "any", "paths": ["amount"]}
     assert result.filter_config == {
         "all": [
@@ -138,6 +153,114 @@ async def test_filter_paths_operators_and_values_are_registry_typed() -> None:
                 filter={"all": [{"path": "record.amount", "operator": "gte", "value": 100000}]},
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_hidden_filter_fields_are_rejected_by_the_single_write_contract() -> None:
+    with pytest.raises(ValueError, match="hidden filter field"):
+        await validator().validate(
+            personal_body(
+                "crm.deal.created",
+                filter={"path": "record.id", "operator": "eq", "value": str(uuid4())},
+            )
+        )
+
+    with pytest.raises(ValueError, match="hidden filter field"):
+        await validator().validate(
+            personal_body(
+                "crm.contact.updated",
+                filter={
+                    "path": "record.owner_id",
+                    "operator": "eq",
+                    "value": "crm-user-1",
+                },
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_organisation_mode_can_use_owner_as_a_business_filter() -> None:
+    body = AutomationTriggerCreateRequest.model_validate(
+        {
+            "name": "Assigned contacts",
+            "trigger_key": "crm.contact.updated",
+            "principal_mode": "organisation",
+            "scope": {"type": "organisation"},
+            "audience": {"mode": "none"},
+            "filter": {
+                "path": "record.owner_id",
+                "operator": "eq",
+                "value": "crm-user-1",
+            },
+        }
+    )
+
+    result = await validator(is_admin=True).validate(body)
+
+    assert result.filter_config == body.filter
+
+
+@pytest.mark.asyncio
+async def test_source_selection_is_validated_inside_the_resolved_authority() -> None:
+    options = FakeOptions()
+    item = validator(options)
+    deal_id = uuid4()
+
+    result = await item.validate(
+        personal_body(
+            "crm.deal.updated",
+            config={"selection": {"mode": "selected", "ids": [str(deal_id)]}},
+        )
+    )
+
+    assert result.trigger_config["selection"] == {
+        "mode": "selected",
+        "ids": [str(deal_id)],
+    }
+    assert options.validated_sources == [("deals", {str(deal_id)}, item.user_id, False)]
+
+
+@pytest.mark.asyncio
+async def test_email_mailbox_selection_compiles_to_hidden_actor_identity() -> None:
+    options = FakeOptions()
+    item = validator(options)
+    mailbox_id = uuid4()
+
+    result = await item.validate(
+        personal_body(
+            "email.message.received",
+            config={"selection": {"mode": "selected", "ids": [str(mailbox_id)]}},
+        )
+    )
+
+    assert result.filter_config == {
+        "path": "actor.id",
+        "operator": "in",
+        "value": [str(mailbox_id)],
+    }
+    assert options.validated_sources == [
+        ("email_mailboxes", {str(mailbox_id)}, item.user_id, False)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_source_selection_is_not_queried_before_organisation_admin_check() -> None:
+    options = FakeOptions()
+    body = AutomationTriggerCreateRequest.model_validate(
+        {
+            "name": "All account changes",
+            "trigger_key": "crm.account.updated",
+            "principal_mode": "organisation",
+            "scope": {"type": "organisation"},
+            "audience": {"mode": "none"},
+            "config": {"selection": {"mode": "selected", "ids": [str(uuid4())]}},
+        }
+    )
+
+    with pytest.raises(ValueError, match="organisation admin"):
+        await validator(options).validate(body)
+
+    assert options.validated_sources == []
 
 
 @pytest.mark.asyncio
@@ -210,7 +333,10 @@ async def test_stage_config_is_tenant_validated() -> None:
         personal_body("crm.deal.entered_stage", config={"stage_id": str(stage_id)})
     )
 
-    assert result.trigger_config == {"stage_id": str(stage_id)}
+    assert result.trigger_config == {
+        "stage_id": str(stage_id),
+        "selection": {"mode": "all", "ids": []},
+    }
     assert options.validated_options == [("pipeline_stages", {str(stage_id)})]
 
 
@@ -310,6 +436,28 @@ async def test_subject_participant_audience_requires_registry_backed_resolution(
             await validator(is_admin=True).validate(
                 supported.model_copy(update={"trigger_key": trigger_key})
             )
+
+
+@pytest.mark.asyncio
+async def test_resolved_ai_signal_validates_status_against_terminal_options() -> None:
+    """Resolved AI events must not accept statuses used only by active signals."""
+
+    options = FakeOptions()
+    body = AutomationTriggerCreateRequest.model_validate(
+        {
+            "name": "Review resolved risks",
+            "trigger_key": "ai.deal_risk.resolved",
+            "principal_mode": "organisation",
+            "scope": {"type": "organisation"},
+            "audience": {"mode": "none"},
+            "filter": {"all": [{"path": "record.status", "operator": "eq", "value": "RESOLVED"}]},
+        }
+    )
+
+    await validator(options, is_admin=True).validate(body)
+
+    assert ("risk_resolution_statuses", {"RESOLVED"}) in options.validated_options
+    assert not any(source == "risk_statuses" for source, _values in options.validated_options)
 
 
 @pytest.mark.asyncio

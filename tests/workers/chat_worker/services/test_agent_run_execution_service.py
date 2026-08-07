@@ -392,6 +392,19 @@ async def test_enabled_subjects_have_live_runtime_authority_policy(
 
 
 @pytest.mark.asyncio
+async def test_personal_deal_authority_accepts_provider_crm_owner_identity() -> None:
+    item = envelope()
+    session = QuerySession(QueryResult(scalar=UUID(item.subject_id)))
+
+    await AgentRunExecutionService._ensure_subject_authority(session, item)
+
+    statement = str(session.statements[0]).lower()
+    assert "crm_deals" in statement
+    assert "crm_users" in statement
+    assert "public.users" in statement
+
+
+@pytest.mark.asyncio
 async def test_personal_meeting_authority_uses_the_event_owner(monkeypatch) -> None:
     """Runtime must authorize the organiser owner even when another mailbox synced the event."""
     item = envelope()
