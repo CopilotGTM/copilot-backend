@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -27,6 +28,7 @@ from src.service.automation.triggers.registry import (
     AUTOMATION_REGISTRY,
     AutomationRegistry,
     TriggerDefinition,
+    filter_field_principal_modes,
 )
 from src.service.automation.triggers.schedule import normalize_schedule_config
 from src.service.automation.triggers.webhook import validate_webhook_payload_schema
@@ -46,6 +48,18 @@ class TriggerOptionValidator(Protocol):
 
     async def validate_audience_user_ids(self, user_ids: set[UUID]) -> None:
         """Reject inactive, unapproved, or foreign audience users."""
+
+        ...
+
+    async def validate_source_selection(
+        self,
+        source: str,
+        values: set[str],
+        *,
+        principal_id: UUID,
+        organisation_scope: bool,
+    ) -> None:
+        """Reject selected sources outside the resolved execution authority."""
 
         ...
 
@@ -116,6 +130,11 @@ class AutomationTriggerValidator:
             not self.registry.event(key).producer_available for key in definition.match_event_keys
         ):
             raise ValueError("trigger producer is not available")
+        self._validate_filter_visibility(
+            definition,
+            request.principal_mode,
+            request.filter,
+        )
 
         try:
             compiled = definition.compile(request.config)
@@ -129,17 +148,30 @@ class AutomationTriggerValidator:
         except ValidationError as exc:
             raise ValueError(exc.errors()[0]["msg"]) from exc
 
+        principal_type, principal_id, audience_config = await self._validate_authority(
+            request,
+            target_allowed_tools=target_allowed_tools,
+            target_allowed_skills=target_allowed_skills,
+        )
+        organisation_scope = principal_type == AutomationPrincipalType.ORGANISATION_SERVICE
+        selection = compiled.config.get("selection")
+        if (
+            definition.source_selector is not None
+            and isinstance(selection, Mapping)
+            and selection.get("mode") == "selected"
+        ):
+            await self.options.validate_source_selection(
+                definition.source_selector.option_source,
+                set(selection["ids"]),
+                principal_id=principal_id,
+                organisation_scope=organisation_scope,
+            )
         for source, values in collect_option_selections(
             definition,
             compiled.config,
             filter_node,
         ).items():
             await self.options.validate_option_selection(source, values)
-        principal_type, principal_id, audience_config = await self._validate_authority(
-            request,
-            target_allowed_tools=target_allowed_tools,
-            target_allowed_skills=target_allowed_skills,
-        )
 
         trigger_config = dict(compiled.config)
         next_trigger_at = None
@@ -153,9 +185,7 @@ class AutomationTriggerValidator:
                     subject_type,
                     {UUID(item) for item in trigger_config["subject_ids"]},
                     principal_id=principal_id,
-                    organisation_scope=(
-                        principal_type == AutomationPrincipalType.ORGANISATION_SERVICE
-                    ),
+                    organisation_scope=organisation_scope,
                 )
         elif definition.family.value == "webhook":
             self._validate_webhook(trigger_config)
@@ -177,6 +207,31 @@ class AutomationTriggerValidator:
             delivery_config=request.delivery.model_dump(),
             next_trigger_at=next_trigger_at,
         )
+
+    @staticmethod
+    def _validate_filter_visibility(
+        definition: TriggerDefinition,
+        principal_mode: str,
+        tree: Mapping[str, Any] | None,
+    ) -> None:
+        if tree is None:
+            return
+        for mode in ("all", "any"):
+            children = tree.get(mode)
+            if type(children) is list:
+                for child in children:
+                    if isinstance(child, Mapping):
+                        AutomationTriggerValidator._validate_filter_visibility(
+                            definition,
+                            principal_mode,
+                            child,
+                        )
+                return
+        path = tree.get("path")
+        if type(path) is str and principal_mode not in filter_field_principal_modes(
+            definition, path
+        ):
+            raise ValueError("hidden filter field cannot be used")
 
     @staticmethod
     def _validate_json(request: AutomationTriggerDefinitionBase) -> None:

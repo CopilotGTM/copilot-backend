@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import func, literal, or_, select, update
+from sqlalchemy import and_, func, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.master_tables import (
@@ -23,6 +23,7 @@ from src.domain.models.organisation_tables import (
     CRMDeal,
     CRMDealParticipant,
     CRMParticipantType,
+    CRMUser,
     UserAgent,
 )
 from src.domain.models.organisation_tables.sync.email_models import Email
@@ -94,6 +95,50 @@ class TriggerActivationAccess:
             columns.admin_status == AdminUserStatus.APPROVED.value,
         )
         return set((await self.session.execute(statement)).scalars().all())
+
+    async def list_crm_user_ids_by_principal(
+        self,
+        principal_ids: set[UUID],
+    ) -> dict[UUID, set[UUID]]:
+        """Map active workspace users to provider CRM-owner rows by stable ID or email."""
+
+        if not principal_ids:
+            return {}
+        user_columns = cast(Any, User).__table__.c
+        crm_user_columns = cast(Any, CRMUser).__table__.c
+        statement = (
+            select(
+                user_columns.user_id.label("principal_id"),
+                crm_user_columns.user_id.label("crm_user_id"),
+            )
+            .select_from(User)
+            .join(
+                CRMUser,
+                and_(
+                    crm_user_columns.organisation_id == self.organisation_id,
+                    crm_user_columns.is_deleted.is_(False),
+                    or_(
+                        crm_user_columns.user_id == user_columns.user_id,
+                        and_(
+                            user_columns.email.is_not(None),
+                            crm_user_columns.email.is_not(None),
+                            func.lower(func.trim(crm_user_columns.email))
+                            == func.lower(func.trim(user_columns.email)),
+                        ),
+                    ),
+                ),
+            )
+            .where(
+                user_columns.organisation_id == self.organisation_id,
+                user_columns.user_id.in_(principal_ids),
+                user_columns.status == SupabaseUserStatus.ACTIVE.value,
+                user_columns.admin_status == AdminUserStatus.APPROVED.value,
+            )
+        )
+        mapped: dict[UUID, set[UUID]] = {}
+        for row in (await self.session.execute(statement)).all():
+            mapped.setdefault(row.principal_id, set()).add(row.crm_user_id)
+        return mapped
 
     async def validate_option_selection(self, source: str, values: set[str]) -> None:
         """Revalidate saved stable IDs against current tenant metadata."""

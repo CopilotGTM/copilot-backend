@@ -102,6 +102,13 @@ class ActivationAccess(Protocol):
         """List active user ids within the organisation boundary."""
         ...
 
+    async def list_crm_user_ids_by_principal(
+        self,
+        principal_ids: set[UUID],
+    ) -> dict[UUID, set[UUID]]:
+        """Map workspace principals to their active tenant CRM owner identities."""
+        ...
+
     async def validate_option_selection(self, source: str, values: set[str]) -> None:
         """Validate option selection against the automation contract before persistence or dispatch."""
         ...
@@ -231,6 +238,13 @@ class AutomationTriggerActivationService:
                 if _value(candidate.execution_principal_type) == "user"
             }
         )
+        crm_user_ids_by_principal = await self.access.list_crm_user_ids_by_principal(
+            {
+                candidate.execution_principal_id
+                for candidate in candidates
+                if _value(candidate.execution_principal_type) == "user"
+            }
+        )
         causation_trigger_ids = await self.access.list_causation_trigger_ids(
             envelope.caused_by_run_id
         )
@@ -258,6 +272,7 @@ class AutomationTriggerActivationService:
                 active_user_ids=active_user_ids,
                 causation_trigger_ids=causation_trigger_ids,
                 audience_config=audience_config,
+                crm_user_ids_by_principal=crm_user_ids_by_principal,
             )
             if reason is not None:
                 outcomes.append(TriggerActivationOutcome(candidate.trigger_id, "skipped", reason))
@@ -385,6 +400,7 @@ class AutomationTriggerActivationService:
         active_user_ids: set[UUID],
         causation_trigger_ids: set[UUID],
         audience_config: dict[str, Any],
+        crm_user_ids_by_principal: dict[UUID, set[UUID]],
     ) -> str | None:
         if _value(trigger.target_type) != "agent":
             return "target_unsupported"
@@ -410,12 +426,21 @@ class AutomationTriggerActivationService:
             if scope_type != "owned_or_created_by_principal" or audience_mode != "principal":
                 return "invalid_authority"
             if envelope.subject.type is not None:
-                principal_id = str(trigger.execution_principal_id)
+                principal_ids = {
+                    str(trigger.execution_principal_id),
+                    *(
+                        str(value)
+                        for value in crm_user_ids_by_principal.get(
+                            trigger.execution_principal_id,
+                            set(),
+                        )
+                    ),
+                }
                 scoped_values = (
                     envelope.record.get("owner_id"),
                     envelope.record.get("created_by_user_id"),
                 )
-                if principal_id not in scoped_values:
+                if principal_ids.isdisjoint(scoped_values):
                     return "scope_mismatch"
         elif principal_type == "organisation_service":
             if (

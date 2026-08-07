@@ -136,6 +136,24 @@ class AutomationTriggerAccess:
             .first()
         )
 
+    async def get_trigger_by_id(
+        self,
+        trigger_id: UUID,
+        *,
+        include_archived: bool = False,
+    ) -> AutomationTrigger | None:
+        """Load one manageable binding when its target ID is not part of the route."""
+
+        columns = cast(Any, AutomationTrigger).__table__.c
+        conditions = [*self._owned_conditions(), columns.trigger_id == trigger_id]
+        if not include_archived:
+            conditions.append(columns.status != AutomationTriggerStatus.ARCHIVED.value)
+        return (
+            (await self.session.execute(select(AutomationTrigger).where(*conditions)))
+            .scalars()
+            .first()
+        )
+
     async def find_duplicate(
         self, agent_id: UUID, config_hash: str, *, exclude_trigger_id: UUID | None = None
     ) -> AutomationTrigger | None:

@@ -27,6 +27,10 @@ from src.api.schemas.automation_trigger_models import (
     AutomationTriggerCreateRequest,
     AutomationTriggerDetail,
     AutomationTriggerListResponse,
+    AutomationTriggerOptionResolveRequest,
+    AutomationTriggerOptionResolveResponse,
+    AutomationTriggerOptionSearchRequest,
+    AutomationTriggerOptionSearchResponse,
     AutomationTriggerRefreshRequest,
     AutomationTriggerUpdateRequest,
     AutomationWebhookCredentials,
@@ -171,6 +175,60 @@ async def get_automation_trigger_catalog(
         )
     except Exception:
         logger.exception("Unexpected error retrieving trigger catalog")
+        return Response.internal_server_error_response(_UNEXPECTED_ERROR_MESSAGE, response=response)
+
+
+@automation_triggers_router.post(
+    "/automation-trigger-options/search",
+    response_model=GenericResponse[AutomationTriggerOptionSearchResponse],
+    summary="Search automation trigger options",
+)
+async def search_automation_trigger_options(
+    body: AutomationTriggerOptionSearchRequest,
+    response: FastAPIResponse,
+    service: AutomationTriggerService = Depends(get_automation_trigger_service),
+    _rl_read: None = Depends(rate_limit_user_read),
+) -> GenericResponse[AutomationTriggerOptionSearchResponse]:
+    """Search active values under backend-derived catalog and authority rules."""
+
+    try:
+        return Response.success_response(
+            "Trigger options retrieved successfully",
+            data=await service.search_trigger_options(body),
+        )
+    except AutomationServiceError as exc:
+        return Response.error_response(
+            status_code=exc.status_code, message=exc.message, response=response
+        )
+    except Exception:
+        logger.exception("Unexpected error searching automation trigger options")
+        return Response.internal_server_error_response(_UNEXPECTED_ERROR_MESSAGE, response=response)
+
+
+@automation_triggers_router.post(
+    "/automation-trigger-options/resolve",
+    response_model=GenericResponse[AutomationTriggerOptionResolveResponse],
+    summary="Resolve automation trigger option labels",
+)
+async def resolve_automation_trigger_options(
+    body: AutomationTriggerOptionResolveRequest,
+    response: FastAPIResponse,
+    service: AutomationTriggerService = Depends(get_automation_trigger_service),
+    _rl_read: None = Depends(rate_limit_user_read),
+) -> GenericResponse[AutomationTriggerOptionResolveResponse]:
+    """Batch-resolve selected values without exposing foreign tenant labels."""
+
+    try:
+        return Response.success_response(
+            "Trigger option labels resolved successfully",
+            data=await service.resolve_trigger_options(body),
+        )
+    except AutomationServiceError as exc:
+        return Response.error_response(
+            status_code=exc.status_code, message=exc.message, response=response
+        )
+    except Exception:
+        logger.exception("Unexpected error resolving automation trigger options")
         return Response.internal_server_error_response(_UNEXPECTED_ERROR_MESSAGE, response=response)
 
 

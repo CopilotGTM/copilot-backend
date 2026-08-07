@@ -13,6 +13,8 @@ backend definitions are presented.
 | Method | Path | Success | Frontend use |
 | --- | --- | --- | --- |
 | `GET` | `/users/v1/automation-trigger-catalog` | `200` | Build the trigger picker and forms |
+| `POST` | `/users/v1/automation-trigger-options/search` | `200` | Search active business values in catalog context |
+| `POST` | `/users/v1/automation-trigger-options/resolve` | `200` | Batch-resolve saved values to labels and status |
 | `GET` | `/users/v1/agents/{agent_id}/triggers` | `200` | List one agent's non-archived triggers |
 | `POST` | `/users/v1/agents/{agent_id}/triggers` | `201` | Create and pin a trigger |
 | `GET` | `/users/v1/agents/{agent_id}/triggers/{trigger_id}` | `200` | Read the complete saved definition |
@@ -39,7 +41,6 @@ The response hierarchy is:
 
 ```text
 data
-├── schema_version
 ├── categories[]
 │   ├── category_key
 │   ├── label
@@ -76,9 +77,7 @@ type TriggerCatalogDefinition = {
   subject_type: string | null;
   subject_required: boolean;
   allow_user_watch: boolean;
-  watch_paths: string[];
-  fixed_watch: { mode: "any" | "all"; paths: string[] } | null;
-  fixed_filter: FilterNode | null;
+  watch_fields: Array<{ path: string; label: string }>;
   default_config: Record<string, unknown>;
   config_fields: Array<{
     key: string;
@@ -97,7 +96,24 @@ type TriggerCatalogDefinition = {
     description: string;
     value_type: string;
     operators: string[];
+    input_type:
+      | "text"
+      | "email"
+      | "number"
+      | "date"
+      | "datetime"
+      | "boolean"
+      | "single_select"
+      | "multi_select"
+      | "entity_single_select"
+      | "entity_multi_select"
+      | "email_tokens"
+      | "between";
     option_source: string | null;
+    visibility: "standard" | "hidden";
+    group: "current" | "previous" | "new" | "context";
+    principal_modes: PrincipalMode[];
+    event_keys: string[];
     required: boolean;
     exact: boolean;
   }>;
@@ -105,6 +121,25 @@ type TriggerCatalogDefinition = {
   scope_types: ScopeType[];
   audience_modes: AudienceMode[];
   output_schema: Record<string, unknown> | null;
+  scope_presentation: {
+    personal: string | null;
+    organisation: string | null;
+  };
+  rule_presentation: {
+    summary: string;
+    details: string[];
+  } | null;
+  timing_note: string;
+  source_selector: {
+    label: string;
+    all_label_personal: string;
+    all_label_organisation: string;
+    selected_label: string;
+    option_source: string;
+    filter_path: string;
+    max_selected: number;
+  } | null;
+  filter_empty_reason: string | null;
 };
 
 type FilterNode =
@@ -118,20 +153,104 @@ Render a definition as follows:
 1. Use `trigger_key` as the stable identity and labels only for display.
 2. Initialize `config` from `default_config`, then render every `config_fields` entry using its
    `input_type`, `required`, `options`, `option_source`, and `depends_on` metadata.
-3. Render optional event predicates from `fields`. Send only a field's advertised `operators` and
-   use its `value_type` to choose the value control.
-4. Display `fixed_watch` and `fixed_filter` as non-removable preset behavior. Do not copy either
-   value into the user `watch` or `filter`; the backend compiles and combines them.
+3. Render optional event predicates from `fields`. Hide `visibility = hidden`, show a field only
+   for the selected `principal_mode`, and render the value using `input_type` plus
+   `option_source`. Send only the field's advertised `operators`.
+4. Display `rule_presentation` as non-removable preset behavior. The compiled fixed matcher is a
+   backend implementation detail and must not be copied into the user `watch` or `filter`.
 5. Show a watch editor only when `allow_user_watch` is true. Its paths must come from
-   `watch_paths`.
+   `watch_fields`, and its labels must come from the same entries.
 6. Offer only the listed principal, scope, and audience values, subject to the authority pairing
    below.
+7. Use `scope_presentation` for the Run as me/organisation explanation and `timing_note` for when
+   the event becomes eligible. When no standard fields remain, show `filter_empty_reason` instead
+   of an empty condition editor.
 
 Filters support at most two group levels and 20 leaf conditions. `is_empty` and `not_empty` omit
 `value`; every other operator requires it. Treat paths as opaque backend keys rather than parsing
 them in the client.
 
-### Option-source adapters
+### Source selectors and option labels
+
+When `source_selector` is present, initialize `config.selection` from the catalog default and
+render the supplied personal or organisation **All** label plus **Specific** choice. Selected
+values are stable IDs, but the UI must display only labels returned by the option API:
+
+```json
+{"selection": {"mode": "all", "ids": []}}
+```
+
+or:
+
+```json
+{"selection": {"mode": "selected", "ids": ["stable-id"]}}
+```
+
+Omitting `selection` also means **All**. Do not construct the hidden matcher in the frontend; the
+backend compiles selected values onto `source_selector.filter_path`.
+
+Search with catalog context, never with a client-chosen option source:
+
+```http
+POST /users/v1/automation-trigger-options/search
+Content-Type: application/json
+```
+
+```json
+{
+  "trigger_key": "email.message.received",
+  "control": "source_selector",
+  "field_path": null,
+  "principal_mode": "personal",
+  "query": "sales",
+  "limit": 25,
+  "cursor": null
+}
+```
+
+The same endpoint supports four backend-derived control contexts:
+
+| `control` | `field_path` | Use |
+| --- | --- | --- |
+| `source_selector` | `null` | A definition's optional All/specific source selector |
+| `filter` | Catalog field path | A typed optional condition |
+| `audience` | `null` | Active workspace members for an explicit organisation audience |
+| `direct_subject` | `deal`, `contact`, or `account` | Manual invocation and Schedule record fan-out |
+
+The backend derives both the option source and its tenant/authority policy. It rejects unsupported
+control/definition combinations. Search returns active selectable items and an opaque
+`next_cursor`; the limit is at most 50.
+
+Resolve selected values in batches before rendering edit forms or saved-trigger summaries:
+
+```http
+POST /users/v1/automation-trigger-options/resolve
+Content-Type: application/json
+```
+
+```json
+{
+  "requests": [{
+    "trigger_key": "email.message.received",
+    "trigger_id": "saved-trigger-id",
+    "control": "source_selector",
+    "field_path": null,
+    "principal_mode": "personal",
+    "values": ["stable-mailbox-id"]
+  }]
+}
+```
+
+Each result preserves its request index and returns values with `label`, `status` (`active`,
+`inactive`, `deleted`, or `unavailable`), and `selectable`. A foreign or inaccessible value is
+`unavailable` with `label=null`. An inactive/deleted label is disclosed only through an accessible
+saved binding that already contains that value. Render a warning and block save until such a value
+is removed or replaced. Never fall back to displaying the stable ID.
+
+Resolution accepts at most 20 groups, 100 values per group, and 200 values total. The backend
+batches equivalent source/context reads rather than querying once per chip.
+
+Inline catalog values remain available for these bounded choices:
 
 | Catalog metadata | Frontend option source |
 | --- | --- |
@@ -140,20 +259,41 @@ them in the client.
 | `option_source = pipeline_stages` | Flatten or group `data.option_sets.pipelines[].stages` |
 | `option_source = deal_statuses` | `data.option_sets.enums.deal_statuses` |
 | `option_source = custom_field:{field_id}` | Matching `data.option_sets.enums` entry |
-| `option_source = crm_users` | Search `GET /users/crm/users?q={query}&limit=20` |
-| `input_type = record_multi_select` | Use the deal, contact, or account search route selected by `subject_type` |
+| Other advertised `option_source` values | Use the automation option search/resolve endpoints above |
 
-Record search routes are `/users/crm/deals/search`, `/users/crm/contacts/search`, and
-`/users/crm/accounts/search`. Send their stable record IDs, never labels.
+`explicit_users` expects active, approved application-user IDs, not CRM-user IDs. Search them with
+`control="audience"`; the backend permits this only for an organisation-authority trigger whose
+definition supports explicit audiences. Manual and Schedule record chips use
+`control="direct_subject"`, with the record type in `field_path`, so edit-time hydration follows the
+same saved-binding tombstone rules as source and filter controls.
 
-`explicit_users` expects active, approved application-user IDs, not CRM-user IDs. The automation
-API does not currently expose an organisation-member discovery route. Use an existing trusted
-organisation-member data source in the application; if the frontend has none, do not expose that
-audience option yet.
+The catalog and write API expose one development contract. Do not send catalog schema query or
+request fields, and do not maintain a second frontend shape. The catalog currently returns 47
+producer-backed definitions; absence means unavailable, so the frontend must not add a fallback
+entry.
 
-Catalog `schema_version` versions the catalog response. A saved trigger's
-`config_schema_version` versions its compiled configuration. Neither is the agent
-`target_revision`.
+List responses include a backend-built `presentation` object on every trigger summary:
+
+```ts
+type AutomationTriggerPresentation = {
+  breadcrumb: string;
+  authority_label: string;
+  scope_summary: string;
+  built_in_rule: string | null;
+  source_summary: string | null;
+  conditions: Array<{
+    field_label: string;
+    group: "current" | "previous" | "new" | "context";
+    operator: string;
+    value_labels: string[];
+    status: "active" | "needs_attention";
+  }>;
+  warnings: string[];
+};
+```
+
+The list service resolves labels in batches across the page. Render this object directly; do not
+derive a fallback breadcrumb from `trigger_key` and never display an unavailable stable ID.
 
 ## Create And Replace Contract
 
@@ -178,7 +318,8 @@ type TriggerWrite = {
 
 Current trigger scope configuration is always `{}`. `task.goal` is optional and may contain at
 most 4,000 characters. JSON configuration is size-bounded and credential-like keys are rejected.
-Archive is not a writable status; use `DELETE`.
+Archive is not a writable status; use `DELETE`. Hidden or unrecognized filter paths are rejected
+on both create and replace.
 
 Example personal event trigger:
 

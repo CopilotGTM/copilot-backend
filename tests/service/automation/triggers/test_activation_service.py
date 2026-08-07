@@ -51,10 +51,16 @@ def trigger(
     audience_config: dict | None = None,
     watch_config: dict | None = None,
     filter_config: dict | None = None,
+    trigger_config: dict | None = None,
     config_hash: str = HASH,
 ) -> AutomationTrigger:
     """Build the trigger fixture used by the surrounding regression cases."""
     agent_id = uuid4()
+    saved_config = (
+        trigger_config
+        if trigger_config is not None
+        else AUTOMATION_REGISTRY.trigger(trigger_key).compile({}).config
+    )
     return AutomationTrigger(
         organisation_id=organisation_id,
         created_by_user_id=principal_id,
@@ -65,7 +71,7 @@ def trigger(
         trigger_key=trigger_key,
         family=family,
         match_event_keys=match_event_keys or [trigger_key],
-        trigger_config={},
+        trigger_config=saved_config,
         watch_config=watch_config,
         filter_config=filter_config,
         execution_principal_type=principal_type,
@@ -209,7 +215,9 @@ class FakeAccess:
         }
         self.causation_trigger_ids: set[UUID] = set()
         self.subject_participant_ids: set[UUID] = set()
+        self.crm_user_ids_by_principal: dict[UUID, set[UUID]] = {}
         self.invalid_options: set[tuple[str, frozenset[str]]] = set()
+        self.validated_options: list[tuple[str, set[str]]] = []
         self.paused: list[tuple[UUID, str, str]] = []
         self.runs: list[AgentRun] = []
         self.existing: AgentRun | None = None
@@ -231,8 +239,18 @@ class FakeAccess:
         """Expose the list active user ids operation expected by the Fake Access test double."""
         return user_ids & self.active_user_ids
 
+    async def list_crm_user_ids_by_principal(
+        self,
+        principal_ids: set[UUID],
+    ) -> dict[UUID, set[UUID]]:
+        return {
+            principal_id: set(self.crm_user_ids_by_principal.get(principal_id, set()))
+            for principal_id in principal_ids
+        }
+
     async def validate_option_selection(self, source: str, values: set[str]) -> None:
         """Expose the validate option selection operation expected by the Fake Access test double."""
+        self.validated_options.append((source, values))
         if (source, frozenset(values)) in self.invalid_options:
             raise ValueError("saved option no longer exists")
 
@@ -328,6 +346,69 @@ async def test_match_route_applies_scope_watch_filter_and_builds_pinned_run() ->
 
 
 @pytest.mark.asyncio
+async def test_selected_record_matches_the_event_snapshot_without_live_row_revalidation() -> None:
+    organisation_id, principal_id = uuid4(), uuid4()
+    event = deal_custom_event(
+        organisation_id,
+        principal_id,
+        field_key="renewal_type",
+        before="new",
+        after="renewal",
+    )
+    config = {"selection": {"mode": "selected", "ids": [event.subject.id]}}
+    compiled = AUTOMATION_REGISTRY.trigger("crm.deal.updated").compile(config)
+    binding = trigger(
+        organisation_id,
+        principal_id,
+        trigger_key="crm.deal.updated",
+        trigger_config=config,
+        filter_config=compiled.filter,
+    )
+    access = FakeAccess([binding])
+
+    result = await AutomationTriggerActivationService(
+        object(),  # type: ignore[arg-type]
+        organisation_id,
+        access=access,
+        registry=AUTOMATION_REGISTRY,
+    ).activate(event)
+
+    assert result.matched_count == 1
+    assert access.validated_options == []
+
+
+@pytest.mark.asyncio
+async def test_malformed_saved_selection_pauses_instead_of_running() -> None:
+    organisation_id, principal_id = uuid4(), uuid4()
+    event = deal_custom_event(
+        organisation_id,
+        principal_id,
+        field_key="renewal_type",
+        before="new",
+        after="renewal",
+    )
+    binding = trigger(
+        organisation_id,
+        principal_id,
+        trigger_key="crm.deal.updated",
+        trigger_config={"selection": {"mode": "all", "ids": [event.subject.id]}},
+    )
+    access = FakeAccess([binding])
+
+    result = await AutomationTriggerActivationService(
+        object(),  # type: ignore[arg-type]
+        organisation_id,
+        access=access,
+        registry=AUTOMATION_REGISTRY,
+    ).activate(event)
+
+    assert result.matched_count == 0
+    assert [(item.status, item.reason) for item in result.outcomes] == [
+        ("paused", "binding_contract_invalid")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_personal_scope_fails_closed_while_organisation_scope_runs_once() -> None:
     """Verify the contract that personal scope fails closed while organisation scope runs once."""
     organisation_id = uuid4()
@@ -353,6 +434,24 @@ async def test_personal_scope_fails_closed_while_organisation_scope_runs_once() 
     assert result.matched_count == 1
     assert [item.reason for item in result.outcomes] == ["scope_mismatch", None]
     assert access.runs[0].trigger_id == shared.trigger_id
+
+
+@pytest.mark.asyncio
+async def test_personal_scope_maps_workspace_principal_to_provider_crm_owner() -> None:
+    organisation_id, principal_id, crm_owner_id = uuid4(), uuid4(), uuid4()
+    binding = trigger(organisation_id, principal_id)
+    access = FakeAccess([binding])
+    access.crm_user_ids_by_principal[principal_id] = {crm_owner_id}
+
+    result = await AutomationTriggerActivationService(
+        object(),  # type: ignore[arg-type]
+        organisation_id,
+        access=access,
+        registry=AUTOMATION_REGISTRY,
+    ).activate(contact_event(organisation_id, crm_owner_id))
+
+    assert result.matched_count == 1
+    assert [(item.status, item.reason) for item in result.outcomes] == [("created", None)]
 
 
 @pytest.mark.asyncio

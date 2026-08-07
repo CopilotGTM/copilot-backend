@@ -8,6 +8,7 @@ import pytest
 from src.service.automation.triggers.matcher import (
     MatcherValidationError,
     evaluate_operator,
+    extract_user_filter,
     validate_filter_tree,
     validate_watch,
 )
@@ -138,3 +139,27 @@ def test_datetime_comparison_normalizes_offsets_to_utc() -> None:
         datetime(2026, 8, 5, 15, 30, tzinfo=UTC).isoformat(),
         "2026-08-05T21:00:00+05:30",
     )
+
+
+def test_extract_user_filter_returns_only_the_user_decision() -> None:
+    fixed = {"path": "changes.stage_id.after", "operator": "eq", "value": "stage-1"}
+    user = {"path": "record.amount", "operator": "gte", "value": "100000"}
+
+    extracted = extract_user_filter(fixed, {"all": [fixed, user]})
+
+    assert extracted == user
+    assert extracted is not user
+
+
+def test_extract_user_filter_removes_a_fixed_only_matcher() -> None:
+    fixed = {"path": "changes.deal_status.after", "operator": "eq", "value": "won"}
+
+    assert extract_user_filter(fixed, fixed) is None
+
+
+def test_extract_user_filter_rejects_an_unseparable_matcher() -> None:
+    fixed = {"path": "changes.deal_status.after", "operator": "eq", "value": "won"}
+    user = {"path": "record.amount", "operator": "gte", "value": "100000"}
+
+    with pytest.raises(ValueError, match="cannot be separated"):
+        extract_user_filter(fixed, {"any": [fixed, user]})
