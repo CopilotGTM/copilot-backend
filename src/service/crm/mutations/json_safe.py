@@ -78,7 +78,11 @@ def normalize_json_value(value: Any, *, field_name: str | None = None) -> Any:
     Unsupported types are rejected instead of stringified because audit payloads
     need stable shapes for idempotency hashing and future workflow filters.
     """
-    if value is None or isinstance(value, bool | int | float):
+    if value is None:
+        return value
+    if isinstance(value, Enum):
+        return normalize_json_value(value.value, field_name=field_name)
+    if isinstance(value, bool | int | float):
         return value
     if isinstance(value, str):
         return _normalize_string(value)
@@ -90,8 +94,6 @@ def normalize_json_value(value: Any, *, field_name: str | None = None) -> Any:
         return value.isoformat()
     if isinstance(value, Decimal):
         return str(value)
-    if isinstance(value, Enum):
-        return normalize_json_value(value.value, field_name=field_name)
     if isinstance(value, Mapping):
         # Nested objects keep their caller-provided keys as strings because JSON
         # object keys cannot safely preserve UUID, enum, or Decimal identity.
