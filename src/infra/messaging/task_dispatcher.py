@@ -28,7 +28,9 @@ _executor_generation = 0
 _generation_inflight: dict[int, int] = {}
 _retired_generations: set[int] = set()
 
-DEFAULT_TASK_PUBLISH_TIMEOUT_SECONDS = 3.0
+# The dispatcher must own this deadline so it can replace capacity when a
+# broker call remains blocked after the caller has stopped waiting.
+DEFAULT_TASK_PUBLISH_TIMEOUT_SECONDS = 6.0
 # Kombu applies this limit to every producer pool in the process, not just this
 # Celery app. Match Celery's default so another API producer cannot resize an
 # in-use pool between 10 and 4 while a mobile call is attaching.
@@ -114,8 +116,8 @@ def _create_task_client() -> Celery:
         client.conf.broker_use_ssl = config.ssl_config
         client.conf.redis_backend_use_ssl = config.ssl_config
 
-    # Bound each Redis operation. send_task() supplies its own connection, but
-    # Celery still initializes the process-global pool while building a producer.
+    # Bound each Redis operation while keeping TLS connections reusable between
+    # publishes; Redis health checks reject stale pooled sockets before use.
     client.conf.update(
         task_serializer="json",
         accept_content=["json"],
@@ -167,20 +169,16 @@ def send_task(
     routing_key: str | None = None,
     headers: dict | None = None,
 ) -> str:
-    """Publish one task through a request-owned broker connection."""
+    """Publish one task through the health-checked producer pool."""
     client = get_task_client()
-    # A fresh connection bypasses Kombu's process-global producer pool, where
-    # stale idle producers can repeatedly stall later publications.
-    with client.connection_for_write() as connection:
-        result = client.send_task(
-            task_name,
-            args=args or [],
-            kwargs=kwargs or {},
-            queue=queue,
-            routing_key=routing_key or queue,
-            headers=correlation_headers(headers),
-            connection=connection,
-        )
+    result = client.send_task(
+        task_name,
+        args=args or [],
+        kwargs=kwargs or {},
+        queue=queue,
+        routing_key=routing_key or queue,
+        headers=correlation_headers(headers),
+    )
     return str(result.id)
 
 
@@ -288,6 +286,10 @@ async def send_task_async(
             asyncio.shield(publish_future),
             timeout=timeout_seconds,
         )
+    except asyncio.CancelledError:
+        if not publish_future.done():
+            _retire_executor(executor, executor_generation)
+        raise
     except TimeoutError as exc:
         elapsed = monotonic() - started_at
         logger.error(

@@ -1,6 +1,8 @@
 """WhatsApp intake, terminal enqueue, media, and provider-send contracts."""
 
 import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -1038,6 +1040,7 @@ async def test_durable_job_unique_race_reloads_winner(
 async def test_enqueue_whatsapp_job_serializes_the_stored_envelope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """WhatsApp must publish its durable envelope with the shared dispatcher deadline."""
     from src.service.bots import whatsapp_bot_service
 
     job_id = uuid4()
@@ -1056,17 +1059,18 @@ async def test_enqueue_whatsapp_job_serializes_the_stored_envelope(
     }
     captured: dict[str, object] = {}
 
-    async def send_task(name, args, kwargs, queue, routing_key):
+    async def _send_task(name, args, kwargs, queue, routing_key, timeout_seconds=None):
         captured.update(
             name=name,
             args=args,
             kwargs=kwargs,
             queue=queue,
             routing_key=routing_key,
+            timeout_seconds=timeout_seconds,
         )
         return "task-123"
 
-    monkeypatch.setattr("src.workers.chat_worker.client.send_chat_task_async", send_task)
+    monkeypatch.setattr("src.workers.chat_worker.client.send_chat_task_async", _send_task)
 
     task_id = await whatsapp_bot_service.enqueue_whatsapp_job(
         job_id=job_id,
@@ -1090,37 +1094,63 @@ async def test_enqueue_whatsapp_job_serializes_the_stored_envelope(
         },
         "queue": "chat_messages",
         "routing_key": "chat_messages",
+        "timeout_seconds": 6.0,
     }
 
 
 @pytest.mark.asyncio
-async def test_enqueue_whatsapp_job_times_out_broker_publication(
+async def test_enqueue_whatsapp_job_retires_a_blocked_dispatcher(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """WhatsApp must reach the dispatcher's timeout so blocked capacity is replaced."""
+    from src.infra.messaging import task_dispatcher
     from src.service.bots import whatsapp_bot_service
 
-    async def slow_send(*_args, **_kwargs):
-        await asyncio.sleep(0.05)
-        return "late-task"
+    executor = ThreadPoolExecutor(max_workers=1)
+    release = threading.Event()
+    started = threading.Event()
+    replacement_executor = None
 
+    def _blocked_send(*_args, **_kwargs):
+        started.set()
+        release.wait()
+        return "late-task-id"
+
+    monkeypatch.setattr(task_dispatcher, "_executor", executor)
+    monkeypatch.setattr(task_dispatcher, "_executor_generation", 0)
+    monkeypatch.setattr(task_dispatcher, "_generation_inflight", {})
+    monkeypatch.setattr(task_dispatcher, "_retired_generations", set())
+    monkeypatch.setattr(task_dispatcher, "send_task", _blocked_send)
     monkeypatch.setattr(
         whatsapp_bot_service,
-        "_WHATSAPP_QUEUE_PUBLISH_TIMEOUT_SECONDS",
-        0.001,
+        "DEFAULT_TASK_PUBLISH_TIMEOUT_SECONDS",
+        0.05,
     )
-    monkeypatch.setattr("src.workers.chat_worker.client.send_chat_task_async", slow_send)
 
-    with pytest.raises(TimeoutError):
-        await whatsapp_bot_service.enqueue_whatsapp_job(
-            job_id=uuid4(),
-            envelope={
-                "organisation_id": str(uuid4()),
-                "user_id": str(uuid4()),
-                "message_text": "hello",
-                "reply_context": {},
-                "bot_context": {},
-            },
-        )
+    try:
+        with pytest.raises(task_dispatcher.TaskPublishTimeoutError):
+            await whatsapp_bot_service.enqueue_whatsapp_job(
+                job_id=uuid4(),
+                envelope={
+                    "organisation_id": str(uuid4()),
+                    "user_id": str(uuid4()),
+                    "message_text": "hello",
+                    "reply_context": {},
+                    "bot_context": {},
+                },
+            )
+
+        replacement_executor = task_dispatcher._executor
+        assert started.is_set()
+        assert replacement_executor is not executor
+        assert task_dispatcher._executor_generation == 1
+        assert task_dispatcher._retired_generations == {0}
+    finally:
+        release.set()
+        await asyncio.sleep(0)
+        executor.shutdown(wait=True)
+        if replacement_executor is not None and replacement_executor is not executor:
+            replacement_executor.shutdown(wait=True)
 
 
 @pytest.mark.asyncio

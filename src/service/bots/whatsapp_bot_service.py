@@ -17,7 +17,6 @@ Notes:
 
 from __future__ import annotations
 
-import asyncio
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -31,6 +30,7 @@ from src.domain.models.master_tables import User
 from src.domain.models.master_tables.external_identity_models import ExternalIdentityProvider
 from src.infra.config.configs import whatsapp_config
 from src.infra.database.sessions import acquire_master_async_session
+from src.infra.messaging.task_dispatcher import DEFAULT_TASK_PUBLISH_TIMEOUT_SECONDS
 from src.infra.observability.metrics import (
     record_whatsapp_durable_job,
     record_whatsapp_enqueue,
@@ -46,7 +46,6 @@ WHATSAPP_GRAPH_API_BASE = "https://graph.facebook.com"
 # WhatsApp is interactive: one Redis publication attempt either starts the
 # response now or terminates the job and asks the user to retry explicitly.
 WHATSAPP_MAX_ENQUEUE_ATTEMPTS = 1
-_WHATSAPP_QUEUE_PUBLISH_TIMEOUT_SECONDS = 4
 _WHATSAPP_SEND_TIMEOUT_SECONDS = 30
 _WHATSAPP_TYPING_TIMEOUT_SECONDS = 3
 _PERSISTED_ERROR_LIMIT = 1000
@@ -79,25 +78,23 @@ async def enqueue_whatsapp_job(*, job_id: UUID, envelope: dict[str, Any]) -> str
     """Publish the immutable dispatch envelope for the initial intake attempt."""
     from src.workers.chat_worker.client import send_chat_task_async
 
-    return await asyncio.wait_for(
-        send_chat_task_async(
-            "chat.process_bot_message",
-            args=[
-                envelope["organisation_id"],
-                envelope["user_id"],
-                envelope["message_text"],
-                "whatsapp",
-                envelope["reply_context"],
-            ],
-            kwargs={
-                "user_email": envelope.get("user_email"),
-                "bot_context": envelope["bot_context"],
-                "job_id": str(job_id),
-            },
-            queue="chat_messages",
-            routing_key="chat_messages",
-        ),
-        timeout=_WHATSAPP_QUEUE_PUBLISH_TIMEOUT_SECONDS,
+    return await send_chat_task_async(
+        "chat.process_bot_message",
+        args=[
+            envelope["organisation_id"],
+            envelope["user_id"],
+            envelope["message_text"],
+            "whatsapp",
+            envelope["reply_context"],
+        ],
+        kwargs={
+            "user_email": envelope.get("user_email"),
+            "bot_context": envelope["bot_context"],
+            "job_id": str(job_id),
+        },
+        queue="chat_messages",
+        routing_key="chat_messages",
+        timeout_seconds=DEFAULT_TASK_PUBLISH_TIMEOUT_SECONDS,
     )
 
 

@@ -54,7 +54,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.domain.models.organisation_tables.sync.crm.leads import CRMLead
 from src.infra.utils.logger import get_logger
 from src.service.automation.triggers.crm_schema import custom_field_type
-from src.service.automation.triggers.service import (
+from src.service.automation.triggers.schema_reconciliation import (
     AutomationTriggerSchemaReconciliationService,
 )
 from src.service.crm.mutations.contracts import CRMMutationContext, CRMMutationRecordCommand

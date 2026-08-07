@@ -18,6 +18,11 @@ PUBLISH_CONTRACTS = [
 ]
 
 
+def test_default_publish_timeout_allows_six_seconds_for_broker_latency():
+    """The shared deadline gives Redis six seconds before publisher capacity rotates."""
+    assert task_dispatcher.DEFAULT_TASK_PUBLISH_TIMEOUT_SECONDS == 6.0
+
+
 def test_task_client_reuses_health_checked_redis_connections(monkeypatch):
     """API publication should reuse TLS connections without trusting stale sockets."""
 
@@ -69,8 +74,8 @@ def test_task_client_does_not_shrink_an_in_use_default_producer_pool(monkeypatch
         pools.set_limit(original_limit)
 
 
-def test_send_task_bypasses_the_process_global_producer_pool(monkeypatch):
-    """Each publish owns its connection so an idle pooled producer cannot block it."""
+def test_send_task_reuses_the_health_checked_producer_pool(monkeypatch):
+    """Repeated publishes reuse health-checked TLS connections instead of reconnecting."""
     original_limit = pools.get_limit()
     pools.reset()
     pools.set_limit(10)
@@ -81,14 +86,17 @@ def test_send_task_bypasses_the_process_global_producer_pool(monkeypatch):
     monkeypatch.setattr(task_dispatcher, "get_task_client", lambda: client)
 
     try:
-        task_id = task_dispatcher.send_task(
-            "chat.process_bot_message",
-            args=["org-id", "job-id"],
-            queue="chat_messages",
-        )
+        task_ids = [
+            task_dispatcher.send_task(
+                "chat.process_bot_message",
+                args=["org-id", f"job-{index}"],
+                queue="chat_messages",
+            )
+            for index in range(2)
+        ]
 
-        assert task_id
-        acquire.assert_not_called()
+        assert all(task_ids)
+        assert acquire.call_count == 2
     finally:
         pools.reset()
         pools.set_limit(original_limit)
@@ -218,6 +226,52 @@ async def test_publish_success_records_structured_outcome(monkeypatch, task_name
         queue=queue,
         outcome="published",
     )
+
+
+@pytest.mark.asyncio
+async def test_cancelled_publish_retires_executor_generation(monkeypatch):
+    """Caller cancellation must not leave later publishes behind a blocked thread."""
+    executor = ThreadPoolExecutor(max_workers=1)
+    release = threading.Event()
+    started = threading.Event()
+    replacement_executor = None
+
+    def _blocked_send(*_args, **_kwargs):
+        started.set()
+        release.wait()
+        return "late-task-id"
+
+    monkeypatch.setattr(task_dispatcher, "_executor", executor)
+    monkeypatch.setattr(task_dispatcher, "_executor_generation", 0)
+    monkeypatch.setattr(task_dispatcher, "_generation_inflight", {})
+    monkeypatch.setattr(task_dispatcher, "_retired_generations", set())
+    monkeypatch.setattr(task_dispatcher, "send_task", _blocked_send)
+
+    publish = asyncio.create_task(
+        task_dispatcher.send_task_async(
+            "chat.process_bot_message",
+            queue="chat_messages",
+            timeout_seconds=1,
+        )
+    )
+    try:
+        while not started.is_set():
+            await asyncio.sleep(0.001)
+
+        publish.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await publish
+
+        replacement_executor = task_dispatcher._executor
+        assert replacement_executor is not executor
+        assert task_dispatcher._executor_generation == 1
+        assert task_dispatcher._retired_generations == {0}
+    finally:
+        release.set()
+        await asyncio.sleep(0)
+        executor.shutdown(wait=True)
+        if replacement_executor is not None and replacement_executor is not executor:
+            replacement_executor.shutdown(wait=True)
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@
 
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 from src.api.routers.chat import messages_handler
 from src.domain.models.organisation_tables.job_models import JobStatus
@@ -49,6 +50,35 @@ def test_message_events_rejects_job_not_owned_by_user(
 # =============================================================================
 # POST /send_message Tests
 # =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_send_message_passes_dispatcher_timeout(mocker):
+    """Web chat must let the shared dispatcher own the publication deadline."""
+    organisation_id = uuid4()
+    user_id = uuid4()
+    service = FakeChatMessageService(organisation_id, user_id)
+    publish = mocker.patch(
+        "src.api.routers.chat.messages_handler.send_chat_task_async",
+        return_value="mock-task-id",
+    )
+
+    await messages_handler.send_message(
+        response=messages_handler.FastAPIResponse(),
+        payload=messages_handler.SendMessageRequest(
+            session_id=uuid4(),
+            content="Hello",
+        ),
+        service=service,
+        user_ids=messages_handler.UserIDs(
+            organisation_id=organisation_id,
+            user_id=user_id,
+            user_timezone="Asia/Kolkata",
+        ),
+        _rl=None,
+    )
+
+    assert publish.await_args.kwargs.get("timeout_seconds") == 6.0
 
 
 def test_send_message_success(client: TestClient, messages_dependency_overrides, mocker):
