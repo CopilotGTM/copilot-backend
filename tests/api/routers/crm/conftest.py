@@ -1046,6 +1046,31 @@ class FakeDealsAccessService:
         """Get contact by local ID."""
         return self._contacts.get(contact_id)
 
+    async def get_contacts_by_ids_or_emails(
+        self,
+        contact_ids: set[UUID],
+        emails: set[str],
+    ) -> tuple[dict[UUID, FakeContact], dict[str, FakeContact]]:
+        """Resolve seeded contacts by ID or one unambiguous exact email."""
+        contacts_by_id = {
+            contact_id: self._contacts[contact_id]
+            for contact_id in contact_ids
+            if contact_id in self._contacts
+        }
+        contacts_by_email: dict[str, FakeContact] = {}
+        duplicate_emails: set[str] = set()
+        for contact in self._contacts.values():
+            email = (contact.email or "").strip().lower()
+            if email not in emails:
+                continue
+            if email in contacts_by_email:
+                duplicate_emails.add(email)
+            else:
+                contacts_by_email[email] = contact
+        for email in duplicate_emails:
+            contacts_by_email.pop(email, None)
+        return contacts_by_id, contacts_by_email
+
     async def list_deals(
         self,
         limit: int = 50,

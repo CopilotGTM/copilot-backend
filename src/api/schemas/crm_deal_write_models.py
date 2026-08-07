@@ -10,7 +10,7 @@ from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field
-from src.api.schemas.crm_models import DealJobResponse, DealOwnerDetail, DealPrimaryContactDetail
+from src.api.schemas.crm_models import DealJobResponse
 from src.contracts.crm.deal_write import (
     DealAccountUpdateRequest,
     DealCloseRequest,
@@ -31,8 +31,27 @@ __all__ = [
     "DealReopenRequest",
     "DealStageMoveRequest",
     "DealUpdateRequest",
+    "DealWriteOwnerDetail",
+    "DealWritePrimaryContactDetail",
     "DealWriteResponse",
 ]
+
+
+class DealWriteOwnerDetail(BaseModel):
+    """Exact owner snapshot returned after a deal mutation."""
+
+    owner_id: UUID | None = None
+    name: str | None = None
+    email: str | None = None
+
+
+class DealWritePrimaryContactDetail(BaseModel):
+    """Exact primary-contact snapshot returned after a deal mutation."""
+
+    contact_id: UUID | None = None
+    name: str | None = None
+    email: str | None = None
+    phone_number: str | None = None
 
 
 class DealWriteResponse(BaseModel):
@@ -56,7 +75,7 @@ class DealWriteResponse(BaseModel):
     owner_user_id: UUID | None
     owner_name: str | None = None
     owner_email: str | None = None
-    owner_details: list[DealOwnerDetail] = Field(default_factory=list)
+    owner_details: list[DealWriteOwnerDetail] = Field(default_factory=list)
     is_internal: bool = True
     company_id: UUID | None = None
     company_name: str | None = None
@@ -68,7 +87,7 @@ class DealWriteResponse(BaseModel):
     primary_contact_id: UUID | None = None
     primary_contact_name: str | None = None
     primary_contact_email: str | None = None
-    primary_contact_details: list[DealPrimaryContactDetail] = Field(default_factory=list)
+    primary_contact_details: list[DealWritePrimaryContactDetail] = Field(default_factory=list)
     processing_jobs: list[DealJobResponse] = Field(default_factory=list)
     source_created_at: datetime | None = None
     close_date: datetime | None = None
