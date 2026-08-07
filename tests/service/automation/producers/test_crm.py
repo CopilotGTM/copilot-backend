@@ -116,6 +116,23 @@ def test_update_emits_only_registry_fields_and_deal_custom_properties() -> None:
     }
 
 
+def test_deal_account_change_uses_automation_account_id() -> None:
+    """Map the deal model's company ID onto the public account ID event field."""
+    source = mutation("crm.deal.account_changed")
+    old_account_id = uuid4()
+    new_account_id = uuid4()
+    source.changed_fields = {"company_id": {"old": str(old_account_id), "new": str(new_account_id)}}
+    source.record_snapshot["account_id"] = str(new_account_id)
+
+    envelope = CRMEventAdapter(source.organisation_id).from_mutation(source)
+
+    assert envelope is not None
+    assert envelope.changes["account_id"].model_dump() == {
+        "before": str(old_account_id),
+        "after": str(new_account_id),
+    }
+
+
 def test_audit_only_contact_update_does_not_emit_automation_event() -> None:
     """A ledger-only contact edit must not create an unfilterable update event."""
     source = mutation("crm.contact.updated")

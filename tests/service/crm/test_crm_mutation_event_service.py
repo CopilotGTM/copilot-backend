@@ -8,7 +8,10 @@ from enum import Enum
 from uuid import uuid4
 
 import pytest
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDealMutationEvent
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDealMutationEvent,
+    CRMDealStatus,
+)
 from src.service.automation.events.contracts import AutomationEventEnvelope
 from src.service.crm.mutations.contracts import (
     CRMMutationContext,
@@ -146,6 +149,36 @@ def test_json_safe_values_are_normalized() -> None:
     assert normalized["tags"]["new"] == [str(value_id), "1.50"]
     assert normalized["meta"]["new"] == {"owner": str(value_id)}
     assert normalized["cleared"] == {"old": "value", "new": None}
+
+
+@pytest.mark.asyncio
+async def test_deal_create_normalizes_string_enum_before_automation_dispatch() -> None:
+    """A deal lifecycle enum must cross the strict event boundary as plain JSON."""
+    organisation_id = uuid4()
+    deal_id = uuid4()
+    enqueuer = _FakeEventEnqueuer()
+    service = CRMMutationEventService(
+        _FakeSession(),
+        organisation_id,
+        event_enqueuer=enqueuer,
+    )
+
+    await service.record_event(
+        CRMMutationRecordCommand(
+            entity_type="deal",
+            entity_id=deal_id,
+            deal_id=deal_id,
+            event_type="crm.deal.created",
+            operation="create_deal",
+            changed_fields={"deal_status": {"old": None, "new": CRMDealStatus.OPEN}},
+            semantic_event_types=["crm.deal.created"],
+            record={"id": deal_id, "deal_status": CRMDealStatus.OPEN},
+            context=CRMMutationContext(source="agent", actor_user_id=uuid4()),
+        )
+    )
+
+    assert type(service.session.added[0].record_snapshot["deal_status"]) is str
+    assert enqueuer.events[0].record["deal_status"] == "open"
 
 
 def test_json_safe_rejects_sensitive_fields() -> None:

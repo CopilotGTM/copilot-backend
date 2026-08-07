@@ -40,12 +40,19 @@ class CRMEventAdapter:
             event_definition = AUTOMATION_REGISTRY.event(event_key)
             # The mutation ledger keeps audit-only fields. Automation exposes only
             # matcher fields, plus deal custom fields validated by the tenant registry.
-            changes = {
-                key: {"before": value["old"], "after": value["new"]}
-                for key, value in event.changed_fields.items()
-                if key in event_definition.watch_fields
-                or (event.entity_type == "deal" and key.startswith("custom_properties."))
-            }
+            for key, value in event.changed_fields.items():
+                # Deal rows call this relation company_id; the public automation
+                # schema calls the same business object account_id.
+                event_field = (
+                    "account_id" if event.entity_type == "deal" and key == "company_id" else key
+                )
+                if event_field in event_definition.watch_fields or (
+                    event.entity_type == "deal" and event_field.startswith("custom_properties.")
+                ):
+                    changes[event_field] = {
+                        "before": value["old"],
+                        "after": value["new"],
+                    }
             if not changes:
                 return None
         return AutomationEventEnvelope.model_validate(
