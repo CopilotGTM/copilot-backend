@@ -17,7 +17,7 @@ from src.domain.models.organisation_tables.sync.crm.custom_fields import (
 )
 from src.infra.utils.logger import get_logger
 from src.service.automation.triggers.crm_schema import custom_field_type
-from src.service.automation.triggers.service import (
+from src.service.automation.triggers.schema_reconciliation import (
     AutomationTriggerSchemaReconciliationService,
 )
 from src.service.integrations.crm.schema.common.types import (

@@ -13,7 +13,7 @@ from src.domain.models.organisation_tables import (
     CRMCustomFieldDefinition,
 )
 from src.service.automation.triggers.crm_schema import merge_deal_custom_fields
-from src.service.automation.triggers.service import (
+from src.service.automation.triggers.schema_reconciliation import (
     AutomationTriggerSchemaReconciliationService,
 )
 
