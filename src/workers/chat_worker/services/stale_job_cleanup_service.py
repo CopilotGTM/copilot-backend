@@ -13,7 +13,6 @@ Three passes run with fresh organization sessions:
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -32,6 +31,7 @@ from src.domain.models.organisation_tables.reminder_models import (
 )
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.messaging.reminder_schedule import schedule_reminder
+from src.infra.messaging.task_dispatcher import DEFAULT_TASK_PUBLISH_TIMEOUT_SECONDS
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 
@@ -44,7 +44,6 @@ REMINDER_RUN_THRESHOLD_MIN = 30
 # legitimate long processing from being duplicated while still repairing lost work.
 ATTACHMENT_PROCESSING_REQUEUE_AFTER_MINUTES = 12
 ATTACHMENT_RECOVERY_BATCH_SIZE = 100
-_ATTACHMENT_QUEUE_PUBLISH_TIMEOUT_SECONDS = 4
 
 # Max consecutive failures before permanently failing a reminder
 MAX_CONSECUTIVE_FAILURES = 3
@@ -57,14 +56,12 @@ async def enqueue_attachment_post_upload(
     """Republish one attachment through the existing post-upload queue."""
     from src.workers.chat_worker.client import send_chat_task_async
 
-    return await asyncio.wait_for(
-        send_chat_task_async(
-            "attachments.post_upload",
-            args=[str(organisation_id), str(attachment_id)],
-            queue="attachments",
-            routing_key="attachments",
-        ),
-        timeout=_ATTACHMENT_QUEUE_PUBLISH_TIMEOUT_SECONDS,
+    return await send_chat_task_async(
+        "attachments.post_upload",
+        args=[str(organisation_id), str(attachment_id)],
+        queue="attachments",
+        routing_key="attachments",
+        timeout_seconds=DEFAULT_TASK_PUBLISH_TIMEOUT_SECONDS,
     )
 
 

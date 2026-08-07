@@ -19,6 +19,7 @@ PUBLISH_CONTRACTS = [
 
 
 def test_default_publish_timeout_allows_six_seconds_for_broker_latency():
+    """The shared deadline gives Redis six seconds before publisher capacity rotates."""
     assert task_dispatcher.DEFAULT_TASK_PUBLISH_TIMEOUT_SECONDS == 6.0
 
 
@@ -225,6 +226,52 @@ async def test_publish_success_records_structured_outcome(monkeypatch, task_name
         queue=queue,
         outcome="published",
     )
+
+
+@pytest.mark.asyncio
+async def test_cancelled_publish_retires_executor_generation(monkeypatch):
+    """Caller cancellation must not leave later publishes behind a blocked thread."""
+    executor = ThreadPoolExecutor(max_workers=1)
+    release = threading.Event()
+    started = threading.Event()
+    replacement_executor = None
+
+    def _blocked_send(*_args, **_kwargs):
+        started.set()
+        release.wait()
+        return "late-task-id"
+
+    monkeypatch.setattr(task_dispatcher, "_executor", executor)
+    monkeypatch.setattr(task_dispatcher, "_executor_generation", 0)
+    monkeypatch.setattr(task_dispatcher, "_generation_inflight", {})
+    monkeypatch.setattr(task_dispatcher, "_retired_generations", set())
+    monkeypatch.setattr(task_dispatcher, "send_task", _blocked_send)
+
+    publish = asyncio.create_task(
+        task_dispatcher.send_task_async(
+            "chat.process_bot_message",
+            queue="chat_messages",
+            timeout_seconds=1,
+        )
+    )
+    try:
+        while not started.is_set():
+            await asyncio.sleep(0.001)
+
+        publish.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await publish
+
+        replacement_executor = task_dispatcher._executor
+        assert replacement_executor is not executor
+        assert task_dispatcher._executor_generation == 1
+        assert task_dispatcher._retired_generations == {0}
+    finally:
+        release.set()
+        await asyncio.sleep(0)
+        executor.shutdown(wait=True)
+        if replacement_executor is not None and replacement_executor is not executor:
+            replacement_executor.shutdown(wait=True)
 
 
 @pytest.mark.asyncio

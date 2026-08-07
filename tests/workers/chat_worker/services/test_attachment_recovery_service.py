@@ -47,6 +47,31 @@ class _LeaseSession:
 
 
 @pytest.mark.asyncio
+async def test_attachment_recovery_passes_dispatcher_timeout(monkeypatch) -> None:
+    """Recovery must let the shared dispatcher own the publication deadline."""
+    from src.workers.chat_worker.services import stale_job_cleanup_service as recovery_module
+
+    organisation_id = uuid4()
+    attachment_id = uuid4()
+    publish = AsyncMock(return_value="task-id")
+    monkeypatch.setattr("src.workers.chat_worker.client.send_chat_task_async", publish)
+
+    task_id = await recovery_module.enqueue_attachment_post_upload(
+        organisation_id,
+        attachment_id,
+    )
+
+    assert task_id == "task-id"
+    publish.assert_awaited_once_with(
+        "attachments.post_upload",
+        args=[str(organisation_id), str(attachment_id)],
+        queue="attachments",
+        routing_key="attachments",
+        timeout_seconds=6.0,
+    )
+
+
+@pytest.mark.asyncio
 async def test_stale_attachment_recovery_leases_a_bounded_processing_batch(monkeypatch) -> None:
     """Recovery must commit an org-scoped row lease before publishing to Redis."""
     organisation_id = uuid4()

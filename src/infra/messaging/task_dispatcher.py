@@ -28,6 +28,8 @@ _executor_generation = 0
 _generation_inflight: dict[int, int] = {}
 _retired_generations: set[int] = set()
 
+# The dispatcher must own this deadline so it can replace capacity when a
+# broker call remains blocked after the caller has stopped waiting.
 DEFAULT_TASK_PUBLISH_TIMEOUT_SECONDS = 6.0
 # Kombu applies this limit to every producer pool in the process, not just this
 # Celery app. Match Celery's default so another API producer cannot resize an
@@ -284,6 +286,10 @@ async def send_task_async(
             asyncio.shield(publish_future),
             timeout=timeout_seconds,
         )
+    except asyncio.CancelledError:
+        if not publish_future.done():
+            _retire_executor(executor, executor_generation)
+        raise
     except TimeoutError as exc:
         elapsed = monotonic() - started_at
         logger.error(

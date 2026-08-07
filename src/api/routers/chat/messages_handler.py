@@ -4,7 +4,6 @@ The send path publishes each instant chat once. Redis acceptance completes the
 request; a broker error marks the job failed instead of reviving it later.
 """
 
-import asyncio
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
@@ -32,6 +31,7 @@ from src.domain.models.organisation_tables.chat_message_models import (
     ChatMessageType,
 )
 from src.domain.models.organisation_tables.job_models import JobStatus
+from src.infra.messaging.task_dispatcher import DEFAULT_TASK_PUBLISH_TIMEOUT_SECONDS
 from src.infra.utils.logger import get_logger
 from src.service.chat.chat_message_service import ChatMessageService
 from src.service.chat.chat_message_sse_service import ChatMessageSSEService
@@ -40,8 +40,6 @@ from sse_starlette.sse import EventSourceResponse
 
 logger = get_logger("chat_messages")
 router = APIRouter()
-
-_CHAT_QUEUE_PUBLISH_TIMEOUT_SECONDS = 4
 
 
 async def get_chat_message_service(
@@ -130,14 +128,12 @@ async def send_message(
             job.job_id,
         )
         try:
-            task_id = await asyncio.wait_for(
-                send_chat_task_async(
-                    "chat.process_message",
-                    args=[str(user_ids.organisation_id), str(job.job_id)],
-                    queue="chat_messages",
-                    routing_key="chat_messages",
-                ),
-                timeout=_CHAT_QUEUE_PUBLISH_TIMEOUT_SECONDS,
+            task_id = await send_chat_task_async(
+                "chat.process_message",
+                args=[str(user_ids.organisation_id), str(job.job_id)],
+                queue="chat_messages",
+                routing_key="chat_messages",
+                timeout_seconds=DEFAULT_TASK_PUBLISH_TIMEOUT_SECONDS,
             )
             logger.info(
                 "Enqueued chat processing job org=%s job=%s task_id=%s",
