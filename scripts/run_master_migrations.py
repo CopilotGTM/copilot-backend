@@ -47,12 +47,12 @@ def run_master_migrations(revision="head", downgrade=False):
 
 
 def _store_password_in_key_vault(secret_name: str, password: str) -> None:
-    """Store password in Azure Key Vault."""
+    """Store the master-database role password in the master Key Vault."""
     print(f"Attempting to store password for '{secret_name}' in Azure Key Vault.")
     try:
-        key_vault_url = os.getenv("AZURE_KEY_VAULT_URL")
+        key_vault_url = os.getenv("AZURE_MASTER_KEY_VAULT_URL")
         if not key_vault_url:
-            print("AZURE_KEY_VAULT_URL not set. Skipping Azure Key Vault storage.")
+            print("AZURE_MASTER_KEY_VAULT_URL not set. Skipping Azure Key Vault storage.")
             print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
             print(f"IMPORTANT: Store this password manually: {password}")
             print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")

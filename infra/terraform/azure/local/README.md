@@ -14,19 +14,13 @@ This directory contains the Terraform configuration for deploying a simplified, 
 - **Name**: From `resource_group_name` in `terraform.tfvars`
 - **Location**: Central India
 
-### 2. Azure Key Vaults (2)
+### 2. Azure Key Vault (1)
 
-#### 2.1 Database Key Vault
+#### 2.1 Master Key Vault
 
-- **Name**: `kv-local-${project_name}`
+- **Name**: `app-master-vault-${env}`
 - **Access**: Public network access enabled.
-- **Used for**: Storing the database admin password secret.
-
-#### 2.2 Master Key Vault
-
-- **Name**: `kvm-${env}-${project_name}`
-- **Access**: Public network access enabled.
-- **Used for**: Mirrors the `dev` “master” key vault pattern.
+- **Used for**: Storing application, database, and tenant-runtime secrets.
 
 ### 3. Azure Storage Accounts (2)
 
@@ -113,10 +107,22 @@ Invoke-RestMethod -Method Get -Uri $uri -Headers @{ Authorization = "Bearer $tok
 3. **Outputs**:
    After a successful apply, the following information will be printed:
    - `resource_group_name`
-   - `key_vault_uri`
    - `master_key_vault_uri`
    - `storage_account_name`
    - `org_storage_account_name`
    - `database_host`
    - `database_admin_user`
    - `database_password` (Visible in plain text as requested)
+
+### Migrating Existing Local State
+
+If the local state was created before the database Key Vault was removed, forget
+the old vault and secret addresses before the next apply. Terraform will then
+recreate `db-admin-password` in the master Key Vault without attempting to
+destroy the already-removed vault:
+
+```bash
+terraform state rm azurerm_key_vault.database_key_vault
+terraform state rm azurerm_key_vault_secret.db_password
+terraform plan
+```

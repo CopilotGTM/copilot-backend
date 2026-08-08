@@ -1365,7 +1365,7 @@ DATABASE_POOL_SIZE=5
 DATABASE_MAX_OVERFLOW=2
 
 # Azure (for remote deployments)
-AZURE_KEY_VAULT_URL=https://your-vault.vault.azure.net/
+AZURE_MASTER_KEY_VAULT_URL=https://your-vault.vault.azure.net/
 
 # SSL Configuration
 REDIS_SSL_CERT_REQS=CERT_REQUIRED  # CERT_NONE, CERT_OPTIONAL, CERT_REQUIRED

@@ -401,12 +401,11 @@ function Get-AzureKeyVaultSecrets {
         }
     }
 
-    # Pipeline and Helm use Key Vault URLs; Azure CLI secret reads need the vault name.
-    $DATABASE_KEY_VAULT_NAME = Resolve-KeyVaultName $env:AZURE_KEY_VAULT_NAME $env:AZURE_KEY_VAULT_URL
+    # Pipeline and Helm use the master Key Vault URL; Azure CLI reads need its name.
     $MASTER_KEY_VAULT_NAME = Resolve-KeyVaultName $env:AZURE_MASTER_KEY_VAULT_NAME $env:AZURE_MASTER_KEY_VAULT_URL
 
-    if (-not $DATABASE_KEY_VAULT_NAME -and -not $MASTER_KEY_VAULT_NAME) {
-        Write-Warning "AZURE_KEY_VAULT_URL/AZURE_MASTER_KEY_VAULT_URL not set and some secrets are missing. Please ensure all secrets are in .env.development"
+    if (-not $MASTER_KEY_VAULT_NAME) {
+        Write-Warning "AZURE_MASTER_KEY_VAULT_URL not set and some secrets are missing. Please ensure all secrets are in .env.development"
         return
     }
 
@@ -454,19 +453,18 @@ function Get-AzureKeyVaultSecrets {
         }
     }
 
-    $databaseFirstVaults = @($DATABASE_KEY_VAULT_NAME, $MASTER_KEY_VAULT_NAME)
-    $masterFirstVaults = @($MASTER_KEY_VAULT_NAME, $DATABASE_KEY_VAULT_NAME)
+    $masterVaults = @($MASTER_KEY_VAULT_NAME)
 
     # Only fetch secrets that are not already set
-    Set-EnvSecretIfMissing "AZURE_OPENAI_API_KEY" $masterFirstVaults @("azure-openai-api-key")
-    Set-EnvSecretIfMissing "ASSEMBLYAI_API_KEY" $masterFirstVaults @("assemblyai-api-key")
-    Set-EnvSecretIfMissing "AZURE_EMBEDDER_OPENAI_API_KEY" $masterFirstVaults @("azure-embedder-openai-api-key")
-    Set-EnvSecretIfMissing "DATABASE_PASSWORD" $databaseFirstVaults @("db-admin-password", "database-password")
-    Set-EnvSecretIfMissing "REDIS_PASSWORD" $masterFirstVaults @("redis-password")
-    Set-EnvSecretIfMissing "RESEND_API_KEY" $masterFirstVaults @("resend-api-key")
-    Set-EnvSecretIfMissing "SUPABASE_ANON_KEY" $masterFirstVaults @("supabase-anon-key")
-    Set-EnvSecretIfMissing "SUPABASE_JWT_SECRET" $masterFirstVaults @("supabase-jwt-secret")
-    Set-EnvSecretIfMissing "SUPABASE_SERVICE_ROLE_KEY" $masterFirstVaults @("supabase-service-role-key")
+    Set-EnvSecretIfMissing "AZURE_OPENAI_API_KEY" $masterVaults @("azure-openai-api-key")
+    Set-EnvSecretIfMissing "ASSEMBLYAI_API_KEY" $masterVaults @("assemblyai-api-key")
+    Set-EnvSecretIfMissing "AZURE_EMBEDDER_OPENAI_API_KEY" $masterVaults @("azure-embedder-openai-api-key")
+    Set-EnvSecretIfMissing "DATABASE_PASSWORD" $masterVaults @("db-admin-password", "database-password")
+    Set-EnvSecretIfMissing "REDIS_PASSWORD" $masterVaults @("redis-password")
+    Set-EnvSecretIfMissing "RESEND_API_KEY" $masterVaults @("resend-api-key")
+    Set-EnvSecretIfMissing "SUPABASE_ANON_KEY" $masterVaults @("supabase-anon-key")
+    Set-EnvSecretIfMissing "SUPABASE_JWT_SECRET" $masterVaults @("supabase-jwt-secret")
+    Set-EnvSecretIfMissing "SUPABASE_SERVICE_ROLE_KEY" $masterVaults @("supabase-service-role-key")
 
     $missingAfterFallback = @()
     foreach ($secret in $requiredSecrets) {
@@ -607,7 +605,6 @@ function Deploy-WithHelm {
             "--set", "api.secrets.ORGANISATION_STORAGE_NAME=$($env:ORGANISATION_STORAGE_NAME)",
             "--set", "api.secrets.APPLICATION_REGION=$($env:APPLICATION_REGION)",
             "--set", "api.secrets.ENV=$($env:ENV)",
-            "--set", "api.secrets.AZURE_KEY_VAULT_URL=$($env:AZURE_KEY_VAULT_URL)",
             "--set", "api.secrets.AZURE_MASTER_KEY_VAULT_URL=$($env:AZURE_MASTER_KEY_VAULT_URL)",
             "--set", "api.secrets.AZURE_RESOURCE_GROUP=$RESOURCE_GROUP",
             "--set", "api.secrets.AZURE_SUBSCRIPTION_ID=$SUBSCRIPTION_ID",

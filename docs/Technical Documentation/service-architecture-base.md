@@ -286,7 +286,7 @@ Local Dev Notes
 
 - ENV=local prefers non‑TLS Redis and `DefaultAzureCredential` for secrets.
 - Run: Postgres + Redis + Celery workers + FastAPI app (`src/api/fastapi_app.py:1`).
-- Common env vars (see `.env`): DB host/port/name/user/pass, Redis host/port/password, `AZURE_KEY_VAULT_URL`, storage names.
+- Common env vars (see `.env`): DB host/port/name/user/pass, Redis host/port/password, `AZURE_MASTER_KEY_VAULT_URL`, storage names.
 - If Azure auth fails locally, ensure you’re logged in (e.g., az login) or configure env secrets.
 
 Observability
@@ -401,6 +401,6 @@ Environment (Minimal to Run E2E)
 - Database: either `DATABASE_URL` or `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_NAME`, `DATABASE_USER`, `DATABASE_PASSWORD`, optional `DATABASE_SSL_MODE`.
 - Redis: `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD` (if set).
 - Storage: `CLOUD_PROVIDER`, `APPLICATION_STORAGE_NAME`, `ORGANISATION_STORAGE_NAME`, `APPLICATION_REGION`.
-- Secrets/Key Vault: `AZURE_KEY_VAULT_URL`; for cloud auth either workload identity (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID` [+ optionally `AZURE_ADDITIONALLY_ALLOWED_TENANTS`]) or Managed Identity (no vars required). Local uses DefaultAzureCredential.
+- Secrets/Key Vault: `AZURE_MASTER_KEY_VAULT_URL`; for cloud auth either workload identity (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID` [+ optionally `AZURE_ADDITIONALLY_ALLOWED_TENANTS`]) or Managed Identity (no vars required). Local uses DefaultAzureCredential.
 - Email/Supabase (if auth enabled): `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWT_SECRET`, and `RESEND_API_KEY`/`FROM_EMAIL` if emailing.
 - File limits: `MAX_UPLOAD_FILE_SIZE_BYTES`, `ALLOWED_MIMETYPES`, and knowledge equivalents `KNOWLEDGE_MAX_UPLOAD_FILE_SIZE_BYTES`, `KNOWLEDGE_ALLOWED_MIMETYPES`.

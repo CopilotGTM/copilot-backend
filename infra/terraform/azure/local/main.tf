@@ -13,50 +13,9 @@ locals {
 }
 
 # -----------------------------------------------------------------
-# Key Vault (Public)
+# Master Key Vault (Public)
 # -----------------------------------------------------------------
 data "azurerm_client_config" "current" {}
-
-resource "azurerm_key_vault" "database_key_vault" {
-  name                        = "app-database-vault-${var.env}"
-  location                    = var.location
-  resource_group_name         = module.resource_group.resource_group_name
-  enabled_for_disk_encryption = true
-  tenant_id                   = data.azurerm_client_config.current.tenant_id
-  soft_delete_retention_days  = 7
-  purge_protection_enabled    = false
-  sku_name                    = "standard"
-
-  access_policy {
-    tenant_id = data.azurerm_client_config.current.tenant_id
-    object_id = data.azurerm_client_config.current.object_id
-
-    key_permissions = [
-      "Get", "List", "Create", "Delete", "Update", "Purge", "Recover"
-    ]
-
-    secret_permissions = [
-      "Get", "List", "Set", "Delete", "Purge", "Recover"
-    ]
-
-    storage_permissions = [
-      "Get", "List", "Delete", "Set", "Update", "Purge", "Recover"
-    ]
-  }
-
-  public_network_access_enabled = true
-
-  network_acls {
-    bypass         = "AzureServices"
-    default_action = "Allow"
-    ip_rules       = []
-  }
-
-  tags = {
-    environment = var.env
-    project     = var.project_name
-  }
-}
 
 # -----------------------------------------------------------------
 # Master Key Vault (Public) - mirrors dev's master_key_vault
@@ -236,7 +195,7 @@ moved {
 resource "azurerm_key_vault_secret" "db_password" {
   name         = "db-admin-password"
   value        = random_password.db_admin.result
-  key_vault_id = azurerm_key_vault.database_key_vault.id
+  key_vault_id = azurerm_key_vault.master_key_vault.id
 }
 
 resource "azurerm_postgresql_flexible_server" "db" {
