@@ -259,7 +259,7 @@ stages:
 
                       echo "=== Terraform Apply (from approved plan artifact) ==="
                       cp "$(Pipeline.Workspace)/${{ parameters.artifactName }}/tfplan" "./tfplan"
-                      terraform apply -input=false -auto-approve tfplan
+                      terraform apply -input=false -auto-approve -parallelism=5 tfplan
 
                       echo ""
                       echo "=== Deployment Complete ==="
