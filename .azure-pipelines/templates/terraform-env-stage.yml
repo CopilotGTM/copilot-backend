@@ -172,7 +172,7 @@ stages:
                 # a local targeted Terraform operation documented outside this
                 # reusable pipeline template.
                 echo "=== Terraform Plan ==="
-                terraform plan -var-file="terraform.tfvars" -out=tfplan -input=false || {
+                terraform plan -var-file="terraform.tfvars" -parallelism=5 -out=tfplan -input=false || {
                     exitCode=$?
                     if [ $exitCode -eq 1 ]; then
                       echo "##vso[task.logissue type=error]Terraform plan failed!"
