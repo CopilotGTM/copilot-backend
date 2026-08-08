@@ -334,6 +334,7 @@ async def test_match_route_applies_scope_watch_filter_and_builds_pinned_run() ->
     assert run.event_key == event.event_key
     assert run.correlation_id == "request-123"
     assert run.agent_snapshot == binding.target_snapshot
+    assert run.trigger_snapshot["name"] == binding.name
     assert run.input_snapshot == event.model_dump(mode="json")
     assert run.idempotency_key == f"trigger:{binding.trigger_id}:event:{event.event_id}"
     assert (

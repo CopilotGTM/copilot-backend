@@ -20,6 +20,7 @@ class FakeOptions:
         self.validated_sources: list[tuple[str, set[str], UUID, bool]] = []
         self.schedule_subjects: set[tuple[str, UUID]] = set()
         self.validated_schedule_subjects: list[tuple[str, set[UUID], UUID, bool]] = []
+        self.validated_delivery_sources: list[tuple[str, set[str], UUID, bool]] = []
 
     async def validate_option_selection(self, source: str, values: set[str]) -> None:
         """Expose the validate option selection operation expected by the Fake Options test double."""
@@ -41,6 +42,10 @@ class FakeOptions:
         organisation_scope: bool,
     ) -> None:
         self.validated_sources.append((source, values, principal_id, organisation_scope))
+        if source == "email_mailboxes" and not organisation_scope:
+            self.validated_delivery_sources.append(
+                (source, values, principal_id, organisation_scope)
+            )
 
     async def validate_schedule_subjects(
         self,
@@ -378,6 +383,70 @@ async def test_automation_bindings_reject_retry_unsafe_mutating_tools() -> None:
             personal_body("crm.deal.updated"),
             target_allowed_tools=("update_deal_fields",),
         )
+
+
+@pytest.mark.asyncio
+async def test_personal_email_notification_uses_platform_managed_delivery() -> None:
+    options = FakeOptions()
+    item = validator(options)
+
+    result = await item.validate(
+        personal_body(
+            "crm.deal.created",
+            delivery={"mode": "email_notification"},
+        )
+    )
+
+    assert result.delivery_config == {"mode": "email_notification"}
+    assert options.validated_delivery_sources == []
+
+
+def test_email_notification_rejects_user_managed_email_fields() -> None:
+    base = {
+        "name": "Review event",
+        "trigger_key": "crm.deal.created",
+        "principal_mode": "personal",
+        "scope": {"type": "owned_or_created_by_principal"},
+        "audience": {"mode": "principal"},
+        "delivery": {"mode": "email_notification", "to": [{"email": "ops@example.com"}]},
+    }
+
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        AutomationTriggerCreateRequest.model_validate(base)
+
+    base["delivery"] = {"mode": "email"}
+    with pytest.raises(ValueError, match="union_tag_invalid"):
+        AutomationTriggerCreateRequest.model_validate(base)
+
+
+@pytest.mark.asyncio
+async def test_organisation_email_notification_requires_a_pinned_run_audience() -> None:
+    no_audience = AutomationTriggerCreateRequest.model_validate(
+        {
+            "name": "Shared review",
+            "trigger_key": "crm.deal.created",
+            "principal_mode": "organisation",
+            "scope": {"type": "organisation"},
+            "audience": {"mode": "none"},
+            "delivery": {"mode": "email_notification"},
+        }
+    )
+
+    with pytest.raises(ValueError, match="audience"):
+        await validator(is_admin=True).validate(no_audience)
+
+    audience_id = uuid4()
+    options = FakeOptions()
+    options.audience_ids.add(audience_id)
+    with_audience = no_audience.model_dump(mode="json")
+    with_audience["audience"] = {
+        "mode": "explicit_users",
+        "user_ids": [str(audience_id)],
+    }
+    validated = await validator(options, is_admin=True).validate(
+        AutomationTriggerCreateRequest.model_validate(with_audience)
+    )
+    assert validated.delivery_config == {"mode": "email_notification"}
 
 
 @pytest.mark.asyncio

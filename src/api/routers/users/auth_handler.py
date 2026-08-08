@@ -9,7 +9,7 @@ never grants application access.
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Security
 from fastapi import Response as FastAPIResponse
 from sqlalchemy import and_, func, select
 from src.api.dependencies.rate_limit import (
@@ -46,7 +46,7 @@ from src.domain.models.user_models import (
 )
 from src.infra.auth.email_service import email_service
 from src.infra.auth.supabase_user_client import SupabaseAuthError, supabase_user_client
-from src.infra.auth.user_auth import user_auth
+from src.infra.auth.user_auth import user_auth, user_bearer
 from src.infra.config.constant import UserAuthErrors
 from src.infra.database.sessions import master_async_session_scope
 from src.infra.utils.logger import get_logger
@@ -317,9 +317,12 @@ async def user_login(
 
 
 @router.post(
+    # The bearer dependency documents and rejects missing auth at the route boundary;
+    # the handler still verifies the provider session and local organisation policy.
     "/{provider}/complete",
     response_model=GenericResponse[UserLoginResponse],
     tags=["user_auth"],
+    dependencies=[Security(user_bearer)],
 )
 async def user_external_auth_complete(
     provider: str,
@@ -614,9 +617,12 @@ async def reset_password(
 
 
 @router.post(
+    # Password setup is also an authenticated transition, even though the user is
+    # still completing the temporary-password flow.
     "/complete-password-setup",
     response_model=GenericResponse[None],
     tags=["user_auth"],
+    dependencies=[Security(user_bearer)],
 )
 async def complete_password_setup(
     request: Request,

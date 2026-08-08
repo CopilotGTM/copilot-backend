@@ -24,6 +24,13 @@ backend deliberately rejects an ambiguous linked OAuth session.
 
 The `/signup` UI uses the same provider sessions but a separate intent and endpoint:
 
+The external signup draft, join, finalise, and status endpoints require the verified provider
+session on every request:
+
+```http
+Authorization: Bearer <supabase-access-token>
+```
+
 | UI choice | Draft/resume | Finalise | Provider authority required |
 |---|---|---|---|
 | Continue with Google | `PUT /users/auth/google/signup/draft` | `POST /users/auth/google/signup` | verified email plus matching Google Workspace `hd` |

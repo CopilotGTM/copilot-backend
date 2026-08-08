@@ -117,6 +117,23 @@ async def test_mailbox_source_selection_requires_active_email_authority() -> Non
     assert "knowledge_integrations.integration_type in" in statement
 
 
+def test_mailbox_options_mark_inactive_connections_unselectable() -> None:
+    mailbox = SimpleNamespace(
+        integration_id=uuid4(),
+        integration_email="sales@example.com",
+        name="Sales",
+        integration_type=IntegrationType.MICROSOFT,
+        is_active=False,
+        requires_reauth=True,
+        credentials={"refresh_token": "token"},
+        scopes=["User.Read", "Mail.Read", "Mail.Send"],
+    )
+
+    assert AutomationTriggerOptionAccess._row_is_selectable("email_mailboxes", mailbox) is False
+    option = AutomationTriggerOptionAccess._format_mailbox(mailbox, False)
+    assert option.reason is None
+
+
 @pytest.mark.asyncio
 async def test_agent_source_selection_requires_active_accessible_agent() -> None:
     organisation_id, principal_id, agent_id = uuid4(), uuid4(), uuid4()
@@ -184,7 +201,12 @@ async def test_mailbox_search_returns_friendly_labels_and_cursor() -> None:
             integration_type=IntegrationType.GOOGLE,
             integration_email="sales@example.com",
             name="Sales",
-            credentials={},
+            is_active=True,
+            credentials={"refresh_token": "token"},
+            scopes=[
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/gmail.send",
+            ],
         ),
         KnowledgeIntegration(
             organisation_id=organisation_id,
@@ -192,7 +214,9 @@ async def test_mailbox_search_returns_friendly_labels_and_cursor() -> None:
             integration_type=IntegrationType.MICROSOFT,
             integration_email="renewals@example.com",
             name="Renewals",
-            credentials={},
+            is_active=True,
+            credentials={"refresh_token": "token"},
+            scopes=["User.Read", "Mail.Read", "Mail.Send"],
         ),
     ]
     session = RecordingSession([rows])
@@ -272,7 +296,7 @@ async def test_static_business_option_sources_validate_and_search_friendly_label
 
     items, cursor = await access.search_options(
         "agent_run_failure_statuses",
-        query="delivery",
+        query="validation",
         limit=25,
         offset=0,
         principal_id=uuid4(),
@@ -280,7 +304,9 @@ async def test_static_business_option_sources_validate_and_search_friendly_label
         authority_scoped=False,
     )
 
-    assert [(item.value, item.label) for item in items] == [("delivery_failed", "Delivery failed")]
+    assert [(item.value, item.label) for item in items] == [
+        ("validation_failed", "Output validation failed")
+    ]
     assert cursor is None
 
 

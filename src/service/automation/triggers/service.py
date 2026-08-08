@@ -53,6 +53,7 @@ from src.service.automation.triggers.options import (
 )
 from src.service.automation.triggers.registry import (
     AutomationRegistry,
+    TriggerDefinition,
     filter_field_principal_modes,
 )
 from src.service.automation.triggers.serializers import (
@@ -169,6 +170,7 @@ class AutomationTriggerService:
                     label=item.label,
                     status="active",
                     selectable=True,
+                    reason=item.reason,
                 )
                 for item in items
             ],
@@ -196,6 +198,8 @@ class AutomationTriggerService:
             contexts.append((source, authority_scoped, principal_id, organisation_scope, disclosed))
 
         batched: dict[tuple[str, bool, UUID, bool], set[str]] = {}
+        # Group identical authority contexts so a multi-control request performs
+        # one bounded lookup per source instead of one query per selected value.
         for request, context in zip(body.requests, contexts, strict=True):
             source, authority_scoped, principal_id, organisation_scope, _ = context
             batched.setdefault(
@@ -231,6 +235,7 @@ class AutomationTriggerService:
                             label=item.label,
                             status="active",
                             selectable=True,
+                            reason=item.reason,
                         )
                     )
                 elif item is not None and value in disclosed:
@@ -240,15 +245,19 @@ class AutomationTriggerService:
                             label=item.label,
                             status=cast(Any, item.status),
                             selectable=False,
+                            reason=item.reason,
                         )
                     )
                 else:
+                    # Keep the requested value in the response shape, but replace
+                    # its label with a safe explanation when it is no longer resolvable.
                     items.append(
                         AutomationTriggerOptionValue(
                             value=value,
                             label=None,
                             status="unavailable",
                             selectable=False,
+                            reason="This saved option is no longer available.",
                         )
                     )
             results.append(
@@ -439,10 +448,11 @@ class AutomationTriggerService:
                 "An equivalent trigger already exists",
                 status_code=409,
             ) from exc
-        detail = trigger_detail(
+        detail = await self._trigger_detail(
             trigger,
             current_target_revision=agent.revision,
             definition=validated.definition,
+            registry=self.validator.registry,
         )
         if issued_webhook_credentials is not None:
             detail.webhook_credentials = AutomationWebhookCredentials(
@@ -535,10 +545,11 @@ class AutomationTriggerService:
         if trigger is None:
             raise AutomationServiceError("Trigger not found", status_code=404)
         registry = (await self.registry_service.snapshot()).registry
-        return trigger_detail(
+        return await self._trigger_detail(
             trigger,
             current_target_revision=agent.revision,
             definition=registry.trigger(trigger.trigger_key),
+            registry=registry,
         )
 
     async def invoke_manual_trigger(
@@ -656,10 +667,11 @@ class AutomationTriggerService:
         )
         if updated is None:
             await self._raise_conditional_failure(agent_id, trigger_id, body.expected_updated_at)
-        detail = trigger_detail(
+        detail = await self._trigger_detail(
             updated,
             current_target_revision=agent.revision,
             definition=validated.definition,
+            registry=self.validator.registry,
         )
         if issued_webhook_credentials is not None:
             detail.webhook_credentials = AutomationWebhookCredentials(
@@ -765,10 +777,51 @@ class AutomationTriggerService:
         if updated is None:
             await self._raise_conditional_failure(agent_id, trigger_id, expected_updated_at)
         registry = (await self.registry_service.snapshot()).registry
-        return trigger_detail(
+        return await self._trigger_detail(
             updated,
             current_target_revision=agent.revision,
             definition=registry.trigger(updated.trigger_key),
+            registry=registry,
+        )
+
+    async def _trigger_detail(
+        self,
+        trigger: AutomationTrigger,
+        *,
+        current_target_revision: int,
+        definition: TriggerDefinition,
+        registry: AutomationRegistry,
+    ) -> AutomationTriggerDetail:
+        """Resolve business labels before serializing one trigger detail."""
+
+        organisation_scope = (
+            self._enum_value(trigger.execution_principal_type)
+            == AutomationPrincipalType.ORGANISATION_SERVICE.value
+        )
+        resolved: dict[tuple[str, str], TriggerOptionRecord] = {}
+        # Resolve labels under each trigger's saved authority; a broad tenant query
+        # here would disclose option names that the viewer cannot use or see.
+        for (source, authority_scoped), values in presentation_option_selections(
+            trigger,
+            definition,
+            registry,
+        ).items():
+            records = await self.options.resolve_options(
+                source,
+                values,
+                principal_id=trigger.execution_principal_id,
+                organisation_scope=organisation_scope,
+                authority_scoped=authority_scoped,
+            )
+            resolved.update(
+                {(source, value): records[value] for value in values if value in records}
+            )
+        return trigger_detail(
+            trigger,
+            current_target_revision=current_target_revision,
+            definition=definition,
+            registry=registry,
+            resolved_options=resolved,
         )
 
     async def archive_trigger(

@@ -23,6 +23,11 @@ _WHATSAPP_JOB_AGE: Any = None
 _WHATSAPP_PROCESSING_COUNT: Any = None
 _WHATSAPP_SEND_COUNT: Any = None
 _WHATSAPP_SEND_ATTEMPTS: Any = None
+_AGENT_RUN_DELIVERY_COUNT: Any = None
+_AGENT_RUN_DELIVERY_ATTEMPTS: Any = None
+_AGENT_RUN_DELIVERY_LATENCY: Any = None
+_AGENT_RUN_DELIVERY_RECOVERY_COUNT: Any = None
+_AGENT_RUN_DELIVERY_RECOVERY_AGE: Any = None
 
 _init_lock = Lock()
 
@@ -33,6 +38,25 @@ _WHATSAPP_RECOVERY_OUTCOMES = frozenset({"completed", "failed"})
 _WHATSAPP_JOB_STATUSES = frozenset({"pending", "in_progress"})
 _WHATSAPP_PROCESSING_OUTCOMES = frozenset({"completed", "agent_failed", "worker_failed"})
 _WHATSAPP_SEND_OUTCOMES = frozenset({"sent", "retryable", "terminal", "ambiguous"})
+# Keep delivery dimensions bounded and identifier-free; run, tenant, and recipient
+# IDs would make the metrics backend high-cardinality and unsuitable for SLOs.
+_AGENT_RUN_DELIVERY_OUTCOMES = frozenset(
+    {"created", "sent", "failed", "needs_attention", "retry", "skipped"}
+)
+_AGENT_RUN_DELIVERY_PROVIDERS = frozenset({"resend", "unknown"})
+_AGENT_RUN_DELIVERY_RECOVERY_OUTCOMES = frozenset({"scanned", "reclaimed", "dispatched", "skipped"})
+_AGENT_RUN_DELIVERY_RECOVERY_STATUSES = frozenset({"pending", "sending"})
+_AGENT_RUN_DELIVERY_REASONS = frozenset(
+    {
+        "none",
+        "delivery_outcome_unknown",
+        "empty_output",
+        "invalid_delivery_config",
+        "invalid_recipient",
+        "platform_email_not_configured",
+        "recipient_unavailable",
+    }
+)
 
 
 def _ensure_http_instruments() -> None:
@@ -173,6 +197,56 @@ def _ensure_whatsapp_instruments() -> None:
             )
 
 
+def _ensure_agent_run_delivery_instruments() -> None:
+    """Create delivery instruments lazily under the shared initialization lock."""
+    global _AGENT_RUN_DELIVERY_COUNT
+    global _AGENT_RUN_DELIVERY_ATTEMPTS, _AGENT_RUN_DELIVERY_LATENCY
+    global _AGENT_RUN_DELIVERY_RECOVERY_COUNT, _AGENT_RUN_DELIVERY_RECOVERY_AGE
+    if all(
+        instrument is not None
+        for instrument in (
+            _AGENT_RUN_DELIVERY_COUNT,
+            _AGENT_RUN_DELIVERY_ATTEMPTS,
+            _AGENT_RUN_DELIVERY_LATENCY,
+            _AGENT_RUN_DELIVERY_RECOVERY_COUNT,
+            _AGENT_RUN_DELIVERY_RECOVERY_AGE,
+        )
+    ):
+        return
+    with _init_lock:
+        meter = metrics.get_meter("copilotgtm.observability")
+        if _AGENT_RUN_DELIVERY_COUNT is None:
+            _AGENT_RUN_DELIVERY_COUNT = meter.create_counter(
+                "copilotgtm.agent_run.delivery.count",
+                description="Agent output delivery outcomes by bounded channel and reason.",
+                unit="{delivery}",
+            )
+        if _AGENT_RUN_DELIVERY_ATTEMPTS is None:
+            _AGENT_RUN_DELIVERY_ATTEMPTS = meter.create_histogram(
+                "copilotgtm.agent_run.delivery.attempts",
+                description="Worker claims used by terminal agent output deliveries.",
+                unit="{attempt}",
+            )
+        if _AGENT_RUN_DELIVERY_LATENCY is None:
+            _AGENT_RUN_DELIVERY_LATENCY = meter.create_histogram(
+                "copilotgtm.agent_run.delivery.latency",
+                description="Time from agent completion to a delivery outcome.",
+                unit="ms",
+            )
+        if _AGENT_RUN_DELIVERY_RECOVERY_COUNT is None:
+            _AGENT_RUN_DELIVERY_RECOVERY_COUNT = meter.create_counter(
+                "copilotgtm.agent_run.delivery.recovery.count",
+                description="Delivery recovery rows by bounded sweep outcome.",
+                unit="{row}",
+            )
+        if _AGENT_RUN_DELIVERY_RECOVERY_AGE is None:
+            _AGENT_RUN_DELIVERY_RECOVERY_AGE = meter.create_histogram(
+                "copilotgtm.agent_run.delivery.recovery.age",
+                description="Age of pending deliveries and stale sending leases.",
+                unit="s",
+            )
+
+
 def _status_family(status_code: int) -> str:
     return f"{status_code // 100}xx"
 
@@ -308,7 +382,54 @@ def record_whatsapp_send(outcome: str, *, attempts: int | None = None) -> None:
         )
 
 
+def record_agent_run_delivery(
+    outcome: str,
+    *,
+    provider: str | None = None,
+    reason: str | None = None,
+    attempts: int | None = None,
+    latency_ms: int | None = None,
+) -> None:
+    """Record one delivery outcome without tenant, run, mailbox, or recipient labels."""
+
+    _ensure_agent_run_delivery_instruments()
+    attributes = {
+        "channel": "email",
+        "outcome": _bounded(outcome, _AGENT_RUN_DELIVERY_OUTCOMES),
+        "provider": _bounded(provider or "unknown", _AGENT_RUN_DELIVERY_PROVIDERS),
+        "reason": _bounded(reason or "none", _AGENT_RUN_DELIVERY_REASONS),
+    }
+    _AGENT_RUN_DELIVERY_COUNT.add(1, attributes)
+    if attempts is not None:
+        _AGENT_RUN_DELIVERY_ATTEMPTS.record(max(attempts, 0), attributes)
+    if latency_ms is not None:
+        _AGENT_RUN_DELIVERY_LATENCY.record(max(latency_ms, 0), attributes)
+
+
+def record_agent_run_delivery_recovery(outcome: str, *, rows: int = 1) -> None:
+    """Count recovery rows without tenant, run, or mailbox identifiers."""
+
+    _ensure_agent_run_delivery_instruments()
+    _AGENT_RUN_DELIVERY_RECOVERY_COUNT.add(
+        max(rows, 0),
+        {"outcome": _bounded(outcome, _AGENT_RUN_DELIVERY_RECOVERY_OUTCOMES)},
+    )
+
+
+def record_agent_run_delivery_recovery_age(status: str, age_seconds: float) -> None:
+    """Observe pending-row or stale-lease age with a bounded status label."""
+
+    _ensure_agent_run_delivery_instruments()
+    _AGENT_RUN_DELIVERY_RECOVERY_AGE.record(
+        max(age_seconds, 0.0),
+        {"status": _bounded(status, _AGENT_RUN_DELIVERY_RECOVERY_STATUSES)},
+    )
+
+
 __all__ = [
+    "record_agent_run_delivery",
+    "record_agent_run_delivery_recovery",
+    "record_agent_run_delivery_recovery_age",
     "record_celery_task_memory",
     "record_celery_task_run",
     "record_http_server_request",

@@ -9,10 +9,11 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from src.domain.models.organisation_tables import AgentRun, AgentRunStatus
 from src.service.automation.events.contracts import AutomationEventEnvelope
 
+# AgentRun describes model execution only; notification outcomes are recorded in
+# NotificationDelivery and must not create a second run lifecycle state machine.
 _OUTCOME_BY_STATUS = {
     AgentRunStatus.SUCCEEDED.value: "completed",
     AgentRunStatus.FAILED.value: "failed",
-    AgentRunStatus.DELIVERY_FAILED.value: "failed",
     AgentRunStatus.VALIDATION_FAILED.value: "failed",
     AgentRunStatus.CANCELLED.value: "cancelled",
 }

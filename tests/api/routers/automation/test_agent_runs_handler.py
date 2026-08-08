@@ -7,8 +7,14 @@ from uuid import uuid4
 
 import pytest
 from fastapi import Response as FastAPIResponse
+from src.api.routers.automation import runs_handler
 from src.api.routers.automation.runs_handler import get_agent_run, list_agent_runs
-from src.api.schemas.agent_run_models import AgentRunDetail, AgentRunListResponse
+from src.api.schemas.agent_run_models import (
+    AgentRunDeliveryRetryRequest,
+    AgentRunDeliveryRetryResponse,
+    AgentRunDetail,
+    AgentRunListResponse,
+)
 from src.domain.models.organisation_tables import (
     AgentRunStatus,
     AutomationAudienceMode,
@@ -19,16 +25,27 @@ from src.domain.models.organisation_tables import (
 class Session:
     """Represent the Session test double used by the surrounding regression cases."""
 
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
     async def close(self) -> None:
         """Expose the close operation expected by the Session test double."""
         return None
+
+    async def commit(self) -> None:
+        self.events.append("commit")
+
+    async def rollback(self) -> None:
+        self.events.append("rollback")
 
 
 class Service:
     """Represent the Service test double used by the surrounding regression cases."""
 
     def __init__(self) -> None:
-        self.session = Session()
+        self.events: list[str] = []
+        self.session = Session(self.events)
+        self.organisation_id = uuid4()
         event_id = uuid4()
         principal_id = uuid4()
         self.detail = AgentRunDetail(
@@ -84,6 +101,17 @@ class Service:
         """Expose the get run operation expected by the Service test double."""
         return self.detail
 
+    async def retry_delivery(self, run_id, delivery_id):
+        self.events.append("requeue")
+        return (
+            AgentRunDeliveryRetryResponse(
+                run_id=run_id,
+                status="pending",
+                delivery_count=1,
+            ),
+            (delivery_id,),
+        )
+
 
 @pytest.mark.asyncio
 async def test_list_runs_is_read_only() -> None:
@@ -116,3 +144,32 @@ async def test_get_run_returns_full_metadata() -> None:
 
     assert result.data.run_id == service.detail.run_id
     assert result.data.token_usage == {"total_tokens": 12}
+
+
+@pytest.mark.asyncio
+async def test_retry_delivery_commits_before_publication(monkeypatch) -> None:
+    assert hasattr(runs_handler, "retry_agent_run_delivery")
+    service = Service()
+    delivery_id = uuid4()
+
+    async def publish(task_name, **kwargs):
+        service.events.append("publish")
+        assert service.events == ["requeue", "commit", "publish"]
+        assert task_name == "chat.deliver_agent_run"
+        assert kwargs["kwargs"]["organisation_id"] == str(service.organisation_id)
+        assert "delivery_id" in kwargs["kwargs"]
+        assert "run_id" not in kwargs["kwargs"]
+
+    monkeypatch.setattr(runs_handler, "send_chat_task_async", publish)
+
+    result = await runs_handler.retry_agent_run_delivery(
+        run_id=service.detail.run_id,
+        body=AgentRunDeliveryRetryRequest(delivery_id=delivery_id),
+        response=FastAPIResponse(),
+        service=service,
+        _rl_write=None,
+    )
+
+    assert result.status == "SUCCESS"
+    assert result.data.status == "pending"
+    assert result.data.delivery_count == 1

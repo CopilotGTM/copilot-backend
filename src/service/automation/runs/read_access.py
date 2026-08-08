@@ -9,6 +9,8 @@ from uuid import UUID
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.organisation_tables import AgentRun, AgentRunStatus
+from src.domain.models.organisation_tables.sync import NotificationDelivery
+from src.service.automation.runs.delivery_access import AgentRunDeliveryAccess
 
 
 class AgentRunReadAccess:
@@ -26,6 +28,8 @@ class AgentRunReadAccess:
 
     def _visible_conditions(self) -> list[Any]:
         columns = cast(Any, AgentRun).__table__.c
+        # The organization predicate is the isolation boundary; the supplied run
+        # or agent IDs below only narrow rows already inside this tenant.
         explicit_audience = columns.audience_config.contains(
             {"user_ids": [str(self.audience_user_id)]}
         )
@@ -93,3 +97,57 @@ class AgentRunReadAccess:
             columns.run_id == run_id,
         )
         return (await self.session.execute(statement)).scalars().first()
+
+    async def list_deliveries(self, run_ids: list[UUID]) -> dict[UUID, list[NotificationDelivery]]:
+        """Return delivery rows only for the already-authorized run page."""
+
+        if not run_ids:
+            return {}
+        columns = cast(Any, NotificationDelivery).__table__.c
+        # These IDs came from the visibility-filtered run page, but the tenant and
+        # source predicates remain on this query so the ledger is safe in isolation.
+        statement = select(NotificationDelivery).where(
+            columns.organisation_id == self.organisation_id,
+            columns.notification_type == "agent_output_ready",
+            columns.source_type == "agent_run",
+            columns.source_id.in_(run_ids),
+            columns.channel == "email",
+        )
+        rows = (await self.session.execute(statement)).scalars().all()
+        result: dict[UUID, list[NotificationDelivery]] = {}
+        for row in rows:
+            result.setdefault(row.source_id, []).append(row)
+        return result
+
+    async def get_deliveries(self, run_id: UUID) -> list[NotificationDelivery]:
+        """Return tenant-scoped notification rows after run visibility was checked."""
+
+        columns = cast(Any, NotificationDelivery).__table__.c
+        # Reapply the tenant boundary because run_id is an externally supplied API
+        # identifier and cannot authorize a cross-tenant delivery lookup.
+        statement = select(NotificationDelivery).where(
+            columns.organisation_id == self.organisation_id,
+            columns.notification_type == "agent_output_ready",
+            columns.source_type == "agent_run",
+            columns.source_id == run_id,
+            columns.channel == "email",
+        )
+        return list((await self.session.execute(statement)).scalars().all())
+
+    async def requeue_repairable_delivery(
+        self,
+        run_id: UUID,
+        delivery_id: UUID,
+        *,
+        expected_error_code: str,
+    ) -> UUID | None:
+        """Requeue one visible repairable delivery through the fenced ledger access."""
+
+        return await AgentRunDeliveryAccess(
+            self.session,
+            self.organisation_id,
+        ).requeue_repairable_delivery(
+            run_id,
+            delivery_id,
+            expected_error_code=expected_error_code,
+        )

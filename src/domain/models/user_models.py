@@ -1,6 +1,13 @@
+"""Client-facing contracts for user authentication and realtime sessions.
+
+These models are shared by the HTTP routes and generated API schemas. Literal
+status values document the small state machine the mobile and web clients may
+rely on instead of accepting arbitrary server strings.
+"""
+
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, EmailStr
@@ -179,4 +186,4 @@ class UserRealtimeCallAttachResponse(BaseModel):
     call_id: str
     chat_session_id: str
     control_mode: RealtimeControlMode
-    status: str
+    status: Literal["queued"]

@@ -22,6 +22,7 @@ from src.api.schemas.automation_trigger_models import (
     TriggerCatalogSourceSelector,
     TriggerCatalogValueOption,
     TriggerCatalogWatchField,
+    TriggerDeliveryChannel,
 )
 from src.domain.models.organisation_tables.sync.meeting_intelligence import MeetingSource
 from src.service.automation.triggers.matcher import (
@@ -105,6 +106,32 @@ def build_trigger_catalog(
     ]
     return AutomationTriggerCatalog(
         categories=categories,
+        # Delivery choices are catalog-owned: email always uses the platform
+        # sender, while recipients come from the saved execution audience.
+        delivery_channels=[
+            TriggerDeliveryChannel(
+                key="none",
+                label="Run history only",
+                description="Keep the completed output in CopilotGTM.",
+                principal_modes=["personal", "organisation"],
+            ),
+            TriggerDeliveryChannel(
+                key="email_notification",
+                label="Email notification",
+                description=(
+                    "CopilotGTM emails the complete final Markdown output and run context "
+                    "after a successful run."
+                ),
+                principal_modes=["personal", "organisation"],
+                sender_mode="platform",
+                recipient_mode_by_principal={
+                    "personal": "execution_principal",
+                    "organisation": "run_audience",
+                },
+                requires_audience_modes=["explicit_users", "subject_participants"],
+                body_source="agent_output_markdown",
+            ),
+        ],
         limits=AutomationTriggerCatalogLimits(
             webhook_max_body_bytes=WEBHOOK_MAX_BODY_BYTES,
             max_direct_subject_ids=100,
@@ -133,7 +160,8 @@ def build_trigger_catalog(
                     TriggerCatalogValueOption(value=value, label=label)
                     for value, label in (
                         ("failed", "Execution failed"),
-                        ("delivery_failed", "Delivery failed"),
+                        # Delivery failures are rendered from the notification
+                        # ledger and are not agent execution statuses.
                         ("validation_failed", "Output validation failed"),
                     )
                 ],

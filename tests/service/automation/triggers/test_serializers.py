@@ -101,6 +101,34 @@ def test_trigger_summary_presents_resolved_labels_without_stable_ids() -> None:
     assert owner_id not in summary.model_dump_json()
 
 
+def test_trigger_summary_presents_platform_email_notification() -> None:
+    trigger = _trigger(
+        delivery_config={"mode": "email_notification"},
+    )
+
+    summary = trigger_summary(trigger, current_target_revision=1)
+
+    assert summary.presentation.delivery_summary == "Email you from CopilotGTM"
+    assert summary.presentation.delivery_mode == "email_notification"
+    assert summary.presentation.delivery_status == "active"
+    assert summary.presentation.delivery_reason is None
+
+
+def test_organisation_email_notification_presents_the_saved_audience() -> None:
+    trigger = _trigger(
+        execution_principal_type="organisation_service",
+        audience_mode="explicit_users",
+        audience_config={"user_ids": [str(uuid4()), str(uuid4())]},
+        delivery_config={"mode": "email_notification"},
+    )
+
+    summary = trigger_summary(trigger, current_target_revision=1)
+
+    assert summary.presentation.delivery_summary == "Email 2 audience members from CopilotGTM"
+    assert summary.presentation.delivery_mode == "email_notification"
+    assert summary.presentation.delivery_status == "active"
+
+
 def test_trigger_detail_returns_only_user_decisions_for_a_semantic_preset() -> None:
     definition = AUTOMATION_REGISTRY.trigger("crm.deal.entered_stage")
     fixed = definition.compile({"stage_id": "stage-1"})

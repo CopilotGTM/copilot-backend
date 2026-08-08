@@ -557,8 +557,11 @@ class AutomationTriggerActivationService:
 
 
 def _trigger_snapshot(trigger: AutomationTrigger) -> dict[str, Any]:
+    # Keep the display name beside the execution contract so later delivery and
+    # history rendering never depend on a mutable trigger row.
     return {
         "trigger_id": str(trigger.trigger_id),
+        "name": trigger.name,
         "trigger_key": trigger.trigger_key,
         "family": _value(trigger.family),
         "match_event_keys": list(trigger.match_event_keys),

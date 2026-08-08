@@ -10,14 +10,19 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.organisation_tables import (
     AgentRun,
     AgentRunStatus,
     AutomationTrigger,
+)
+from src.domain.models.organisation_tables.sync import (
+    NotificationDelivery,
+    NotificationDeliveryChannel,
 )
 
 
@@ -186,6 +191,58 @@ class AgentRunClaimAccess:
             .values(values)
         )
 
+    async def ensure_deliveries(self, run: AgentRun) -> tuple[UUID, ...]:
+        """Insert one platform-email intent for every immutable run recipient."""
+
+        # Recipients come from the pinned run audience, not a live trigger or user
+        # lookup; replaying completion must preserve the same delivery identities.
+        recipient_ids = _delivery_recipient_ids(run)
+        columns = cast(Any, NotificationDelivery).__table__.c
+        delivery_ids: list[UUID] = []
+        for recipient_id in recipient_ids:
+            delivery_id = uuid4()
+            identity = {
+                "organisation_id": self.organisation_id,
+                "notification_type": "agent_output_ready",
+                "source_type": "agent_run",
+                "source_id": run.run_id,
+                "channel": NotificationDeliveryChannel.EMAIL.value,
+                "target_key": str(recipient_id),
+            }
+            created = (
+                await self.session.execute(
+                    insert(NotificationDelivery)
+                    .values(
+                        delivery_id=delivery_id,
+                        **identity,
+                        delivery_metadata={"template_version": 1},
+                    )
+                    .on_conflict_do_nothing(
+                        # The unique source/channel/target key makes completion
+                        # idempotent when a worker finalization is replayed.
+                        index_elements=[
+                            columns.organisation_id,
+                            columns.notification_type,
+                            columns.source_type,
+                            columns.source_id,
+                            columns.channel,
+                            columns.target_key,
+                        ]
+                    )
+                    .returning(columns.delivery_id)
+                )
+            ).scalar_one_or_none()
+            if created is None:
+                created = (
+                    await self.session.execute(
+                        select(columns.delivery_id).where(
+                            *(columns[key] == value for key, value in identity.items())
+                        )
+                    )
+                ).scalar_one()
+            delivery_ids.append(cast(UUID, created))
+        return tuple(delivery_ids)
+
     async def list_dispatchable_run_ids(
         self,
         *,
@@ -196,6 +253,8 @@ class AgentRunClaimAccess:
 
         if not 1 <= limit <= 1000:
             raise ValueError("limit must be between 1 and 1000")
+        # Recovery is intentionally bounded so one organization cannot monopolize
+        # the sweep; the next tick continues from the ordered keyset.
         columns = cast(Any, AgentRun).__table__.c
         statement = (
             select(columns.run_id)
@@ -216,3 +275,15 @@ class AgentRunClaimAccess:
             .limit(limit)
         )
         return list((await self.session.execute(statement)).scalars().all())
+
+
+def _delivery_recipient_ids(run: AgentRun) -> tuple[UUID, ...]:
+    """Resolve recipients from the immutable execution principal or run audience."""
+
+    if str(getattr(run.execution_principal_type, "value", run.execution_principal_type)) == "user":
+        return (run.execution_principal_id,)
+    values = run.audience_config.get("user_ids", [])
+    recipients = tuple(sorted({UUID(str(value)) for value in values}, key=str))
+    if not recipients:
+        raise ValueError("organisation email notification requires a pinned run audience")
+    return recipients

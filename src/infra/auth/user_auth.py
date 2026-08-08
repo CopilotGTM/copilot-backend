@@ -1,7 +1,15 @@
+"""FastAPI authentication dependency backed by Supabase and local policy.
+
+The provider verifies the bearer token, then this module rechecks the local
+user and organisation state. Database sessions are released before returning
+so authentication does not pin a connection for the rest of the request.
+"""
+
 import secrets
 import string
 
-from fastapi import HTTPException, Request, status
+from fastapi import HTTPException, Request, Security, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from src.domain.models.master_tables import Organisation, User
 from src.infra.auth.supabase_user_client import SupabaseAuthError, supabase_user_client
@@ -11,6 +19,8 @@ from src.infra.utils.logger import get_logger
 from src.service.users.auth_access_service import AuthAccessError, AuthAccessService
 
 logger = get_logger(__name__)
+
+user_bearer = HTTPBearer(auto_error=False, scheme_name="UserBearerAuth")
 
 
 class UserAuth:
@@ -101,7 +111,8 @@ class UserAuth:
             HTTPException: If authentication fails
         """
         try:
-            # Get authorization header
+            # Read the bearer header before the provider call; missing credentials
+            # are an authentication failure, not a database lookup case.
             auth_header = request.headers.get("Authorization")
             if not auth_header or not auth_header.startswith("Bearer "):
                 raise HTTPException(
@@ -184,10 +195,17 @@ class UserAuth:
                 detail=UserAuthErrors.AUTHENTICATION_FAILED,
             ) from e
 
-    async def __call__(self, request: Request) -> User:
+    async def __call__(
+        self,
+        request: Request,
+        # FastAPI uses this dependency to publish the bearer scheme in OpenAPI;
+        # get_current_user still performs the actual token and policy checks.
+        _credentials: HTTPAuthorizationCredentials | None = Security(user_bearer),
+    ) -> User:
         """FastAPI dependency to get current authenticated user from Supabase token."""
         return await self.get_current_user(request)
 
 
-# Create a global instance
+# Keep one dependency instance so route wiring shares the same Supabase client
+# and authentication policy without rebuilding it per request.
 user_auth = UserAuth()

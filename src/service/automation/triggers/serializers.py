@@ -1,9 +1,16 @@
-"""Public response mapping for persisted automation triggers."""
+"""Serialize persisted trigger bindings into safe, business-readable responses.
+
+The serializer keeps stable IDs available for actions while resolving labels
+through the same registry and authority context used during validation. Saved
+values that are no longer selectable are surfaced as warnings rather than
+silently rewritten.
+"""
 
 from collections.abc import Mapping
 from typing import Any, Literal
 from uuid import UUID
 
+from pydantic import TypeAdapter
 from src.api.schemas.automation_trigger_models import (
     AutomationTriggerDetail,
     AutomationTriggerPresentation,
@@ -30,6 +37,10 @@ from src.service.automation.triggers.registry import (
     filter_field_group,
 )
 from src.service.automation.triggers.webhook import public_webhook_config
+
+# The discriminator adapter keeps old or malformed JSON from being silently
+# coerced into a different delivery mode when a trigger is read back.
+_DELIVERY_ADAPTER = TypeAdapter(TriggerDeliveryDecision)
 
 
 def _value(value: object) -> str:
@@ -100,6 +111,8 @@ def trigger_detail(
     *,
     current_target_revision: int,
     definition: TriggerDefinition,
+    registry: AutomationRegistry = AUTOMATION_REGISTRY,
+    resolved_options: Mapping[tuple[str, str], TriggerOptionRecord] | None = None,
 ) -> AutomationTriggerDetail:
     """Build the complete owner-visible trigger definition."""
 
@@ -107,6 +120,8 @@ def trigger_detail(
         trigger,
         current_target_revision=current_target_revision,
         definition=definition,
+        registry=registry,
+        resolved_options=resolved_options,
     )
     config = public_webhook_config(trigger.trigger_config)
     try:
@@ -134,7 +149,7 @@ def trigger_detail(
             user_ids=trigger.audience_config.get("user_ids", []),
         ),
         task=TriggerTaskDecision.model_validate(trigger.task_config),
-        delivery=TriggerDeliveryDecision.model_validate(trigger.delivery_config),
+        delivery=_DELIVERY_ADAPTER.validate_python(trigger.delivery_config),
         config_hash=trigger.config_hash,
     )
 
@@ -150,6 +165,9 @@ def _trigger_presentation(
     rule = trigger_rule_presentation(definition)
     warnings: list[str] = []
     source_summary = _source_summary(trigger, definition, principal_mode, resolved, warnings)
+    # Delivery copy is derived from server-owned config and audience state; it
+    # must not invent a recipient label from an inaccessible saved ID.
+    delivery_summary, delivery_status, delivery_reason = _delivery_presentation(trigger)
     conditions = _condition_presentations(
         trigger,
         definition,
@@ -166,6 +184,14 @@ def _trigger_presentation(
         or "Saved execution scope",
         built_in_rule=rule.summary if rule else None,
         source_summary=source_summary,
+        delivery_mode=(
+            "email_notification"
+            if trigger.delivery_config.get("mode") == "email_notification"
+            else "none"
+        ),
+        delivery_summary=delivery_summary,
+        delivery_status=delivery_status,
+        delivery_reason=delivery_reason,
         conditions=conditions,
         warnings=list(dict.fromkeys(warnings)),
     )
@@ -219,6 +245,22 @@ def presentation_option_selections(
         values = value if isinstance(value, list) else ([] if value is None else [value])
         selections.setdefault((source, False), set()).update(str(item) for item in values)
     return selections
+
+
+def _delivery_presentation(
+    trigger: AutomationTrigger,
+) -> tuple[str, Literal["active", "needs_attention"], str | None]:
+    """Describe the saved delivery mode without exposing recipient identities."""
+
+    delivery = trigger.delivery_config
+    if delivery.get("mode") != "email_notification":
+        return "Run history only", "active", None
+    if _principal_mode(trigger) == "personal":
+        return "Email you from CopilotGTM", "active", None
+    count = len(trigger.audience_config.get("user_ids", []))
+    if _value(trigger.audience_mode) == "subject_participants":
+        return "Email internal subject participants from CopilotGTM", "active", None
+    return f"Email {count} audience members from CopilotGTM", "active", None
 
 
 def _source_summary(

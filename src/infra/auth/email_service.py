@@ -1,5 +1,14 @@
+"""Platform email composition and provider-boundary error classification.
+
+Authentication, signup, and notification workers call this service through one
+process-wide sender. Configuration is resolved lazily, while provider responses
+are classified so durable delivery workers can distinguish safe retries from an
+unknown send outcome.
+"""
+
 import datetime
 import os
+from email.utils import formataddr, parseaddr
 from html import escape as html_escape
 
 import resend
@@ -9,6 +18,16 @@ from src.infra.utils.logger import get_logger
 logger = get_logger()
 
 
+class PlatformEmailSendError(RuntimeError):
+    """Safe provider-boundary failure classification for durable notification workers."""
+
+    def __init__(self, code: str, message: str, *, safe_to_retry: bool) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.safe_to_retry = safe_to_retry
+
+
 class EmailService:
     """Email service using Resend for sending notifications to admins.
 
@@ -16,8 +35,14 @@ class EmailService:
     """
 
     def __init__(self):
-        self.from_email = os.getenv("FROM_EMAIL", "noreply@copilotgtm.com")
         self.app_name = os.getenv("APP_NAME", "CopilotGTM")
+        configured_sender = os.getenv("FROM_EMAIL", "noreply@copilotgtm.com")
+        display_name, address = parseaddr(configured_sender)
+        # Add the product name only to a bare address; an explicitly configured
+        # display name is part of the deployment contract and must be preserved.
+        self.from_email = (
+            configured_sender if display_name else formataddr((self.app_name, address))
+        )
         self.app_url = os.getenv("APP_URL", "https://app.copilotgtm.com")
         self.admin_app_url = os.getenv("ADMIN_APP_URL", "https://admin.copilotgtm.com")
         self.web_app_url = os.getenv("WEB_APP_URL", "https://www.copilotgtm.com")
@@ -47,13 +72,17 @@ class EmailService:
     def _create_styled_html(self, title: str, preheader: str, content: str) -> str:
         """Creates a styled HTML email body."""
         current_year = datetime.datetime.now().year
+        # Header text is caller-controlled; content is already assembled as the
+        # service's intended safe HTML and must keep its formatting.
+        safe_title = html_escape(title)
+        safe_preheader = html_escape(preheader)
         return f"""
         <!DOCTYPE html>
         <html>
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>{title}</title>
+            <title>{safe_title}</title>
             <style>
                 body {{ font-family: Arial, sans-serif; margin: 0; padding: 0; background-color: #f4f4f4; }}
                 .container {{ max-width: 600px; margin: 20px auto; padding: 20px; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
@@ -70,7 +99,7 @@ class EmailService:
             </style>
         </head>
         <body>
-            <div class="hidden-preheader">{preheader}</div>
+            <div class="hidden-preheader">{safe_preheader}</div>
             <div class="container">
                 <div class="header">
                     <h1>{self.app_name}</h1>
@@ -96,28 +125,83 @@ class EmailService:
         cc: list[str] | None = None,
     ) -> bool:
         """Send an email using Resend."""
-        if not await self._ensure_configured():
-            logger.error("Email service not configured. Cannot send email.")
-            return False
-
         try:
-            email_data = {
-                "from": self.from_email,
-                "to": [to_email],
-                "subject": subject,
-                "html": html_content,
-            }
-            if text_content:
-                email_data["text"] = text_content
-            if cc:
-                email_data["cc"] = cc
-
-            resend.Emails.send(email_data)
-            logger.info(f"Email sent successfully to {to_email} via Resend")
+            # Keep the legacy boolean API for existing callers while routing the
+            # actual send through the receipt-aware error classification boundary.
+            await self.send_email_with_receipt(
+                to_email=to_email,
+                subject=subject,
+                html_content=html_content,
+                text_content=text_content,
+                cc=cc,
+            )
             return True
-        except Exception as e:
-            logger.error(f"Failed to send email to {to_email}: {str(e)}")
+        except RuntimeError:
             return False
+
+    async def send_email_with_receipt(
+        self,
+        *,
+        to_email: str,
+        subject: str,
+        html_content: str,
+        text_content: str | None = None,
+        cc: list[str] | None = None,
+        idempotency_key: str | None = None,
+    ) -> str:
+        """Send through the platform account and return the provider resource ID."""
+
+        if not await self._ensure_configured():
+            # A missing deployment secret is retryable because configuration may
+            # arrive before the durable delivery's next attempt.
+            logger.error("Email service is not configured")
+            raise PlatformEmailSendError(
+                "platform_email_not_configured",
+                "Platform email is not configured",
+                safe_to_retry=True,
+            )
+        email_data: resend.Emails.SendParams = {
+            "from": self.from_email,
+            "to": [to_email],
+            "subject": subject,
+            "html": html_content,
+        }
+        if text_content:
+            email_data["text"] = text_content
+        if cc:
+            email_data["cc"] = cc
+        try:
+            # The delivery ledger supplies this key on retries so the provider can
+            # deduplicate a repeated request instead of sending a second message.
+            response = (
+                resend.Emails.send(
+                    email_data,
+                    {"idempotency_key": idempotency_key},
+                )
+                if idempotency_key
+                else resend.Emails.send(email_data)
+            )
+            provider_id = (
+                response.get("id") if isinstance(response, dict) else getattr(response, "id", None)
+            )
+            if not provider_id:
+                raise PlatformEmailSendError(
+                    "delivery_outcome_unknown",
+                    "Provider outcome is unknown",
+                    safe_to_retry=False,
+                )
+            logger.info("Transactional email accepted by provider")
+            return str(provider_id)
+        except PlatformEmailSendError:
+            logger.error("Transactional email provider outcome is unknown")
+            raise
+        except Exception as exc:
+            logger.error("Transactional email provider request failed")
+            raise PlatformEmailSendError(
+                "delivery_outcome_unknown",
+                "Provider outcome is unknown",
+                safe_to_retry=False,
+            ) from exc
 
     async def send_super_admin_creation_email(
         self, to_email: str, first_name: str, temp_password: str
@@ -450,5 +534,6 @@ class EmailService:
         return await self.send_email(to_email, subject, html_content, text_content)
 
 
-# Create global instance
+# Share one lazily configured sender so all email callers use the same branding
+# and provider configuration without performing setup during module import.
 email_service = EmailService()

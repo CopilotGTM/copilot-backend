@@ -38,6 +38,7 @@ from src.infra.database.sessions import (
     acquire_master_async_session,
     acquire_org_async_session,
 )
+from src.infra.observability.metrics import record_agent_run_delivery
 from src.infra.utils.logger import get_logger
 from src.service.automation.producers.meeting import load_meeting_event_context
 from src.service.automation.runs.claim_service import (
@@ -51,11 +52,27 @@ from src.service.automation.runs.runtime_executor import (
 )
 from src.service.automation.triggers.direct import crm_user_ids_for_principal
 from src.service.automation.triggers.runtime import AgentRunRuntimeEnvelope
+from src.workers.chat_worker.client import send_chat_task_async
 
 logger = get_logger("agent_run_execution")
 
 SessionScope = Callable[[UUID], AsyncIterator[AsyncSession]]
 ContextLoader = Callable[[AgentRunRuntimeEnvelope], Awaitable[AgentContext]]
+DeliveryPublisher = Callable[[UUID, UUID], Awaitable[None]]
+
+
+async def _publish_delivery(organisation_id: UUID, delivery_id: UUID) -> None:
+    """Publish a committed delivery identity to the provider-facing worker queue."""
+
+    await send_chat_task_async(
+        "chat.deliver_agent_run",
+        kwargs={
+            "organisation_id": str(organisation_id),
+            "delivery_id": str(delivery_id),
+        },
+        queue="chat_messages",
+        routing_key="chat_messages",
+    )
 
 
 class AgentRunExecutionService:
@@ -70,6 +87,7 @@ class AgentRunExecutionService:
         lifecycle_factory: Callable[[AsyncSession, UUID], Any] = AgentRunLifecycleService,
         executor: AgentRunExecutor | None = None,
         context_loader: ContextLoader | None = None,
+        delivery_publisher: DeliveryPublisher | None = None,
     ) -> None:
         self.organisation_id = organisation_id
         self.session_scope = session_scope
@@ -77,6 +95,7 @@ class AgentRunExecutionService:
         self.lifecycle_factory = lifecycle_factory
         self.executor = executor or AgentRunExecutor()
         self.context_loader = context_loader or self._load_context
+        self.delivery_publisher = delivery_publisher or _publish_delivery
 
     async def execute(
         self,
@@ -85,7 +104,11 @@ class AgentRunExecutionService:
         worker_id: str,
         retry_allowed: bool,
     ) -> dict[str, Any]:
-        """Execute one run and return whether Celery should retry its delivery."""
+        """Execute one claimed run and publish only delivery rows committed with it.
+
+        A failed delivery publication is recoverable independently, so this task
+        must never release and rerun a model execution that already completed.
+        """
 
         envelope, claim_status = await self._claim(run_id, worker_id)
         if envelope is None:
@@ -137,7 +160,7 @@ class AgentRunExecutionService:
         async for session in self.session_scope(self.organisation_id):
             lifecycle = self.lifecycle_factory(session, self.organisation_id)
             try:
-                updated = await lifecycle.mark_succeeded(
+                completion = await lifecycle.mark_succeeded(
                     run_id,
                     attempt_number=envelope.attempt_number,
                     worker_id=envelope.worker_id,
@@ -162,6 +185,24 @@ class AgentRunExecutionService:
                         "run_id": str(run_id),
                     }
                 return {"status": "superseded", "run_id": str(run_id)}
+            updated = completion.updated
+            # The run and delivery ledger are durable before the broker call. A
+            # publication failure is handled by delivery recovery, not run retry.
+            for delivery_id in completion.delivery_ids:
+                record_agent_run_delivery("created")
+                try:
+                    await self.delivery_publisher(
+                        self.organisation_id,
+                        delivery_id,
+                    )
+                except Exception:
+                    # The durable delivery row is recovered independently. The
+                    # completed model run must never be released and executed again.
+                    logger.exception(
+                        "Agent run delivery publication failed org=%s run=%s",
+                        self.organisation_id,
+                        run_id,
+                    )
             return {
                 "status": "succeeded" if updated else "superseded",
                 "run_id": str(run_id),
