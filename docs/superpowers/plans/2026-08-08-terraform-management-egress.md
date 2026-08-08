@@ -4,7 +4,7 @@
 
 **Goal:** Make Dev infrastructure planning resilient to Azure management-plane connection resets from the Managed DevOps Pool.
 
-**Architecture:** Enable the existing VNet module's NAT Gateway so both Managed DevOps Pool subnets have deterministic outbound egress. Lower Terraform's plan and apply concurrency in the shared pipeline template, and retry the idempotent apply task after transient connection resets. No Key Vault, database, or shared-key authentication changes are required.
+**Architecture:** Enable the existing VNet module's NAT Gateway so both Managed DevOps Pool subnets have deterministic outbound egress. Lower Terraform's plan and apply concurrency in the shared pipeline template. A partial apply must be recovered through a fresh pipeline plan because the approved saved plan may no longer match updated state. No Key Vault, database, or shared-key authentication changes are required.
 
 **Tech Stack:** Terraform, AzureRM, Azure DevOps YAML, Azure Managed DevOps Pools.
 
@@ -25,7 +25,7 @@
 
 - [x] Add `-parallelism=5` to the shared `terraform plan` command.
 - [x] Add `-parallelism=5` to the approved-plan apply command.
-- [x] Configure two retries on the idempotent AzureCLI apply task.
+- [x] Do not automatically retry the saved-plan apply task after partial state changes.
 - [x] Keep the existing plan artifact and `-input=false` behavior unchanged.
 
 ### Task 3: Validate and publish

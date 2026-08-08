@@ -226,7 +226,6 @@ stages:
 
                 - task: AzureCLI@2
                   displayName: 'Terraform Init & Apply'
-                  retryCountOnTaskFailure: 2
                   inputs:
                     azureSubscription: ${{ parameters.azureServiceConnection }}
                     scriptType: 'bash'
