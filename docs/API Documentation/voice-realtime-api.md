@@ -105,7 +105,8 @@ export interface UserRealtimeRuntimeConfig {
   session_update: {
     type: "session.update";
     session: {
-      modalities: ("text" | "audio")[];
+      type: "realtime";
+      output_modalities: ["audio"];
       instructions: string;
       tools: Array<{
         type: "function";
@@ -115,17 +116,18 @@ export interface UserRealtimeRuntimeConfig {
       }>;
       audio: {
         input: {
-          format: { type: "audio/pcm"; sample_rate_hz: number };
+          format: { type: "audio/pcm"; rate: 24000 };
           transcription: { model: "whisper-1" };
+          turn_detection: Record<string, unknown> | null;
         };
         output: {
-          format: { type: "audio/pcm"; sample_rate_hz: number };
+          format: { type: "audio/pcm"; rate: 24000 };
           voice: string;
         };
       };
-      turn_detection: null;
     };
   };
+  organisation_context_item?: Record<string, unknown> | null;
   issued_at: string;
   expires_at: string;
   signature: string;
@@ -142,7 +144,7 @@ export interface UserRealtimeCallAttachResponse {
   call_id: string;
   chat_session_id: UUID;
   control_mode: RealtimeControlMode;
-  status: "attached";
+  status: "queued";
 }
 
 export interface VoiceTurnEntry {
@@ -254,7 +256,8 @@ Behavior:
       "session_update": {
         "type": "session.update",
         "session": {
-          "modalities": ["text", "audio"],
+          "type": "realtime",
+          "output_modalities": ["audio"],
           "instructions": "You are Kai, CopilotGTM's AI sales assistant...",
           "tools": [
             {
@@ -280,21 +283,29 @@ Behavior:
             "input": {
               "format": {
                 "type": "audio/pcm",
-                "sample_rate_hz": 16000
+                "rate": 24000
               },
               "transcription": {
                 "model": "whisper-1"
-              }
+              },
+              "turn_detection": null
             },
             "output": {
               "format": {
                 "type": "audio/pcm",
-                "sample_rate_hz": 24000
+                "rate": 24000
               },
               "voice": "alloy"
             }
-          },
-          "turn_detection": null
+          }
+        }
+      },
+      "organisation_context_item": {
+        "type": "conversation.item.create",
+        "item": {
+          "type": "message",
+          "role": "user",
+          "content": [{ "type": "input_text", "text": "Organisation profile..." }]
         }
       },
       "issued_at": "2026-04-13T09:00:00Z",
@@ -314,6 +325,7 @@ Behavior:
 - `turn_mode` currently always resolves to `"push_to_talk"`.
 - `runtime_config.control_mode` currently always resolves to `"backend_sideband"`.
 - `runtime_config.session_update` is server-authored and is applied by the backend voice worker after the live call is attached.
+- `runtime_config.organisation_context_item` is optional organisation context applied by the backend worker before the live conversation. It participates in the runtime HMAC and must be returned unchanged by the client.
 - The frontend must not inject its own voice prompt or build its own tool list for this session.
 - `allowed_tools` is backend-owned policy metadata.
 - `session_update.session.tools` contains the realtime function schemas that match the backend-owned tool subset.
@@ -389,11 +401,24 @@ the direct WebRTC connection. This is the point where the backend becomes the ac
     "session_update": {
       "type": "session.update",
       "session": {
-        "modalities": ["text", "audio"],
+        "type": "realtime",
+        "output_modalities": ["audio"],
         "instructions": "You are Kai...",
-        "tools": []
+        "tools": [],
+        "audio": {
+          "input": {
+            "format": { "type": "audio/pcm", "rate": 24000 },
+            "transcription": { "model": "whisper-1" },
+            "turn_detection": null
+          },
+          "output": {
+            "format": { "type": "audio/pcm", "rate": 24000 },
+            "voice": "alloy"
+          }
+        }
       }
     },
+    "organisation_context_item": null,
     "issued_at": "2026-04-13T09:00:00Z",
     "expires_at": "2026-04-13T10:00:00Z",
     "signature": "8f7d0f3f..."
@@ -501,12 +526,14 @@ Each persisted turn is stored as a normal `ChatMessage`:
 {
   "role": "user | assistant",
   "content": {
-    "text": "transcribed text",
-    "source": "voice_transcription",
-    "realtime_item_id": "item_user_001"
+    "text": "transcribed text"
   },
   "extra": {
-    "turn_index": 0
+    "source": "voice_transcription",
+    "realtime_item_id": "item_user_001",
+    "turn_index": 0,
+    "audio_origin": "voice_realtime",
+    "input_modality": "audio"
   }
 }
 ```
@@ -571,7 +598,15 @@ Sessions are ordered by `updated_at`; persisted user voice turns bump the sessio
         "is_favorite": false,
         "tags": [],
         "created_at": "2026-04-11T10:44:00Z",
-        "updated_at": "2026-04-11T10:45:00Z"
+        "updated_at": "2026-04-11T10:45:00Z",
+        "access": "owner",
+        "capabilities": {
+          "read": true,
+          "send": true,
+          "rename": true,
+          "delete": true,
+          "manage_shares": true
+        }
       }
     ],
     "cursor": null
@@ -615,6 +650,23 @@ For `VOICE_CHAT` sessions:
   "status": "SUCCESS",
   "message": "Messages listed",
   "data": {
+    "session": {
+      "session_id": "550e8400-e29b-41d4-a716-446655440000",
+      "title": "How is the Acme deal looking?",
+      "chat_type": "VOICE_CHAT",
+      "is_favorite": false,
+      "tags": [],
+      "created_at": "2026-04-11T10:44:00Z",
+      "updated_at": "2026-04-11T10:45:00Z",
+      "access": "owner",
+      "capabilities": {
+        "read": true,
+        "send": true,
+        "rename": true,
+        "delete": true,
+        "manage_shares": true
+      }
+    },
     "items": [
       {
         "message_id": "11111111-1111-1111-1111-111111111111",
@@ -647,7 +699,8 @@ For `VOICE_CHAT` sessions:
         "feedback_score": null
       }
     ],
-    "cursor": null
+    "cursor": null,
+    "active_jobs": []
   }
 }
 ```
@@ -686,6 +739,13 @@ For `VOICE_CHAT` sessions:
 ---
 
 ## Changelog
+
+### 2026-08-06
+
+- Aligned the signed runtime contract with current Azure GA fields and documented signature-bearing `organisation_context_item`.
+- Corrected attach status to the queued chat-worker handoff.
+- Corrected normalized voice-message storage metadata and current chat list/message envelopes.
+- Documented local Compose route enablement while preserving the production default-off policy.
 
 ### 2026-04-13
 

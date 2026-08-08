@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -57,10 +57,12 @@ class AutomationTriggerOptionSearchRequest(BaseModel):
     @field_validator("trigger_key", "query")
     @classmethod
     def strip_option_search_text(cls, value: str) -> str:
+        """Trim search text before bounded catalog matching."""
         return value.strip()
 
     @model_validator(mode="after")
     def validate_control_path(self) -> Self:
+        """Keep pathless controls separate from field-bound controls."""
         if self.control in {"source_selector", "audience"} and self.field_path is not None:
             raise ValueError(f"{self.control} search does not accept field_path")
         if self.control in {"filter", "direct_subject"} and not self.field_path:
@@ -82,6 +84,7 @@ class AutomationTriggerOptionResolveGroupRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_group(self) -> Self:
+        """Require unique values and the field path appropriate to this control."""
         if self.control in {"source_selector", "audience"} and self.field_path is not None:
             raise ValueError(f"{self.control} resolution does not accept field_path")
         if self.control in {"filter", "direct_subject"} and not self.field_path:
@@ -105,6 +108,7 @@ class AutomationTriggerOptionResolveRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_total_values(self) -> Self:
+        """Bound one label-resolution request so query and response work stay predictable."""
         if sum(len(request.values) for request in self.requests) > 200:
             raise ValueError("option resolution accepts at most 200 values")
         return self
@@ -119,6 +123,7 @@ class AutomationTriggerOptionValue(BaseModel):
     label: str | None = None
     status: TriggerOptionStatus
     selectable: bool
+    reason: str | None = None
 
 
 class AutomationTriggerOptionSearchResponse(BaseModel):
@@ -213,12 +218,26 @@ class TriggerTaskDecision(BaseModel):
         return value
 
 
-class TriggerDeliveryDecision(BaseModel):
-    """Code-owned delivery policy; V1 records runs without external fanout."""
+class TriggerNoDeliveryDecision(BaseModel):
+    """Keep the completed result in run history without an external side effect."""
 
     model_config = ConfigDict(extra="forbid")
 
     mode: Literal["none"] = "none"
+
+
+class TriggerEmailNotificationDecision(BaseModel):
+    """Email the persisted run result through CopilotGTM's platform sender."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["email_notification"]
+
+
+TriggerDeliveryDecision = Annotated[
+    TriggerNoDeliveryDecision | TriggerEmailNotificationDecision,
+    Field(discriminator="mode"),
+]
 
 
 class AutomationTriggerDefinitionBase(BaseModel):
@@ -236,7 +255,7 @@ class AutomationTriggerDefinitionBase(BaseModel):
     scope: TriggerScopeDecision
     audience: TriggerAudienceDecision
     task: TriggerTaskDecision = Field(default_factory=TriggerTaskDecision)
-    delivery: TriggerDeliveryDecision = Field(default_factory=TriggerDeliveryDecision)
+    delivery: TriggerDeliveryDecision = Field(default_factory=TriggerNoDeliveryDecision)
 
     @field_validator("name", "trigger_key", mode="before")
     @classmethod
@@ -395,6 +414,10 @@ class AutomationTriggerPresentation(BaseModel):
     scope_summary: str
     built_in_rule: str | None = None
     source_summary: str | None = None
+    delivery_mode: Literal["none", "email_notification"]
+    delivery_summary: str
+    delivery_status: Literal["active", "needs_attention"] = "active"
+    delivery_reason: str | None = None
     conditions: list[TriggerConditionPresentation] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
@@ -618,9 +641,30 @@ class AutomationTriggerCatalogLimits(BaseModel):
     max_filter_conditions: int = Field(gt=0)
 
 
+class TriggerDeliveryChannel(BaseModel):
+    """One server-owned post-run delivery choice rendered by the trigger builder."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: Literal["none", "email_notification"]
+    label: str
+    description: str
+    principal_modes: list[Literal["personal", "organisation"]]
+    sender_mode: Literal["platform"] | None = None
+    recipient_mode_by_principal: dict[
+        Literal["personal", "organisation"],
+        Literal["execution_principal", "run_audience"],
+    ] = Field(default_factory=dict)
+    requires_audience_modes: list[Literal["explicit_users", "subject_participants"]] = Field(
+        default_factory=list
+    )
+    body_source: Literal["agent_output_markdown"] | None = None
+
+
 class AutomationTriggerCatalog(BaseModel):
     """Complete backend-owned trigger-builder contract for the authenticated user."""
 
     categories: list[TriggerCatalogCategory] = Field(default_factory=list)
+    delivery_channels: list[TriggerDeliveryChannel] = Field(default_factory=list)
     option_sets: AutomationTriggerOptionSets
     limits: AutomationTriggerCatalogLimits

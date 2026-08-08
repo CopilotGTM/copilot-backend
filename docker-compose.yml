@@ -143,6 +143,8 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - GOOGLE_APPLICATION_CREDENTIALS=/home/appuser/.config/gcloud/application_default_credentials.json
+      # Local mobile voice development requires these routes to be mounted.
+      - VOICE_REALTIME_API_ENABLED=true
     env_file:
       - .env
     volumes:

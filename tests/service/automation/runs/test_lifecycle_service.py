@@ -16,6 +16,7 @@ class FakeAccess:
     def __init__(self, run: AgentRun | None = None, result: bool = True) -> None:
         self.run = run
         self.result = result
+        self.delivery_id = uuid4()
         self.calls: list[tuple[str, UUID, dict[str, Any]]] = []
 
     async def complete_run(self, run_id: UUID, **kwargs: Any) -> AgentRun | None:
@@ -37,6 +38,10 @@ class FakeAccess:
         """Expose the record trigger outcome operation expected by the Fake Access test double."""
         self.calls.append(("trigger_outcome", trigger_id, kwargs))
 
+    async def ensure_deliveries(self, run: AgentRun) -> tuple[UUID, ...]:
+        self.calls.append(("ensure_deliveries", run.run_id, {"delivery_ids": [self.delivery_id]}))
+        return (self.delivery_id,)
+
 
 class FakeEvents:
     """Represent the Fake Events test double used by the surrounding regression cases."""
@@ -47,7 +52,7 @@ class FakeEvents:
 
     async def enqueue(self, envelope):  # noqa: ANN001
         """Expose the enqueue operation expected by the Fake Events test double."""
-        assert self.access.calls[-1][0] == "complete"
+        assert self.access.calls[0][0] == "complete"
         self.envelopes.append(envelope)
         return object()
 
@@ -93,7 +98,7 @@ async def test_success_persists_result_metadata_under_claim_fence() -> None:
         automation_events=events,
     )
 
-    updated = await service.mark_succeeded(
+    completed = await service.mark_succeeded(
         run_id,
         attempt_number=2,
         worker_id="agent-worker-2",
@@ -106,7 +111,8 @@ async def test_success_persists_result_metadata_under_claim_fence() -> None:
         latency_ms=1200,
     )
 
-    assert updated is True
+    assert completed.updated is True
+    assert completed.delivery_ids == ()
     assert access.calls == [
         (
             "complete",
@@ -141,6 +147,40 @@ async def test_success_persists_result_metadata_under_claim_fence() -> None:
 
 
 @pytest.mark.asyncio
+async def test_success_creates_platform_email_notification_from_the_pinned_snapshot() -> None:
+    organisation_id = uuid4()
+    run = agent_run(organisation_id)
+    run.trigger_snapshot = {"delivery_config": {"mode": "email_notification"}}
+    access = FakeAccess(run)
+    service = AgentRunLifecycleService(
+        object(),  # type: ignore[arg-type]
+        organisation_id,
+        access=access,
+        automation_events=FakeEvents(access),
+    )
+
+    completed = await service.mark_succeeded(
+        run.run_id,
+        attempt_number=1,
+        worker_id="agent-worker-1",
+        output_text="Call the buyer",
+        output_json=None,
+        model_name="gpt-5",
+        token_usage=None,
+        cost=None,
+        latency_ms=10,
+    )
+
+    assert completed.updated is True
+    assert completed.delivery_ids == (access.delivery_id,)
+    assert [call[0] for call in access.calls] == [
+        "complete",
+        "ensure_deliveries",
+        "trigger_outcome",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_validation_failure_is_terminal_and_sanitized() -> None:
     """Verify the contract that validation failure is terminal and sanitized."""
     organisation_id = uuid4()
@@ -172,6 +212,32 @@ async def test_validation_failure_is_terminal_and_sanitized() -> None:
     assert access.calls[1][0] == "trigger_outcome"
     assert access.calls[1][2]["succeeded"] is False
     assert [event.event_key for event in events.envelopes] == ["agent.run.failed"]
+
+
+@pytest.mark.asyncio
+async def test_failed_run_does_not_create_email_delivery() -> None:
+    organisation_id = uuid4()
+    run = agent_run(organisation_id)
+    run.trigger_snapshot = {"delivery_config": {"mode": "email_notification"}}
+    access = FakeAccess(run)
+    service = AgentRunLifecycleService(
+        object(),  # type: ignore[arg-type]
+        organisation_id,
+        access=access,
+        automation_events=FakeEvents(access),
+    )
+
+    await service.mark_failed(
+        run.run_id,
+        attempt_number=1,
+        worker_id="agent-worker-1",
+        error_code="agent_execution_failed",
+        error_message="Agent execution failed",
+        validation_failure=False,
+        latency_ms=10,
+    )
+
+    assert "ensure_deliveries" not in [call[0] for call in access.calls]
 
 
 @pytest.mark.asyncio

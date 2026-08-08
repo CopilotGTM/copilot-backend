@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import FastAPI
 from src.api.dependencies.organisation_dependencies import get_current_user
-from src.infra.auth.user_auth import user_auth
+from src.infra.auth.user_auth import user_auth, user_bearer
 
 PUBLIC_USER_ROUTES = {
     ("POST", "/users/auth/login"),
@@ -43,7 +43,7 @@ def _effective_routes(app: FastAPI) -> Iterable[Any]:
 
 
 def _has_user_authentication(dependant: Any) -> bool:
-    if getattr(dependant, "call", None) in {get_current_user, user_auth}:
+    if getattr(dependant, "call", None) in {get_current_user, user_auth, user_bearer}:
         return True
     return any(_has_user_authentication(child) for child in getattr(dependant, "dependencies", ()))
 

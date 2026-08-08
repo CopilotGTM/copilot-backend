@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -13,6 +13,56 @@ from src.domain.models.organisation_tables import (
     AutomationAudienceMode,
     AutomationPrincipalType,
 )
+
+# Delivery presentation is deliberately separate from AgentRunStatus: a model
+# run can be complete while one or more post-run notification targets need repair.
+AgentRunDeliveryPresentationStatus = Literal[
+    "pending",
+    "sending",
+    "sent",
+    "partially_sent",
+    "failed",
+    "skipped",
+]
+
+
+class AgentRunDeliveryTargetSummary(BaseModel):
+    """One internal delivery target; IDs are for API actions, not UI labels."""
+
+    delivery_id: UUID
+    status: AgentRunDeliveryPresentationStatus
+    error_code: str | None = None
+    error_message: str | None = None
+    can_retry: bool = False
+    sent_at: datetime | None = None
+
+
+class AgentRunDeliverySummary(BaseModel):
+    """Independent post-run delivery state safe for run-history presentation."""
+
+    channel: Literal["email"]
+    status: AgentRunDeliveryPresentationStatus
+    recipient_count: int
+    sent_count: int
+    failed_count: int
+    skipped_count: int
+    can_retry: bool = False
+    sent_at: datetime | None = None
+    targets: list[AgentRunDeliveryTargetSummary] = Field(default_factory=list)
+
+
+class AgentRunDeliveryRetryRequest(BaseModel):
+    """Select one visible notification target without rerunning its agent."""
+
+    delivery_id: UUID
+
+
+class AgentRunDeliveryRetryResponse(BaseModel):
+    """Accepted repair retry for one owner-visible delivery."""
+
+    run_id: UUID
+    status: Literal["pending"]
+    delivery_count: int
 
 
 class AgentRunSummary(BaseModel):
@@ -36,6 +86,7 @@ class AgentRunSummary(BaseModel):
     error_code: str | None
     error_message: str | None
     output_preview: str | None
+    delivery: AgentRunDeliverySummary | None = None
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None

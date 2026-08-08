@@ -69,6 +69,34 @@ def test_catalog_serializes_registry_hierarchy_and_organisation_options() -> Non
         "lost",
         "closed",
     ]
+    assert [channel.model_dump() for channel in catalog.delivery_channels] == [
+        {
+            "key": "none",
+            "label": "Run history only",
+            "description": "Keep the completed output in CopilotGTM.",
+            "principal_modes": ["personal", "organisation"],
+            "sender_mode": None,
+            "recipient_mode_by_principal": {},
+            "requires_audience_modes": [],
+            "body_source": None,
+        },
+        {
+            "key": "email_notification",
+            "label": "Email notification",
+            "description": (
+                "CopilotGTM emails the complete final Markdown output and run context "
+                "after a successful run."
+            ),
+            "principal_modes": ["personal", "organisation"],
+            "sender_mode": "platform",
+            "recipient_mode_by_principal": {
+                "personal": "execution_principal",
+                "organisation": "run_audience",
+            },
+            "requires_audience_modes": ["explicit_users", "subject_participants"],
+            "body_source": "agent_output_markdown",
+        },
+    ]
 
 
 def test_catalog_exposes_business_fields_watch_labels_and_built_in_rules() -> None:
@@ -511,7 +539,6 @@ def test_agent_run_catalog_uses_friendly_resolvable_conditions() -> None:
     enum_sets = build_trigger_catalog([]).option_sets.enums
     assert [item.label for item in enum_sets["agent_run_failure_statuses"]] == [
         "Execution failed",
-        "Delivery failed",
         "Output validation failed",
     ]
     assert enum_sets["trigger_event_keys"]

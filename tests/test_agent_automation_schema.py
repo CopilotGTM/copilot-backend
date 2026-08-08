@@ -103,7 +103,6 @@ def test_agent_automation_enums_match_the_ai_native_contract() -> None:
         "running",
         "succeeded",
         "failed",
-        "delivery_failed",
         "validation_failed",
         "cancelled",
     }

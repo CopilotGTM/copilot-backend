@@ -134,7 +134,8 @@ class AgentRunStatus(str, Enum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
-    DELIVERY_FAILED = "delivery_failed"
+    # Delivery outcomes live in the generic notification ledger so a sent-mail
+    # failure cannot turn a completed agent execution back into a run failure.
     VALIDATION_FAILED = "validation_failed"
     CANCELLED = "cancelled"
 
@@ -720,8 +721,7 @@ class AgentRun(SQLModel, table=True):
         CheckConstraint("agent_revision >= 1", name="ck_agent_runs_agent_revision"),
         CheckConstraint(
             "status IN ("
-            "'pending', 'running', 'succeeded', 'failed', 'delivery_failed', "
-            "'validation_failed', 'cancelled'"
+            "'pending', 'running', 'succeeded', 'failed', 'validation_failed', 'cancelled'"
             ")",
             name="ck_agent_runs_status",
         ),

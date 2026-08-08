@@ -45,6 +45,7 @@ _EMAIL_INTEGRATION_TYPES = (
     IntegrationType.OUTLOOK_EMAIL,
 )
 
+
 _STATIC_OPTIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "deal_statuses": tuple((value, value.title()) for value in ("open", "won", "lost", "closed")),
     "meeting_providers": tuple(
@@ -67,7 +68,6 @@ _STATIC_OPTIONS: dict[str, tuple[tuple[str, str], ...]] = {
     ),
     "agent_run_failure_statuses": (
         ("failed", "Execution failed"),
-        ("delivery_failed", "Delivery failed"),
         ("validation_failed", "Output validation failed"),
     ),
 }
@@ -81,6 +81,9 @@ class TriggerOptionRecord:
     label: str
     status: str
     selectable: bool
+    # The UI can explain an unavailable or inactive value without exposing a
+    # second identifier or having to infer the reason from status alone.
+    reason: str | None = None
 
 
 class AutomationTriggerOptionAccess:
@@ -100,6 +103,8 @@ class AutomationTriggerOptionAccess:
 
         pipeline_columns = cast(Any, CRMPipeline).__table__.c
         stage_columns = cast(Any, CRMDealStage).__table__.c
+        # Pipeline and stage IDs are client-supplied option values; organization
+        # predicates are the trust boundary for both queries.
         pipelines = list(
             (
                 await self.session.execute(
@@ -157,6 +162,8 @@ class AutomationTriggerOptionAccess:
 
         pipeline_columns = cast(Any, CRMPipeline).__table__.c
         stage_columns = cast(Any, CRMDealStage).__table__.c
+        # Validate IDs against current tenant rows before persisting them into a
+        # trigger snapshot; existence in another organization is not sufficient.
         if pipeline_ids:
             found_pipelines = set(
                 (
@@ -302,6 +309,8 @@ class AutomationTriggerOptionAccess:
                 identity_column.in_(identifiers),
             ]
             if not organisation_scope:
+                # Personal bindings may select only records owned by the resolved
+                # principal (or created by it for deals), not arbitrary tenant rows.
                 crm_user_ids = crm_user_ids_for_principal(
                     self.organisation_id,
                     principal_id,
@@ -323,6 +332,8 @@ class AutomationTriggerOptionAccess:
                 columns.is_active.is_(True),
             ]
             if not organisation_scope:
+                # A personal mailbox is valid only when this user created the
+                # integration; tenant ownership alone would leak another user's mailbox.
                 conditions.append(columns.created_by_user_id == principal_id)
             statement = select(columns.integration_id).where(*conditions)
         elif source == "agents":
@@ -355,6 +366,8 @@ class AutomationTriggerOptionAccess:
     ) -> tuple[list[TriggerOptionRecord], int | None]:
         """Return one active, selectable option page without exposing internal IDs as labels."""
 
+        # Search and resolve share the same authority flags so a friendly label
+        # cannot be discovered through a broader query than the saved binding allows.
         static = self._static_options(source)
         if static is not None:
             rows = [
@@ -395,6 +408,8 @@ class AutomationTriggerOptionAccess:
     ) -> dict[str, TriggerOptionRecord]:
         """Resolve tenant rows in one query; callers apply saved-binding disclosure gates."""
 
+        # Batch the selected IDs into one tenant query; presentation decides later
+        # whether a non-selectable saved value may still be disclosed.
         static = self._static_options(source)
         if static is not None:
             labels = dict(static)
@@ -438,6 +453,8 @@ class AutomationTriggerOptionAccess:
     ) -> tuple[Any, Any]:
         """Build the one tenant query for a registry-owned option source."""
 
+        # Every dynamic source starts with the organization predicate; authority
+        # narrowing is added only after that immutable tenant boundary is present.
         if source in {"deals", "contacts", "accounts", "ai_deals"}:
             source = "deals" if source == "ai_deals" else source
             model, identity_name, text_names = {
@@ -745,6 +762,8 @@ class AutomationTriggerOptionAccess:
         return f"{primary} · {secondary}" if secondary else primary
 
     async def _validate_custom_field_options(self, source: str, values: set[str]) -> None:
+        # The field definition and its options are tenant-owned; the UUID prefix
+        # from the request is useful for lookup but is not an authorization proof.
         try:
             field_id = UUID(source.removeprefix("custom_field:"))
         except ValueError as exc:

@@ -1,5 +1,6 @@
 """Runtime metric contracts for bounded labels, counts, durations, and memory."""
 
+from src.infra.observability import metrics as metrics_module
 from src.infra.observability.metrics import (
     record_celery_task_memory,
     record_celery_task_run,
@@ -201,3 +202,54 @@ def test_whatsapp_metric_rejects_identifier_as_bounded_unknown(monkeypatch) -> N
     record_whatsapp_inbound("wamid.15551234567.job-id")
 
     assert inbound.calls == [(1, {"outcome": "unknown"})]
+
+
+def test_agent_delivery_metrics_are_bounded_and_contain_no_business_ids(monkeypatch) -> None:
+    assert hasattr(metrics_module, "record_agent_run_delivery")
+    count = _FakeMetric()
+    attempts = _FakeMetric()
+    latency = _FakeMetric()
+    monkeypatch.setattr(metrics_module, "_AGENT_RUN_DELIVERY_COUNT", count, raising=False)
+    monkeypatch.setattr(metrics_module, "_AGENT_RUN_DELIVERY_ATTEMPTS", attempts, raising=False)
+    monkeypatch.setattr(metrics_module, "_AGENT_RUN_DELIVERY_LATENCY", latency, raising=False)
+
+    metrics_module.record_agent_run_delivery(
+        "needs_attention",
+        provider="gmail-user-id-123",
+        reason="email_send_status_unknown",
+        attempts=2,
+        latency_ms=850,
+    )
+
+    attributes = {
+        "channel": "email",
+        "outcome": "needs_attention",
+        "provider": "unknown",
+        "reason": "unknown",
+    }
+    assert count.calls == [(1, attributes)]
+    assert attempts.calls == [(2, attributes)]
+    assert latency.calls == [(850, attributes)]
+
+
+def test_agent_delivery_recovery_metrics_are_bounded_and_id_free(monkeypatch) -> None:
+    recovery = _FakeMetric()
+    age = _FakeMetric()
+    monkeypatch.setattr(
+        metrics_module,
+        "_AGENT_RUN_DELIVERY_RECOVERY_COUNT",
+        recovery,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        metrics_module,
+        "_AGENT_RUN_DELIVERY_RECOVERY_AGE",
+        age,
+        raising=False,
+    )
+
+    metrics_module.record_agent_run_delivery_recovery("tenant-run-id", rows=3)
+    metrics_module.record_agent_run_delivery_recovery_age("mailbox-id", 42.5)
+
+    assert recovery.calls == [(3, {"outcome": "unknown"})]
+    assert age.calls == [(42.5, {"status": "unknown"})]

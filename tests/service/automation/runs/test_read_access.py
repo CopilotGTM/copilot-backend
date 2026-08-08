@@ -71,3 +71,21 @@ async def test_list_and_detail_require_principal_or_resolved_audience_visibility
         assert "agent_runs.audience_mode" in statement_sql
         assert "agent_runs.audience_config @>" in statement_sql
         assert "agent_runs.created_by_user_id =" not in statement_sql
+
+
+@pytest.mark.asyncio
+async def test_delivery_reads_are_tenant_and_run_scoped() -> None:
+    session = RecordingSession()
+    organisation_id = uuid4()
+    run_id = uuid4()
+    access = AgentRunReadAccess(session, organisation_id, uuid4())  # type: ignore[arg-type]
+
+    await access.list_deliveries([run_id])
+    await access.get_deliveries(run_id)
+
+    for statement in session.statements:
+        statement_sql = sql(statement)
+        assert "notification_deliveries.organisation_id" in statement_sql
+        assert "notification_deliveries.source_id" in statement_sql
+        assert "notification_deliveries.notification_type" in statement_sql
+        assert "notification_deliveries.source_type" in statement_sql

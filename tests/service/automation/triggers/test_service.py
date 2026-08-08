@@ -431,6 +431,7 @@ async def test_trigger_list_batch_resolves_saved_card_labels() -> None:
             }
         ),
     )
+    options.resolve_calls.clear()
 
     result = await service.list_triggers(
         agent.agent_id,
@@ -441,6 +442,39 @@ async def test_trigger_list_batch_resolves_saved_card_labels() -> None:
 
     assert result.items[0].presentation.source_summary == "Specific deals: Acme renewal"
     assert options.resolve_calls == [("deals", {deal_id})]
+
+
+@pytest.mark.asyncio
+async def test_trigger_detail_needs_no_delivery_option_lookup() -> None:
+    agent = make_agent()
+    service, _, _ = make_service(agent)
+    options = service.options
+    assert isinstance(options, FakeOptions)
+    created = await service.create_trigger(
+        agent.agent_id,
+        AutomationTriggerCreateRequest.model_validate(
+            {
+                "name": "Send pipeline review",
+                "trigger_key": "time.schedule.due",
+                "config": {
+                    "timezone": "UTC",
+                    "starts_at": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+                    "recurrence": "daily",
+                },
+                "principal_mode": "personal",
+                "scope": {"type": "owned_or_created_by_principal"},
+                "audience": {"mode": "principal"},
+                "delivery": {"mode": "email_notification"},
+            }
+        ),
+    )
+
+    detail = await service.get_trigger(agent.agent_id, created.trigger_id)
+
+    assert detail.presentation.delivery_summary == "Email you from CopilotGTM"
+    assert detail.presentation.delivery_status == "active"
+    assert detail.presentation.delivery_reason is None
+    assert options.resolve_calls == []
 
 
 @pytest.mark.asyncio

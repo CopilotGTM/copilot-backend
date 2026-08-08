@@ -63,6 +63,16 @@ class ChatWorkerConfig(BaseWorkerConfig):
                 "queue": "chat_processing",
                 "routing_key": "chat_processing",
             },
+            # Delivery has its own queue so a slow provider cannot block model
+            # execution messages; recovery remains on the processing queue.
+            "chat.deliver_agent_run": {
+                "queue": "chat_messages",
+                "routing_key": "chat_messages",
+            },
+            "chat.recover_agent_run_deliveries": {
+                "queue": "chat_processing",
+                "routing_key": "chat_processing",
+            },
             "attachments.post_upload": {
                 "queue": "attachments",
                 "routing_key": "attachments",
@@ -128,6 +138,16 @@ class ChatWorkerConfig(BaseWorkerConfig):
             },
             "recover-agent-runs": {
                 "task": "chat.recover_agent_runs",
+                "schedule": 30.0,
+                "options": {
+                    "queue": "chat_processing",
+                    "routing_key": "chat_processing",
+                },
+            },
+            # The sweep republishes durable rows whose broker publication or
+            # worker lease was lost; it does not rerun the completed agent.
+            "recover-agent-run-deliveries": {
+                "task": "chat.recover_agent_run_deliveries",
                 "schedule": 30.0,
                 "options": {
                     "queue": "chat_processing",

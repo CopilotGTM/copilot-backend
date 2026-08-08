@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Security
 from fastapi import Response as FastAPIResponse
 from sqlalchemy import select
 from sqlmodel import col
@@ -26,6 +26,7 @@ from src.domain.models.user_signup_models import (
 )
 from src.infra.auth.email_service import email_service
 from src.infra.auth.supabase_user_client import SupabaseAuthError, supabase_user_client
+from src.infra.auth.user_auth import user_bearer
 from src.infra.database.sessions import master_async_session_scope
 from src.infra.utils.logger import get_logger
 from src.service.users.external_auth_service import (
@@ -133,10 +134,13 @@ def _verify_identity(
     return ExternalAuthService().validate_signup_identity(claims)
 
 
+# Every signup lifecycle route requires a bearer session; handlers still bind the
+# verified claims to the requested provider before reading or mutating signup state.
 @router.put(
     "/{provider}/signup/draft",
     response_model=GenericResponse[ExternalSignupProfile],
     tags=["user_signup"],
+    dependencies=[Security(user_bearer)],
 )
 async def put_external_signup_draft(
     provider: str,
@@ -197,6 +201,7 @@ async def put_external_signup_draft(
     response_model=GenericResponse[ExternalSignupResponse],
     status_code=202,
     tags=["user_signup"],
+    dependencies=[Security(user_bearer)],
 )
 async def join_existing_organisation(
     provider: str,
@@ -264,6 +269,7 @@ async def join_existing_organisation(
     response_model=GenericResponse[ExternalSignupResponse],
     status_code=202,
     tags=["user_signup"],
+    dependencies=[Security(user_bearer)],
 )
 async def start_external_signup(
     provider: str,
@@ -327,6 +333,7 @@ async def start_external_signup(
     "/signup-requests/{signup_request_id}",
     response_model=GenericResponse[ExternalSignupResponse],
     tags=["user_signup"],
+    dependencies=[Security(user_bearer)],
 )
 async def get_signup_status(
     signup_request_id: UUID,

@@ -3,7 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from src.infra.auth.email_service import EmailService
+from src.infra.auth.email_service import EmailService, PlatformEmailSendError
 
 
 @pytest.mark.asyncio
@@ -100,6 +100,14 @@ class TestEmailServiceLazyInit:
     def test_is_configured_false_before_first_use(self):
         service = EmailService()
         assert service.is_configured is False
+
+    def test_platform_sender_adds_app_name_to_a_bare_from_address(self, monkeypatch):
+        monkeypatch.setenv("APP_NAME", "CopilotGTM")
+        monkeypatch.setenv("FROM_EMAIL", "noreply@example.com")
+
+        service = EmailService()
+
+        assert service.from_email == "CopilotGTM <noreply@example.com>"
 
 
 class TestEmailServiceEnsureConfigured:
@@ -218,6 +226,72 @@ class TestEmailServiceSendEmail:
 
         call_args = mock_resend.Emails.send.call_args[0][0]
         assert call_args["text"] == "Hello plain"
+
+    @pytest.mark.asyncio
+    async def test_receipt_send_uses_platform_sender_and_provider_idempotency(self):
+        service = EmailService()
+
+        with patch("src.infra.auth.email_service.resend_config") as mock_config:
+            mock_config.get_api_key = AsyncMock(return_value="key-123")
+            with patch("src.infra.auth.email_service.resend") as mock_resend:
+                mock_resend.Emails.send = MagicMock(return_value={"id": "email-42"})
+                provider_id = await service.send_email_with_receipt(
+                    to_email="user@example.com",
+                    subject="Agent completed",
+                    html_content="<p>Done</p>",
+                    text_content="Done",
+                    idempotency_key="agent-output:delivery-1",
+                )
+
+        assert provider_id == "email-42"
+        payload, options = mock_resend.Emails.send.call_args.args
+        assert payload["from"] == service.from_email
+        assert payload["to"] == ["user@example.com"]
+        assert options == {"idempotency_key": "agent-output:delivery-1"}
+
+    @pytest.mark.asyncio
+    async def test_receipt_send_classifies_pre_provider_and_unknown_outcomes(self):
+        service = EmailService()
+        with patch("src.infra.auth.email_service.resend_config") as mock_config:
+            mock_config.get_api_key = AsyncMock(return_value=None)
+            with pytest.raises(PlatformEmailSendError) as unconfigured:
+                await service.send_email_with_receipt(
+                    to_email="user@example.com",
+                    subject="Agent completed",
+                    html_content="<p>Done</p>",
+                )
+        assert unconfigured.value.code == "platform_email_not_configured"
+        assert unconfigured.value.safe_to_retry is True
+
+        service = EmailService()
+        with patch("src.infra.auth.email_service.resend_config") as mock_config:
+            mock_config.get_api_key = AsyncMock(return_value="key-123")
+            with patch("src.infra.auth.email_service.resend") as mock_resend:
+                mock_resend.Emails.send = MagicMock(side_effect=TimeoutError())
+                with pytest.raises(PlatformEmailSendError) as unknown:
+                    await service.send_email_with_receipt(
+                        to_email="user@example.com",
+                        subject="Agent completed",
+                        html_content="<p>Done</p>",
+                    )
+        assert unknown.value.code == "delivery_outcome_unknown"
+        assert unknown.value.safe_to_retry is False
+
+
+def test_styled_wrapper_escapes_title_and_preheader_but_keeps_rendered_content() -> None:
+    service = EmailService()
+
+    html = service._create_styled_html(
+        "<script>title</script>",
+        '<img src=x onerror="bad()">',
+        "<p><strong>Safe rendered body</strong></p>",
+    )
+
+    assert "<script>title</script>" not in html
+    assert "&lt;script&gt;title&lt;/script&gt;" in html
+    assert '<img src=x onerror="bad()">' not in html
+    assert "&lt;img src=x onerror=&quot;bad()&quot;&gt;" in html
+    assert "<p><strong>Safe rendered body</strong></p>" in html
 
 
 class TestEmailServiceSendMethods:

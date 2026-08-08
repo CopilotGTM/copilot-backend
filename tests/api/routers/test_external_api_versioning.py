@@ -79,6 +79,8 @@ def test_user_agent_trigger_routes_are_versioned(monkeypatch, mocker) -> None:
     paths = app.openapi()["paths"]
 
     assert "/users/v1/automation-trigger-catalog" in paths
+    assert set(paths["/users/v1/automation-trigger-options/search"]) == {"post"}
+    assert set(paths["/users/v1/automation-trigger-options/resolve"]) == {"post"}
     assert set(paths["/users/v1/agents/{agent_id}/triggers"]) >= {"get", "post"}
     assert set(paths["/users/v1/agents/{agent_id}/triggers/{trigger_id}"]) >= {
         "get",

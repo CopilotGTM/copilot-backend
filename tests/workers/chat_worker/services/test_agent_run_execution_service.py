@@ -11,6 +11,7 @@ import pytest
 import src.workers.chat_worker.services.agent_run_execution_service as execution_module
 from src.agents.context import AgentContext
 from src.service.automation.producers.meeting import MeetingEventContext
+from src.service.automation.runs.lifecycle_service import AgentRunCompletion
 from src.service.automation.runs.runtime_executor import AgentExecutionResult
 from src.workers.chat_worker.services.agent_run_execution_service import (
     AgentRunExecutionService,
@@ -120,13 +121,14 @@ class FakeLifecycle:
         self.events = events
         self.failure_kwargs: dict = {}
         self.terminal_failure = terminal_failure
+        self.delivery_ids: tuple[UUID, ...] = ()
 
     async def mark_succeeded(self, _run_id, **_kwargs):
         """Expose the mark succeeded operation expected by the Fake Lifecycle test double."""
         self.events.append("complete")
         if self.terminal_failure is not None:
             raise self.terminal_failure
-        return True
+        return AgentRunCompletion(updated=True, delivery_ids=self.delivery_ids)
 
     async def mark_failed(self, _run_id, **kwargs):
         """Expose the mark failed operation expected by the Fake Lifecycle test double."""
@@ -169,11 +171,22 @@ def build_service(
     *,
     failure: Exception | None = None,
     terminal_failure: Exception | None = None,
+    delivery: bool = False,
+    delivery_publish_failure: Exception | None = None,
 ):
     """Build the build service fixture used by the surrounding regression cases."""
     item = envelope()
+    if delivery:
+        item = replace(
+            item,
+            trigger_snapshot={
+                **item.trigger_snapshot,
+                "delivery_config": {"mode": "email_notification"},
+            },
+        )
     scopes = SessionScopes(events)
     lifecycle = FakeLifecycle(events, terminal_failure=terminal_failure)
+    lifecycle.delivery_ids = (uuid4(), uuid4()) if delivery else ()
 
     async def context_loader(_envelope):
         """Build the context loader fixture used by the surrounding regression cases."""
@@ -192,8 +205,20 @@ def build_service(
         lifecycle_factory=lambda _session, _org: lifecycle,
         executor=FakeExecutor(events, failure),
         context_loader=context_loader,
+        delivery_publisher=(
+            _delivery_publisher(events, delivery_publish_failure) if delivery else None
+        ),
     )
     return service, item, lifecycle
+
+
+def _delivery_publisher(events: list[str], failure: Exception | None):
+    async def publish(_organisation_id, delivery_id):
+        events.append(f"publish-delivery:{delivery_id}")
+        if failure is not None:
+            raise failure
+
+    return publish
 
 
 @pytest.mark.asyncio
@@ -211,6 +236,49 @@ async def test_worker_commits_claim_before_slow_execution_then_fenced_result() -
         "execute",
         "complete",
         "session2:commit",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_success_publishes_email_delivery_only_after_result_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    metrics: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        execution_module,
+        "record_agent_run_delivery",
+        lambda outcome, **values: metrics.append((outcome, values)),
+        raising=False,
+    )
+    service, item, lifecycle = build_service(events, delivery=True)
+
+    result = await service.execute(item.run_id, worker_id="worker-1", retry_allowed=True)
+
+    assert result["status"] == "succeeded"
+    assert events[-4:] == [
+        "complete",
+        "session2:commit",
+        *(f"publish-delivery:{delivery_id}" for delivery_id in lifecycle.delivery_ids),
+    ]
+    assert metrics == [("created", {}), ("created", {})]
+
+
+@pytest.mark.asyncio
+async def test_delivery_publish_failure_does_not_rerun_successful_agent() -> None:
+    events: list[str] = []
+    service, item, lifecycle = build_service(
+        events,
+        delivery=True,
+        delivery_publish_failure=RuntimeError("broker unavailable"),
+    )
+
+    result = await service.execute(item.run_id, worker_id="worker-1", retry_allowed=True)
+
+    assert result["status"] == "succeeded"
+    assert events.count("execute") == 1
+    assert events[-2:] == [
+        f"publish-delivery:{delivery_id}" for delivery_id in lifecycle.delivery_ids
     ]
 
 
