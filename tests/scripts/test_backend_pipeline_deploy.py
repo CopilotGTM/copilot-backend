@@ -57,6 +57,27 @@ def test_backend_pipelines_deploy_and_wait_for_deal_insights_worker() -> None:
         )
 
 
+def test_backend_pipelines_use_only_the_master_key_vault_url() -> None:
+    for pipeline_path in PIPELINE_PATHS:
+        pipeline_text = pipeline_path.read_text(encoding="utf-8")
+
+        assert "AZURE_KEY_VAULT_URL" not in pipeline_text, pipeline_path
+        assert "AZURE_MASTER_KEY_VAULT_URL" in pipeline_text, pipeline_path
+
+
+def test_backend_pipelines_capture_chat_worker_rollout_diagnostics() -> None:
+    for pipeline_path in PIPELINE_PATHS:
+        pipeline_text = pipeline_path.read_text(encoding="utf-8")
+
+        assert "copilot-backend-chat-worker) timeout_seconds=600" in pipeline_text, pipeline_path
+        assert "kubectl get pods -n copilotgtm -l app.kubernetes.io/name=worker" in (
+            pipeline_text
+        ), pipeline_path
+        assert "grep '^pod/copilot-backend-chat-worker-'" in pipeline_text, pipeline_path
+        assert 'kubectl describe pod -n copilotgtm "$pod"' in pipeline_text, pipeline_path
+        assert 'kubectl logs -n copilotgtm "$pod" --all-containers' in pipeline_text, pipeline_path
+
+
 def test_startup_migration_hook_runs_before_upgrade_rollout() -> None:
     values_text = CHART_VALUES_PATH.read_text(encoding="utf-8")
 

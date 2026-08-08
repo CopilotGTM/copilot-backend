@@ -1655,14 +1655,9 @@ class SalesforceIntegrationConfig:
 class SecretManagerConfig:
     """Configuration for Cloud Secret Manager"""
 
-    # Primary Key Vault for org-specific secrets (DB passwords per tenant)
-    AZURE_KEY_VAULT_URL: str | None = os.getenv("AZURE_KEY_VAULT_URL")
-
-    # Master Key Vault for global/shared secrets (Teams bot, API keys, etc.)
-    # Falls back to AZURE_KEY_VAULT_URL if not set
-    AZURE_MASTER_KEY_VAULT_URL: str | None = os.getenv(
-        "AZURE_MASTER_KEY_VAULT_URL", os.getenv("AZURE_KEY_VAULT_URL")
-    )
+    # All shared application and tenant-runtime secrets now live in the master
+    # Key Vault; the former database-only vault is no longer part of runtime.
+    AZURE_MASTER_KEY_VAULT_URL: str | None = os.getenv("AZURE_MASTER_KEY_VAULT_URL")
 
     # Bound individual secret fetch duration to avoid event-loop stalls while
     # still allowing Azure Key Vault enough time to answer during transient slowness.

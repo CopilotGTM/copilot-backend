@@ -706,7 +706,6 @@ stages:
                       --set api.secrets.APPLICATION_REGION="$(APPLICATION_REGION)" \
                       --set api.secrets.DATABASE_SSL_MODE="$(DATABASE_SSL_MODE)" \
                       --set api.secrets.ENV="$(ENV)" \
-                      --set api.secrets.AZURE_KEY_VAULT_URL="$(AZURE_KEY_VAULT_URL)" \
                       --set api.secrets.AZURE_MASTER_KEY_VAULT_URL="$(AZURE_MASTER_KEY_VAULT_URL)" \
                       --set api.secrets.AZURE_RESOURCE_GROUP="$(AZURE_RESOURCE_GROUP)" \
                       --set api.secrets.AZURE_SUBSCRIPTION_ID="$(AZURE_SUBSCRIPTION_ID)" \
@@ -756,7 +755,6 @@ stages:
                     APPLICATION_REGION: $(APPLICATION_REGION)
                     DATABASE_SSL_MODE: $(DATABASE_SSL_MODE)
                     ENV: $(ENV)
-                    AZURE_KEY_VAULT_URL: $(AZURE_KEY_VAULT_URL)
                     AZURE_MASTER_KEY_VAULT_URL: $(AZURE_MASTER_KEY_VAULT_URL)
                     AZURE_RESOURCE_GROUP: $(AZURE_RESOURCE_GROUP)
                     AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
@@ -776,13 +774,32 @@ stages:
 
                     wait_if_present() {
                       local deployment_name="$1"
+                      local timeout_seconds=300
+
+                      case "$deployment_name" in
+                        copilot-backend-chat-worker) timeout_seconds=600 ;;
+                      esac
 
                       if kubectl get deployment "$deployment_name" -n copilotgtm >/dev/null 2>&1; then
-                        kubectl rollout status deployment "$deployment_name" -n copilotgtm --timeout=300s
+                        kubectl rollout status deployment "$deployment_name" -n copilotgtm --timeout="${timeout_seconds}s"
                       else
                         echo "Skipping missing deployment: $deployment_name"
                       fi
                     }
+
+                    dump_chat_worker_diagnostics() {
+                      echo "Chat-worker rollout diagnostics before rollback"
+                      kubectl get deployment copilot-backend-chat-worker -n copilotgtm -o wide || true
+                      kubectl get pods -n copilotgtm -l app.kubernetes.io/name=worker -o wide | grep 'copilot-backend-chat-worker-' || true
+
+                      for pod in $(kubectl get pods -n copilotgtm -l app.kubernetes.io/name=worker -o name 2>/dev/null | grep '^pod/copilot-backend-chat-worker-' || true); do
+                        kubectl describe pod -n copilotgtm "$pod" || true
+                        kubectl logs -n copilotgtm "$pod" --all-containers --timestamps --prefix --tail=300 || true
+                        kubectl logs -n copilotgtm "$pod" --all-containers --previous --timestamps --prefix --tail=300 || true
+                      done
+                    }
+
+                    trap 'status=$?; dump_chat_worker_diagnostics; exit "$status"' ERR
 
                     echo "Waiting for API and worker deployments updated by Helm..."
                     wait_if_present copilot-backend

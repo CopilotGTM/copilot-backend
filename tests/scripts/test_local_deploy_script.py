@@ -64,6 +64,13 @@ def test_full_local_deploy_keeps_bootstrap_install_values() -> None:
     assert "deal-insights-worker.enabled=true" in full_deploy_args
 
 
+def test_local_deploy_uses_only_the_master_key_vault() -> None:
+    script_text = SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert "AZURE_KEY_VAULT_URL" not in script_text
+    assert "AZURE_MASTER_KEY_VAULT_URL" in script_text
+
+
 def test_full_local_deploy_skips_startup_hooks_by_default_with_opt_in_flag() -> None:
     script_text = SCRIPT_PATH.read_text(encoding="utf-8")
     full_deploy_args = _full_deploy_helm_args(script_text)

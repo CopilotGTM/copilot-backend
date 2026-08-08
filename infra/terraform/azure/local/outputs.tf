@@ -2,10 +2,6 @@ output "resource_group_name" {
   value = module.resource_group.resource_group_name
 }
 
-output "key_vault_uri" {
-  value = azurerm_key_vault.database_key_vault.vault_uri
-}
-
 output "master_key_vault_uri" {
   value = azurerm_key_vault.master_key_vault.vault_uri
 }

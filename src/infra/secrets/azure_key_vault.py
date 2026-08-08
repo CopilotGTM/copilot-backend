@@ -88,9 +88,9 @@ class AzureKeyVaultSecretProvider(SecretProvider):
 
     async def _create_client(self):
         """Create a new SecretClient with appropriate credential strategy."""
-        key_vault_url = self._vault_url_override or secret_manager_config.AZURE_KEY_VAULT_URL
+        key_vault_url = self._vault_url_override or secret_manager_config.AZURE_MASTER_KEY_VAULT_URL
         if not key_vault_url:
-            raise RuntimeError("AZURE_KEY_VAULT_URL not configured")
+            raise RuntimeError("AZURE_MASTER_KEY_VAULT_URL not configured")
 
         try:
             # Close existing client if any
@@ -334,5 +334,5 @@ class AzureKeyVaultSecretProvider(SecretProvider):
             "client_age_seconds": (
                 time.time() - self._client_creation_time if self._client_creation_time else None
             ),
-            "vault_url": secret_manager_config.AZURE_KEY_VAULT_URL,
+            "vault_url": secret_manager_config.AZURE_MASTER_KEY_VAULT_URL,
         }
