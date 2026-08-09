@@ -108,12 +108,15 @@ def test_agent_automation_enums_match_the_ai_native_contract() -> None:
     }
 
 
-def test_user_agent_definition_contract_is_unchanged() -> None:
-    """Verify the contract that user agent definition contract is unchanged."""
+def test_user_agent_owns_output_delivery_configuration() -> None:
+    """Keep output delivery with the agent definition, not its triggers."""
     assert UserAgent.__tablename__ == "user_agents"
     assert "model_settings" in UserAgent.model_fields
     assert "model_config" not in UserAgent.model_fields
     assert isinstance(UserAgent.__table__.c.model_config.type, JSONB)
+    assert isinstance(UserAgent.__table__.c.output_delivery_config.type, JSONB)
+    assert UserAgent.__table__.c.output_delivery_config.nullable is False
+    assert UserAgent.__table__.c.output_delivery_updated_at.nullable is False
 
 
 def test_trigger_persists_compiled_routing_authority_and_target_snapshot() -> None:
@@ -141,7 +144,6 @@ def test_trigger_persists_compiled_routing_authority_and_target_snapshot() -> No
         "audience_mode",
         "audience_config",
         "task_config",
-        "delivery_config",
         "config_hash",
         "status",
         "next_trigger_at",
@@ -163,7 +165,6 @@ def test_trigger_persists_compiled_routing_authority_and_target_snapshot() -> No
         "scope_config",
         "audience_config",
         "task_config",
-        "delivery_config",
     ):
         assert isinstance(AutomationTrigger.__table__.c[column_name].type, JSONB)
     assert AutomationTrigger.__table__.c.watch_config.nullable is True
@@ -305,6 +306,7 @@ def test_run_pins_authority_lineage_and_one_trigger_event_decision() -> None:
         "trigger_snapshot",
         "agent_snapshot",
         "input_snapshot",
+        "output_delivery_config",
         "output_text",
         "output_json",
         "error_code",
@@ -374,6 +376,7 @@ def test_run_pins_authority_lineage_and_one_trigger_event_decision() -> None:
         "trigger_snapshot",
         "agent_snapshot",
         "input_snapshot",
+        "output_delivery_config",
         "output_json",
         "token_usage",
     ):

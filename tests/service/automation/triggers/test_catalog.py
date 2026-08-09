@@ -69,34 +69,7 @@ def test_catalog_serializes_registry_hierarchy_and_organisation_options() -> Non
         "lost",
         "closed",
     ]
-    assert [channel.model_dump() for channel in catalog.delivery_channels] == [
-        {
-            "key": "none",
-            "label": "Run history only",
-            "description": "Keep the completed output in CopilotGTM.",
-            "principal_modes": ["personal", "organisation"],
-            "sender_mode": None,
-            "recipient_mode_by_principal": {},
-            "requires_audience_modes": [],
-            "body_source": None,
-        },
-        {
-            "key": "email_notification",
-            "label": "Email notification",
-            "description": (
-                "CopilotGTM emails the complete final Markdown output and run context "
-                "after a successful run."
-            ),
-            "principal_modes": ["personal", "organisation"],
-            "sender_mode": "platform",
-            "recipient_mode_by_principal": {
-                "personal": "execution_principal",
-                "organisation": "run_audience",
-            },
-            "requires_audience_modes": ["explicit_users", "subject_participants"],
-            "body_source": "agent_output_markdown",
-        },
-    ]
+    assert "delivery_channels" not in type(catalog).model_fields
 
 
 def test_catalog_exposes_business_fields_watch_labels_and_built_in_rules() -> None:

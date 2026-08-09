@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -142,3 +143,25 @@ async def test_archive_agent_is_a_soft_delete_with_the_same_revision_boundary() 
         AgentStatus.ARCHIVED.value
         in statement.compile(dialect=postgresql.dialect()).params.values()
     )
+
+
+@pytest.mark.asyncio
+async def test_replace_output_delivery_uses_its_own_owner_scoped_concurrency_token() -> None:
+    session = _RecordingSession()
+    access = AgentDefinitionAccess(session, uuid4(), uuid4())  # type: ignore[arg-type]
+    expected_updated_at = datetime(2026, 8, 9, 10, 30, tzinfo=UTC)
+
+    result = await access.replace_output_delivery(
+        uuid4(),
+        expected_updated_at=expected_updated_at,
+        channels=["email_notification"],
+    )
+
+    assert result is None
+    sql = _sql(session.statements[0])
+    assert sql.startswith("update user_agents set")
+    _assert_owner_boundary(sql)
+    assert "user_agents.output_delivery_updated_at =" in sql
+    assert "user_agents.status !=" in sql
+    assert "output_delivery_config=" in sql
+    assert "revision=(user_agents.revision +" not in sql

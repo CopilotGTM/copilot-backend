@@ -285,7 +285,6 @@ def test_downgrade_restores_revision_086_schema_and_rls(
         "scope_type",
         "scope_config",
         "task_config",
-        "delivery_config",
         "config_hash",
         "status",
         "next_trigger_at",

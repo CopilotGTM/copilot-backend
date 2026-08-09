@@ -176,14 +176,6 @@ def build_service(
 ):
     """Build the build service fixture used by the surrounding regression cases."""
     item = envelope()
-    if delivery:
-        item = replace(
-            item,
-            trigger_snapshot={
-                **item.trigger_snapshot,
-                "delivery_config": {"mode": "email_notification"},
-            },
-        )
     scopes = SessionScopes(events)
     lifecycle = FakeLifecycle(events, terminal_failure=terminal_failure)
     lifecycle.delivery_ids = (uuid4(), uuid4()) if delivery else ()

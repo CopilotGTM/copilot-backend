@@ -157,3 +157,31 @@ class AgentDefinitionAccess:
             .returning(UserAgent)
         )
         return (await self.session.execute(statement)).scalars().first()
+
+    async def replace_output_delivery(
+        self,
+        agent_id: UUID,
+        *,
+        expected_updated_at: datetime,
+        channels: list[str],
+    ) -> UserAgent | None:
+        """Replace delivery channels without changing the executable agent revision."""
+
+        columns = cast(Any, UserAgent).__table__.c
+        now = datetime.now(UTC)
+        statement = (
+            update(UserAgent)
+            .where(
+                *self._owned_conditions(),
+                columns.agent_id == agent_id,
+                columns.output_delivery_updated_at == expected_updated_at,
+                columns.status != AgentStatus.ARCHIVED.value,
+            )
+            .values(
+                output_delivery_config={"channels": channels},
+                output_delivery_updated_at=now,
+                updated_at=now,
+            )
+            .returning(UserAgent)
+        )
+        return (await self.session.execute(statement)).scalars().first()

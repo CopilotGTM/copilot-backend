@@ -25,6 +25,8 @@ from src.api.schemas.agent_models import (
     AgentCreateRequest,
     AgentDetail,
     AgentListResponse,
+    AgentOutputDeliveryState,
+    AgentOutputDeliveryUpdateRequest,
     AgentUpdateRequest,
 )
 from src.api.schemas.base_models import GenericResponse
@@ -270,6 +272,50 @@ async def replace_agent_capabilities(
     except Exception:
         await service.session.rollback()
         logger.exception("Unexpected error replacing agent capabilities")
+        return Response.internal_server_error_response(
+            _UNEXPECTED_ERROR_MESSAGE,
+            response=response,
+        )
+
+
+@agent_definitions_router.put(
+    "/{agent_id}/output-delivery",
+    response_model=GenericResponse[AgentOutputDeliveryState],
+    summary="Replace agent output delivery",
+    description="Replace external output channels at an expected delivery timestamp.",
+    responses={
+        http_status.HTTP_404_NOT_FOUND: {"description": "Agent not found."},
+        http_status.HTTP_409_CONFLICT: {"description": "Delivery version conflict."},
+        http_status.HTTP_429_TOO_MANY_REQUESTS: {"description": "Rate limit exceeded."},
+        http_status.HTTP_500_INTERNAL_SERVER_ERROR: {"description": "Unexpected server error."},
+    },
+)
+async def replace_agent_output_delivery(
+    agent_id: UUID,
+    body: AgentOutputDeliveryUpdateRequest,
+    response: FastAPIResponse,
+    service: AgentDefinitionService = Depends(get_agent_definition_service),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[AgentOutputDeliveryState]:
+    """Commit delivery preferences without changing the executable revision."""
+
+    try:
+        item = await service.replace_output_delivery(agent_id, body)
+        await service.session.commit()
+        return Response.success_response(
+            "Agent output delivery updated successfully",
+            data=item,
+        )
+    except AgentServiceError as exc:
+        await service.session.rollback()
+        return Response.error_response(
+            status_code=exc.status_code,
+            message=exc.message,
+            response=response,
+        )
+    except Exception:
+        await service.session.rollback()
+        logger.exception("Unexpected error replacing agent output delivery")
         return Response.internal_server_error_response(
             _UNEXPECTED_ERROR_MESSAGE,
             response=response,

@@ -94,8 +94,11 @@ class ActivationAccess(Protocol):
         """Load direct candidate within the organisation boundary."""
         ...
 
-    async def list_active_agent_ids(self, agent_ids: set[UUID]) -> set[UUID]:
-        """List active agent ids within the organisation boundary."""
+    async def list_active_agent_delivery_configs(
+        self,
+        agent_ids: set[UUID],
+    ) -> dict[UUID, dict[str, Any]]:
+        """Load active agent delivery decisions within the organisation boundary."""
         ...
 
     async def list_active_user_ids(self, user_ids: set[UUID]) -> set[UUID]:
@@ -223,13 +226,26 @@ class AutomationTriggerActivationService:
             audience_configs[candidate.trigger_id] = audience_config
             audience_user_ids.update(UUID(value) for value in audience_config.get("user_ids", []))
 
-        active_agent_ids = await self.access.list_active_agent_ids(
+        stored_agent_delivery_configs = await self.access.list_active_agent_delivery_configs(
             {
                 candidate.target_id
                 for candidate in candidates
                 if _value(candidate.target_type) == "agent"
             }
         )
+        active_agent_delivery_configs: dict[UUID, dict[str, Any]] = {}
+        invalid_agent_delivery_ids: set[UUID] = set()
+        for agent_id, config in stored_agent_delivery_configs.items():
+            try:
+                active_agent_delivery_configs[agent_id] = _output_delivery_config(config)
+            except ValueError as exc:
+                invalid_agent_delivery_ids.add(agent_id)
+                logger.warning(
+                    "Invalid agent output delivery org=%s agent=%s error=%s",
+                    self.organisation_id,
+                    agent_id,
+                    exc,
+                )
         active_user_ids = await self.access.list_active_user_ids(
             audience_user_ids
             | {
@@ -264,11 +280,20 @@ class AutomationTriggerActivationService:
                     )
                 )
                 continue
+            if candidate.target_id in invalid_agent_delivery_ids:
+                outcomes.append(
+                    TriggerActivationOutcome(
+                        candidate.trigger_id,
+                        "skipped",
+                        "agent_output_delivery_invalid",
+                    )
+                )
+                continue
             audience_config = audience_configs[candidate.trigger_id]
             reason = self._readiness_reason(
                 candidate,
                 envelope,
-                active_agent_ids=active_agent_ids,
+                active_agent_ids=set(stored_agent_delivery_configs),
                 active_user_ids=active_user_ids,
                 causation_trigger_ids=causation_trigger_ids,
                 audience_config=audience_config,
@@ -324,7 +349,12 @@ class AutomationTriggerActivationService:
                 continue
 
             matched_count += 1
-            run = self._build_run(candidate, envelope, audience_config=audience_config)
+            run = self._build_run(
+                candidate,
+                envelope,
+                audience_config=audience_config,
+                output_delivery_config=active_agent_delivery_configs[candidate.target_id],
+            )
             if await self.access.insert_run_if_absent(run):
                 created_run_ids.append(run.run_id)
                 outcomes.append(
@@ -531,6 +561,7 @@ class AutomationTriggerActivationService:
         envelope: AutomationEventEnvelope,
         *,
         audience_config: dict[str, Any],
+        output_delivery_config: dict[str, Any],
     ) -> AgentRun:
         return AgentRun(
             organisation_id=self.organisation_id,
@@ -553,12 +584,13 @@ class AutomationTriggerActivationService:
             trigger_snapshot=_trigger_snapshot(trigger),
             agent_snapshot=dict(trigger.target_snapshot),
             input_snapshot=envelope.model_dump(mode="json"),
+            output_delivery_config=dict(output_delivery_config),
         )
 
 
 def _trigger_snapshot(trigger: AutomationTrigger) -> dict[str, Any]:
-    # Keep the display name beside the execution contract so later delivery and
-    # history rendering never depend on a mutable trigger row.
+    # Keep the display name beside the trigger contract so history rendering
+    # never depends on a mutable trigger row.
     return {
         "trigger_id": str(trigger.trigger_id),
         "name": trigger.name,
@@ -579,9 +611,19 @@ def _trigger_snapshot(trigger: AutomationTrigger) -> dict[str, Any]:
         "audience_mode": _value(trigger.audience_mode),
         "audience_config": dict(trigger.audience_config),
         "task_config": dict(trigger.task_config),
-        "delivery_config": dict(trigger.delivery_config),
         "config_hash": trigger.config_hash,
     }
+
+
+def _output_delivery_config(value: object) -> dict[str, list[str]]:
+    """Fail closed if persisted agent policy bypasses the write-contract validator."""
+
+    if not isinstance(value, dict) or set(value) != {"channels"}:
+        raise ValueError("output delivery must contain only channels")
+    channels = value["channels"]
+    if channels not in ([], ["email_notification"]):
+        raise ValueError("output delivery channels are not canonical")
+    return {"channels": list(channels)}
 
 
 def _scheduled_for(envelope: AutomationEventEnvelope) -> datetime | None:

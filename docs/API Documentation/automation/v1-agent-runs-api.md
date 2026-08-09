@@ -117,7 +117,8 @@ GET /users/v1/agent-runs/{run_id}
 The detail includes every summary field, including `delivery`, plus:
 
 - creator, execution-principal, audience, source, actor, subject, and correlation metadata;
-- pinned agent and trigger snapshots plus the canonical input event snapshot;
+- pinned agent and trigger snapshots, the normalized output-delivery decision, and the canonical
+  input event snapshot;
 - persisted `output_text` or `output_json`;
 - attempt/claim state, model, token usage, cost, and latency;
 - stable error code and sanitized error message;
@@ -126,6 +127,23 @@ The detail includes every summary field, including `delivery`, plus:
 Treat snapshots as audit data, not as current editable definitions. Render `output_text` as safe
 Markdown. When it is absent, render `output_json` as formatted JSON. There is no separate
 output-only endpoint.
+
+The configured decision is a separate fact from the delivery outcome:
+
+```ts
+type AgentRunOutputDeliverySnapshot = {
+  channels: Array<"email_notification">;
+};
+
+type AgentRunDetail = AgentRunSummary & {
+  output_delivery: AgentRunOutputDeliverySnapshot;
+  // remaining immutable snapshots and result fields
+};
+```
+
+`output_delivery` is copied from the agent when this run is created and never changes afterward.
+`delivery` is derived later from durable notification rows and can therefore be `null`, pending,
+or terminal independently of the configured snapshot.
 
 ## Independent Run And Delivery Lifecycles
 

@@ -27,11 +27,13 @@ class FakeSession:
     def __init__(self, user=None) -> None:
         self.user = user
         self.commits = 0
+        self.statement = None
 
     async def commit(self) -> None:
         self.commits += 1
 
-    async def execute(self, _statement):
+    async def execute(self, statement):
+        self.statement = statement
         user = self.user
 
         class Result:
@@ -124,10 +126,10 @@ def run_and_delivery(*, output_text="**Created lead**", output_json=None):
         correlation_id=str(uuid4()),
         trigger_snapshot={
             "name": "Incoming sales email",
-            "delivery_config": {"mode": "email_notification"},
         },
         agent_snapshot={"name": "Lead creator"},
         input_snapshot={"subject": {"type": "email_message", "id": str(uuid4())}},
+        output_delivery_config={"channels": ["email_notification"]},
         output_text=output_text,
         output_json=output_json,
         completed_at=datetime(2026, 8, 7, 10, 0, tzinfo=UTC),
@@ -200,6 +202,20 @@ def test_markdown_rendering_neutralizes_raw_html_and_unsafe_links() -> None:
     assert "<script>" not in rendered
     assert "&lt;script&gt;" in rendered
     assert "javascript:" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_recipient_query_requires_verified_email() -> None:
+    """Queued output must not disclose agent results to an unverified address."""
+    organisation_id, delivery, _, user = run_and_delivery()
+    master_session = FakeSession(user)
+    service = AgentRunDeliveryExecutionService(
+        organisation_id,
+        master_session_scope=scope(master_session),
+    )
+
+    assert await service._recipient(delivery.target_key) is user
+    assert "users.email_verified IS true" in str(master_session.statement)
 
 
 def test_json_and_oversized_outputs_have_deterministic_markdown() -> None:

@@ -19,6 +19,8 @@ from src.domain.models.organisation_tables import (
     AgentVisibility,
 )
 
+AgentOutputDeliveryChannel = Literal["email_notification"]
+
 
 class AgentCapabilitySelection(BaseModel):
     """Complete desired tool and skill allowlists for a user-owned agent."""
@@ -41,6 +43,39 @@ class AgentCapabilitySelection(BaseModel):
         if len(cleaned) != len(set(cleaned)):
             raise ValueError(f"{info.field_name} values must be unique")
         return cleaned
+
+
+class AgentOutputDeliveryUpdateRequest(BaseModel):
+    """Replace the agent's external delivery channels at a known delivery version."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    channels: list[AgentOutputDeliveryChannel]
+    expected_updated_at: datetime
+
+    @field_validator("channels")
+    @classmethod
+    def _require_unique_channels(
+        cls,
+        value: list[AgentOutputDeliveryChannel],
+    ) -> list[AgentOutputDeliveryChannel]:
+        if len(value) != len(set(value)):
+            raise ValueError("channels values must be unique")
+        return sorted(value)
+
+    @field_validator("expected_updated_at")
+    @classmethod
+    def _require_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("expected_updated_at must include a timezone")
+        return value
+
+
+class AgentOutputDeliveryState(BaseModel):
+    """Current agent-level delivery decision and its concurrency token."""
+
+    channels: list[AgentOutputDeliveryChannel]
+    updated_at: datetime
 
 
 class AgentDefinitionBase(AgentCapabilitySelection):
@@ -112,11 +147,22 @@ class AgentCapabilityItem(BaseModel):
     category: str
 
 
+class AgentOutputDeliveryChannelItem(BaseModel):
+    """One server-owned destination available in the output-delivery editor."""
+
+    key: AgentOutputDeliveryChannel
+    label: str
+    description: str
+    sender_mode: Literal["platform"]
+    body_source: Literal["agent_output_markdown"]
+
+
 class AgentCapabilityCatalog(BaseModel):
     """Selectable tool and skill metadata sourced from the running backend."""
 
     tools: list[AgentCapabilityItem]
     skills: list[AgentCapabilityItem]
+    output_delivery_channels: list[AgentOutputDeliveryChannelItem]
 
 
 class AgentTemplateSummary(BaseModel):
@@ -216,6 +262,7 @@ class AgentDetail(AgentSummary):
     max_turns: int | None
     input_schema: dict[str, Any] | None
     output_schema: dict[str, Any] | None
+    output_delivery: AgentOutputDeliveryState
     automation_eligibility: AgentAutomationEligibility
 
 

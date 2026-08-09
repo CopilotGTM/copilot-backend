@@ -28,8 +28,9 @@ unknown `agent_id` returns the same `404 Agent not found` response.
 | `GET` | `/users/v1/agents/{agent_id}` | Get one complete owned definition |
 | `PUT` | `/users/v1/agents/{agent_id}` | Fully replace mutable fields |
 | `PUT` | `/users/v1/agents/{agent_id}/capabilities` | Atomically replace selected tools and skills |
+| `PUT` | `/users/v1/agents/{agent_id}/output-delivery` | Replace external output destinations without changing executable revision |
 | `DELETE` | `/users/v1/agents/{agent_id}?expected_revision=1` | Archive without hard deletion |
-| `GET` | `/users/v1/agent-capability-catalog` | List code-owned tool and skill keys |
+| `GET` | `/users/v1/agent-capability-catalog` | List code-owned tool, skill, and output-delivery choices |
 | `GET` | `/users/v1/agent-templates` | List code-owned base agents |
 | `POST` | `/users/v1/agent-templates/{template_id}/use` | Copy an exact template version into the user's agents |
 
@@ -68,7 +69,8 @@ Content-Type: application/json
 
 Success returns `201 Created`, a `Location: /users/v1/agents/{agent_id}` header, and the complete
 definition in the normal `{status, message, data}` envelope. New rows use `revision = 1`,
-`source_type = user`, `visibility = private`, `status = active`, and `agent_type = general`.
+`source_type = user`, `visibility = private`, `status = active`, `agent_type = general`, and
+`output_delivery.channels = []`.
 
 Agents copied through `Use Template` instead use `source_type = system`, store the stable template
 UUID in `source_agent_id`, and store the selected metadata version in `source_version`. After the
@@ -119,7 +121,17 @@ GET /users/v1/agents/{agent_id}
 ```
 
 The detail response adds owner/provenance fields, visibility, prompt, model configuration, turn
-limit, and input/output schemas to the list representation.
+limit, input/output schemas, and the separately versioned delivery decision to the list
+representation:
+
+```json
+{
+  "output_delivery": {
+    "channels": ["email_notification"],
+    "updated_at": "2026-08-09T10:30:00Z"
+  }
+}
+```
 
 ## Replace Agent
 
@@ -142,6 +154,7 @@ increments `revision`. If another edit already changed the row, the API returns 
 `Agent changed since it was loaded; refresh and retry`.
 
 `status` accepts `active` or `paused`. Archive is intentionally unavailable through PUT.
+The complete definition PUT does not accept or overwrite `output_delivery`.
 
 ## Replace Capabilities
 
@@ -164,7 +177,36 @@ the full replacement endpoint. Existing triggers remain pinned to their saved ag
 the user explicitly refreshes the trigger target.
 
 `GET /users/v1/agent-capability-catalog` returns the backend's current tool and skill keys with
-labels and categories. V1 selection does not upload or install executable code.
+labels and categories plus `output_delivery_channels`. V1 selection does not upload or install
+executable code.
+
+## Replace Output Delivery
+
+Output delivery is one agent-level decision, independent of its triggers and executable revision:
+
+```http
+PUT /users/v1/agents/{agent_id}/output-delivery
+Content-Type: application/json
+```
+
+```json
+{
+  "channels": ["email_notification"],
+  "expected_updated_at": "2026-08-09T10:30:00Z"
+}
+```
+
+`channels: []` means run history only. `email_notification` is currently the only external
+channel and sends through the CopilotGTM platform sender, never the user's connected mailbox.
+Recipients are server-derived from each run's authorized execution principal or immutable
+audience; the request cannot include addresses, mailboxes, sender settings, templates, or recipient
+IDs.
+
+The write atomically replaces the complete channel set and returns the new `output_delivery`
+state. It changes `output_delivery.updated_at` but does not increment `revision`, refresh trigger
+snapshots, or start provider work. A stale timestamp returns `409` with `Agent output delivery
+changed since it was loaded; refresh and retry`. Changes apply only to runs created after the
+write; each run keeps its activation-time snapshot.
 
 ## Archive Agent
 

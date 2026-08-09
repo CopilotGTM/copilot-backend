@@ -1,5 +1,9 @@
 # Agent Automation Tables Implementation Plan
 
+> **Schema correction (2026-08-09):** `automation_triggers.delivery_config` is removed. Current
+> output delivery belongs to `user_agents`, and each `agent_runs` row stores its own immutable
+> activation-time snapshot. See `../specs/2026-08-09-agent-level-output-delivery.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (- [ ]) syntax for tracking.
 
 **Goal:** Add the three tenant-local PostgreSQL tables that persist user-owned agents, reusable automation triggers, and durable agent runs.

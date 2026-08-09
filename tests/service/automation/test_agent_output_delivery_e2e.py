@@ -101,8 +101,8 @@ async def test_replayed_worker_message_does_not_send_persisted_output_twice() ->
         correlation_id=str(uuid4()),
         trigger_snapshot={
             "name": "Incoming email",
-            "delivery_config": {"mode": "email_notification"},
         },
+        output_delivery_config={"channels": ["email_notification"]},
         agent_snapshot={"name": "Lead creator"},
         input_snapshot={},
         output_text="Created the lead and linked the account.",

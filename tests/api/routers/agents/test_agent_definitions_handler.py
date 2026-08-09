@@ -17,13 +17,18 @@ from src.api.routers.agents.definitions_handler import (
     list_agent_definitions,
     replace_agent_capabilities,
     replace_agent_definition,
+    replace_agent_output_delivery,
 )
 from src.api.schemas.agent_models import (
+    AgentAutomationEligibility,
     AgentCapabilitiesUpdateRequest,
     AgentCreateRequest,
     AgentDetail,
     AgentListResponse,
+    AgentOutputDeliveryState,
+    AgentOutputDeliveryUpdateRequest,
     AgentUpdateRequest,
+    AutomationEligibilityMode,
 )
 from src.domain.models.organisation_tables import (
     AgentOutputMode,
@@ -76,6 +81,10 @@ class _Service:
         self._raise_if_needed()
         return self.detail
 
+    async def replace_output_delivery(self, _agent_id, _body):
+        self._raise_if_needed()
+        return self.detail.output_delivery
+
     async def archive_agent(self, _agent_id, *, expected_revision):
         self._raise_if_needed()
         return None
@@ -106,6 +115,11 @@ def _detail() -> AgentDetail:
         max_turns=None,
         input_schema=None,
         output_schema=None,
+        output_delivery=AgentOutputDeliveryState(channels=[], updated_at=now),
+        automation_eligibility=AgentAutomationEligibility(
+            personal=AutomationEligibilityMode(available=True),
+            organisation=AutomationEligibilityMode(available=False),
+        ),
     )
 
 
@@ -216,6 +230,30 @@ async def test_replace_capabilities_commits_atomic_set_update() -> None:
     )
 
     assert result.status == "SUCCESS"
+    assert service.session.commits == 1
+    assert service.session.rollbacks == 0
+
+
+@pytest.mark.asyncio
+async def test_replace_output_delivery_commits_and_returns_the_delivery_state() -> None:
+    service = _Service()
+    body = AgentOutputDeliveryUpdateRequest(
+        channels=["email_notification"],
+        expected_updated_at=service.detail.output_delivery.updated_at,
+    )
+    service.detail.output_delivery.channels = ["email_notification"]
+
+    result = await replace_agent_output_delivery(
+        agent_id=uuid4(),
+        body=body,
+        response=FastAPIResponse(),
+        service=service,  # type: ignore[arg-type]
+        _rl_write=None,
+    )
+
+    assert result.status == "SUCCESS"
+    assert result.message == "Agent output delivery updated successfully"
+    assert result.data.channels == ["email_notification"]
     assert service.session.commits == 1
     assert service.session.rollbacks == 0
 

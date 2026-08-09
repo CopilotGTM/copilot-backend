@@ -158,13 +158,13 @@ class AgentRunLifecycleService:
         if run is None:
             return AgentRunCompletion(updated=False)
         delivery_ids: tuple[UUID, ...] = ()
-        delivery_config = run.trigger_snapshot.get("delivery_config")
+        delivery_channels = run.output_delivery_config.get("channels")
         # Delivery intent is created only for a fenced successful run and uses
-        # the immutable snapshot, so later trigger edits cannot change its target.
+        # the immutable run policy, so later agent edits cannot change its target.
         if (
             kwargs["status"] == AgentRunStatus.SUCCEEDED.value
-            and isinstance(delivery_config, dict)
-            and delivery_config.get("mode") == "email_notification"
+            and isinstance(delivery_channels, list)
+            and "email_notification" in delivery_channels
         ):
             delivery_ids = await self.access.ensure_deliveries(run)
         envelope = AgentRunEventAdapter(self.organisation_id).from_run(run)

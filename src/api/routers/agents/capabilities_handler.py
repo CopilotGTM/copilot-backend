@@ -15,7 +15,7 @@ agent_capabilities_router = APIRouter()
     "/agent-capability-catalog",
     response_model=GenericResponse[AgentCapabilityCatalog],
     summary="List agent capabilities",
-    description="List code-owned tools and skills selectable by the authenticated user.",
+    description="List code-owned tools, skills, and output-delivery channels.",
 )
 async def get_agent_capability_catalog(
     _user_ids: UserIDs = Depends(get_current_user),

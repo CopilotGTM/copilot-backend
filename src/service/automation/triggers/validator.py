@@ -9,10 +9,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from pydantic import ValidationError
-from src.api.schemas.automation_trigger_models import (
-    AutomationTriggerDefinitionBase,
-    TriggerEmailNotificationDecision,
-)
+from src.api.schemas.automation_trigger_models import AutomationTriggerDefinitionBase
 from src.domain.models.organisation_tables import (
     AutomationAudienceMode,
     AutomationPrincipalType,
@@ -94,7 +91,6 @@ class ValidatedTriggerDefinition:
     audience_mode: AutomationAudienceMode
     audience_config: dict[str, Any]
     task_config: dict[str, Any]
-    delivery_config: dict[str, Any]
     next_trigger_at: datetime | None
 
 
@@ -157,14 +153,6 @@ class AutomationTriggerValidator:
             target_allowed_skills=target_allowed_skills,
         )
         organisation_scope = principal_type == AutomationPrincipalType.ORGANISATION_SERVICE
-        if (
-            isinstance(request.delivery, TriggerEmailNotificationDecision)
-            and organisation_scope
-            and request.audience.mode == AutomationAudienceMode.NONE
-        ):
-            # An organization email must have a pinned audience so the worker can
-            # deliver from the immutable run snapshot without a later user lookup.
-            raise ValueError("organisation email notification requires a run audience")
         selection = compiled.config.get("selection")
         if (
             definition.source_selector is not None
@@ -215,9 +203,6 @@ class AutomationTriggerValidator:
             audience_mode=request.audience.mode,
             audience_config=audience_config,
             task_config=request.task.model_dump(exclude_none=True),
-            # JSON mode gives the hash/persistence path plain values rather than
-            # enum objects whose serialization could vary by caller.
-            delivery_config=request.delivery.model_dump(mode="json"),
             next_trigger_at=next_trigger_at,
         )
 
@@ -255,8 +240,6 @@ class AutomationTriggerValidator:
             "scope": request.scope.model_dump(mode="json"),
             "audience": request.audience.model_dump(mode="json"),
             "task": request.task.model_dump(),
-            # Validate the same JSON representation that is persisted and hashed.
-            "delivery": request.delivery.model_dump(mode="json"),
         }
         for field_name, value in values.items():
             validate_json_document(field_name, value, max_bytes=_CONFIG_MAX_BYTES)

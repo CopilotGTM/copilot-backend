@@ -1,5 +1,10 @@
 # Agent Output Transactional Email Notification Specification
 
+> **Superseded in part on 2026-08-09:** Trigger-owned output-delivery configuration and its UI
+> contract are replaced by the agent-level decision in
+> `2026-08-09-agent-level-output-delivery.md`. The notification ledger, platform sender, retry,
+> rendering, and delivery-outcome portions of this document remain applicable.
+
 **Status:** Implemented in development; migration, deployment, and live verification pending
 
 **Date:** 2026-08-07
