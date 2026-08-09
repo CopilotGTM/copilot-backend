@@ -165,6 +165,8 @@ workers-light = [
 
     # Deal-worker sends meeting-summary notifications from Celery, not the API image.
     "resend==2.11.0",
+    # Chat-worker renders persisted agent output into transactional email HTML.
+    "markdown==3.9",
 
     # Thumbnail generation for chat attachments
     "Pillow>=12.2.0",
