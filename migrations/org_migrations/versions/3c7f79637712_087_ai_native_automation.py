@@ -166,12 +166,6 @@ def upgrade() -> None:
             nullable=False,
             server_default=_EMPTY_OBJECT,
         ),
-        sa.Column(
-            "delivery_config",
-            postgresql.JSONB,
-            nullable=False,
-            server_default=_EMPTY_OBJECT,
-        ),
         sa.Column("config_hash", sa.Text(), nullable=False),
         sa.Column("status", sa.Text(), nullable=False, server_default="active"),
         sa.Column("next_trigger_at", sa.DateTime(timezone=True), nullable=True),
@@ -711,12 +705,6 @@ def downgrade() -> None:
         ),
         sa.Column(
             "task_config",
-            postgresql.JSONB,
-            nullable=False,
-            server_default=_EMPTY_OBJECT,
-        ),
-        sa.Column(
-            "delivery_config",
             postgresql.JSONB,
             nullable=False,
             server_default=_EMPTY_OBJECT,

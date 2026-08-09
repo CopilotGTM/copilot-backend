@@ -91,13 +91,14 @@ async def test_readiness_and_causation_queries_are_tenant_scoped() -> None:
     session = RecordingSession()
     access = TriggerActivationAccess(session, uuid4())  # type: ignore[arg-type]
 
-    await access.list_active_agent_ids({uuid4(), uuid4()})
+    await access.list_active_agent_delivery_configs({uuid4(), uuid4()})
     await access.list_active_user_ids({uuid4()})
     await access.list_causation_trigger_ids(uuid4())
 
     agent_sql, user_sql, causation_sql = map(sql, session.statements)
     assert "user_agents.organisation_id" in agent_sql
     assert "user_agents.status" in agent_sql
+    assert "user_agents.output_delivery_config" in agent_sql
     assert "public.users.organisation_id" in user_sql
     assert "public.users.status" in user_sql
     assert "public.users.admin_status" in user_sql

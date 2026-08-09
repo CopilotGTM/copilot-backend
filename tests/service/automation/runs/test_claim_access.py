@@ -8,6 +8,8 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy.dialects import postgresql
+from src.domain.models.organisation_tables import AgentRun, AgentRunStatus
+from src.domain.models.organisation_tables.sync import NotificationDeliveryStatus
 from src.service.automation.runs.access import AgentRunClaimAccess
 
 
@@ -160,6 +162,46 @@ async def test_retry_release_is_fenced_and_returns_run_to_pending() -> None:
     assert "claimed_by=" in statement_sql
     assert "pending" in parameter_values
     assert "running" in parameter_values
+
+
+@pytest.mark.asyncio
+async def test_org_delivery_without_authorized_recipients_is_a_terminal_skip() -> None:
+    """Record the policy decision without publishing a delivery job."""
+    organisation_id = uuid4()
+    delivery_id = uuid4()
+    session = RecordingSession(returned=delivery_id)
+    access = AgentRunClaimAccess(session, organisation_id)  # type: ignore[arg-type]
+    run = AgentRun(
+        organisation_id=organisation_id,
+        created_by_user_id=uuid4(),
+        execution_principal_type="organisation",
+        execution_principal_id=organisation_id,
+        audience_mode="organisation",
+        audience_config={"user_ids": []},
+        agent_id=uuid4(),
+        trigger_id=uuid4(),
+        agent_revision=1,
+        status=AgentRunStatus.SUCCEEDED,
+        idempotency_key=f"run:{uuid4()}",
+        event_id=uuid4(),
+        event_key="crm.deal.updated",
+        correlation_id="chain-22",
+        causation_depth=0,
+        trigger_snapshot={},
+        agent_snapshot={},
+        input_snapshot={},
+        output_delivery_config={"channels": ["email_notification"]},
+    )
+
+    delivery_ids = await access.ensure_deliveries(run)
+
+    assert delivery_ids == ()
+    assert len(session.statements) == 1
+    compiled = compile_statement(session.statements[0])
+    parameter_values = list(compiled.params.values())
+    assert "policy:no_authorized_recipient" in parameter_values
+    assert NotificationDeliveryStatus.SKIPPED.value in parameter_values
+    assert "no_authorized_recipient" in parameter_values
 
 
 @pytest.mark.asyncio

@@ -190,8 +190,7 @@ Content-Type: application/json
   "principal_mode": "personal",
   "scope": {"type": "owned_or_created_by_principal", "config": {}},
   "audience": {"mode": "principal", "user_ids": []},
-  "task": {"goal": "Review the deal and recommend the next best actions."},
-  "delivery": {"mode": "none"}
+  "task": {"goal": "Review the deal and recommend the next best actions."}
 }
 ```
 
@@ -213,6 +212,23 @@ GET /users/v1/agent-runs?agent_id={agent_id}&limit=20
 The first response is the editable definition, the second is trigger configuration and health,
 and the third is execution history. An agent may exist with no trigger and a trigger may exist with
 no runs yet; both are valid empty states.
+
+Render **Output delivery** from `agent.output_delivery` as a separate agent-level section. Load
+available destinations from `agent-capability-catalog.output_delivery_channels` and save the
+complete selection independently:
+
+```http
+PUT /users/v1/agents/{agent_id}/output-delivery
+Content-Type: application/json
+
+{
+  "channels": ["email_notification"],
+  "expected_updated_at": "2026-08-09T10:30:00Z"
+}
+```
+
+Use `channels: []` for run history only. Do not put delivery state in trigger forms, trigger cards,
+or general agent-definition PUT payloads. Tell users that changes apply to runs started after save.
 
 ## Editing Agents And Pinned Triggers
 
@@ -270,7 +286,8 @@ Invoke manual triggers through
 `POST /users/v1/agents/{agent_id}/triggers/{trigger_id}/invoke`. That response, and public
 webhook acceptance, returns durable event IDs rather than completed runs. There is no frontend
 push/stream contract for run updates. Poll the list or detail endpoint while a run is `pending` or
-`running` and stop at `succeeded`, `failed`, `delivery_failed`, `validation_failed`, or
+`running`. After the run is terminal, continue only while its independent notification state is
+`pending` or `sending`; agent terminal states are `succeeded`, `failed`, `validation_failed`, or
 `cancelled`.
 
 ## Complete V1 Endpoint Map
@@ -285,8 +302,9 @@ push/stream contract for run updates. Poll the list or detail endpoint while a r
 | Agents | `GET` | `/users/v1/agents/{agent_id}` | Read an owned agent |
 | Agents | `PUT` | `/users/v1/agents/{agent_id}` | Replace an agent definition |
 | Agents | `PUT` | `/users/v1/agents/{agent_id}/capabilities` | Replace only tools and skills |
+| Agents | `PUT` | `/users/v1/agents/{agent_id}/output-delivery` | Replace external output destinations |
 | Agents | `DELETE` | `/users/v1/agents/{agent_id}` | Archive an agent |
-| Capabilities | `GET` | `/users/v1/agent-capability-catalog` | Resolve selectable tool/skill metadata |
+| Capabilities | `GET` | `/users/v1/agent-capability-catalog` | Resolve tool, skill, and output-delivery metadata |
 | Triggers | `GET` | `/users/v1/automation-trigger-catalog` | Build trigger forms and CRM options |
 | Triggers | `GET` | `/users/v1/agents/{agent_id}/triggers` | List one agent's triggers |
 | Triggers | `POST` | `/users/v1/agents/{agent_id}/triggers` | Create and pin a trigger |

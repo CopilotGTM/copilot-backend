@@ -69,18 +69,24 @@ class TriggerActivationAccess:
         )
         return (await self.session.execute(statement)).scalars().first()
 
-    async def list_active_agent_ids(self, agent_ids: set[UUID]) -> set[UUID]:
-        """Return executable agent definitions without trusting trigger snapshots."""
+    async def list_active_agent_delivery_configs(
+        self,
+        agent_ids: set[UUID],
+    ) -> dict[UUID, dict[str, Any]]:
+        """Return current delivery decisions for active executable agents."""
 
         if not agent_ids:
-            return set()
+            return {}
         columns = cast(Any, UserAgent).__table__.c
-        statement = select(columns.agent_id).where(
+        statement = select(columns.agent_id, columns.output_delivery_config).where(
             columns.organisation_id == self.organisation_id,
             columns.agent_id.in_(agent_ids),
             columns.status == AgentStatus.ACTIVE.value,
         )
-        return set((await self.session.execute(statement)).scalars().all())
+        return {
+            row.agent_id: dict(row.output_delivery_config)
+            for row in (await self.session.execute(statement)).all()
+        }
 
     async def list_active_user_ids(self, user_ids: set[UUID]) -> set[UUID]:
         """Return active approved principals that still belong to this tenant."""

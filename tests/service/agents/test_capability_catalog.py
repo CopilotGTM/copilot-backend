@@ -21,3 +21,12 @@ def test_catalog_lists_tool_metadata_and_only_skill_directories(tmp_path: Path) 
     assert search_deals.category == "crm"
     assert ToolName.GET_BRIEFING.value not in {item.key for item in catalog.tools}
     assert [item.key for item in catalog.skills] == ["pipeline-review"]
+    assert [item.model_dump() for item in catalog.output_delivery_channels] == [
+        {
+            "key": "email_notification",
+            "label": "Email notification",
+            "description": "Email successful output to the authorized recipients of each run.",
+            "sender_mode": "platform",
+            "body_source": "agent_output_markdown",
+        }
+    ]

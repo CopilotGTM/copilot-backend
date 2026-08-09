@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -9,6 +10,7 @@ from pydantic import ValidationError
 from src.api.schemas.agent_models import (
     AgentCapabilitiesUpdateRequest,
     AgentCreateRequest,
+    AgentOutputDeliveryUpdateRequest,
     AgentUpdateRequest,
 )
 from src.domain.models.organisation_tables import AgentOutputMode, AgentStatus
@@ -117,3 +119,32 @@ def test_replace_contract_requires_status_as_part_of_the_full_representation() -
         AgentUpdateRequest(**payload)
 
     assert ("status",) in {error["loc"] for error in exc_info.value.errors()}
+
+
+def test_output_delivery_update_accepts_only_the_agent_delivery_decision() -> None:
+    expected_updated_at = datetime(2026, 8, 9, 10, 30, tzinfo=UTC)
+
+    body = AgentOutputDeliveryUpdateRequest(
+        channels=["email_notification"],
+        expected_updated_at=expected_updated_at,
+    )
+
+    assert body.channels == ["email_notification"]
+    assert body.expected_updated_at == expected_updated_at
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"channels": ["email_notification", "email_notification"]},
+        {"channels": ["webhook"]},
+        {"channels": [], "recipient": "user@example.com"},
+    ],
+)
+def test_output_delivery_update_rejects_noncanonical_or_server_owned_values(
+    payload: dict,
+) -> None:
+    payload["expected_updated_at"] = datetime(2026, 8, 9, 10, 30, tzinfo=UTC)
+
+    with pytest.raises(ValidationError):
+        AgentOutputDeliveryUpdateRequest(**payload)

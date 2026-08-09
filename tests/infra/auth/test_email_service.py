@@ -140,19 +140,31 @@ class TestEmailServiceEnsureConfigured:
         assert service.is_configured is False
 
     @pytest.mark.asyncio
-    async def test_only_resolves_once(self):
-        """After first call, subsequent calls return cached result."""
+    async def test_recovers_when_key_appears_after_missing_configuration(self):
+        """A durable retry must observe a secret added after worker startup."""
         service = EmailService()
 
         with patch("src.infra.auth.email_service.resend_config") as mock_config:
-            mock_config.get_api_key = AsyncMock(return_value="key-123")
-            with patch("src.infra.auth.email_service.resend"):
-                await service._ensure_configured()
-                await service._ensure_configured()
-                await service._ensure_configured()
+            mock_config.get_api_key = AsyncMock(side_effect=[None, "key-123"])
+            with patch("src.infra.auth.email_service.resend") as mock_resend:
+                assert await service._ensure_configured() is False
+                assert await service._ensure_configured() is True
 
-        # get_api_key called only once
-        mock_config.get_api_key.assert_called_once()
+        assert mock_config.get_api_key.await_count == 2
+        assert mock_resend.api_key == "key-123"
+
+    @pytest.mark.asyncio
+    async def test_applies_rotated_key_without_worker_restart(self):
+        """The service must consume the TTL-aware config's refreshed value."""
+        service = EmailService()
+
+        with patch("src.infra.auth.email_service.resend_config") as mock_config:
+            mock_config.get_api_key = AsyncMock(side_effect=["old-key", "new-key"])
+            with patch("src.infra.auth.email_service.resend") as mock_resend:
+                assert await service._ensure_configured() is True
+                assert await service._ensure_configured() is True
+
+        assert mock_resend.api_key == "new-key"
 
 
 class TestEmailServiceSendEmail:

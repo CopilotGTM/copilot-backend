@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal, Self
+from typing import Any, Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -218,28 +218,6 @@ class TriggerTaskDecision(BaseModel):
         return value
 
 
-class TriggerNoDeliveryDecision(BaseModel):
-    """Keep the completed result in run history without an external side effect."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    mode: Literal["none"] = "none"
-
-
-class TriggerEmailNotificationDecision(BaseModel):
-    """Email the persisted run result through CopilotGTM's platform sender."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    mode: Literal["email_notification"]
-
-
-TriggerDeliveryDecision = Annotated[
-    TriggerNoDeliveryDecision | TriggerEmailNotificationDecision,
-    Field(discriminator="mode"),
-]
-
-
 class AutomationTriggerDefinitionBase(BaseModel):
     """User decisions for one binding; correlated projections remain server-owned."""
 
@@ -255,7 +233,6 @@ class AutomationTriggerDefinitionBase(BaseModel):
     scope: TriggerScopeDecision
     audience: TriggerAudienceDecision
     task: TriggerTaskDecision = Field(default_factory=TriggerTaskDecision)
-    delivery: TriggerDeliveryDecision = Field(default_factory=TriggerNoDeliveryDecision)
 
     @field_validator("name", "trigger_key", mode="before")
     @classmethod
@@ -414,10 +391,6 @@ class AutomationTriggerPresentation(BaseModel):
     scope_summary: str
     built_in_rule: str | None = None
     source_summary: str | None = None
-    delivery_mode: Literal["none", "email_notification"]
-    delivery_summary: str
-    delivery_status: Literal["active", "needs_attention"] = "active"
-    delivery_reason: str | None = None
     conditions: list[TriggerConditionPresentation] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
@@ -461,7 +434,6 @@ class AutomationTriggerDetail(AutomationTriggerSummary):
     scope: TriggerScopeDecision
     audience: TriggerAudienceDecision
     task: TriggerTaskDecision
-    delivery: TriggerDeliveryDecision
     config_hash: str
     webhook_credentials: AutomationWebhookCredentials | None = None
 
@@ -641,30 +613,9 @@ class AutomationTriggerCatalogLimits(BaseModel):
     max_filter_conditions: int = Field(gt=0)
 
 
-class TriggerDeliveryChannel(BaseModel):
-    """One server-owned post-run delivery choice rendered by the trigger builder."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    key: Literal["none", "email_notification"]
-    label: str
-    description: str
-    principal_modes: list[Literal["personal", "organisation"]]
-    sender_mode: Literal["platform"] | None = None
-    recipient_mode_by_principal: dict[
-        Literal["personal", "organisation"],
-        Literal["execution_principal", "run_audience"],
-    ] = Field(default_factory=dict)
-    requires_audience_modes: list[Literal["explicit_users", "subject_participants"]] = Field(
-        default_factory=list
-    )
-    body_source: Literal["agent_output_markdown"] | None = None
-
-
 class AutomationTriggerCatalog(BaseModel):
     """Complete backend-owned trigger-builder contract for the authenticated user."""
 
     categories: list[TriggerCatalogCategory] = Field(default_factory=list)
-    delivery_channels: list[TriggerDeliveryChannel] = Field(default_factory=list)
     option_sets: AutomationTriggerOptionSets
     limits: AutomationTriggerCatalogLimits

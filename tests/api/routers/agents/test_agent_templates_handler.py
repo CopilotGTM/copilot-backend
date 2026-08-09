@@ -9,7 +9,13 @@ from uuid import uuid4
 import pytest
 from fastapi import Response as FastAPIResponse
 from src.api.dependencies.organisation_dependencies import UserIDs
-from src.api.schemas.agent_models import AgentDetail, UseAgentTemplateRequest
+from src.api.schemas.agent_models import (
+    AgentAutomationEligibility,
+    AgentDetail,
+    AgentOutputDeliveryState,
+    AutomationEligibilityMode,
+    UseAgentTemplateRequest,
+)
 from src.domain.models.organisation_tables import (
     AgentOutputMode,
     AgentSourceType,
@@ -76,6 +82,11 @@ def _detail() -> AgentDetail:
         max_turns=12,
         input_schema={"type": "object"},
         output_schema={"type": "object"},
+        output_delivery=AgentOutputDeliveryState(channels=[], updated_at=now),
+        automation_eligibility=AgentAutomationEligibility(
+            personal=AutomationEligibilityMode(available=True),
+            organisation=AutomationEligibilityMode(available=False),
+        ),
     )
 
 

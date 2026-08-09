@@ -58,8 +58,8 @@ def run(*, organisation_id: UUID, principal_user_id: UUID) -> AgentRun:
         trigger_snapshot={
             "trigger_id": str(trigger_id),
             "task_config": {},
-            "delivery_config": {"mode": "email_notification"},
         },
+        output_delivery_config={"channels": ["email_notification"]},
         input_snapshot=event.model_dump(mode="json"),
         output_text="Call buyer",
         attempt_count=1,
@@ -258,6 +258,7 @@ async def test_detail_returns_snapshots_and_delivery_without_provider_metadata()
 
     assert detail.source_domain == "crm"
     assert detail.agent_snapshot == {"prompt": "Coach deal"}
+    assert detail.output_delivery.channels == ["email_notification"]
     assert detail.delivery is not None
     assert detail.delivery.status == "sent"
     assert "provider_resource_id" not in detail.delivery.model_dump_json()

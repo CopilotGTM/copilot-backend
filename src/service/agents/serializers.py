@@ -9,6 +9,7 @@ from __future__ import annotations
 from src.api.schemas.agent_models import (
     AgentAutomationEligibility,
     AgentDetail,
+    AgentOutputDeliveryState,
     AgentSummary,
     AutomationEligibilityMode,
 )
@@ -84,7 +85,17 @@ def agent_detail(agent: UserAgent, *, is_admin: bool = False) -> AgentDetail:
         max_turns=agent.max_turns,
         input_schema=agent.input_schema,
         output_schema=agent.output_schema,
+        output_delivery=agent_output_delivery(agent),
         automation_eligibility=_automation_eligibility(agent, is_admin=is_admin),
+    )
+
+
+def agent_output_delivery(agent: UserAgent) -> AgentOutputDeliveryState:
+    """Serialize the agent-owned delivery decision independently of executable revision."""
+
+    return AgentOutputDeliveryState(
+        channels=agent.output_delivery_config["channels"],
+        updated_at=agent.output_delivery_updated_at,
     )
 
 

@@ -10,7 +10,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.agents.tools.registry import GENERAL_AGENT_TOOLS, TOOL_CATEGORIES
-from src.api.schemas.agent_models import AgentCapabilityCatalog, AgentCapabilityItem
+from src.api.schemas.agent_models import (
+    AgentCapabilityCatalog,
+    AgentCapabilityItem,
+    AgentOutputDeliveryChannelItem,
+)
 
 DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[2] / "agents" / "skills"
 
@@ -46,4 +50,16 @@ def build_agent_capability_catalog(
         )
         for key in discover_skill_keys(skills_dir)
     ]
-    return AgentCapabilityCatalog(tools=tools, skills=skills)
+    return AgentCapabilityCatalog(
+        tools=tools,
+        skills=skills,
+        output_delivery_channels=[
+            AgentOutputDeliveryChannelItem(
+                key="email_notification",
+                label="Email notification",
+                description=("Email successful output to the authorized recipients of each run."),
+                sender_mode="platform",
+                body_source="agent_output_markdown",
+            )
+        ],
+    )

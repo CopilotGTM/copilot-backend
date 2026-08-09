@@ -147,10 +147,10 @@ async def test_success_persists_result_metadata_under_claim_fence() -> None:
 
 
 @pytest.mark.asyncio
-async def test_success_creates_platform_email_notification_from_the_pinned_snapshot() -> None:
+async def test_success_creates_platform_email_notification_from_the_pinned_run_policy() -> None:
     organisation_id = uuid4()
     run = agent_run(organisation_id)
-    run.trigger_snapshot = {"delivery_config": {"mode": "email_notification"}}
+    run.output_delivery_config = {"channels": ["email_notification"]}
     access = FakeAccess(run)
     service = AgentRunLifecycleService(
         object(),  # type: ignore[arg-type]
@@ -218,7 +218,7 @@ async def test_validation_failure_is_terminal_and_sanitized() -> None:
 async def test_failed_run_does_not_create_email_delivery() -> None:
     organisation_id = uuid4()
     run = agent_run(organisation_id)
-    run.trigger_snapshot = {"delivery_config": {"mode": "email_notification"}}
+    run.output_delivery_config = {"channels": ["email_notification"]}
     access = FakeAccess(run)
     service = AgentRunLifecycleService(
         object(),  # type: ignore[arg-type]

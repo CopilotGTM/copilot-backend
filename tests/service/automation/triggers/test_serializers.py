@@ -40,7 +40,6 @@ def _trigger(**overrides):
         "audience_mode": "principal",
         "audience_config": {},
         "task_config": {"goal": None},
-        "delivery_config": {"mode": "none"},
         "config_hash": "a" * 64,
         "created_at": datetime.now(UTC),
         "updated_at": datetime.now(UTC),
@@ -64,6 +63,7 @@ def test_trigger_summary_derives_truthful_display_status(overrides, display_stat
     assert summary.presentation.breadcrumb == "Time / Schedule / Scheduled time"
     assert summary.presentation.authority_label == "Runs as you"
     assert summary.presentation.scope_summary == "Scheduled runs under your saved user identity"
+    assert "delivery_mode" not in type(summary.presentation).model_fields
 
 
 def test_trigger_summary_presents_resolved_labels_without_stable_ids() -> None:
@@ -99,34 +99,6 @@ def test_trigger_summary_presents_resolved_labels_without_stable_ids() -> None:
     assert "Needs attention" in summary.presentation.warnings
     assert deal_id not in summary.model_dump_json()
     assert owner_id not in summary.model_dump_json()
-
-
-def test_trigger_summary_presents_platform_email_notification() -> None:
-    trigger = _trigger(
-        delivery_config={"mode": "email_notification"},
-    )
-
-    summary = trigger_summary(trigger, current_target_revision=1)
-
-    assert summary.presentation.delivery_summary == "Email you from CopilotGTM"
-    assert summary.presentation.delivery_mode == "email_notification"
-    assert summary.presentation.delivery_status == "active"
-    assert summary.presentation.delivery_reason is None
-
-
-def test_organisation_email_notification_presents_the_saved_audience() -> None:
-    trigger = _trigger(
-        execution_principal_type="organisation_service",
-        audience_mode="explicit_users",
-        audience_config={"user_ids": [str(uuid4()), str(uuid4())]},
-        delivery_config={"mode": "email_notification"},
-    )
-
-    summary = trigger_summary(trigger, current_target_revision=1)
-
-    assert summary.presentation.delivery_summary == "Email 2 audience members from CopilotGTM"
-    assert summary.presentation.delivery_mode == "email_notification"
-    assert summary.presentation.delivery_status == "active"
 
 
 def test_trigger_detail_returns_only_user_decisions_for_a_semantic_preset() -> None:

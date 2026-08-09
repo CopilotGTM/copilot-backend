@@ -445,7 +445,7 @@ async def test_trigger_list_batch_resolves_saved_card_labels() -> None:
 
 
 @pytest.mark.asyncio
-async def test_trigger_detail_needs_no_delivery_option_lookup() -> None:
+async def test_trigger_detail_without_saved_options_needs_no_option_lookup() -> None:
     agent = make_agent()
     service, _, _ = make_service(agent)
     options = service.options
@@ -464,16 +464,13 @@ async def test_trigger_detail_needs_no_delivery_option_lookup() -> None:
                 "principal_mode": "personal",
                 "scope": {"type": "owned_or_created_by_principal"},
                 "audience": {"mode": "principal"},
-                "delivery": {"mode": "email_notification"},
             }
         ),
     )
 
     detail = await service.get_trigger(agent.agent_id, created.trigger_id)
 
-    assert detail.presentation.delivery_summary == "Email you from CopilotGTM"
-    assert detail.presentation.delivery_status == "active"
-    assert detail.presentation.delivery_reason is None
+    assert "delivery" not in type(detail).model_fields
     assert options.resolve_calls == []
 
 
@@ -491,7 +488,6 @@ async def test_create_pins_current_agent_and_persists_registry_projections() -> 
     assert result.family == "schedule"
     assert result.match_event_keys == ["time.schedule.due"]
     assert result.principal_mode == "personal"
-    assert result.delivery.mode == "none"
     assert len(result.config_hash) == 64
     session.commit.assert_not_awaited()
     assert access.trigger is not None
@@ -582,7 +578,6 @@ async def test_semantic_trigger_detail_round_trip_does_not_duplicate_fixed_match
             "scope": loaded.scope.model_dump(),
             "audience": loaded.audience.model_dump(),
             "task": loaded.task.model_dump(),
-            "delivery": loaded.delivery.model_dump(),
             "expected_updated_at": access.trigger.updated_at,
         }
     )

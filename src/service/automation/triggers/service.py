@@ -436,7 +436,6 @@ class AutomationTriggerService:
             audience_mode=validated.audience_mode,
             audience_config=validated.audience_config,
             task_config=validated.task_config,
-            delivery_config=validated.delivery_config,
             config_hash=config_hash,
             status=body.status,
             next_trigger_at=validated.next_trigger_at,
@@ -660,7 +659,6 @@ class AutomationTriggerService:
                 "audience_mode": validated.audience_mode.value,
                 "audience_config": validated.audience_config,
                 "task_config": validated.task_config,
-                "delivery_config": validated.delivery_config,
                 "next_trigger_at": validated.next_trigger_at,
                 "config_hash": config_hash,
             },
@@ -961,7 +959,6 @@ class AutomationTriggerService:
                 audience_mode=validated.audience_mode.value,
                 audience_config=validated.audience_config,
                 task_config=validated.task_config,
-                delivery_config=validated.delivery_config,
             )
         )
 
@@ -992,7 +989,6 @@ class AutomationTriggerService:
                 audience_mode=cls._enum_value(trigger.audience_mode),
                 audience_config=trigger.audience_config,
                 task_config=trigger.task_config,
-                delivery_config=trigger.delivery_config,
             )
         )
 
@@ -1027,7 +1023,6 @@ class AutomationTriggerService:
                 "audience": value["audience_config"],
             },
             "task": value["task_config"],
-            "delivery": value["delivery_config"],
         }
 
     @classmethod

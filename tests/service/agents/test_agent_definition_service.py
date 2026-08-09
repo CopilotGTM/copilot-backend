@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -11,6 +12,7 @@ from src.agents.tools.registry import ToolName
 from src.api.schemas.agent_models import (
     AgentCapabilitiesUpdateRequest,
     AgentCreateRequest,
+    AgentOutputDeliveryUpdateRequest,
     AgentUpdateRequest,
 )
 from src.domain.models.organisation_tables import (
@@ -52,7 +54,9 @@ class _Access:
         self.current: UserAgent | None = None
         self.replace_result: UserAgent | None = None
         self.archive_result: UserAgent | None = None
+        self.output_delivery_result: UserAgent | None = None
         self.replace_call: dict[str, Any] | None = None
+        self.output_delivery_call: dict[str, Any] | None = None
         self.archive_call: tuple[UUID, int] | None = None
 
     async def create_agent(self, agent: UserAgent) -> None:
@@ -71,6 +75,10 @@ class _Access:
     async def archive_agent(self, agent_id: UUID, *, expected_revision: int):
         self.archive_call = (agent_id, expected_revision)
         return self.archive_result
+
+    async def replace_output_delivery(self, agent_id: UUID, **kwargs):
+        self.output_delivery_call = {"agent_id": agent_id, **kwargs}
+        return self.output_delivery_result
 
 
 def _create_body() -> AgentCreateRequest:
@@ -342,6 +350,56 @@ async def test_replace_capabilities_validates_and_updates_only_capability_column
         },
     }
     assert result.revision == 2
+
+
+@pytest.mark.asyncio
+async def test_replace_output_delivery_uses_separate_concurrency_without_revision_change() -> None:
+    service, access, _validator, organisation_id, owner_user_id = _service()
+    expected_updated_at = datetime(2026, 8, 9, 10, 30, tzinfo=UTC)
+    stored_updated_at = datetime(2026, 8, 9, 10, 31, tzinfo=UTC)
+    access.output_delivery_result = _agent(
+        organisation_id=organisation_id,
+        owner_user_id=owner_user_id,
+        revision=7,
+    )
+    access.output_delivery_result.output_delivery_config = {"channels": ["email_notification"]}
+    access.output_delivery_result.output_delivery_updated_at = stored_updated_at
+    body = AgentOutputDeliveryUpdateRequest(
+        channels=["email_notification"],
+        expected_updated_at=expected_updated_at,
+    )
+
+    result = await service.replace_output_delivery(
+        access.output_delivery_result.agent_id,
+        body,
+    )
+
+    assert access.output_delivery_call == {
+        "agent_id": access.output_delivery_result.agent_id,
+        "expected_updated_at": expected_updated_at,
+        "channels": ["email_notification"],
+    }
+    assert result.channels == ["email_notification"]
+    assert result.updated_at == stored_updated_at
+    assert access.output_delivery_result.revision == 7
+
+
+@pytest.mark.asyncio
+async def test_replace_output_delivery_reports_its_own_stale_timestamp() -> None:
+    service, access, _validator, organisation_id, owner_user_id = _service()
+    access.current = _agent(
+        organisation_id=organisation_id,
+        owner_user_id=owner_user_id,
+    )
+    body = AgentOutputDeliveryUpdateRequest(
+        channels=[],
+        expected_updated_at=datetime(2026, 8, 9, 10, 30, tzinfo=UTC),
+    )
+
+    with pytest.raises(AgentServiceError, match="output delivery changed") as exc:
+        await service.replace_output_delivery(access.current.agent_id, body)
+
+    assert exc.value.status_code == 409
 
 
 @pytest.mark.asyncio

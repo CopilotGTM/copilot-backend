@@ -31,7 +31,8 @@ class PlatformEmailSendError(RuntimeError):
 class EmailService:
     """Email service using Resend for sending notifications to admins.
 
-    API key is resolved lazily on first use: env var first, then Key Vault.
+    API key is resolved lazily through the TTL-aware config: env var first,
+    then Key Vault.
     """
 
     def __init__(self):
@@ -49,18 +50,20 @@ class EmailService:
         self._configured: bool | None = None  # None = not yet attempted
 
     async def _ensure_configured(self) -> bool:
-        """Lazily resolve Resend API key from env var or Key Vault."""
-        if self._configured is not None:
-            return self._configured
-
+        """Apply the current TTL-aware Resend key before each provider call."""
+        previously_configured = self._configured
         api_key = await resend_config.get_api_key()
         if api_key:
             resend.api_key = api_key
             self._configured = True
-            logger.info("Resend API key configured successfully")
+            if previously_configured is not True:
+                logger.info("Resend API key configured successfully")
         else:
             self._configured = False
-            logger.warning("Resend API key not configured. Email functionality will be disabled.")
+            if previously_configured is not False:
+                logger.warning(
+                    "Resend API key not configured. Email functionality will be disabled."
+                )
 
         return self._configured
 

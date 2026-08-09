@@ -208,6 +208,9 @@ class FakeAccess:
     def __init__(self, candidates: list[AutomationTrigger]) -> None:
         self.candidates = candidates
         self.active_agent_ids = {item.target_id for item in candidates}
+        self.active_agent_delivery_configs = {
+            item.target_id: {"channels": []} for item in candidates
+        }
         self.active_user_ids = {
             item.execution_principal_id
             for item in candidates
@@ -231,9 +234,14 @@ class FakeAccess:
         """Expose the get direct candidate operation expected by the Fake Access test double."""
         return next((item for item in self.candidates if item.trigger_id == trigger_id), None)
 
-    async def list_active_agent_ids(self, agent_ids: set[UUID]) -> set[UUID]:
-        """Expose the list active agent ids operation expected by the Fake Access test double."""
-        return agent_ids & self.active_agent_ids
+    async def list_active_agent_delivery_configs(
+        self,
+        agent_ids: set[UUID],
+    ) -> dict[UUID, dict[str, object]]:
+        return {
+            agent_id: self.active_agent_delivery_configs[agent_id]
+            for agent_id in agent_ids & self.active_agent_ids
+        }
 
     async def list_active_user_ids(self, user_ids: set[UUID]) -> set[UUID]:
         """Expose the list active user ids operation expected by the Fake Access test double."""
@@ -313,6 +321,7 @@ async def test_match_route_applies_scope_watch_filter_and_builds_pinned_run() ->
     )
     event = contact_event(organisation_id, principal_id)
     access = FakeAccess([binding])
+    access.active_agent_delivery_configs[binding.target_id] = {"channels": ["email_notification"]}
     service = AutomationTriggerActivationService(
         object(),  # type: ignore[arg-type]
         organisation_id,
@@ -335,6 +344,8 @@ async def test_match_route_applies_scope_watch_filter_and_builds_pinned_run() ->
     assert run.correlation_id == "request-123"
     assert run.agent_snapshot == binding.target_snapshot
     assert run.trigger_snapshot["name"] == binding.name
+    assert "delivery_config" not in run.trigger_snapshot
+    assert run.output_delivery_config == {"channels": ["email_notification"]}
     assert run.input_snapshot == event.model_dump(mode="json")
     assert run.idempotency_key == f"trigger:{binding.trigger_id}:event:{event.event_id}"
     assert (
@@ -344,6 +355,29 @@ async def test_match_route_applies_scope_watch_filter_and_builds_pinned_run() ->
         )["matched"]
         is True
     )
+
+
+@pytest.mark.asyncio
+async def test_malformed_agent_delivery_config_fails_closed_without_pausing_trigger() -> None:
+    organisation_id, principal_id = uuid4(), uuid4()
+    binding = trigger(organisation_id, principal_id)
+    access = FakeAccess([binding])
+    access.active_agent_delivery_configs[binding.target_id] = {"channels": ["webhook"]}
+    service = AutomationTriggerActivationService(
+        object(),  # type: ignore[arg-type]
+        organisation_id,
+        access=access,
+        registry=AUTOMATION_REGISTRY,
+    )
+
+    result = await service.activate(contact_event(organisation_id, principal_id))
+
+    assert result.created_run_ids == ()
+    assert [(item.status, item.reason) for item in result.outcomes] == [
+        ("skipped", "agent_output_delivery_invalid")
+    ]
+    assert access.runs == []
+    assert access.paused == []
 
 
 @pytest.mark.asyncio

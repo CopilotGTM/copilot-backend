@@ -7,6 +7,7 @@ SQL to the owner-scoped access layer, and flushes through that layer without com
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import NoReturn
 from uuid import UUID
 
@@ -16,6 +17,8 @@ from src.api.schemas.agent_models import (
     AgentCreateRequest,
     AgentDetail,
     AgentListResponse,
+    AgentOutputDeliveryState,
+    AgentOutputDeliveryUpdateRequest,
     AgentUpdateRequest,
 )
 from src.domain.models.organisation_tables import (
@@ -27,7 +30,7 @@ from src.domain.models.organisation_tables import (
 from src.infra.utils.logger import get_logger
 from src.service.agents.access import AgentDefinitionAccess
 from src.service.agents.errors import AgentServiceError
-from src.service.agents.serializers import agent_detail, agent_summary
+from src.service.agents.serializers import agent_detail, agent_output_delivery, agent_summary
 from src.service.agents.template_metadata import (
     agent_definition_from_template,
     get_agent_template,
@@ -221,6 +224,25 @@ class AgentDefinitionService:
         if archived is None:
             await self._raise_conditional_write_failure(agent_id, expected_revision)
 
+    async def replace_output_delivery(
+        self,
+        agent_id: UUID,
+        body: AgentOutputDeliveryUpdateRequest,
+    ) -> AgentOutputDeliveryState:
+        """Replace external channels under delivery-specific optimistic concurrency."""
+
+        updated = await self.access.replace_output_delivery(
+            agent_id,
+            expected_updated_at=body.expected_updated_at,
+            channels=list(body.channels),
+        )
+        if updated is None:
+            await self._raise_output_delivery_write_failure(
+                agent_id,
+                body.expected_updated_at,
+            )
+        return agent_output_delivery(updated)
+
     async def _raise_conditional_write_failure(
         self,
         agent_id: UUID,
@@ -237,3 +259,18 @@ class AgentDefinitionService:
                 status_code=409,
             )
         raise AgentServiceError("Agent could not be updated", status_code=409)
+
+    async def _raise_output_delivery_write_failure(
+        self,
+        agent_id: UUID,
+        expected_updated_at: datetime,
+    ) -> NoReturn:
+        current = await self.access.get_agent(agent_id, include_archived=True)
+        if current is None or current.status == AgentStatus.ARCHIVED:
+            raise AgentServiceError("Agent not found", status_code=404)
+        if current.output_delivery_updated_at != expected_updated_at:
+            raise AgentServiceError(
+                "Agent output delivery changed since it was loaded; refresh and retry",
+                status_code=409,
+            )
+        raise AgentServiceError("Agent output delivery could not be updated", status_code=409)

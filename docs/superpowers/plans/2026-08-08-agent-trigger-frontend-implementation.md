@@ -1,5 +1,9 @@
 # Agent Trigger Frontend Implementation Plan
 
+> **Superseded in part on 2026-08-09:** Remove output selection from the trigger builder. The
+> replacement UI belongs in the agent-level **Output delivery** section and uses the catalog and
+> update subresource defined by `../specs/2026-08-09-agent-level-output-delivery.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Implement and maintain the Agents V1 trigger builder and run-output experience against the catalog-owned trigger contract and the platform-owned transactional output-notification contract.

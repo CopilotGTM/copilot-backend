@@ -19,6 +19,7 @@ from src.api.schemas.agent_run_models import (
     AgentRunDeliveryTargetSummary,
     AgentRunDetail,
     AgentRunListResponse,
+    AgentRunOutputDeliverySnapshot,
     AgentRunSummary,
 )
 from src.domain.models.organisation_tables import AgentRun, AgentRunStatus
@@ -264,6 +265,7 @@ def _detail(
         cost=row.cost,
         output_text=row.output_text,
         output_json=row.output_json,
+        output_delivery=AgentRunOutputDeliverySnapshot.model_validate(row.output_delivery_config),
         trigger_snapshot=dict(row.trigger_snapshot),
         agent_snapshot=dict(row.agent_snapshot),
         input_snapshot=dict(row.input_snapshot),

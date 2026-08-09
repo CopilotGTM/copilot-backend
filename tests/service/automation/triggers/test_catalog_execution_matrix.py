@@ -259,8 +259,11 @@ class MatrixAccess:
     async def get_direct_candidate(self, trigger_id: UUID) -> AutomationTrigger | None:
         return self.binding if trigger_id == self.binding.trigger_id else None
 
-    async def list_active_agent_ids(self, agent_ids: set[UUID]) -> set[UUID]:
-        return agent_ids
+    async def list_active_agent_delivery_configs(
+        self,
+        agent_ids: set[UUID],
+    ) -> dict[UUID, dict[str, object]]:
+        return {agent_id: {"channels": []} for agent_id in agent_ids}
 
     async def list_active_user_ids(self, user_ids: set[UUID]) -> set[UUID]:
         return user_ids

@@ -14,7 +14,7 @@ from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
 from html import escape
 from html.parser import HTMLParser
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -248,13 +248,11 @@ class AgentRunDeliveryExecutionService:
     ) -> dict[str, str]:
         """Render a platform email solely from the persisted run snapshots."""
 
-        delivery_config = run.trigger_snapshot.get("delivery_config")
-        if not isinstance(delivery_config, dict) or delivery_config.get("mode") != (
-            "email_notification"
-        ):
+        delivery_channels = run.output_delivery_config.get("channels")
+        if not isinstance(delivery_channels, list) or "email_notification" not in delivery_channels:
             raise DeliveryPreparationError(
                 "invalid_delivery_config",
-                "Pinned run does not contain platform email notification configuration",
+                "Pinned run does not enable platform email notification",
             )
         recipient = await self._recipient(delivery.target_key)
         if recipient is None:
@@ -324,16 +322,18 @@ class AgentRunDeliveryExecutionService:
                 "invalid_recipient",
                 "The notification recipient identity is invalid",
             ) from exc
+        user_model = cast(Any, User)
         async for session in self.master_session_scope():
-            # The organization and active/approved checks are the authorization
-            # boundary; target_key is a queued identifier, not proof of access.
+            # Organization membership plus active, approved, and verified state
+            # is the authorization boundary; a queued target is not proof of access.
             return (
                 await session.execute(
                     select(User).where(
-                        User.user_id == user_id,
-                        User.organisation_id == self.organisation_id,
-                        User.status == SupabaseUserStatus.ACTIVE,
-                        User.admin_status == AdminUserStatus.APPROVED,
+                        user_model.user_id == user_id,
+                        user_model.organisation_id == self.organisation_id,
+                        user_model.status == SupabaseUserStatus.ACTIVE,
+                        user_model.admin_status == AdminUserStatus.APPROVED,
+                        user_model.email_verified.is_(True),
                     )
                 )
             ).scalar_one_or_none()
@@ -483,9 +483,9 @@ def _subject_context(input_snapshot: dict[str, Any]) -> str | None:
         return type_label
     label = next(
         (
-            _safe_label(record.get(key), "")
+            _safe_label(value, "")
             for key in ("name", "full_name", "title")
-            if isinstance(record.get(key), str) and record.get(key).strip()
+            if isinstance(value := record.get(key), str) and value.strip()
         ),
         "",
     )

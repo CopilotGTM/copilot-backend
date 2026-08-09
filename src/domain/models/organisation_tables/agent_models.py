@@ -281,6 +281,24 @@ class UserAgent(SQLModel, table=True):
         sa_column=Column(JSONB, nullable=True),
         description="JSON Schema required when output_mode is json.",
     )
+    output_delivery_config: dict[str, Any] = Field(
+        default_factory=lambda: {"channels": []},
+        sa_column=Column(
+            JSONB,
+            nullable=False,
+            server_default=text("'{\"channels\": []}'::jsonb"),
+        ),
+        description="Agent-level channels used to deliver completed run output.",
+    )
+    output_delivery_updated_at: datetime = Field(
+        default_factory=utcnow,
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=func.now(),
+        ),
+        description="Concurrency token for output-delivery edits.",
+    )
     created_at: datetime = Field(
         default_factory=utcnow,
         sa_column=Column(
@@ -456,10 +474,6 @@ class AutomationTrigger(SQLModel, table=True):
         sa_column=Column(JSONB, nullable=False, server_default=_EMPTY_OBJECT_DEFAULT),
     )
     task_config: dict[str, Any] = Field(
-        default_factory=dict,
-        sa_column=Column(JSONB, nullable=False, server_default=_EMPTY_OBJECT_DEFAULT),
-    )
-    delivery_config: dict[str, Any] = Field(
         default_factory=dict,
         sa_column=Column(JSONB, nullable=False, server_default=_EMPTY_OBJECT_DEFAULT),
     )
@@ -782,6 +796,15 @@ class AgentRun(SQLModel, table=True):
     input_snapshot: dict[str, Any] = Field(
         default_factory=dict,
         sa_column=Column(JSONB, nullable=False, server_default=_EMPTY_OBJECT_DEFAULT),
+    )
+    output_delivery_config: dict[str, Any] = Field(
+        default_factory=lambda: {"channels": []},
+        sa_column=Column(
+            JSONB,
+            nullable=False,
+            server_default=text("'{\"channels\": []}'::jsonb"),
+        ),
+        description="Immutable agent delivery channels captured at activation.",
     )
     output_text: str | None = Field(
         default=None,

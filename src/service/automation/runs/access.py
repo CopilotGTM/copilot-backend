@@ -23,6 +23,7 @@ from src.domain.models.organisation_tables import (
 from src.domain.models.organisation_tables.sync import (
     NotificationDelivery,
     NotificationDeliveryChannel,
+    NotificationDeliveryStatus,
 )
 
 
@@ -197,9 +198,14 @@ class AgentRunClaimAccess:
         # Recipients come from the pinned run audience, not a live trigger or user
         # lookup; replaying completion must preserve the same delivery identities.
         recipient_ids = _delivery_recipient_ids(run)
+        targets: list[tuple[str, str | None]] = [
+            (str(recipient_id), None) for recipient_id in recipient_ids
+        ]
+        if not targets:
+            targets = [("policy:no_authorized_recipient", "no_authorized_recipient")]
         columns = cast(Any, NotificationDelivery).__table__.c
         delivery_ids: list[UUID] = []
-        for recipient_id in recipient_ids:
+        for target_key, policy_error in targets:
             delivery_id = uuid4()
             identity = {
                 "organisation_id": self.organisation_id,
@@ -207,16 +213,23 @@ class AgentRunClaimAccess:
                 "source_type": "agent_run",
                 "source_id": run.run_id,
                 "channel": NotificationDeliveryChannel.EMAIL.value,
-                "target_key": str(recipient_id),
+                "target_key": target_key,
             }
+            delivery_values: dict[str, Any] = {
+                "delivery_id": delivery_id,
+                **identity,
+                "delivery_metadata": {"template_version": 1},
+            }
+            if policy_error is not None:
+                delivery_values.update(
+                    status=NotificationDeliveryStatus.SKIPPED.value,
+                    error_code=policy_error,
+                    last_error="No authorized recipient was pinned to this run",
+                )
             created = (
                 await self.session.execute(
                     insert(NotificationDelivery)
-                    .values(
-                        delivery_id=delivery_id,
-                        **identity,
-                        delivery_metadata={"template_version": 1},
-                    )
+                    .values(**delivery_values)
                     .on_conflict_do_nothing(
                         # The unique source/channel/target key makes completion
                         # idempotent when a worker finalization is replayed.
@@ -240,7 +253,8 @@ class AgentRunClaimAccess:
                         )
                     )
                 ).scalar_one()
-            delivery_ids.append(cast(UUID, created))
+            if policy_error is None:
+                delivery_ids.append(cast(UUID, created))
         return tuple(delivery_ids)
 
     async def list_dispatchable_run_ids(
@@ -284,6 +298,4 @@ def _delivery_recipient_ids(run: AgentRun) -> tuple[UUID, ...]:
         return (run.execution_principal_id,)
     values = run.audience_config.get("user_ids", [])
     recipients = tuple(sorted({UUID(str(value)) for value in values}, key=str))
-    if not recipients:
-        raise ValueError("organisation email notification requires a pinned run audience")
     return recipients

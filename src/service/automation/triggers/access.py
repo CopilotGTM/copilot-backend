@@ -33,7 +33,6 @@ _MUTABLE_COLUMNS = {
     "audience_mode",
     "audience_config",
     "task_config",
-    "delivery_config",
     "next_trigger_at",
     "config_hash",
     "target_revision",

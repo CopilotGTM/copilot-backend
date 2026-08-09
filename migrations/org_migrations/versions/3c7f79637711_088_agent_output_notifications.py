@@ -1,4 +1,4 @@
-"""Extend generic notification deliveries for agent output email.
+"""Move output delivery to agents and extend the notification ledger.
 
 Revision ID: 3c7f79637711
 Revises: 3c7f79637712
@@ -11,6 +11,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision: str = "3c7f79637711"
 down_revision: str | None = "3c7f79637712"
@@ -19,17 +20,35 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    """Add generic claim fencing without replacing existing notification data."""
+    """Persist agent policy/run snapshots and add generic claim fencing."""
 
-    if (
-        op.get_bind()
-        .execute(
-            sa.text("SELECT EXISTS (SELECT 1 FROM agent_runs WHERE status = 'delivery_failed')")
-        )
-        .scalar()
-    ):
-        raise RuntimeError("Refusing to remove delivery_failed while agent runs use that status")
-
+    op.add_column(
+        "user_agents",
+        sa.Column(
+            "output_delivery_config",
+            postgresql.JSONB,
+            nullable=False,
+            server_default=sa.text("'{\"channels\": []}'::jsonb"),
+        ),
+    )
+    op.add_column(
+        "user_agents",
+        sa.Column(
+            "output_delivery_updated_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
+    )
+    op.add_column(
+        "agent_runs",
+        sa.Column(
+            "output_delivery_config",
+            postgresql.JSONB,
+            nullable=False,
+            server_default=sa.text("'{\"channels\": []}'::jsonb"),
+        ),
+    )
     op.drop_constraint("ck_agent_runs_status", "agent_runs", type_="check")
     op.create_check_constraint(
         "ck_agent_runs_status",
@@ -71,7 +90,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Remove claim fencing only before agent output notification data exists."""
+    """Remove agent delivery persistence and generic claim fencing."""
 
     if (
         op.get_bind()
@@ -113,3 +132,9 @@ def downgrade() -> None:
         "status IN ('pending', 'running', 'succeeded', 'failed', 'delivery_failed', "
         "'validation_failed', 'cancelled')",
     )
+    # Dev may already record this revision from the earlier trigger-owned shape,
+    # which never created these columns; IF EXISTS lets that shape reach 087 so
+    # the edited 087/088 pair can be replayed from one clean migration boundary.
+    op.drop_column("agent_runs", "output_delivery_config", if_exists=True)
+    op.drop_column("user_agents", "output_delivery_updated_at", if_exists=True)
+    op.drop_column("user_agents", "output_delivery_config", if_exists=True)

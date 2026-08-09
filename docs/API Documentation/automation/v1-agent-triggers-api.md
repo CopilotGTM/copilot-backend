@@ -52,7 +52,6 @@ data
 │       ├── resource_key
 │       ├── label
 │       └── triggers[]
-├── delivery_channels[]
 ├── option_sets
 │   ├── pipelines[] -> stages[]
 │   └── enums
@@ -146,19 +145,6 @@ type TriggerCatalogDefinition = {
     max_selected: number;
   } | null;
   filter_empty_reason: string | null;
-};
-
-type TriggerDeliveryChannel = {
-  key: "none" | "email_notification";
-  label: string;
-  description: string;
-  principal_modes: PrincipalMode[];
-  sender_mode: "platform" | null;
-  recipient_mode_by_principal: Partial<
-    Record<PrincipalMode, "execution_principal" | "run_audience">
-  >;
-  requires_audience_modes: Array<"explicit_users" | "subject_participants">;
-  body_source: "agent_output_markdown" | null;
 };
 
 type FilterNode =
@@ -300,10 +286,6 @@ type AutomationTriggerPresentation = {
   scope_summary: string;
   built_in_rule: string | null;
   source_summary: string | null;
-  delivery_mode: "none" | "email_notification";
-  delivery_summary: string;
-  delivery_status: "active" | "needs_attention";
-  delivery_reason: string | null;
   conditions: Array<{
     field_label: string;
     group: "current" | "previous" | "new" | "context";
@@ -335,7 +317,6 @@ type TriggerWrite = {
   scope: { type: ScopeType; config: Record<string, unknown> };
   audience: { mode: AudienceMode; user_ids: string[] };
   task: { goal?: string };
-  delivery: { mode: "none" } | { mode: "email_notification" };
 };
 ```
 
@@ -366,8 +347,7 @@ Content-Type: application/json
   "principal_mode": "personal",
   "scope": {"type": "owned_or_created_by_principal", "config": {}},
   "audience": {"mode": "principal", "user_ids": []},
-  "task": {"goal": "Review the deal and recommend the next action."},
-  "delivery": {"mode": "email_notification"}
+  "task": {"goal": "Review the deal and recommend the next action."}
 }
 ```
 
@@ -375,24 +355,10 @@ The backend derives `family`, `match_event_keys`, the fixed stage watch, executi
 target identity and snapshot, schema version, canonical hash, schedule projection, and health
 counters.
 
-### Output delivery
-
-`delivery` contains one user decision only:
-
-- `{ "mode": "none" }` keeps the result in run history;
-- `{ "mode": "email_notification" }` sends the successful run's complete Markdown output and
-  run context through the CopilotGTM transactional sender.
-
-The frontend must render choices from `data.delivery_channels`. It must not submit a mailbox,
-sender integration, From/To/Cc/Bcc address, subject, body, template, provider credential, or
-recipient ID inside `delivery`. For personal authority, the backend derives the execution
-principal's current verified workspace email. For organisation authority, it derives recipients
-from the immutable run audience, and email delivery therefore requires `explicit_users` or
-`subject_participants`.
-
-This platform notification is separate from an agent instruction that tells the agent to email a
-client. Client email uses the existing connected Gmail/Outlook tool under tool policy; post-run
-output notification never uses the user's connected mailbox.
+Output delivery is not a trigger decision. Configure it once on the agent through
+`PUT /users/v1/agents/{agent_id}/output-delivery`; see the
+[Agent Definitions API](../agents/v1-agent-definitions-api.md). Trigger create, replace, detail,
+catalog, and presentation payloads contain no delivery field.
 
 ### Authority pairing
 
@@ -476,8 +442,7 @@ schedule atomically.
   "principal_mode": "personal",
   "scope": {"type": "owned_or_created_by_principal", "config": {}},
   "audience": {"mode": "principal", "user_ids": []},
-  "task": {"goal": "Rank these deals by risk."},
-  "delivery": {"mode": "none"}
+  "task": {"goal": "Rank these deals by risk."}
 }
 ```
 
@@ -516,8 +481,7 @@ allowed.
   "principal_mode": "personal",
   "scope": {"type": "owned_or_created_by_principal", "config": {}},
   "audience": {"mode": "principal", "user_ids": []},
-  "task": {},
-  "delivery": {"mode": "none"}
+  "task": {}
 }
 ```
 

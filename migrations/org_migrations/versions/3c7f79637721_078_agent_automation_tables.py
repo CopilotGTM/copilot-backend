@@ -216,12 +216,6 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.text("'{}'::jsonb"),
         ),
-        sa.Column(
-            "delivery_config",
-            postgresql.JSONB(astext_type=sa.Text()),
-            nullable=False,
-            server_default=sa.text("'{}'::jsonb"),
-        ),
         sa.Column("config_hash", sa.Text(), nullable=False),
         sa.Column(
             "status",

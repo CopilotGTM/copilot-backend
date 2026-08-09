@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from src.domain.models.organisation_tables import (
     AgentRunStatus,
     AutomationAudienceMode,
@@ -24,6 +24,14 @@ AgentRunDeliveryPresentationStatus = Literal[
     "failed",
     "skipped",
 ]
+
+
+class AgentRunOutputDeliverySnapshot(BaseModel):
+    """Immutable external-channel decision captured when the run was created."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    channels: list[Literal["email_notification"]] = Field(default_factory=list)
 
 
 class AgentRunDeliveryTargetSummary(BaseModel):
@@ -120,6 +128,7 @@ class AgentRunDetail(AgentRunSummary):
     cost: Decimal | None
     output_text: str | None
     output_json: Any | None
+    output_delivery: AgentRunOutputDeliverySnapshot
     trigger_snapshot: dict[str, Any]
     agent_snapshot: dict[str, Any]
     input_snapshot: dict[str, Any]

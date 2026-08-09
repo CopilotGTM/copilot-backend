@@ -216,6 +216,7 @@ full = [
     "azure-storage-blob==12.25.1",
     "azure-mgmt-storage==21.1.0",
     "resend==2.11.0",
+    "markdown==3.9",
     
     # === Knowledge Worker Dependencies ===
     "torch==2.6.0",
