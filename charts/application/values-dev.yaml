@@ -154,6 +154,18 @@ integrations-worker:
       cpu: "2000m"
       memory: "2Gi"
 
+salesforce-cdc-worker:
+  replicaCount: 0
+  image:
+    repository: "copilotgtmacrdev.azurecr.io/copilot-backend-integrations-worker"
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
 integrationsCronJobs:
   jobs:
     - name: refresh-tokens

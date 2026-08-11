@@ -16,6 +16,8 @@ image:
 
 # Configuration specific to the worker
 config:
+  command: []
+  env: []
   queueName: "default" # Should be overridden
   secretName: "" # Will be populated by global value
   # Optional Celery execution tuning
@@ -57,6 +59,8 @@ priorityClassName: ""
 
 probes:
   enabled: true
+  livenessCommand: []
+  readinessCommand: []
   # heartbeat avoids restarting a live worker merely because Redis control traffic is slow.
   livenessMode: celeryPing
   heartbeatMaxAgeSeconds: 120

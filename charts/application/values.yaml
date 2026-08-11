@@ -418,6 +418,40 @@ integrations-worker:
     scaleDownDelay: 240
     scaleUpDelay: 10
 
+# One process owns every aggregate Salesforce CDC stream; capacity is fixed at seven.
+salesforce-cdc-worker:
+  enabled: true
+  replicaCount: 0
+  image:
+    repository: "copilotgtmacrdev.azurecr.io/copilot-backend-integrations-worker"
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  config:
+    command: ["python", "-m", "src.workers.salesforce_cdc_worker.main"]
+    env:
+      - {name: SALESFORCE_CDC_MAX_INTEGRATIONS, value: "7"}
+      - {name: SALESFORCE_CDC_DISCOVERY_SECONDS, value: "60"}
+      - {name: SALESFORCE_CDC_STREAM_RUNTIME_SECONDS, value: "2700"}
+      - {name: SALESFORCE_CDC_LEASE_SECONDS, value: "120"}
+      - {name: SALESFORCE_CDC_LEASE_RENEW_SECONDS, value: "30"}
+  serviceAccount:
+    create: false
+    name: "copilot-workers"
+  updateStrategy:
+    maxSurge: 0
+    maxUnavailable: 1
+  autoscaling:
+    enabled: false
+  shutdown:
+    enabled: true
+    gracefulPeriodSeconds: 90
+  resources:
+    requests: {cpu: "250m", memory: "256Mi"}
+    limits: {cpu: "500m", memory: "512Mi"}
+  probes:
+    livenessCommand: ["python", "-m", "src.workers.salesforce_cdc_worker.healthcheck", "--live"]
+    readinessCommand: ["python", "-m", "src.workers.salesforce_cdc_worker.healthcheck", "--ready"]
+
 integrationsCronJobs:
   enabled: true
   timeZone: "Etc/UTC"

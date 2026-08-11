@@ -53,6 +53,11 @@ dependencies:
 - name: worker
   version: "0.1.0"
   repository: "file://./charts/worker"
+  alias: salesforce-cdc-worker
+  condition: salesforce-cdc-worker.enabled
+- name: worker
+  version: "0.1.0"
+  repository: "file://./charts/worker"
   alias: deal-worker
   condition: deal-worker.enabled
 - name: worker

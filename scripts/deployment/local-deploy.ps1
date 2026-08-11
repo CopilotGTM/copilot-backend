@@ -634,6 +634,7 @@ function Deploy-WithHelm {
             "--set", "chat-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
             "--set", "chat-beat.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
             "--set", "integrations-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
+            "--set", "salesforce-cdc-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
             "--set", "deal-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
             "--set", "deal-insights-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
             "--set", "integrations-beat.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
@@ -643,6 +644,7 @@ function Deploy-WithHelm {
             "--set", "chat-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
             "--set", "chat-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
             "--set", "integrations-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
+            "--set", "salesforce-cdc-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
             "--set", "deal-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
             "--set", "deal-insights-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
             "--set", "integrations-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
@@ -683,6 +685,8 @@ function Deploy-WithHelm {
         "--set", "chat-beat.image.tag=$IMAGE_TAG",
         "--set", "integrations-worker.image.repository=$integrationsRepo",
         "--set", "integrations-worker.image.tag=$IMAGE_TAG",
+        "--set", "salesforce-cdc-worker.image.repository=$integrationsRepo",
+        "--set", "salesforce-cdc-worker.image.tag=$IMAGE_TAG",
         "--set", "deal-worker.image.repository=$lightRepo",
         "--set", "deal-worker.image.tag=$IMAGE_TAG",
         "--set", "deal-insights-worker.image.repository=$lightRepo",
@@ -740,6 +744,7 @@ function Deploy-WithHelm {
         "copilot-backend-chat-beat",
         "copilot-backend-organization-worker",
         "copilot-backend-integrations-worker",
+        "copilot-backend-salesforce-cdc-worker",
         "copilot-backend-deal-worker",
         "copilot-backend-deal-insights-worker"
     )

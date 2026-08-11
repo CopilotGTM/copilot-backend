@@ -9,6 +9,7 @@ from typing import Any
 class SalesforceChangeEvent:
     replay_id: bytes
     schema_id: str
+    entity_name: str
     record_ids: tuple[str, ...]
     change_type: str
     commit_timestamp: datetime | None

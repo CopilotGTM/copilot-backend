@@ -57,6 +57,65 @@ def _render_prod_worker_cronjobs() -> list[dict]:
     return _render_worker_cronjobs("charts/application/values-prod.yaml")
 
 
+def test_prod_renders_one_fixed_salesforce_cdc_worker_without_scaler() -> None:
+    manifests = _render_all_manifests("charts/application/values-prod.yaml")
+    values = yaml.safe_load(
+        (REPO_ROOT / "charts" / "application" / "values.yaml").read_text(encoding="utf-8")
+    )
+    name = "copilot-backend-salesforce-cdc-worker"
+    deployments = [
+        doc
+        for doc in manifests
+        if doc.get("kind") == "Deployment" and doc["metadata"]["name"] == name
+    ]
+
+    assert len(deployments) == 1
+    deployment = deployments[0]
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    assert deployment["spec"]["replicas"] == 1
+    assert deployment["spec"]["strategy"]["rollingUpdate"] == {
+        "maxSurge": 0,
+        "maxUnavailable": 1,
+    }
+    assert container["command"] == [
+        "python",
+        "-m",
+        "src.workers.salesforce_cdc_worker.main",
+    ]
+    assert container["resources"] == {
+        "requests": {"cpu": "500m", "memory": "512Mi"},
+        "limits": {"cpu": "1000m", "memory": "2Gi"},
+    }
+    assert "celery" not in " ".join(container["command"])
+    assert "SALESFORCE_CDC_MAX_INTEGRATIONS" in {entry["name"] for entry in container["env"]}
+    assert container["livenessProbe"]["exec"]["command"][-1] == "--live"
+    assert container["readinessProbe"]["exec"]["command"][-1] == "--ready"
+    assert "lifecycle" not in container
+    assert values["salesforce-cdc-worker"]["autoscaling"]["enabled"] is False
+    assert not any(
+        doc.get("kind") in {"HorizontalPodAutoscaler", "ScaledObject"}
+        and name in doc["metadata"]["name"]
+        for doc in manifests
+    )
+
+
+def test_dev_disables_salesforce_cdc_worker_with_small_memory_budget() -> None:
+    manifests = _render_all_manifests("charts/application/values-dev.yaml")
+    deployment = next(
+        doc
+        for doc in manifests
+        if doc.get("kind") == "Deployment"
+        and doc["metadata"]["name"] == "copilot-backend-salesforce-cdc-worker"
+    )
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+
+    assert deployment["spec"]["replicas"] == 0
+    assert container["resources"] == {
+        "requests": {"cpu": "250m", "memory": "256Mi"},
+        "limits": {"cpu": "500m", "memory": "512Mi"},
+    }
+
+
 def test_prod_startup_hook_does_not_require_priority_class_before_upgrade() -> None:
     """Keep startup hooks independent from resources created by the same Helm upgrade."""
     manifests = _render_all_manifests("charts/application/values-prod.yaml")
@@ -440,6 +499,7 @@ def test_worker_deployments_render_celery_events_and_health_probes() -> None:
         if doc.get("kind") == "Deployment"
         and doc["metadata"]["name"].endswith("-worker")
         and "beat" not in doc["metadata"]["name"]
+        and doc["spec"]["template"]["spec"]["containers"][0]["command"][0] == "celery"
     ]
 
     assert {doc["metadata"]["name"] for doc in deployments} == {

@@ -15,10 +15,15 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMTask,
     CRMUser,
 )
+from src.service.integrations.webhooks.salesforce import (
+    change_processor as salesforce_cdc_subscriber_task,
+)
 from src.workers.integrations_worker.providers.crm.salesforce.pubsub_client import (
     SalesforcePubSubReplayIdError,
 )
-from src.workers.integrations_worker.tasks.crm.salesforce import salesforce_cdc_subscriber_task
+from src.workers.integrations_worker.tasks.crm.salesforce import (
+    salesforce_cdc_subscriber_task as subscriber_task,
+)
 
 
 def _run(coro):
@@ -35,6 +40,12 @@ class _FakeDeleteExecuteResult:
 
     def scalar_one_or_none(self) -> object:
         return self.row
+
+    def scalars(self) -> _FakeDeleteExecuteResult:
+        return self
+
+    def all(self) -> list[object]:
+        return []
 
 
 class _FakeDeleteSession:
@@ -73,6 +84,14 @@ class _FakeDeleteMappingHelper:
         return {external_id: self.local_id}
 
 
+class _FakeActivityFeedProjectionService:
+    def __init__(self, *_args: object) -> None:
+        pass
+
+    async def soft_delete_activity_projection(self, _activity_id: UUID) -> None:
+        pass
+
+
 async def _acquire_delete_session(session: _FakeDeleteSession):
     yield session
 
@@ -104,20 +123,20 @@ def test_completed_salesforce_cdc_run_releases_lease_before_requeue(
         queued.append(kwargs)
         return "task-id"
 
-    monkeypatch.setattr(salesforce_cdc_subscriber_task, "SalesforcePubSubClient", FakePubSubClient)
+    monkeypatch.setattr(subscriber_task, "SalesforcePubSubClient", FakePubSubClient)
     monkeypatch.setattr(
-        salesforce_cdc_subscriber_task,
+        subscriber_task,
         "SalesforceCdcSubscriptionStateService",
         FakeStateService,
     )
     monkeypatch.setattr(
-        salesforce_cdc_subscriber_task,
+        subscriber_task,
         "send_integrations_task_async",
         fake_send_integrations_task_async,
     )
 
     result = _run(
-        salesforce_cdc_subscriber_task._run_subscriber(
+        subscriber_task._run_subscriber(
             organisation_id=org_id,
             integration_id=integration_id,
             channel="/data/OpportunityChangeEvent",
@@ -152,21 +171,21 @@ def test_salesforce_cdc_token_failure_releases_lease_before_retry(
         queued.append(kwargs)
         return "task-id"
 
-    monkeypatch.setattr(salesforce_cdc_subscriber_task, "get_access_token", fake_get_access_token)
+    monkeypatch.setattr(subscriber_task, "get_access_token", fake_get_access_token)
     monkeypatch.setattr(
-        salesforce_cdc_subscriber_task,
+        subscriber_task,
         "SalesforceCdcSubscriptionStateService",
         FakeStateService,
     )
     monkeypatch.setattr(
-        salesforce_cdc_subscriber_task,
+        subscriber_task,
         "send_integrations_task_async",
         fake_send_integrations_task_async,
     )
 
     with pytest.raises(RuntimeError, match="token refresh failed"):
         _run(
-            salesforce_cdc_subscriber_task._run_subscriber(
+            subscriber_task._run_subscriber(
                 organisation_id=org_id,
                 integration_id=integration_id,
                 channel="/data/OpportunityChangeEvent",
@@ -213,20 +232,20 @@ def test_salesforce_cdc_replay_repair_releases_lease_before_repair_enqueue(
         operations.append("enqueue")
         return "task-id"
 
-    monkeypatch.setattr(salesforce_cdc_subscriber_task, "SalesforcePubSubClient", FakePubSubClient)
+    monkeypatch.setattr(subscriber_task, "SalesforcePubSubClient", FakePubSubClient)
     monkeypatch.setattr(
-        salesforce_cdc_subscriber_task,
+        subscriber_task,
         "SalesforceCdcSubscriptionStateService",
         FakeStateService,
     )
     monkeypatch.setattr(
-        salesforce_cdc_subscriber_task,
+        subscriber_task,
         "send_integrations_task_async",
         fake_send_integrations_task_async,
     )
 
     result = _run(
-        salesforce_cdc_subscriber_task._run_subscriber(
+        subscriber_task._run_subscriber(
             organisation_id=org_id,
             integration_id=integration_id,
             channel="/data/OpportunityChangeEvent",
@@ -235,6 +254,35 @@ def test_salesforce_cdc_replay_repair_releases_lease_before_repair_enqueue(
 
     assert result["status"] == "replay_expired_repair_queued"
     assert operations == ["clear", "release", "enqueue"]
+
+
+def test_legacy_subscriber_exits_without_requeue_in_aggregate_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = uuid4()
+    integration_id = uuid4()
+    queued: list[dict[str, object]] = []
+
+    async def fake_load_integration(**_kwargs):
+        return SimpleNamespace(connection_metadata={"salesforce_cdc": {"mode": "aggregate"}})
+
+    async def fake_send(**kwargs):
+        queued.append(kwargs)
+
+    monkeypatch.setattr(subscriber_task, "_load_integration", fake_load_integration)
+    monkeypatch.setattr(subscriber_task, "acquire_org_async_session", _acquire_session)
+    monkeypatch.setattr(subscriber_task, "send_integrations_task_async", fake_send)
+
+    result = _run(
+        subscriber_task._run_subscriber(
+            organisation_id=org_id,
+            integration_id=integration_id,
+            channel="/data/OpportunityChangeEvent",
+        )
+    )
+
+    assert result == {"status": "superseded", "events_seen": 0, "records_processed": 0}
+    assert queued == []
 
 
 @pytest.mark.asyncio
@@ -464,6 +512,11 @@ async def test_salesforce_cdc_delete_helpers_resolve_source_mapping_before_local
         salesforce_cdc_subscriber_task,
         "acquire_org_async_session",
         lambda _org_id: _acquire_delete_session(session),
+    )
+    monkeypatch.setattr(
+        salesforce_cdc_subscriber_task,
+        "ActivityFeedProjectionService",
+        _FakeActivityFeedProjectionService,
     )
 
     await getattr(salesforce_cdc_subscriber_task, function_name)(
@@ -1058,14 +1111,14 @@ async def test_replay_repair_routes_task_and_note_channels_to_matching_full_sync
     async def fake_send(*args, **kwargs):
         queued.append({"task_name": args[0], **kwargs})
 
-    monkeypatch.setattr(salesforce_cdc_subscriber_task, "send_integrations_task_async", fake_send)
+    monkeypatch.setattr(subscriber_task, "send_integrations_task_async", fake_send)
 
     for channel in (
         "/data/TaskChangeEvent",
         "/data/ContentDocumentChangeEvent",
         "/data/ContentDocumentLinkChangeEvent",
     ):
-        await salesforce_cdc_subscriber_task._enqueue_repair_sync(
+        await subscriber_task._enqueue_repair_sync(
             organisation_id=org_id,
             integration_id=integration_id,
             channel=channel,
@@ -1094,9 +1147,9 @@ async def test_replay_repair_routes_user_channel_to_user_full_sync(
     async def fake_send(*args, **kwargs):
         queued.append({"task_name": args[0], **kwargs})
 
-    monkeypatch.setattr(salesforce_cdc_subscriber_task, "send_integrations_task_async", fake_send)
+    monkeypatch.setattr(subscriber_task, "send_integrations_task_async", fake_send)
 
-    await salesforce_cdc_subscriber_task._enqueue_repair_sync(
+    await subscriber_task._enqueue_repair_sync(
         organisation_id=org_id,
         integration_id=integration_id,
         channel="/data/UserChangeEvent",
@@ -1142,15 +1195,11 @@ def _patch_context(
             pubsub_endpoint="api.pubsub.salesforce.com:443",
         )
 
-    monkeypatch.setattr(salesforce_cdc_subscriber_task, "_load_integration", fake_load_integration)
+    monkeypatch.setattr(subscriber_task, "_load_integration", fake_load_integration)
     monkeypatch.setattr(
-        salesforce_cdc_subscriber_task,
+        subscriber_task,
         "get_salesforce_opportunity_cdc_metadata",
         fake_metadata,
     )
-    monkeypatch.setattr(
-        salesforce_cdc_subscriber_task, "get_access_token", AsyncMock(return_value="token")
-    )
-    monkeypatch.setattr(
-        salesforce_cdc_subscriber_task, "acquire_org_async_session", _acquire_session
-    )
+    monkeypatch.setattr(subscriber_task, "get_access_token", AsyncMock(return_value="token"))
+    monkeypatch.setattr(subscriber_task, "acquire_org_async_session", _acquire_session)

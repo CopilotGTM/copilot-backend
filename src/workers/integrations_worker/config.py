@@ -220,6 +220,16 @@ TASK_LIMITS: dict[str, dict] = {
         "hard": 3600,
         "retries": 0,
     },
+    "integrations.mark_salesforce_cdc_repair_succeeded": {
+        "soft": 120,
+        "hard": 180,
+        "retries": 0,
+    },
+    "integrations.mark_salesforce_cdc_repair_failed": {
+        "soft": 120,
+        "hard": 180,
+        "retries": 0,
+    },
     "integrations.sync_salesforce_tasks": {
         "soft": 7200,
         "hard": 7260,
@@ -480,6 +490,14 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             "integrations.run_salesforce_cdc_subscriber": {
                 "queue": "integrations_streaming",
                 "routing_key": "integrations_streaming",
+            },
+            "integrations.mark_salesforce_cdc_repair_succeeded": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
+            },
+            "integrations.mark_salesforce_cdc_repair_failed": {
+                "queue": "integrations_priority",
+                "routing_key": "integrations_priority",
             },
             "integrations.sync_salesforce_tasks": {
                 "queue": "integrations_priority",

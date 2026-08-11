@@ -46,6 +46,7 @@ class SalesforcePubSubTransport(Protocol):
         *,
         channel: str,
         replay_id: bytes | None,
+        start_from_earliest: bool,
         metadata: tuple[tuple[str, str], ...],
         num_requested: int,
     ) -> AsyncIterator[Any]: ...
@@ -85,6 +86,7 @@ class SalesforceGrpcPubSubTransport:
         *,
         channel: str,
         replay_id: bytes | None,
+        start_from_earliest: bool = False,
         metadata: tuple[tuple[str, str], ...],
         num_requested: int,
     ) -> AsyncIterator[SalesforcePubSubRawEvent | SalesforcePubSubKeepalive]:
@@ -97,7 +99,11 @@ class SalesforceGrpcPubSubTransport:
 
         pb2 = cast(Any, pubsub_api_pb2)
         request_queue: Queue[Any] = Queue()
-        replay_preset = _replay_preset_for(replay_id, pb2)
+        replay_preset = _replay_preset_for(
+            replay_id,
+            pb2,
+            start_from_earliest=start_from_earliest,
+        )
         await request_queue.put(
             pb2.FetchRequest(
                 topic_name=channel,
@@ -166,6 +172,7 @@ class SalesforcePubSubClient:
         channel: str,
         replay_id: bytes | None,
         max_runtime_seconds: int,
+        start_from_earliest: bool = False,
     ) -> AsyncIterator[SalesforcePubSubEvent | SalesforcePubSubKeepalive]:
         if self._transport is None:
             raise RuntimeError("Salesforce Pub/Sub transport is not configured")
@@ -182,6 +189,7 @@ class SalesforcePubSubClient:
         async for raw_event in self._transport.subscribe(
             channel=channel,
             replay_id=replay_id,
+            start_from_earliest=start_from_earliest,
             metadata=metadata,
             num_requested=10,
         ):
@@ -229,8 +237,17 @@ def _is_replay_id_error(exc: Exception) -> bool:
     return False
 
 
-def _replay_preset_for(replay_id: bytes | None, pb2: Any) -> Any:
-    return pb2.ReplayPreset.CUSTOM if replay_id is not None else pb2.ReplayPreset.LATEST
+def _replay_preset_for(
+    replay_id: bytes | None,
+    pb2: Any,
+    *,
+    start_from_earliest: bool = False,
+) -> Any:
+    # A committed cursor is always authoritative. EARLIEST is reserved for a
+    # new or repaired aggregate stream so missed events are replayed safely.
+    if replay_id is not None:
+        return pb2.ReplayPreset.CUSTOM
+    return pb2.ReplayPreset.EARLIEST if start_from_earliest else pb2.ReplayPreset.LATEST
 
 
 def _next_fetch_request_count(*, pending_num_requested: int, num_requested: int) -> int:

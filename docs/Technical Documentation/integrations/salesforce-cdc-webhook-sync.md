@@ -1,174 +1,97 @@
 # Salesforce CRM CDC Sync
 
-Salesforce does not use a HubSpot-style public HTTP webhook for realtime CRM sync.
-The backend runs bounded integrations-worker subscribers against Salesforce Pub/Sub
-API single-entity topics:
+Salesforce CDC is consumed through Pub/Sub API, not an HTTP webhook. One dedicated
+`salesforce-cdc-worker` process supervises up to seven customer integrations. Each integration has
+one connector task subscribed to the aggregate `/data/ChangeEvents` topic; connecting another
+Salesforce customer does not create another Kubernetes Deployment, pod, queue, or OS process.
 
-- `/data/OpportunityChangeEvent`
-- `/data/AccountChangeEvent`
-- `/data/ContactChangeEvent`
-- `/data/UserChangeEvent`
-- `/data/TaskChangeEvent`
-- `/data/ContentDocumentChangeEvent`
-- `/data/ContentDocumentLinkChangeEvent`
+## Why the old worker stopped after about one hour
 
-Each event is decoded from Avro, fanned out across every
-`ChangeEventHeader.recordIds` entry, refreshed from Salesforce REST, and persisted
-through the same normalizers and writers used by full Salesforce sync.
+The legacy design used bounded Celery subscriber tasks against individual object topics. A task ran
+for roughly 55 minutes and then depended on broker handoff to enqueue its successor. Any failed or
+lost handoff left that integration without a subscriber. Multiplying seven topics by each customer
+also consumed ordinary integrations-worker slots and made a customer-specific worker tempting.
 
-## Scope
+The aggregate worker removes that handoff. Its process is long-lived; only each Salesforce Pub/Sub
+session rotates. The default session is 2,700 seconds (45 minutes), after which the connector opens a
+new session from the last committed aggregate replay ID inside the same process. Transport failures
+use bounded exponential reconnect delay and do not stop the other customer connectors.
 
-This v1 covers standard Opportunity, Account, Contact, User, Task, and current
-Salesforce Lightning Notes CDC channels. Lightning Notes require both
-`ContentDocument` and `ContentDocumentLink`: `ContentDocument` carries note
-document/content changes, while `ContentDocumentLink` carries relationship changes
-to Account, Contact, and Opportunity. The sync hydrates enhanced-note bodies from
-`ContentNote` after receiving the `ContentDocument` ID.
-
-- In scope: per-object replay cursor storage, subscriber leasing, keepalive replay
-  advancement, single-record fetch, record upsert, Account/User deactivation,
-  owner backfill, and Opportunity/Contact/Task/Note soft-delete for Salesforce
-  delete events.
-- Out of scope: `/data/ChangeEvents`, OpportunityContactRole fanout, durable local
-  event handoff, event fingerprints, and separate subscriber task names.
-
-Salesforce setup prerequisite: Account, Contact, Opportunity, User, Task,
-ContentNote, and ContentDocumentLink must be selected for Change Data Capture in
-Salesforce Setup where those entities are available in the org. The integration
-user also needs `View All Users` so User CDC refreshes can read owner records.
-
-## Runtime Flow
+## Runtime flow
 
 ```text
-Salesforce initial sync success dispatches integrations.run_salesforce_cdc_subscriber
-for each enabled CDC channel
+one Kubernetes Deployment / one pod / one Python process
         |
         v
-subscriber opens the requested /data/*ChangeEvent channel
+supervisor discovers aggregate-ready Salesforce integrations every 60 seconds
+        |
+        +-- connector 1 -> /data/ChangeEvents -> customer 1 aggregate replay
+        +-- connector 2 -> /data/ChangeEvents -> customer 2 aggregate replay
+        +-- ...
+        +-- connector 7 -> /data/ChangeEvents -> customer 7 aggregate replay
         |
         v
-for each recordId in ChangeEventHeader.recordIds:
-    Opportunity DELETE -> CRMDeal.is_deleted = true
-    Account DELETE     -> CRMCompany.is_active = false
-    Contact DELETE     -> CRMContact.is_deleted = true
-    User DELETE        -> CRMUser.is_active = false
-    Task DELETE        -> CRMTask.is_deleted = true and feed projection is tombstoned
-    ContentDocument DELETE -> CRMNote.is_deleted = true and feed projection is tombstoned
-    ContentDocumentLink DELETE -> rehydrate remaining note links or soft-delete note
-    other              -> fetch one record -> persist_single_*()
+decode entityName and every ChangeEventHeader.recordIds entry
         |
         v
-after every record ID in the event succeeds, store replay ID
+process record IDs sequentially through the shared Salesforce CDC processor
         |
         v
-bounded subscriber run requeues the next subscriber run
+commit the aggregate replay ID only after every record succeeds
 ```
 
-Replay state advances only after the event's record IDs are processed. If fetch or
-persistence fails first, the previous replay ID remains in place and Salesforce can
-redeliver the event on the next subscription attempt. Duplicate delivery is
-acceptable because the writers are upsert-oriented and delete/deactivate handling is
-idempotent.
+The process owns at most seven connector tasks. A slow or reconnecting customer has an independent
+task and cannot cancel its peers. At `7/7`, an eighth integration is marked `capacity_exceeded` and
+is not started; the worker never scales itself or creates customer-specific infrastructure.
 
-The first subscriber run starts from Salesforce's latest replay position when no
-local cursor exists. The initial sync is the source of truth for pre-subscription
-state; starting from latest avoids replaying up to 72 hours of retained events on
-new connections.
+## State and fencing
 
-Transient token, Pub/Sub, fetch, or persistence failures mark the CDC state as
-errored and enqueue a delayed subscriber retry without advancing replay. If
-Salesforce rejects the stored replay ID, the subscriber clears that channel's local
-cursor and queues the matching full repair sync:
-
-- Opportunity -> `integrations.sync_salesforce_deals`
-- Account -> `integrations.sync_salesforce_companies`
-- Contact -> `integrations.sync_salesforce_contacts`
-- User -> `integrations.sync_salesforce_users`
-- Task -> `integrations.sync_salesforce_tasks`
-- ContentDocument -> `integrations.sync_salesforce_notes`
-- ContentDocumentLink -> `integrations.sync_salesforce_notes`
-
-The repair sync restarts the same CDC channel after it completes successfully.
-
-## State
-
-Each Salesforce integration stores its CDC checkpoint and lease state in
-`knowledge_integrations.connection_metadata.salesforce_cdc.<object>`, where
-`<object>` is `opportunity`, `account`, `contact`, `user`, `task`,
-`content_document`, or `content_document_link`.
-
-Each channel has an independent replay cursor and lease. No separate CDC
-subscription table or CDC event table exists in v1.
-
-## Task Contract
-
-The single Celery task is `integrations.run_salesforce_cdc_subscriber`.
-
-It requires explicit `organisation_id` and `integration_id`. With those IDs, it
-acquires a subscription lease, opens Pub/Sub, processes events, stores keepalive
-replay positions, stores committed replay IDs after successful processing, respects
-Salesforce `pending_num_requested` flow-control top-ups, releases its lease before
-handoff, and requeues the next bounded subscriber run when the stream exits
-normally.
-
-There is no fixed scheduled job for this subscriber. Salesforce initial-sync success
-starts the first run, and each normal bounded run schedules the next one. Lease
-state in `connection_metadata` prevents duplicate active subscribers for one
-integration/channel.
-
-## Required Integration Metadata
-
-CDC discovery expects:
+State remains in `knowledge_integrations.connection_metadata.salesforce_cdc`. Aggregate mode uses:
 
 ```json
 {
-  "salesforce_organization_id": "00D...",
-  "salesforce_instance_url": "https://example.my.salesforce.com",
   "salesforce_cdc": {
-    "opportunity": {
-      "enabled": true,
-      "channel": "/data/OpportunityChangeEvent",
-      "last_replay_id": "opaque-base64-replay-id",
-      "lease_owner": "worker-id",
-      "lease_expires_at": "2026-05-31T03:30:00+00:00"
-    },
-    "account": {
-      "enabled": true,
-      "channel": "/data/AccountChangeEvent",
-      "last_replay_id": "opaque-base64-replay-id"
-    },
-    "contact": {
-      "enabled": true,
-      "channel": "/data/ContactChangeEvent",
-      "last_replay_id": "opaque-base64-replay-id"
-    },
-    "user": {
-      "enabled": true,
-      "channel": "/data/UserChangeEvent",
-      "last_replay_id": "opaque-base64-replay-id"
-    },
-    "task": {
-      "enabled": true,
-      "channel": "/data/TaskChangeEvent",
-      "last_replay_id": "opaque-base64-replay-id"
-    },
-    "content_document": {
-      "enabled": true,
-      "channel": "/data/ContentDocumentChangeEvent",
-      "last_replay_id": "opaque-base64-replay-id"
-    },
-    "content_document_link": {
-      "enabled": true,
-      "channel": "/data/ContentDocumentLinkChangeEvent",
-      "last_replay_id": "opaque-base64-replay-id"
+    "mode": "aggregate",
+    "aggregate": {
+      "channel": "/data/ChangeEvents",
+      "status": "pending",
+      "replay_preset": "EARLIEST",
+      "last_replay_id": null,
+      "heartbeat_at": null,
+      "lease_owner": null,
+      "lease_expires_at": null
     }
   }
 }
 ```
 
-Existing integrations with only the `opportunity` entry remain Opportunity-only.
-New reconnects receive Account, Contact, Opportunity, User, Task, ContentDocument,
-and ContentDocumentLink entries by default.
+The connector acquires a 120-second lease and renews it every 30 seconds. All replay, heartbeat,
+disconnect, and release writes are fenced by the lease owner. Aggregate acquisition waits until all
+legacy per-object leases are inactive, and a legacy subscriber exits harmlessly when it observes
+aggregate mode. This prevents aggregate and legacy streams from overlapping.
 
-The default Pub/Sub endpoint is `api.pubsub.salesforce.com:443`; the global
-Salesforce Pub/Sub host is accepted on ports `443` and `7443`.
+Keepalives persist the server replay position and heartbeat. Data-event replay advances only after
+successful processing, preserving at-least-once delivery. Upsert and soft-delete paths are
+idempotent. A rejected or expired replay ID atomically fences the connector in `repairing` and
+publishes one serial full-repair chain. The connector resumes from `EARLIEST` only after repair
+succeeds.
+
+## Initial sync and migration
+
+New integrations enter aggregate `pending` state after successful initial sync and are discovered by
+the existing worker process. Migration of an existing integration is deliberately separate and
+dry-run by default. It does not copy any per-object replay cursor into the aggregate cursor because
+Salesforce replay IDs are opaque and topic-specific.
+
+The legacy per-object subscriber remains only as a compatibility and rollback path during rollout.
+Its prior bounded-task/requeue ownership is not the steady-state architecture.
+
+## Salesforce references
+
+- [Subscribe RPC](https://developer.salesforce.com/docs/platform/pub-sub-api/references/methods/subscribe-rpc.html)
+- [Event message durability](https://developer.salesforce.com/docs/platform/pub-sub-api/guide/event-message-durability.html)
+- [Pub/Sub API allocations](https://developer.salesforce.com/docs/platform/pub-sub-api/guide/allocations.html)
+- [Salesforce Pub/Sub API overview](https://developer.salesforce.com/blogs/2021/07/pub-sub-api-building-event-driven-integrations-just-got-even-easier)
+
+Operational checks, alert thresholds, repair, and rollback are documented in
+[Salesforce CDC Operations](salesforce-cdc-operations.md).
