@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from httpx import Client as HttpxClient
 from src.api.middleware.request_context import RequestContextMiddleware
 from src.infra.config.configs import otel_config, sentry_config
+from src.infra.observability import metrics as metrics_runtime
 from src.infra.observability.context import get_request_id, reset_context
 from src.infra.utils.logger import configure_logging, get_logger, resolve_celery_component
 from src.workers.base import celery_base
@@ -45,6 +46,54 @@ def _build_supabase_base_client() -> tuple[SupabaseClient, HttpxClient]:
         options=SyncClientOptions(httpx_client=transport),
     )
     return client, transport
+
+
+def test_salesforce_cdc_metrics_are_lazy_and_identifier_free(monkeypatch):
+    created: list[tuple[str, str]] = []
+
+    class _Instrument:
+        def add(self, _value, attributes):
+            assert set(attributes) <= {"outcome", "entity", "reason"}
+
+        record = add
+
+    class _Meter:
+        def create_counter(self, name, **_kwargs):
+            created.append(("counter", name))
+            return _Instrument()
+
+        def create_histogram(self, name, **_kwargs):
+            created.append(("histogram", name))
+            return _Instrument()
+
+    for name in (
+        "_SALESFORCE_CDC_CONNECTION_COUNT",
+        "_SALESFORCE_CDC_EVENT_COUNT",
+        "_SALESFORCE_CDC_RECORD_COUNT",
+        "_SALESFORCE_CDC_RECONNECT_DELAY",
+        "_SALESFORCE_CDC_REPAIR_COUNT",
+        "_SALESFORCE_CDC_CAPACITY_COUNT",
+    ):
+        monkeypatch.setattr(metrics_runtime, name, None, raising=False)
+    monkeypatch.setattr(metrics_runtime.metrics, "get_meter", lambda _name: _Meter())
+
+    metrics_runtime.record_salesforce_cdc_connection("connected")
+    metrics_runtime.record_salesforce_cdc_event("processed", entity="Opportunity")
+    metrics_runtime.record_salesforce_cdc_record(
+        "failed", entity="tenant-id", reason="integration-id"
+    )
+    metrics_runtime.record_salesforce_cdc_reconnect_delay(4.5, reason="transport")
+    metrics_runtime.record_salesforce_cdc_repair("started", reason="replay_expired")
+    metrics_runtime.record_salesforce_cdc_capacity(7, outcome="running")
+
+    assert {name for _kind, name in created} == {
+        "copilotgtm.salesforce.cdc.connection.count",
+        "copilotgtm.salesforce.cdc.event.count",
+        "copilotgtm.salesforce.cdc.record.count",
+        "copilotgtm.salesforce.cdc.reconnect.delay",
+        "copilotgtm.salesforce.cdc.repair.count",
+        "copilotgtm.salesforce.cdc.capacity.count",
+    }
 
 
 def test_configure_logging_formats_stdlib_loggers_as_json(capsys, monkeypatch):

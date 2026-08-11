@@ -17,6 +17,7 @@ from src.infra.utils.logger import get_logger
 from src.infra.utils.task_lock import is_task_locked
 from src.service.integrations.sync_history_manager import datetime_now_naive
 from src.service.integrations.webhooks.salesforce.metadata import (
+    AGGREGATE_CDC_CHANNEL,
     CONTENT_DOCUMENT_CDC_CHANNEL,
     SALESFORCE_CDC_OBJECTS,
 )
@@ -75,9 +76,22 @@ def mark_salesforce_initial_sync_succeeded_task(
             metadata["initial_sync_completed_at"] = datetime.now(UTC).isoformat()
             metadata.pop("initial_sync_failed_phase", None)
             metadata.pop("initial_sync_placeholder", None)
+            cdc_metadata = dict(metadata.get("salesforce_cdc") or {})
+            if cdc_metadata.get("mode") == "aggregate":
+                aggregate_state = dict(cdc_metadata.get("aggregate") or {})
+                aggregate_state.update(
+                    {
+                        "enabled": True,
+                        "channel": AGGREGATE_CDC_CHANNEL,
+                        "status": "pending",
+                    }
+                )
+                aggregate_state.setdefault("replay_preset", "EARLIEST")
+                cdc_metadata["aggregate"] = aggregate_state
+                metadata["salesforce_cdc"] = cdc_metadata
             integration.connection_metadata = metadata
             integration.last_synced_at = datetime_now_naive()
-            if _has_salesforce_cdc_identity(
+            if cdc_metadata.get("mode") != "aggregate" and _has_salesforce_cdc_identity(
                 metadata=metadata,
                 credentials=dict(getattr(integration, "credentials", None) or {}),
             ):

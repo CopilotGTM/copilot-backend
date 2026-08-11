@@ -3,11 +3,18 @@ from uuid import uuid4
 import pytest
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.service.integrations.webhooks.salesforce.metadata import (
+    AGGREGATE_CDC_CHANNEL,
     SalesforceCdcMetadataError,
+    channel_metadata_key,
     get_enabled_salesforce_cdc_metadata,
     get_salesforce_cdc_metadata_for_channel,
     get_salesforce_opportunity_cdc_metadata,
 )
+
+
+def test_salesforce_cdc_metadata_maps_aggregate_channel() -> None:
+    assert AGGREGATE_CDC_CHANNEL == "/data/ChangeEvents"
+    assert channel_metadata_key(AGGREGATE_CDC_CHANNEL) == "aggregate"
 
 
 def test_salesforce_cdc_metadata_reads_opportunity_channel() -> None:

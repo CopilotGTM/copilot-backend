@@ -7,6 +7,7 @@ PIPELINE_PATHS = [
 CHART_VALUES_PATH = Path("charts/application/values.yaml")
 STARTUP_SCRIPT_PATH = Path("scripts/startup.sh")
 PROD_PIPELINE_PATH = Path(".azure-pipelines/azure-backend-pipeline-prod.yml")
+LOCAL_DEPLOY_PATH = Path("scripts/deployment/local-deploy.ps1")
 
 
 def test_backend_pipelines_do_not_force_second_worker_rollout() -> None:
@@ -55,6 +56,38 @@ def test_backend_pipelines_deploy_and_wait_for_deal_insights_worker() -> None:
         assert "wait_if_present copilot-backend-deal-insights-worker" in pipeline_text, (
             pipeline_path
         )
+
+
+def test_deploy_paths_reuse_integrations_image_for_shared_salesforce_worker() -> None:
+    for pipeline_path in PIPELINE_PATHS:
+        pipeline_text = pipeline_path.read_text(encoding="utf-8")
+
+        assert (
+            '--set salesforce-cdc-worker.image.repository="$ACR_LOGIN_SERVER/$(INTEGRATIONS_IMAGE_REPOSITORY)"'
+            in pipeline_text
+        ), pipeline_path
+        assert '--set salesforce-cdc-worker.image.tag="$BUILD_BUILDID"' in pipeline_text, (
+            pipeline_path
+        )
+        assert (
+            '--set salesforce-cdc-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)"'
+            in pipeline_text
+        ), pipeline_path
+        assert (
+            '--set salesforce-cdc-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"'
+            in pipeline_text
+        ), pipeline_path
+        assert "wait_if_present copilot-backend-salesforce-cdc-worker" in pipeline_text, (
+            pipeline_path
+        )
+        assert "grep '^pod/copilot-backend-salesforce-cdc-worker-'" in pipeline_text, pipeline_path
+
+    local_deploy_text = LOCAL_DEPLOY_PATH.read_text(encoding="utf-8")
+    assert "salesforce-cdc-worker.image.repository=$integrationsRepo" in local_deploy_text
+    assert "salesforce-cdc-worker.image.tag=$IMAGE_TAG" in local_deploy_text
+    assert "salesforce-cdc-worker.workloadIdentity.clientId=" in local_deploy_text
+    assert "salesforce-cdc-worker.workloadIdentity.tenantId=" in local_deploy_text
+    assert '"copilot-backend-salesforce-cdc-worker"' in local_deploy_text
 
 
 def test_backend_pipelines_use_only_the_master_key_vault_url() -> None:

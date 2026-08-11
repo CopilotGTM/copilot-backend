@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 
 OPPORTUNITY_CDC_CHANNEL = "/data/OpportunityChangeEvent"
+AGGREGATE_CDC_CHANNEL = "/data/ChangeEvents"
 ACCOUNT_CDC_CHANNEL = "/data/AccountChangeEvent"
 CONTACT_CDC_CHANNEL = "/data/ContactChangeEvent"
 USER_CDC_CHANNEL = "/data/UserChangeEvent"
@@ -138,6 +139,8 @@ def get_salesforce_cdc_metadata_for_channel(
 
 
 def channel_metadata_key(channel: str) -> str:
+    if channel == AGGREGATE_CDC_CHANNEL:
+        return "aggregate"
     for object_key, config in SALESFORCE_CDC_OBJECTS.items():
         if channel == config["channel"]:
             return object_key

@@ -30,16 +30,24 @@ def decode_salesforce_change_event(
     replay_id: bytes,
     schema_id: str,
     payload: dict[str, Any],
-    object_name: str,
-    id_prefix: str,
+    object_name: str | None,
+    id_prefix: str | None,
 ) -> SalesforceChangeEvent:
+    """Decode one object-specific or aggregate Salesforce CDC event.
+
+    Per-object subscribers provide an expected object and ID prefix. The
+    aggregate stream instead trusts the provider header for routing but still
+    enforces Salesforce's 15/18-character record ID shape at this boundary.
+    """
     header = dict(payload.get("ChangeEventHeader") or {})
-    entity_name = _optional_str(header.get("entityName"))
-    if entity_name is not None and entity_name != object_name:
+    entity_name = _optional_str(header.get("entityName")) or object_name
+    if entity_name is None:
+        raise ValueError("Salesforce CDC event has no entity name")
+    if object_name is not None and entity_name != object_name:
         raise ValueError(f"Salesforce {object_name} CDC event has mismatched entityName")
 
     record_ids = tuple(
-        _validate_record_id(record_id, object_name=object_name, id_prefix=id_prefix)
+        _validate_record_id(record_id, object_name=entity_name, id_prefix=id_prefix)
         for record_id in header.get("recordIds") or ()
         if record_id
     )
@@ -58,6 +66,7 @@ def decode_salesforce_change_event(
     return SalesforceChangeEvent(
         replay_id=replay_id,
         schema_id=schema_id,
+        entity_name=entity_name,
         record_ids=record_ids,
         change_type=change_type,
         commit_timestamp=commit_timestamp,
@@ -81,9 +90,12 @@ def _optional_str(value: Any) -> str | None:
     return text or None
 
 
-def _validate_record_id(value: Any, *, object_name: str, id_prefix: str) -> str:
+def _validate_record_id(value: Any, *, object_name: str, id_prefix: str | None) -> str:
     record_id = str(value).strip()
-    id_re = re.compile(rf"^{re.escape(id_prefix)}[A-Za-z0-9]{{12}}(?:[A-Za-z0-9]{{3}})?$")
+    if id_prefix is None:
+        id_re = re.compile(r"^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$")
+    else:
+        id_re = re.compile(rf"^{re.escape(id_prefix)}[A-Za-z0-9]{{12}}(?:[A-Za-z0-9]{{3}})?$")
     if not id_re.fullmatch(record_id):
         raise ValueError(f"Salesforce {object_name} CDC event has invalid record ID")
     return record_id

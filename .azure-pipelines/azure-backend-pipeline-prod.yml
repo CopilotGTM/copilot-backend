@@ -678,6 +678,8 @@ stages:
                       --set organization-worker.autoscaling.enabled=true \
                       --set integrations-worker.image.repository="$ACR_LOGIN_SERVER/$(INTEGRATIONS_IMAGE_REPOSITORY)" \
                       --set integrations-worker.image.tag="$BUILD_BUILDID" \
+                      --set salesforce-cdc-worker.image.repository="$ACR_LOGIN_SERVER/$(INTEGRATIONS_IMAGE_REPOSITORY)" \
+                      --set salesforce-cdc-worker.image.tag="$BUILD_BUILDID" \
                       --set deal-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
                       --set deal-worker.image.tag="$BUILD_BUILDID" \
                       --set deal-worker.autoscaling.enabled=true \
@@ -716,6 +718,7 @@ stages:
                       --set chat-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set chat-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set integrations-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set salesforce-cdc-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set deal-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set deal-insights-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set integrations-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
@@ -725,6 +728,7 @@ stages:
                       --set chat-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set chat-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set integrations-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set salesforce-cdc-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set deal-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set deal-insights-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set integrations-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
@@ -797,6 +801,14 @@ stages:
                         kubectl logs -n copilotgtm "$pod" --all-containers --timestamps --prefix --tail=300 || true
                         kubectl logs -n copilotgtm "$pod" --all-containers --previous --timestamps --prefix --tail=300 || true
                       done
+
+                      echo "Salesforce CDC worker rollout diagnostics before rollback"
+                      kubectl get deployment copilot-backend-salesforce-cdc-worker -n copilotgtm -o wide || true
+                      for pod in $(kubectl get pods -n copilotgtm -l app.kubernetes.io/name=worker -o name 2>/dev/null | grep '^pod/copilot-backend-salesforce-cdc-worker-' || true); do
+                        kubectl describe pod -n copilotgtm "$pod" || true
+                        kubectl logs -n copilotgtm "$pod" --all-containers --timestamps --prefix --tail=300 || true
+                        kubectl logs -n copilotgtm "$pod" --all-containers --previous --timestamps --prefix --tail=300 || true
+                      done
                     }
 
                     trap 'status=$?; dump_chat_worker_diagnostics; exit "$status"' ERR
@@ -809,6 +821,7 @@ stages:
                     wait_if_present copilot-backend-chat-beat
                     wait_if_present copilot-backend-organization-worker
                     wait_if_present copilot-backend-integrations-worker
+                    wait_if_present copilot-backend-salesforce-cdc-worker
                     wait_if_present copilot-backend-deal-worker
                     wait_if_present copilot-backend-deal-insights-worker
                   displayName: Wait for API and worker rollouts

@@ -11,6 +11,8 @@ from .calendar import sync_calendar_integration_task
 from .crm import (
     mark_hubspot_initial_sync_failed_task,
     mark_hubspot_initial_sync_succeeded_task,
+    mark_salesforce_cdc_repair_failed_task,
+    mark_salesforce_cdc_repair_succeeded_task,
     mark_salesforce_initial_sync_failed_task,
     mark_salesforce_initial_sync_succeeded_task,
     process_hubspot_webhook_event_task,
@@ -119,4 +121,6 @@ __all__ = [
     "sync_salesforce_opportunity_schema_all_orgs_task",
     "mark_salesforce_initial_sync_succeeded_task",
     "mark_salesforce_initial_sync_failed_task",
+    "mark_salesforce_cdc_repair_succeeded_task",
+    "mark_salesforce_cdc_repair_failed_task",
 ]

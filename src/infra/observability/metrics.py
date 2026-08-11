@@ -28,6 +28,12 @@ _AGENT_RUN_DELIVERY_ATTEMPTS: Any = None
 _AGENT_RUN_DELIVERY_LATENCY: Any = None
 _AGENT_RUN_DELIVERY_RECOVERY_COUNT: Any = None
 _AGENT_RUN_DELIVERY_RECOVERY_AGE: Any = None
+_SALESFORCE_CDC_CONNECTION_COUNT: Any = None
+_SALESFORCE_CDC_EVENT_COUNT: Any = None
+_SALESFORCE_CDC_RECORD_COUNT: Any = None
+_SALESFORCE_CDC_RECONNECT_DELAY: Any = None
+_SALESFORCE_CDC_REPAIR_COUNT: Any = None
+_SALESFORCE_CDC_CAPACITY_COUNT: Any = None
 
 _init_lock = Lock()
 
@@ -56,6 +62,35 @@ _AGENT_RUN_DELIVERY_REASONS = frozenset(
         "platform_email_not_configured",
         "recipient_unavailable",
     }
+)
+_SALESFORCE_CDC_OUTCOMES = frozenset(
+    {
+        "capacity_exceeded",
+        "completed",
+        "connected",
+        "desired",
+        "disconnected",
+        "failed",
+        "processed",
+        "running",
+        "skipped",
+        "started",
+        "succeeded",
+    }
+)
+_SALESFORCE_CDC_ENTITIES = frozenset(
+    {
+        "Account",
+        "Contact",
+        "ContentDocument",
+        "ContentDocumentLink",
+        "Opportunity",
+        "Task",
+        "User",
+    }
+)
+_SALESFORCE_CDC_REASONS = frozenset(
+    {"lease_lost", "none", "processing", "replay_expired", "session_rotation", "transport"}
 )
 
 
@@ -247,6 +282,61 @@ def _ensure_agent_run_delivery_instruments() -> None:
             )
 
 
+def _ensure_salesforce_cdc_instruments() -> None:
+    """Create aggregate CDC instruments without tenant-cardinality dimensions."""
+    global _SALESFORCE_CDC_CONNECTION_COUNT, _SALESFORCE_CDC_EVENT_COUNT
+    global _SALESFORCE_CDC_RECORD_COUNT, _SALESFORCE_CDC_RECONNECT_DELAY
+    global _SALESFORCE_CDC_REPAIR_COUNT, _SALESFORCE_CDC_CAPACITY_COUNT
+    instruments = (
+        _SALESFORCE_CDC_CONNECTION_COUNT,
+        _SALESFORCE_CDC_EVENT_COUNT,
+        _SALESFORCE_CDC_RECORD_COUNT,
+        _SALESFORCE_CDC_RECONNECT_DELAY,
+        _SALESFORCE_CDC_REPAIR_COUNT,
+        _SALESFORCE_CDC_CAPACITY_COUNT,
+    )
+    if all(instrument is not None for instrument in instruments):
+        return
+    with _init_lock:
+        meter = metrics.get_meter("copilotgtm.observability")
+        if _SALESFORCE_CDC_CONNECTION_COUNT is None:
+            _SALESFORCE_CDC_CONNECTION_COUNT = meter.create_counter(
+                "copilotgtm.salesforce.cdc.connection.count",
+                description="Aggregate Salesforce CDC stream connection outcomes.",
+                unit="{connection}",
+            )
+        if _SALESFORCE_CDC_EVENT_COUNT is None:
+            _SALESFORCE_CDC_EVENT_COUNT = meter.create_counter(
+                "copilotgtm.salesforce.cdc.event.count",
+                description="Aggregate Salesforce CDC event outcomes.",
+                unit="{event}",
+            )
+        if _SALESFORCE_CDC_RECORD_COUNT is None:
+            _SALESFORCE_CDC_RECORD_COUNT = meter.create_counter(
+                "copilotgtm.salesforce.cdc.record.count",
+                description="Aggregate Salesforce CDC record processing outcomes.",
+                unit="{record}",
+            )
+        if _SALESFORCE_CDC_RECONNECT_DELAY is None:
+            _SALESFORCE_CDC_RECONNECT_DELAY = meter.create_histogram(
+                "copilotgtm.salesforce.cdc.reconnect.delay",
+                description="Delay before reconnecting an aggregate Salesforce CDC stream.",
+                unit="s",
+            )
+        if _SALESFORCE_CDC_REPAIR_COUNT is None:
+            _SALESFORCE_CDC_REPAIR_COUNT = meter.create_counter(
+                "copilotgtm.salesforce.cdc.repair.count",
+                description="Aggregate Salesforce CDC repair outcomes.",
+                unit="{repair}",
+            )
+        if _SALESFORCE_CDC_CAPACITY_COUNT is None:
+            _SALESFORCE_CDC_CAPACITY_COUNT = meter.create_histogram(
+                "copilotgtm.salesforce.cdc.capacity.count",
+                description="Current aggregate Salesforce CDC supervisor capacity counts.",
+                unit="{integration}",
+            )
+
+
 def _status_family(status_code: int) -> str:
     return f"{status_code // 100}xx"
 
@@ -426,6 +516,67 @@ def record_agent_run_delivery_recovery_age(status: str, age_seconds: float) -> N
     )
 
 
+def record_salesforce_cdc_connection(outcome: str) -> None:
+    """Count an aggregate stream connection transition."""
+    _ensure_salesforce_cdc_instruments()
+    _SALESFORCE_CDC_CONNECTION_COUNT.add(
+        1, {"outcome": _bounded(outcome, _SALESFORCE_CDC_OUTCOMES)}
+    )
+
+
+def record_salesforce_cdc_event(outcome: str, *, entity: str) -> None:
+    """Count an aggregate event without identifying its tenant."""
+    _ensure_salesforce_cdc_instruments()
+    _SALESFORCE_CDC_EVENT_COUNT.add(
+        1,
+        {
+            "outcome": _bounded(outcome, _SALESFORCE_CDC_OUTCOMES),
+            "entity": _bounded(entity, _SALESFORCE_CDC_ENTITIES),
+        },
+    )
+
+
+def record_salesforce_cdc_record(outcome: str, *, entity: str, reason: str = "none") -> None:
+    """Count a record result using bounded provider semantics only."""
+    _ensure_salesforce_cdc_instruments()
+    _SALESFORCE_CDC_RECORD_COUNT.add(
+        1,
+        {
+            "outcome": _bounded(outcome, _SALESFORCE_CDC_OUTCOMES),
+            "entity": _bounded(entity, _SALESFORCE_CDC_ENTITIES),
+            "reason": _bounded(reason, _SALESFORCE_CDC_REASONS),
+        },
+    )
+
+
+def record_salesforce_cdc_reconnect_delay(delay_seconds: float, *, reason: str) -> None:
+    """Observe bounded reconnect delay without endpoint or tenant labels."""
+    _ensure_salesforce_cdc_instruments()
+    _SALESFORCE_CDC_RECONNECT_DELAY.record(
+        max(delay_seconds, 0.0), {"reason": _bounded(reason, _SALESFORCE_CDC_REASONS)}
+    )
+
+
+def record_salesforce_cdc_repair(outcome: str, *, reason: str) -> None:
+    """Count aggregate repair lifecycle outcomes."""
+    _ensure_salesforce_cdc_instruments()
+    _SALESFORCE_CDC_REPAIR_COUNT.add(
+        1,
+        {
+            "outcome": _bounded(outcome, _SALESFORCE_CDC_OUTCOMES),
+            "reason": _bounded(reason, _SALESFORCE_CDC_REASONS),
+        },
+    )
+
+
+def record_salesforce_cdc_capacity(count: int, *, outcome: str) -> None:
+    """Observe desired, running, or overflow integration counts."""
+    _ensure_salesforce_cdc_instruments()
+    _SALESFORCE_CDC_CAPACITY_COUNT.record(
+        max(count, 0), {"outcome": _bounded(outcome, _SALESFORCE_CDC_OUTCOMES)}
+    )
+
+
 __all__ = [
     "record_agent_run_delivery",
     "record_agent_run_delivery_recovery",
@@ -433,6 +584,12 @@ __all__ = [
     "record_celery_task_memory",
     "record_celery_task_run",
     "record_http_server_request",
+    "record_salesforce_cdc_capacity",
+    "record_salesforce_cdc_connection",
+    "record_salesforce_cdc_event",
+    "record_salesforce_cdc_reconnect_delay",
+    "record_salesforce_cdc_record",
+    "record_salesforce_cdc_repair",
     "record_whatsapp_durable_job",
     "record_whatsapp_enqueue",
     "record_whatsapp_inbound",

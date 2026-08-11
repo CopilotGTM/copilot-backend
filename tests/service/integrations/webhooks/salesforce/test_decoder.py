@@ -64,6 +64,42 @@ def test_decode_salesforce_change_event_accepts_account_ids() -> None:
 
     assert event.record_ids == ("001xx0000000001AAA",)
     assert event.change_type == "UPDATE"
+    assert event.entity_name == "Account"
+
+
+def test_decode_aggregate_change_event_uses_header_entity_name() -> None:
+    event = decode_salesforce_change_event(
+        replay_id=b"\x00\x01",
+        schema_id="schema-1",
+        payload={
+            "ChangeEventHeader": {
+                "entityName": "Opportunity",
+                "recordIds": ["006xx0000000001AAA"],
+                "changeType": "UPDATE",
+            }
+        },
+        object_name=None,
+        id_prefix=None,
+    )
+
+    assert event.entity_name == "Opportunity"
+    assert event.record_ids == ("006xx0000000001AAA",)
+
+
+def test_decode_aggregate_change_event_requires_entity_name() -> None:
+    with pytest.raises(ValueError, match="has no entity name"):
+        decode_salesforce_change_event(
+            replay_id=b"\x00\x01",
+            schema_id="schema-1",
+            payload={
+                "ChangeEventHeader": {
+                    "recordIds": ["006xx0000000001AAA"],
+                    "changeType": "UPDATE",
+                }
+            },
+            object_name=None,
+            id_prefix=None,
+        )
 
 
 def test_decode_salesforce_change_event_accepts_contact_ids() -> None:
