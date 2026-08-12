@@ -17,6 +17,7 @@ configure_logging(component=resolve_celery_component("integrations_worker"))
 
 # Redis connection pool management
 from src.infra.messaging.redis_client import close_redis_pool, initialize_redis_pool
+from src.infra.utils.async_runner import start_shared_loop, stop_shared_loop
 from src.infra.utils.logger import get_logger
 from src.workers.base.celery_base import create_celery_app
 from src.workers.integrations_worker.config import IntegrationsWorkerConfig
@@ -35,7 +36,7 @@ WORKER_COMPONENT = resolve_celery_component(app.main)
 
 
 def _is_current_worker_signal(sender) -> bool:
-    return getattr(getattr(sender, "app", None), "main", None) == app.main
+    return bool(getattr(getattr(sender, "app", None), "main", None) == app.main)
 
 
 @worker_ready.connect
@@ -48,6 +49,9 @@ def worker_ready_handler(sender=None, **kwargs):
         "Integrations worker starting",
         extra={"event": "worker_starting", "worker_component": WORKER_COMPONENT},
     )
+    # Celery threads submit all async database and provider work to this one
+    # loop, keeping loop-bound pools safe while independent I/O overlaps.
+    start_shared_loop()
     initialize_redis_pool()
     logger.info(
         "Integrations worker ready",
@@ -76,6 +80,10 @@ def worker_shutdown_handler(sender=None, **kwargs):
             "Failed to close Redis connection pool",
             extra={"event": "redis_pool_close_failed", "worker_component": WORKER_COMPONENT},
         )
+    finally:
+        # Celery has drained task threads before this process-level signal. Stop
+        # the loop last so coroutine cleanup can still use its owning loop.
+        stop_shared_loop()
 
 
 # Explicitly import active task modules to ensure registration.

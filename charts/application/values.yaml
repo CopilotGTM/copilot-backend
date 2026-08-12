@@ -398,7 +398,12 @@ integrations-worker:
   config:
     queueName: "integrations"
     additionalQueues: ["integrations_priority", "integrations_streaming"]
-    concurrency: 8  # Reduced from 20 to prevent OOM
+    concurrency: 4
+    pool: threads
+    gracefulTimeout: 7270
+  probes:
+    livenessMode: heartbeat
+    heartbeatPath: /tmp/worker-asyncio-loop-heartbeat
   # Use shared ServiceAccount (created by knowledge-extract-worker)
   serviceAccount:
     create: false
@@ -417,6 +422,8 @@ integrations-worker:
     queueLength: 5
     scaleDownDelay: 240
     scaleUpDelay: 10
+  shutdown:
+    gracefulPeriodSeconds: 7270
 
 # One process owns every aggregate Salesforce CDC stream; capacity is fixed at seven.
 salesforce-cdc-worker:
@@ -517,7 +524,11 @@ deal-worker:
   config:
     queueName: "deal"
     concurrency: 4
-    gracefulTimeout: 540  # 9 minutes for long-running deal processing
+    pool: threads
+    gracefulTimeout: 3310
+  probes:
+    livenessMode: heartbeat
+    heartbeatPath: /tmp/worker-asyncio-loop-heartbeat
   # Use shared ServiceAccount (created by knowledge-extract-worker)
   serviceAccount:
     create: false
@@ -536,6 +547,8 @@ deal-worker:
     queueLength: 3
     scaleDownDelay: 300
     scaleUpDelay: 10
+  shutdown:
+    gracefulPeriodSeconds: 3310
 
 # Deal Insights Worker (isolates slower AI/LLM jobs from interactive deal hydration)
 deal-insights-worker:
@@ -547,8 +560,12 @@ deal-insights-worker:
     pullPolicy: IfNotPresent
   config:
     queueName: "deal_jobs"
-    concurrency: 1
-    gracefulTimeout: 540
+    concurrency: 2
+    pool: threads
+    gracefulTimeout: 670
+  probes:
+    livenessMode: heartbeat
+    heartbeatPath: /tmp/worker-asyncio-loop-heartbeat
   serviceAccount:
     create: false
     name: "copilot-workers"
@@ -566,6 +583,8 @@ deal-insights-worker:
     queueLength: 3
     scaleDownDelay: 300
     scaleUpDelay: 10
+  shutdown:
+    gracefulPeriodSeconds: 670
 
 dealCronJobs:
   enabled: true

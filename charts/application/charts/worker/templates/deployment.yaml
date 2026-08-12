@@ -151,7 +151,7 @@ spec:
                 - -c
                 {{- if $heartbeatLiveness }}
                 - >-
-                  python -c 'import os,sys,time; path="/tmp/celery-worker-heartbeat"; sys.exit(not os.path.exists(path) or time.time() - os.path.getmtime(path) > {{ .Values.probes.heartbeatMaxAgeSeconds | default 120 }})'
+                  python -c 'import os,sys,time; path={{ .Values.probes.heartbeatPath | default "/tmp/celery-worker-heartbeat" | quote }}; sys.exit(not os.path.exists(path) or time.time() - os.path.getmtime(path) > {{ .Values.probes.heartbeatMaxAgeSeconds | default 120 }})'
                 {{- else }}
                 - >-
                   celery -A {{ $workerApp }} inspect ping --destination "celery@$HOSTNAME" --timeout={{ .Values.probes.timeoutSeconds | default 10 }} >/dev/null

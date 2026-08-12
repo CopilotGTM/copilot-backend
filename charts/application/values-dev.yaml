@@ -142,7 +142,7 @@ chat-beat:
 integrations-worker:
   # 2026-08-12 live usage: 532m CPU and 490Mi memory; limits retain burst headroom.
   config:
-    concurrency: 1
+    concurrency: 4
   autoscaling:
     minReplicas: 1
     maxReplicas: 1
@@ -183,7 +183,7 @@ knowledgeCronJobs:
 deal-worker:
   # Scale from zero on queued deal work so idle Dev can fit on one node.
   config:
-    concurrency: 1
+    concurrency: 4
   autoscaling:
     minReplicas: 0
     maxReplicas: 1
@@ -194,7 +194,7 @@ deal-worker:
 
 deal-insights-worker:
   config:
-    concurrency: 1
+    concurrency: 2
   autoscaling:
     minReplicas: 0
     maxReplicas: 1
