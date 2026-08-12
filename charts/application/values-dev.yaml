@@ -140,7 +140,7 @@ chat-beat:
       memory: "512Mi"
 
 integrations-worker:
-  # 2026-07-27 live usage: 393m CPU and 530Mi memory; retain burst headroom.
+  # 2026-08-12 live usage: 532m CPU and 490Mi memory; limits retain burst headroom.
   config:
     concurrency: 1
   autoscaling:
@@ -148,8 +148,8 @@ integrations-worker:
     maxReplicas: 1
   resources:
     requests:
-      cpu: "250m"
-      memory: "1Gi"
+      cpu: "100m"
+      memory: "640Mi"
     limits:
       cpu: "2000m"
       memory: "2Gi"
@@ -181,11 +181,11 @@ knowledgeCronJobs:
   jobs: []
 
 deal-worker:
-  # 2026-07-27 live usage: 501Mi; keep headroom without reserving a full GiB.
+  # Scale from zero on queued deal work so idle Dev can fit on one node.
   config:
     concurrency: 1
   autoscaling:
-    minReplicas: 1
+    minReplicas: 0
     maxReplicas: 1
   resources:
     requests:
@@ -196,7 +196,7 @@ deal-insights-worker:
   config:
     concurrency: 1
   autoscaling:
-    minReplicas: 1
+    minReplicas: 0
     maxReplicas: 1
   resources:
     requests:
