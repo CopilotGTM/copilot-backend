@@ -426,7 +426,8 @@ services:
     command: >
       celery -A src.workers.integrations_worker.celery_app worker
       --queues=integrations,integrations_priority,integrations_streaming
-      --concurrency=8
+      --concurrency=4
+      --pool=threads
       --loglevel=info
       --hostname=integrations@%h
     environment:
@@ -449,6 +450,7 @@ services:
     networks:
       - copilot-network
     profiles: ["integrations"]
+
   # # ---------------------------------------------------------------------------
   # # Integrations Beat Scheduler
   # # ---------------------------------------------------------------------------
@@ -502,10 +504,47 @@ services:
       - 8.8.4.4
     command: >
       celery -A src.workers.deal_worker.celery_app worker
-      --queues=deal,deal_jobs
+      --queues=deal
       --concurrency=4
+      --pool=threads
       --loglevel=info
       --hostname=deal@%h
+    environment:
+      - ENV=local
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_SSL=false
+      - REDIS_SSL_CERT_REQS=none
+      - REDIS_PASSWORD=
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    env_file:
+      - .env
+    volumes:
+      - azure-data:/home/appuser/.azure
+      - ./src:/app/src:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - copilot-network
+    profiles: ["deal"]
+
+  # Isolate expensive insight generation from latency-sensitive deal tasks.
+  deal-insights-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+      target: light-worker
+    container_name: copilot-deal-insights-worker
+    <<: *worker-service
+    command: >
+      celery -A src.workers.deal_worker.celery_app worker
+      --queues=deal_jobs
+      --concurrency=2
+      --pool=threads
+      --loglevel=info
+      --hostname=deal-insights@%h
     environment:
       - ENV=local
       - REDIS_HOST=redis

@@ -314,6 +314,32 @@ def test_deal_and_knowledge_beat_deployments_are_disabled() -> None:
     assert "copilot-backend-knowledge-beat" not in deployment_names
 
 
+def test_threaded_workers_can_drain_their_longest_cooperative_deadline() -> None:
+    manifests = _render_all_manifests("charts/application/values-prod.yaml")
+    deployments = {
+        doc["metadata"]["name"]: doc for doc in manifests if doc.get("kind") == "Deployment"
+    }
+
+    assert (
+        deployments["copilot-backend-integrations-worker"]["spec"]["template"]["spec"][
+            "terminationGracePeriodSeconds"
+        ]
+        >= 7270
+    )
+    assert (
+        deployments["copilot-backend-deal-worker"]["spec"]["template"]["spec"][
+            "terminationGracePeriodSeconds"
+        ]
+        >= 3310
+    )
+    assert (
+        deployments["copilot-backend-deal-insights-worker"]["spec"]["template"]["spec"][
+            "terminationGracePeriodSeconds"
+        ]
+        >= 670
+    )
+
+
 def test_chat_worker_scaledobject_watches_all_consumed_queues() -> None:
     """Scale chat workers on user messages, reminders, voice, and attachment work."""
     manifests = _render_all_manifests()
@@ -361,8 +387,8 @@ def test_chat_worker_renders_ten_async_compatible_slots() -> None:
         assert not any("per-child" in argument for argument in container["command"])
 
 
-def test_prod_integrations_and_deal_workers_render_measured_limits() -> None:
-    """Lock the measured prod capacity without increasing the riskier deal worker."""
+def test_prod_integrations_and_deal_workers_render_async_slots() -> None:
+    """I/O workers must use bounded threads while preserving measured resources."""
     manifests = _render_all_manifests("charts/application/values-prod.yaml")
     deal_deployment = next(
         doc
@@ -381,7 +407,11 @@ def test_prod_integrations_and_deal_workers_render_measured_limits() -> None:
         for doc in manifests
         if doc.get("kind") == "Deployment"
         and doc["metadata"]["name"]
-        in {"copilot-backend-integrations-worker", "copilot-backend-deal-worker"}
+        in {
+            "copilot-backend-integrations-worker",
+            "copilot-backend-deal-worker",
+            "copilot-backend-deal-insights-worker",
+        }
     }
 
     integrations_command = commands["copilot-backend-integrations-worker"]
@@ -391,13 +421,17 @@ def test_prod_integrations_and_deal_workers_render_measured_limits() -> None:
         if doc.get("kind") == "Deployment"
         and doc["metadata"]["name"] == "copilot-backend-integrations-worker"
     )
-    assert "--concurrency=2" in integrations_command
-    assert "--max-tasks-per-child=50" in integrations_command
+    assert "--concurrency=4" in integrations_command
+    assert "--pool=threads" in integrations_command
+    assert not any("per-child" in argument for argument in integrations_command)
     assert integrations_deployment["spec"]["template"]["spec"]["containers"][0]["resources"] == {
         "requests": {"cpu": "500m", "memory": "1Gi"},
         "limits": {"cpu": "1000m", "memory": "2Gi"},
     }
-    assert "--concurrency=1" in commands["copilot-backend-deal-worker"]
+    assert "--concurrency=4" in commands["copilot-backend-deal-worker"]
+    assert "--pool=threads" in commands["copilot-backend-deal-worker"]
+    assert "--concurrency=2" in commands["copilot-backend-deal-insights-worker"]
+    assert "--pool=threads" in commands["copilot-backend-deal-insights-worker"]
     assert deal_deployment["spec"]["template"]["spec"]["containers"][0]["resources"] == {
         "requests": {"cpu": "500m", "memory": "1Gi"},
         "limits": {"cpu": "1500m", "memory": "2Gi"},
@@ -443,13 +477,13 @@ def test_dev_integrations_worker_renders_measured_resources() -> None:
     )
 
     assert deployment["spec"]["template"]["spec"]["containers"][0]["resources"] == {
-        "requests": {"cpu": "250m", "memory": "1Gi"},
+        "requests": {"cpu": "100m", "memory": "640Mi"},
         "limits": {"cpu": "2000m", "memory": "2Gi"},
     }
 
 
 def test_prod_keeps_two_interactive_deal_workers_warm() -> None:
-    """Interactive deal hydration gets two isolated slots without pod-local concurrency."""
+    """Two warm pods each expose four I/O slots for interactive hydration."""
     manifests = _render_all_manifests("charts/application/values-prod.yaml")
     scaler = next(
         doc
@@ -466,7 +500,9 @@ def test_prod_keeps_two_interactive_deal_workers_warm() -> None:
 
     assert scaler["spec"]["minReplicaCount"] == 2
     assert scaler["spec"]["maxReplicaCount"] == 2
-    assert "--concurrency=1" in deployment["spec"]["template"]["spec"]["containers"][0]["command"]
+    command = deployment["spec"]["template"]["spec"]["containers"][0]["command"]
+    assert "--concurrency=4" in command
+    assert "--pool=threads" in command
 
 
 def test_deal_and_insight_queues_have_separate_workers() -> None:
@@ -529,8 +565,18 @@ def test_worker_deployments_render_celery_events_and_health_probes() -> None:
         assert container["readinessProbe"]["timeoutSeconds"] >= 20, name
         assert container["readinessProbe"]["failureThreshold"] >= 3, name
 
-        if name == "copilot-backend-chat-worker":
-            assert "celery-worker-heartbeat" in joined_liveness
+        if name in {
+            "copilot-backend-chat-worker",
+            "copilot-backend-deal-insights-worker",
+            "copilot-backend-deal-worker",
+            "copilot-backend-integrations-worker",
+        }:
+            heartbeat_name = (
+                "celery-worker-heartbeat"
+                if name == "copilot-backend-chat-worker"
+                else "worker-asyncio-loop-heartbeat"
+            )
+            assert heartbeat_name in joined_liveness
             assert "inspect ping" not in joined_liveness
             assert container["livenessProbe"]["timeoutSeconds"] == 5
             assert "src.workers.base.healthcheck_app:app" in joined_readiness
@@ -576,8 +622,8 @@ def test_api_secret_renders_sentry_settings_for_dev() -> None:
     assert base64.b64decode(secret["data"]["SENTRY_TRACES_SAMPLE_RATE"]).decode() == "0.2"
 
 
-def test_integrations_worker_values_consume_salesforce_streaming_queue() -> None:
-    """Assert Salesforce CDC tasks are routed to a queue the integrations worker consumes."""
+def test_does_not_add_a_second_salesforce_cdc_worker() -> None:
+    """The existing shared CDC worker remains the only CDC deployment."""
     values = yaml.safe_load(
         (REPO_ROOT / "charts" / "application" / "values.yaml").read_text(encoding="utf-8")
     )
@@ -587,3 +633,4 @@ def test_integrations_worker_values_consume_salesforce_streaming_queue() -> None
     assert worker_config["queueName"] == "integrations"
     assert "integrations_priority" in worker_config["additionalQueues"]
     assert "integrations_streaming" in worker_config["additionalQueues"]
+    assert "salesforce-cdc-legacy-worker" not in values

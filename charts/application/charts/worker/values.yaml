@@ -63,6 +63,7 @@ probes:
   readinessCommand: []
   # heartbeat avoids restarting a live worker merely because Redis control traffic is slow.
   livenessMode: celeryPing
+  heartbeatPath: /tmp/celery-worker-heartbeat
   heartbeatMaxAgeSeconds: 120
   livenessTimeoutSeconds: 5
   initialDelaySeconds: 60

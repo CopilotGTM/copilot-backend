@@ -9,10 +9,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import threading
+import time
 from collections.abc import Coroutine
+from dataclasses import dataclass
+from pathlib import Path
+from tempfile import gettempdir
 from typing import Any, TypeVar
 
+from celery.exceptions import SoftTimeLimitExceeded
 from src.infra.utils.logger import get_logger
 
 T = TypeVar("T")
@@ -22,6 +28,86 @@ _thread_local = threading.local()
 _shared_loop: asyncio.AbstractEventLoop | None = None
 _shared_loop_thread: threading.Thread | None = None
 _shared_loop_lock = threading.Lock()
+_shared_loop_state_lock = threading.Lock()
+_shared_loop_last_tick_monotonic = 0.0
+_shared_loop_active_coroutines = 0
+
+_SHARED_LOOP_TICK_SECONDS = 0.1
+_CANCELLATION_GRACE_SECONDS = 5.0
+_SHARED_LOOP_HEARTBEAT_PATH = Path(gettempdir()) / "worker-asyncio-loop-heartbeat"
+
+
+class WorkerAsyncTimeoutError(SoftTimeLimitExceeded, TimeoutError):
+    """Report a cooperative coroutine deadline through existing Celery handlers.
+
+    Integration tasks already distinguish ``SoftTimeLimitExceeded`` from normal
+    provider failures. Inheriting it preserves those retry and history updates
+    when the threads pool cannot deliver Celery's process-signal timeout.
+    """
+
+
+@dataclass(frozen=True)
+class SharedLoopHealth:
+    """Snapshot whether the worker-owned loop is advancing and serving tasks."""
+
+    running: bool
+    active_coroutines: int
+    last_tick_monotonic: float
+
+
+def _record_shared_loop_tick(loop: asyncio.AbstractEventLoop) -> None:
+    """Refresh loop health from the loop thread so blocking work is observable."""
+    global _shared_loop_last_tick_monotonic
+
+    with _shared_loop_state_lock:
+        _shared_loop_last_tick_monotonic = time.monotonic()
+    with contextlib.suppress(OSError):
+        _SHARED_LOOP_HEARTBEAT_PATH.touch()
+
+    if _shared_loop is loop and loop.is_running():
+        loop.call_later(_SHARED_LOOP_TICK_SECONDS, _record_shared_loop_tick, loop)
+
+
+def get_shared_loop_health() -> SharedLoopHealth:
+    """Return thread-safe health state for tests, metrics, and worker probes."""
+    thread = _shared_loop_thread
+    loop = _shared_loop
+    with _shared_loop_state_lock:
+        return SharedLoopHealth(
+            running=bool(
+                loop is not None and loop.is_running() and thread is not None and thread.is_alive()
+            ),
+            active_coroutines=_shared_loop_active_coroutines,
+            last_tick_monotonic=_shared_loop_last_tick_monotonic,
+        )
+
+
+async def _track_shared_coroutine(
+    coro: Coroutine[Any, Any, T],
+    cleanup_finished: threading.Event,
+) -> T:
+    """Track one submitted task until its async cleanup has fully completed."""
+    global _shared_loop_active_coroutines
+
+    with _shared_loop_state_lock:
+        _shared_loop_active_coroutines += 1
+    try:
+        return await coro
+    finally:
+        with _shared_loop_state_lock:
+            _shared_loop_active_coroutines -= 1
+        cleanup_finished.set()
+
+
+def _fail_stop_worker_after_stuck_cancellation() -> None:
+    """Exit without acknowledging work that ignored cooperative cancellation."""
+    logger.critical(
+        "Worker coroutine ignored cancellation; terminating for safe redelivery",
+        extra={"event": "worker_async_cancellation_stuck"},
+    )
+    # A Python thread cannot be killed safely. Fail-stopping the container is
+    # the only way to prevent a late mutation after Celery acknowledges timeout.
+    os._exit(1)
 
 
 def _serve_shared_loop(
@@ -30,6 +116,7 @@ def _serve_shared_loop(
 ) -> None:
     """Run the worker-owned event loop until Celery begins graceful shutdown."""
     asyncio.set_event_loop(loop)
+    loop.call_soon(_record_shared_loop_tick, loop)
     started.set()
     try:
         loop.run_forever()
@@ -90,6 +177,8 @@ def stop_shared_loop() -> None:
         loop.call_soon_threadsafe(loop.stop)
     if thread is not threading.current_thread():
         thread.join(timeout=5)
+    with contextlib.suppress(OSError):
+        _SHARED_LOOP_HEARTBEAT_PATH.unlink()
 
 
 def _clear_async_db_provider_cache(
@@ -155,12 +244,19 @@ def reset_after_fork() -> None:
     fresh asyncpg connections on a child-owned loop.
     """
     global _shared_loop, _shared_loop_thread, _shared_loop_lock
+    global _shared_loop_state_lock
+    global _shared_loop_active_coroutines, _shared_loop_last_tick_monotonic
 
     # Fork copies the parent's "running" loop state but not its owner thread.
     # Drop those references without touching parent-owned resources.
     _shared_loop = None
     _shared_loop_thread = None
     _shared_loop_lock = threading.Lock()
+    # A vanished parent thread may have held either lock at fork time.
+    _shared_loop_state_lock = threading.Lock()
+    with _shared_loop_state_lock:
+        _shared_loop_active_coroutines = 0
+        _shared_loop_last_tick_monotonic = 0.0
 
     _reset_async_db_provider_after_fork()
     _clear_sync_db_provider_cache()
@@ -208,19 +304,61 @@ def _get_or_create_loop() -> asyncio.AbstractEventLoop:
     return loop
 
 
-def run_async(coro: Coroutine[Any, Any, T]) -> T:
+def _resolve_timeout_seconds(timeout_seconds: float | None) -> float | None:
+    """Resolve an explicit deadline or the current Celery task's soft limit."""
+    if timeout_seconds is not None:
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        return timeout_seconds
+
+    try:
+        from celery import current_task
+
+        task = current_task
+        request_limits = getattr(getattr(task, "request", None), "timelimit", None)
+        soft_limit = request_limits[1] if request_limits else None
+        soft_limit = soft_limit or getattr(task, "soft_time_limit", None)
+        return float(soft_limit) if soft_limit else None
+    except (AttributeError, IndexError, TypeError, ValueError):
+        return None
+
+
+def run_async(
+    coro: Coroutine[Any, Any, T],
+    *,
+    timeout_seconds: float | None = None,
+) -> T:
     """Run an async coroutine on the configured worker event loop.
 
     Threaded workers submit to one explicitly started shared loop so async
     connection pools keep one owner. Other callers retain the persistent
     thread-local loop used by solo and prefork workers.
     """
+    timeout_seconds = _resolve_timeout_seconds(timeout_seconds)
     shared_loop = _shared_loop
     if shared_loop is not None and shared_loop.is_running():
         if threading.current_thread() is _shared_loop_thread:
             coro.close()
             raise RuntimeError("run_async() cannot block the shared event-loop thread")
-        return asyncio.run_coroutine_threadsafe(coro, shared_loop).result()
+        cleanup_finished = threading.Event()
+        future = asyncio.run_coroutine_threadsafe(
+            _track_shared_coroutine(coro, cleanup_finished),
+            shared_loop,
+        )
+        try:
+            return future.result(timeout=timeout_seconds)
+        except TimeoutError as exc:
+            # A provider may raise TimeoutError itself. Only cancel when the
+            # Future is still running, which means our wait deadline expired.
+            if future.done():
+                raise
+            future.cancel()
+            if not cleanup_finished.wait(timeout=_CANCELLATION_GRACE_SECONDS):
+                _fail_stop_worker_after_stuck_cancellation()
+                raise RuntimeError("Worker fail-stop returned unexpectedly") from exc
+            raise WorkerAsyncTimeoutError(
+                f"Worker coroutine exceeded {timeout_seconds:.3f} seconds"
+            ) from exc
 
     loop = _get_or_create_loop()
 
@@ -228,7 +366,19 @@ def run_async(coro: Coroutine[Any, Any, T]) -> T:
         raise RuntimeError("run_async() cannot be called while the event loop is running")
 
     try:
-        return loop.run_until_complete(coro)
+        if timeout_seconds is None:
+            return loop.run_until_complete(coro)
+        task = loop.create_task(coro)
+        try:
+            return loop.run_until_complete(asyncio.wait_for(task, timeout_seconds))
+        except TimeoutError as exc:
+            # wait_for cancels its child only when its own deadline expires. A
+            # completed child raising TimeoutError is a provider-level failure.
+            if not task.cancelled():
+                raise
+            raise WorkerAsyncTimeoutError(
+                f"Worker coroutine exceeded {timeout_seconds:.3f} seconds"
+            ) from exc
     except RuntimeError as e:
         # Common failure mode in Celery workers on Windows: asyncpg connections
         # (or SQLAlchemy async engines/pools) were created on a different event loop
@@ -261,6 +411,9 @@ def run_async(coro: Coroutine[Any, Any, T]) -> T:
 
 
 __all__ = [
+    "SharedLoopHealth",
+    "WorkerAsyncTimeoutError",
+    "get_shared_loop_health",
     "run_async",
     "start_shared_loop",
     "stop_shared_loop",
