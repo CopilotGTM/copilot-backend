@@ -102,6 +102,8 @@ async def test_readiness_and_causation_queries_are_tenant_scoped() -> None:
     assert "public.users.organisation_id" in user_sql
     assert "public.users.status" in user_sql
     assert "public.users.admin_status" in user_sql
+    assert "cast(public.users.status as varchar)" in user_sql
+    assert "cast(public.users.admin_status as varchar)" in user_sql
     assert "agent_runs.organisation_id" in causation_sql
     assert "with recursive" in causation_sql
 
@@ -117,6 +119,8 @@ async def test_crm_principal_identity_query_is_tenant_scoped_and_active_only() -
     assert "public.users.organisation_id" in statement
     assert "public.users.status" in statement
     assert "public.users.admin_status" in statement
+    assert "cast(public.users.status as varchar)" in statement
+    assert "cast(public.users.admin_status as varchar)" in statement
     assert "crm_users.organisation_id" in statement
     assert "crm_users.is_deleted is false" in statement
 

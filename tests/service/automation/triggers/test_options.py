@@ -187,6 +187,8 @@ async def test_manual_and_schedule_record_access_use_the_same_crm_identity_mappi
     statement = sql(session.statements[0])
     assert "crm_users.user_id" in statement
     assert "public.users.email" in statement
+    assert "cast(public.users.status as varchar)" in statement
+    assert "cast(public.users.admin_status as varchar)" in statement
     assert "crm_deals.owner_id in" in statement
     assert "crm_deals.created_by_user_id in" in statement
 

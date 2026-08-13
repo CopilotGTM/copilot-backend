@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import and_, func, literal, or_, select, update
+from sqlalchemy import String, and_, func, literal, or_, select, update
+from sqlalchemy import cast as sa_cast
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.master_tables import (
@@ -97,8 +98,8 @@ class TriggerActivationAccess:
         statement = select(columns.user_id).where(
             columns.organisation_id == self.organisation_id,
             columns.user_id.in_(user_ids),
-            columns.status == SupabaseUserStatus.ACTIVE.value,
-            columns.admin_status == AdminUserStatus.APPROVED.value,
+            sa_cast(columns.status, String) == SupabaseUserStatus.ACTIVE.value,
+            sa_cast(columns.admin_status, String) == AdminUserStatus.APPROVED.value,
         )
         return set((await self.session.execute(statement)).scalars().all())
 
@@ -137,8 +138,8 @@ class TriggerActivationAccess:
             .where(
                 user_columns.organisation_id == self.organisation_id,
                 user_columns.user_id.in_(principal_ids),
-                user_columns.status == SupabaseUserStatus.ACTIVE.value,
-                user_columns.admin_status == AdminUserStatus.APPROVED.value,
+                sa_cast(user_columns.status, String) == SupabaseUserStatus.ACTIVE.value,
+                sa_cast(user_columns.admin_status, String) == AdminUserStatus.APPROVED.value,
             )
         )
         mapped: dict[UUID, set[UUID]] = {}
@@ -306,8 +307,8 @@ class TriggerActivationAccess:
             identities.append(func.lower(func.trim(user_columns.email)).in_(candidate_emails))
         statement = select(user_columns.user_id).where(
             user_columns.organisation_id == self.organisation_id,
-            user_columns.status == SupabaseUserStatus.ACTIVE.value,
-            user_columns.admin_status == AdminUserStatus.APPROVED.value,
+            sa_cast(user_columns.status, String) == SupabaseUserStatus.ACTIVE.value,
+            sa_cast(user_columns.admin_status, String) == AdminUserStatus.APPROVED.value,
             or_(*identities),
         )
         return set((await self.session.execute(statement)).scalars().all())
