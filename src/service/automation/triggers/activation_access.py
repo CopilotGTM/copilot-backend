@@ -6,8 +6,7 @@ from collections.abc import AsyncIterator, Callable
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import String, func, literal, or_, select, update
-from sqlalchemy import cast as sa_cast
+from sqlalchemy import func, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.master_tables import (
@@ -109,8 +108,8 @@ class TriggerActivationAccess:
         statement = select(columns.user_id).where(
             columns.organisation_id == self.organisation_id,
             columns.user_id.in_(user_ids),
-            sa_cast(columns.status, String) == SupabaseUserStatus.ACTIVE.value,
-            sa_cast(columns.admin_status, String) == AdminUserStatus.APPROVED.value,
+            columns.status == SupabaseUserStatus.ACTIVE,
+            columns.admin_status == AdminUserStatus.APPROVED,
         )
         # Users are global identities in the master database. The tenant role must
         # never gain public.users access merely to activate an organisation event.
@@ -131,8 +130,8 @@ class TriggerActivationAccess:
         principal_statement = select(user_columns.user_id, user_columns.email).where(
             user_columns.organisation_id == self.organisation_id,
             user_columns.user_id.in_(principal_ids),
-            sa_cast(user_columns.status, String) == SupabaseUserStatus.ACTIVE.value,
-            sa_cast(user_columns.admin_status, String) == AdminUserStatus.APPROVED.value,
+            user_columns.status == SupabaseUserStatus.ACTIVE,
+            user_columns.admin_status == AdminUserStatus.APPROVED,
         )
         principal_rows = []
         async for master_session in self.master_session_scope():
@@ -331,8 +330,8 @@ class TriggerActivationAccess:
             identities.append(func.lower(func.trim(user_columns.email)).in_(candidate_emails))
         statement = select(user_columns.user_id).where(
             user_columns.organisation_id == self.organisation_id,
-            sa_cast(user_columns.status, String) == SupabaseUserStatus.ACTIVE.value,
-            sa_cast(user_columns.admin_status, String) == AdminUserStatus.APPROVED.value,
+            user_columns.status == SupabaseUserStatus.ACTIVE,
+            user_columns.admin_status == AdminUserStatus.APPROVED,
             or_(*identities),
         )
         # Resolve public user identities with the master role after collecting

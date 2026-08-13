@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy.dialects import postgresql
+from src.domain.models.master_tables import AdminUserStatus, SupabaseUserStatus
 from src.domain.models.organisation_tables import (
     AgentRun,
     AutomationAudienceMode,
@@ -79,6 +80,12 @@ def sql(statement: Any) -> str:
     return " ".join(str(statement.compile(dialect=postgresql.dialect())).lower().split())
 
 
+def parameters(statement: Any) -> dict[str, Any]:
+    """Expose bound values so tests can verify PostgreSQL enum serialization."""
+
+    return statement.compile(dialect=postgresql.dialect()).params
+
+
 @pytest.mark.asyncio
 async def test_candidate_queries_use_event_array_direct_identity_and_active_status() -> None:
     """Verify the contract that candidate queries use event array direct identity and active status."""
@@ -114,15 +121,18 @@ async def test_readiness_and_causation_queries_are_tenant_scoped() -> None:
     await access.list_causation_trigger_ids(uuid4())
 
     agent_sql, causation_sql = map(sql, session.statements)
-    [user_sql] = map(sql, master_session.statements)
+    [user_statement] = master_session.statements
+    user_sql = sql(user_statement)
     assert "user_agents.organisation_id" in agent_sql
     assert "user_agents.status" in agent_sql
     assert "user_agents.output_delivery_config" in agent_sql
     assert "public.users.organisation_id" in user_sql
     assert "public.users.status" in user_sql
     assert "public.users.admin_status" in user_sql
-    assert "cast(public.users.status as varchar)" in user_sql
-    assert "cast(public.users.admin_status as varchar)" in user_sql
+    assert "cast(public.users.status as varchar)" not in user_sql
+    assert "cast(public.users.admin_status as varchar)" not in user_sql
+    assert SupabaseUserStatus.ACTIVE in parameters(user_statement).values()
+    assert AdminUserStatus.APPROVED in parameters(user_statement).values()
     assert "agent_runs.organisation_id" in causation_sql
     assert "with recursive" in causation_sql
 
@@ -146,13 +156,16 @@ async def test_crm_principal_identity_query_is_tenant_scoped_and_active_only() -
 
     assert await access.list_crm_user_ids_by_principal({principal_id}) == {}
 
-    [master_statement] = map(sql, master_session.statements)
+    [master_query] = master_session.statements
+    master_statement = sql(master_query)
     [tenant_statement] = map(sql, session.statements)
     assert "public.users.organisation_id" in master_statement
     assert "public.users.status" in master_statement
     assert "public.users.admin_status" in master_statement
-    assert "cast(public.users.status as varchar)" in master_statement
-    assert "cast(public.users.admin_status as varchar)" in master_statement
+    assert "cast(public.users.status as varchar)" not in master_statement
+    assert "cast(public.users.admin_status as varchar)" not in master_statement
+    assert SupabaseUserStatus.ACTIVE in parameters(master_query).values()
+    assert AdminUserStatus.APPROVED in parameters(master_query).values()
     assert "public.users" not in tenant_statement
     assert "crm_users.organisation_id" in tenant_statement
     assert "crm_users.is_deleted is false" in tenant_statement
@@ -284,7 +297,13 @@ async def test_email_subject_participants_resolve_active_tenant_users() -> None:
     assert resolved == set(participant_ids)
     assert all("organisation_id" in sql(statement) for statement in session.statements)
     assert len(session.statements) == 2
-    assert "public.users" in sql(master_session.statements[0])
+    master_query = master_session.statements[0]
+    master_sql = sql(master_query)
+    assert "public.users" in master_sql
+    assert "cast(public.users.status as varchar)" not in master_sql
+    assert "cast(public.users.admin_status as varchar)" not in master_sql
+    assert SupabaseUserStatus.ACTIVE in parameters(master_query).values()
+    assert AdminUserStatus.APPROVED in parameters(master_query).values()
 
 
 @pytest.mark.asyncio
