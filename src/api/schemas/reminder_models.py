@@ -8,15 +8,11 @@ from fastapi import Query
 from pydantic import BaseModel, Field
 from src.contracts.reminders import (
     VALID_DELIVERY_CHANNELS,
-    AgentCreateRequest,
-    AgentUpdateRequest,
-    ReminderCreateRequest,
     ReminderDetail,
     ReminderHistoryResponse,
     ReminderListItem,
     ReminderListResponse,
     ReminderRunListItem,
-    ReminderUpdateRequest,
     StaticReminderCreateRequest,
     StaticReminderUpdateRequest,
 )
@@ -60,11 +56,8 @@ class AvailableChannelsResponse(BaseModel):
 
 
 __all__ = [
-    "AgentCreateRequest",
-    "AgentUpdateRequest",
     "AvailableChannelsResponse",
     "DeliveryChannelInfo",
-    "ReminderCreateRequest",
     "ReminderDetail",
     "ReminderHistoryQueryParams",
     "ReminderHistoryResponse",
@@ -72,7 +65,6 @@ __all__ = [
     "ReminderListQueryParams",
     "ReminderListResponse",
     "ReminderRunListItem",
-    "ReminderUpdateRequest",
     "StaticReminderCreateRequest",
     "StaticReminderUpdateRequest",
     "VALID_DELIVERY_CHANNELS",

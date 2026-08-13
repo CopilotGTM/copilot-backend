@@ -17,49 +17,6 @@ from src.domain.models.organisation_tables.reminder_models import (
 VALID_DELIVERY_CHANNELS = {"teams", "slack", "whatsapp"}
 
 
-class ReminderCreateRequest(BaseModel):
-    """Request model for creating a reminder."""
-
-    title: str = Field(..., max_length=255, description="Short label for the reminder")
-    reminder_type: ReminderType = Field(..., description="'static' or 'agentic'")
-    message_content: str | None = Field(
-        None, description="Text to deliver (required for static reminders)"
-    )
-    agent_prompt: str | None = Field(
-        None, description="AI instruction to execute (required for agentic reminders)"
-    )
-    deal_id: UUID | None = Field(None, description="Deal scope for agentic reminders")
-    trigger_time: datetime = Field(..., description="When to fire, ISO 8601 with timezone")
-    timezone: str = Field(..., max_length=50, description="IANA timezone, e.g. 'Asia/Kolkata'")
-    recurrence: ReminderRecurrence = Field(
-        default=ReminderRecurrence.NONE, description="Recurrence pattern"
-    )
-    recurrence_end_at: datetime | None = Field(
-        None, description="Stop recurring after this UTC datetime"
-    )
-    delivery_channel: str = Field(
-        ..., description="Where to deliver: 'teams', 'slack', or 'whatsapp'"
-    )
-
-    @model_validator(mode="after")
-    def validate_type_content(self) -> ReminderCreateRequest:
-        if self.reminder_type == ReminderType.STATIC:
-            if not self.message_content:
-                msg = "message_content is required for static reminders"
-                raise ValueError(msg)
-        elif self.reminder_type == ReminderType.AGENTIC:
-            if not self.agent_prompt:
-                msg = "agent_prompt is required for agentic reminders"
-                raise ValueError(msg)
-            if self.deal_id is None:
-                msg = "deal_id is required for agentic reminders"
-                raise ValueError(msg)
-        if self.delivery_channel not in VALID_DELIVERY_CHANNELS:
-            msg = f"delivery_channel must be one of: {', '.join(sorted(VALID_DELIVERY_CHANNELS))}"
-            raise ValueError(msg)
-        return self
-
-
 class StaticReminderCreateRequest(BaseModel):
     """Request model for creating a static reminder from the user API."""
 
@@ -81,56 +38,8 @@ class StaticReminderCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_channel(self) -> StaticReminderCreateRequest:
+        """Reject delivery channels that the reminder dispatcher cannot route."""
         if self.delivery_channel not in VALID_DELIVERY_CHANNELS:
-            msg = f"delivery_channel must be one of: {', '.join(sorted(VALID_DELIVERY_CHANNELS))}"
-            raise ValueError(msg)
-        return self
-
-
-class AgentCreateRequest(BaseModel):
-    """Request model for creating a scheduled agent from the user API."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    title: str = Field(..., max_length=255, description="Short label for the scheduled agent")
-    agent_prompt: str = Field(..., description="AI instruction to execute when the agent fires")
-    deal_id: UUID = Field(..., description="Deal scope for the scheduled agent")
-    trigger_time: datetime = Field(..., description="When to fire, ISO 8601 with timezone")
-    timezone: str = Field(..., max_length=50, description="IANA timezone, e.g. 'Asia/Kolkata'")
-    recurrence: ReminderRecurrence = Field(
-        default=ReminderRecurrence.NONE, description="Recurrence pattern"
-    )
-    recurrence_end_at: datetime | None = Field(
-        None, description="Stop recurring after this UTC datetime"
-    )
-    delivery_channel: str = Field(
-        ..., description="Where to deliver: 'teams', 'slack', or 'whatsapp'"
-    )
-
-    @model_validator(mode="after")
-    def validate_channel(self) -> AgentCreateRequest:
-        if self.delivery_channel not in VALID_DELIVERY_CHANNELS:
-            msg = f"delivery_channel must be one of: {', '.join(sorted(VALID_DELIVERY_CHANNELS))}"
-            raise ValueError(msg)
-        return self
-
-
-class ReminderUpdateRequest(BaseModel):
-    """Request model for updating a reminder. All fields optional."""
-
-    title: str | None = Field(None, max_length=255)
-    message_content: str | None = None
-    agent_prompt: str | None = None
-    deal_id: UUID | None = None
-    trigger_time: datetime | None = None
-    timezone: str | None = Field(None, max_length=50)
-    recurrence: ReminderRecurrence | None = None
-    recurrence_end_at: datetime | None = None
-    delivery_channel: str | None = None
-
-    @model_validator(mode="after")
-    def validate_channel(self) -> ReminderUpdateRequest:
-        if self.delivery_channel and self.delivery_channel not in VALID_DELIVERY_CHANNELS:
             msg = f"delivery_channel must be one of: {', '.join(sorted(VALID_DELIVERY_CHANNELS))}"
             raise ValueError(msg)
         return self
@@ -151,31 +60,7 @@ class StaticReminderUpdateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_channel(self) -> StaticReminderUpdateRequest:
-        if self.delivery_channel and self.delivery_channel not in VALID_DELIVERY_CHANNELS:
-            msg = f"delivery_channel must be one of: {', '.join(sorted(VALID_DELIVERY_CHANNELS))}"
-            raise ValueError(msg)
-        return self
-
-
-class AgentUpdateRequest(BaseModel):
-    """Request model for updating scheduled agent fields from the user API."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    title: str | None = Field(None, max_length=255)
-    agent_prompt: str | None = None
-    deal_id: UUID | None = None
-    trigger_time: datetime | None = None
-    timezone: str | None = Field(None, max_length=50)
-    recurrence: ReminderRecurrence | None = None
-    recurrence_end_at: datetime | None = None
-    delivery_channel: str | None = None
-
-    @model_validator(mode="after")
-    def validate_channel(self) -> AgentUpdateRequest:
-        if "deal_id" in self.model_fields_set and self.deal_id is None:
-            msg = "deal_id cannot be cleared for scheduled agents"
-            raise ValueError(msg)
+        """Reject unsupported delivery channels when an update supplies one."""
         if self.delivery_channel and self.delivery_channel not in VALID_DELIVERY_CHANNELS:
             msg = f"delivery_channel must be one of: {', '.join(sorted(VALID_DELIVERY_CHANNELS))}"
             raise ValueError(msg)

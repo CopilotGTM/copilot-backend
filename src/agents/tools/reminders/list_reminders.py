@@ -1,4 +1,4 @@
-"""List Reminders tool — shows the user's active reminders and scheduled alerts.
+"""List the user's static reminders for GeneralAgent chat workflows.
 
 SECURITY BOUNDARIES (immutable, from context):
 - organisation_id: Prevents cross-org data access
@@ -19,6 +19,7 @@ from sqlmodel import col
 from src.agents.tools.base import execute_with_capabilities
 from src.domain.models.organisation_tables.reminder_models import (
     ReminderStatus,
+    ReminderType,
     UserReminder,
 )
 
@@ -56,6 +57,7 @@ async def list_reminders(
             .where(
                 col(UserReminder.organisation_id) == organisation_id,
                 col(UserReminder.user_id) == user_id,
+                col(UserReminder.reminder_type) == ReminderType.STATIC.value,
             )
             .order_by(col(UserReminder.next_trigger_at).asc())
             .limit(effective_limit)
@@ -85,10 +87,7 @@ async def list_reminders(
             "recurrence": r.recurrence,
             "timezone": r.user_timezone,
         }
-        if r.reminder_type == "static":
-            item["message"] = r.message_content
-        elif r.reminder_type == "agentic" and r.agent_config:
-            item["agent_prompt"] = r.agent_config.get("prompt", "")
+        item["message"] = r.message_content
         output.append(item)
 
     return output
@@ -104,10 +103,10 @@ def create_list_reminders(
         include_completed: bool = False,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """List your active reminders and scheduled alerts.
+        """List your active static reminders.
 
-        Use this tool when the user asks to see their reminders, scheduled alerts,
-        or wants to know what notifications they have set up.
+        Use this tool when the user asks to see their reminders or wants to know
+        what notifications they have set up.
 
         Returns a list of reminders with their IDs, titles, trigger times,
         recurrence patterns, and status.

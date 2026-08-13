@@ -170,7 +170,7 @@ class ToolName(str, Enum):
     COMPLETE_DEAL_TASK = "complete_deal_task"
 
     # -------------------------------------------------------------------------
-    # REMINDER TOOLS - For scheduled reminders and agentic alerts
+    # REMINDER TOOLS - For static scheduled reminders
     # Used by: Chat Agent (Teams-channel-only)
     # -------------------------------------------------------------------------
     CREATE_REMINDER = "create_reminder"

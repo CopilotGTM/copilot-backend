@@ -135,6 +135,14 @@ def test_static_reminder_create_request_rejects_agent_fields() -> None:
         )
 
 
+def test_reminder_api_schema_does_not_export_generic_agentic_write_contracts() -> None:
+    """Only static reminder write contracts remain public after legacy Agents removal."""
+    from src.api.schemas import reminder_models
+
+    assert not hasattr(reminder_models, "ReminderCreateRequest")
+    assert not hasattr(reminder_models, "ReminderUpdateRequest")
+
+
 @pytest.mark.asyncio
 async def test_get_available_channels_returns_service_channels(monkeypatch: pytest.MonkeyPatch):
     class FakeOutboundChannelService:

@@ -20,6 +20,7 @@ from sqlmodel import col
 from src.agents.tools.base import execute_with_capabilities
 from src.domain.models.organisation_tables.reminder_models import (
     ReminderStatus,
+    ReminderType,
     UserReminder,
 )
 
@@ -52,6 +53,7 @@ async def cancel_reminder(
             col(UserReminder.reminder_id) == parsed_id,
             col(UserReminder.organisation_id) == organisation_id,
             col(UserReminder.user_id) == user_id,
+            col(UserReminder.reminder_type) == ReminderType.STATIC.value,
         )
         result = await session.execute(stmt)
         reminder = result.scalars().first()
@@ -92,7 +94,7 @@ def create_cancel_reminder(
     async def cancel_reminder_tool(
         reminder_id: str,
     ) -> dict[str, Any]:
-        """Cancel a scheduled reminder or alert by its ID.
+        """Cancel a static reminder by its ID.
 
         Use this tool when the user wants to cancel or delete a reminder.
         First call list_reminders to show the user their active reminders,
