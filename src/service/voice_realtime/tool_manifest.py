@@ -799,10 +799,7 @@ VOICE_REALTIME_BASE_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = 
                         "Do not convert to UTC."
                     ),
                 },
-                "reminder_type": {"type": "string", "enum": ["static", "agentic"]},
                 "message": {"type": "string"},
-                "agent_prompt": {"type": "string"},
-                "deal_id": {"type": "string"},
                 "recurrence": {
                     "type": "string",
                     "enum": ["none", "daily", "weekdays", "weekly", "biweekly", "monthly"],
@@ -815,7 +812,7 @@ VOICE_REALTIME_BASE_TOOL_DEFINITIONS: tuple[VoiceRealtimeToolDefinition, ...] = 
     ),
     VoiceRealtimeToolDefinition(
         tool_name=ToolName.LIST_REMINDERS,
-        description="List the user's active reminders and scheduled alerts.",
+        description="List the user's active reminders.",
         parameters={
             "type": "object",
             "properties": {

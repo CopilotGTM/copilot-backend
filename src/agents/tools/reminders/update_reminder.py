@@ -1,7 +1,7 @@
-"""Update static or agentic reminders from GeneralAgent chat workflows.
+"""Update static reminders from GeneralAgent chat workflows.
 
-One type-aware adapter covers both reminder kinds. Ownership comes from
-``AgentContext`` and the service determines which content fields are legal.
+Ownership comes from ``AgentContext`` and the service enforces the static type
+boundary so legacy scheduled-agent rows are not exposed through this tool.
 """
 
 from __future__ import annotations
@@ -34,10 +34,9 @@ async def update_reminder(
     title: str | None = None,
     trigger_time: str | None = None,
     message: str | None = None,
-    agent_prompt: str | None = None,
     recurrence: str | None = None,
 ) -> dict[str, Any]:
-    """Update a resolved reminder while preserving its static or agentic type.
+    """Update a static reminder owned by the user in ``context``.
 
     Ownership is immutable in ``context``. The reminder ID must come from
     ``list_reminders`` rather than model inference.
@@ -70,19 +69,16 @@ async def update_reminder(
     async with context.acquire_session() as session:
         service = ReminderService(session, context.organisation_id, context.user_id)
         try:
-            existing = await service.get(parsed_reminder_id)
-            reminder_type = ReminderType(existing.reminder_type)
+            await service.get(parsed_reminder_id, reminder_type=ReminderType.STATIC)
             if message is not None:
-                if reminder_type != ReminderType.STATIC:
-                    return {"status": "error", "message": "Agentic reminders use agent_prompt."}
                 updates["message_content"] = _clean_text(message)
-            if agent_prompt is not None:
-                if reminder_type != ReminderType.AGENTIC:
-                    return {"status": "error", "message": "Static reminders use message."}
-                updates["agent_prompt"] = _clean_text(agent_prompt)
             if not updates:
                 return {"status": "error", "message": "Provide a reminder field to update."}
-            detail = await service.update(parsed_reminder_id, updates, reminder_type=reminder_type)
+            detail = await service.update(
+                parsed_reminder_id,
+                updates,
+                reminder_type=ReminderType.STATIC,
+            )
         except ReminderServiceError as exc:
             await session.rollback()
             return {"status": "error", "message": exc.message}
@@ -100,9 +96,6 @@ async def update_reminder(
         "recurrence": detail.recurrence.value,
         "message": f"Updated reminder **{detail.title}**. Reminder ID: {detail.reminder_id}.",
     }
-    if getattr(detail, "deal_id", None):
-        result["deal_id"] = str(detail.deal_id)
-        result["message"] += f" Deal ID: {detail.deal_id}."
     return result
 
 
@@ -117,13 +110,11 @@ def create_update_reminder(
         title: str | None = None,
         trigger_time: str | None = None,
         message: str | None = None,
-        agent_prompt: str | None = None,
         recurrence: str | None = None,
     ) -> dict[str, Any]:
-        """Update a reminder resolved with ``list_reminders``.
+        """Update a static reminder resolved with ``list_reminders``.
 
-        Use ``message`` for static reminders and ``agent_prompt`` for agentic
-        reminders. Send only fields the user explicitly requested.
+        Send only fields the user explicitly requested.
         """
         result = await execute_with_capabilities(
             capabilities_getter(),
@@ -135,7 +126,6 @@ def create_update_reminder(
                 "title": title,
                 "trigger_time": trigger_time,
                 "message": message,
-                "agent_prompt": agent_prompt,
                 "recurrence": recurrence,
             },
             description="Updating reminder",

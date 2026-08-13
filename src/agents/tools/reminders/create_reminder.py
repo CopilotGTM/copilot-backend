@@ -1,12 +1,9 @@
-"""Create Reminder tool — lets the GeneralAgent create a scheduled reminder or agentic alert.
+"""Create static reminders from GeneralAgent chat workflows.
 
 The LLM extracts the user's intent (title, time expression, type) and passes it
 to this tool. The tool resolves the time server-side (hybrid: ISO 8601 first,
 then dateparser for natural language), validates that the user provided a real
 reminder intent, creates an ACTIVE DB row, and schedules it immediately.
-
-The old preview-confirm path remains available as ``create_reminder_form`` for
-legacy cards that were already sent before direct reminder creation existed.
 
 SECURITY BOUNDARIES (immutable, from context):
 - organisation_id: Prevents cross-org data access
@@ -17,26 +14,20 @@ This tool supports Teams, Slack, WhatsApp, Web, and Voice chats.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
-from uuid import UUID
 
-from src.adapters import ChannelPayload
 from src.agents.tools.base import execute_with_capabilities
-from src.agents.tools.crm.access import AgentCRMAccessError, resolve_agent_access_actor
 from src.domain.models.organisation_tables.reminder_models import (
     ReminderRecurrence,
-    ReminderStatus,
     ReminderType,
-    UserReminder,
 )
 from src.infra.database.sessions import acquire_master_async_session
 from src.infra.utils.agent_datetime import parse_agent_datetime
 from src.infra.utils.timezone import resolve_timezone_name
-from src.service.channels import OutboundChannelService, OutboundDeliveryTarget
+from src.service.channels import OutboundChannelService
 from src.service.reminders.reminder_service import ReminderService, ReminderServiceError
 
 if TYPE_CHECKING:
@@ -61,19 +52,6 @@ _GENERIC_REMINDER_TITLES = {
 def _escape_slack_mrkdwn(value: str) -> str:
     """Escape special characters for Slack mrkdwn."""
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
-def _slack_field(label: str, value: Any) -> dict[str, str]:
-    """Build a Slack section field with label + value."""
-    text = _escape_slack_mrkdwn(str(value))
-    return {"type": "mrkdwn", "text": f"*{label}*\n{text}"}
-
-
-def _slack_quote(value: str) -> str:
-    """Render multi-line text as a Slack blockquote."""
-    escaped = _escape_slack_mrkdwn(value)
-    lines = escaped.splitlines() or [escaped]
-    return "\n".join(f"> {line}" if line else ">" for line in lines)
 
 
 def _clean_text(value: str | None) -> str:
@@ -245,143 +223,6 @@ def _resolve_effective_timezone(context: AgentContext, timezone_name: str | None
     )
 
 
-def _build_preview_card(
-    reminder_id: str,
-    organisation_id: str,
-    title: str,
-    reminder_type: str,
-    trigger_dt: datetime,
-    timezone_name: str,
-    recurrence: str,
-    message: str | None,
-    agent_prompt: str | None,
-) -> dict[str, Any]:
-    """Build a read-only Adaptive Card for the user to confirm or cancel."""
-    from zoneinfo import ZoneInfo
-
-    # Format trigger time in user's local timezone
-    try:
-        tz = ZoneInfo(timezone_name)
-        local_time = trigger_dt.astimezone(tz)
-    except (KeyError, ValueError):
-        local_time = trigger_dt
-
-    time_display = local_time.strftime("%b %d, %Y at %I:%M %p %Z")
-    type_label = "Reminder" if reminder_type == "static" else "Scheduled Alert"
-    recurrence_display = recurrence if recurrence != "none" else "One-time"
-
-    # Build card body
-    body: list[dict[str, Any]] = [
-        {
-            "type": "TextBlock",
-            "text": f"📋 {type_label} Preview",
-            "size": "Medium",
-            "weight": "Bolder",
-            "wrap": True,
-        },
-        {
-            "type": "FactSet",
-            "facts": [
-                {"title": "Title", "value": title},
-                {"title": "When", "value": time_display},
-                {"title": "Repeats", "value": recurrence_display},
-                {"title": "Type", "value": type_label},
-            ],
-        },
-    ]
-
-    # Show content preview
-    if reminder_type == "static" and message:
-        body.append(
-            {
-                "type": "TextBlock",
-                "text": f"**Message:** {message}",
-                "wrap": True,
-                "spacing": "Small",
-            }
-        )
-    elif reminder_type == "agentic" and agent_prompt:
-        body.append(
-            {
-                "type": "TextBlock",
-                "text": f"**AI Prompt:** {agent_prompt}",
-                "wrap": True,
-                "spacing": "Small",
-            }
-        )
-
-    body.append(
-        {
-            "type": "TextBlock",
-            "text": "Please confirm or cancel this reminder.",
-            "size": "Small",
-            "isSubtle": True,
-            "wrap": True,
-            "spacing": "Medium",
-        }
-    )
-
-    # Metadata carried in both action paths
-    metadata = {
-        "reminder_id": reminder_id,
-        "organisation_id": organisation_id,
-    }
-
-    # Build actions with Action.Execute + Action.Submit fallback
-    confirm_fallback = {"action": "confirm_reminder_submit", **metadata}
-    confirm_execute = dict(metadata)
-
-    cancel_fallback = {"action": "confirm_reminder_cancel", **metadata}
-    cancel_execute = dict(metadata)
-
-    actions = [
-        {
-            "type": "Action.Execute",
-            "title": "Confirm",
-            "style": "positive",
-            "verb": "confirm_reminder_submit",
-            "data": confirm_execute,
-            "fallback": {
-                "type": "Action.Submit",
-                "title": "Confirm",
-                "style": "positive",
-                "data": confirm_fallback,
-            },
-        },
-        {
-            "type": "Action.Execute",
-            "title": "Cancel",
-            "style": "destructive",
-            "verb": "confirm_reminder_cancel",
-            "data": cancel_execute,
-            "fallback": {
-                "type": "Action.Submit",
-                "title": "Cancel",
-                "style": "destructive",
-                "data": cancel_fallback,
-            },
-        },
-    ]
-
-    card = {
-        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-        "type": "AdaptiveCard",
-        "version": "1.4",
-        "body": body,
-        "actions": actions,
-    }
-
-    return {
-        "text": " ",
-        "attachments": [
-            {
-                "contentType": "application/vnd.microsoft.card.adaptive",
-                "content": card,
-            }
-        ],
-    }
-
-
 def _format_trigger_time(trigger_dt: datetime, timezone_name: str) -> str:
     from zoneinfo import ZoneInfo
 
@@ -392,45 +233,33 @@ def _format_trigger_time(trigger_dt: datetime, timezone_name: str) -> str:
     return local_dt.strftime("%b %d, %Y at %I:%M %p %Z")
 
 
-def _reminder_type_label(reminder_type: ReminderType) -> str:
-    return "Reminder" if reminder_type == ReminderType.STATIC else "Scheduled Alert"
-
-
 def _reminder_created_text(
     *,
     reminder_id: str,
     title: str,
-    reminder_type: ReminderType,
     trigger_time: datetime,
     timezone_name: str,
     recurrence: ReminderRecurrence,
-    deal_id: str | None,
 ) -> str:
-    type_label = _reminder_type_label(reminder_type)
     recurrence_display = recurrence.value if recurrence != ReminderRecurrence.NONE else "One-time"
-    text = (
-        f"{type_label} created: {title}\n"
+    return (
+        f"Reminder created: {title}\n"
         f"Reminder ID: {reminder_id}\n"
         f"When: {_format_trigger_time(trigger_time, timezone_name)}\n"
         f"Repeats: {recurrence_display}"
     )
-    if deal_id:
-        text += f"\nDeal ID: {deal_id}"
-    return text
 
 
 def _reminder_success_facts(
     *,
     reminder_id: str,
     title: str,
-    reminder_type: ReminderType,
     trigger_time: datetime,
     timezone_name: str,
     recurrence: ReminderRecurrence,
     delivery_channel: str,
-    deal_id: str | None,
 ) -> list[dict[str, str]]:
-    facts = [
+    return [
         {"title": "Title", "value": title},
         {"title": "Reminder ID", "value": reminder_id},
         {"title": "When", "value": _format_trigger_time(trigger_time, timezone_name)},
@@ -438,24 +267,19 @@ def _reminder_success_facts(
             "title": "Repeats",
             "value": recurrence.value if recurrence != ReminderRecurrence.NONE else "One-time",
         },
-        {"title": "Type", "value": _reminder_type_label(reminder_type)},
+        {"title": "Type", "value": "Reminder"},
         {"title": "Delivery", "value": delivery_channel.title()},
     ]
-    if deal_id:
-        facts.append({"title": "Deal ID", "value": deal_id})
-    return facts
 
 
 def _build_teams_success_payload(
     *,
     reminder_id: str,
     title: str,
-    reminder_type: ReminderType,
     trigger_time: datetime,
     timezone_name: str,
     recurrence: ReminderRecurrence,
     delivery_channel: str,
-    deal_id: str | None,
 ) -> dict[str, Any]:
     card = {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
@@ -464,7 +288,7 @@ def _build_teams_success_payload(
         "body": [
             {
                 "type": "TextBlock",
-                "text": f"{_reminder_type_label(reminder_type)} created",
+                "text": "Reminder created",
                 "size": "Medium",
                 "weight": "Bolder",
                 "wrap": True,
@@ -474,12 +298,10 @@ def _build_teams_success_payload(
                 "facts": _reminder_success_facts(
                     reminder_id=reminder_id,
                     title=title,
-                    reminder_type=reminder_type,
                     trigger_time=trigger_time,
                     timezone_name=timezone_name,
                     recurrence=recurrence,
                     delivery_channel=delivery_channel,
-                    deal_id=deal_id,
                 ),
             },
         ],
@@ -487,11 +309,9 @@ def _build_teams_success_payload(
     text_fallback = _reminder_created_text(
         reminder_id=reminder_id,
         title=title,
-        reminder_type=reminder_type,
         trigger_time=trigger_time,
         timezone_name=timezone_name,
         recurrence=recurrence,
-        deal_id=deal_id,
     )
     return {
         "type": "message",
@@ -514,34 +334,28 @@ def _build_slack_success_payload(
     *,
     reminder_id: str,
     title: str,
-    reminder_type: ReminderType,
     trigger_time: datetime,
     timezone_name: str,
     recurrence: ReminderRecurrence,
     delivery_channel: str,
-    deal_id: str | None,
 ) -> dict[str, Any]:
     fields = [
         {"type": "mrkdwn", "text": f"*{fact['title']}*\n{_escape_slack_mrkdwn(fact['value'])}"}
         for fact in _reminder_success_facts(
             reminder_id=reminder_id,
             title=title,
-            reminder_type=reminder_type,
             trigger_time=trigger_time,
             timezone_name=timezone_name,
             recurrence=recurrence,
             delivery_channel=delivery_channel,
-            deal_id=deal_id,
         )
     ]
     text_fallback = _reminder_created_text(
         reminder_id=reminder_id,
         title=title,
-        reminder_type=reminder_type,
         trigger_time=trigger_time,
         timezone_name=timezone_name,
         recurrence=recurrence,
-        deal_id=deal_id,
     )
     return {
         "type": "message",
@@ -562,12 +376,10 @@ def _build_whatsapp_success_payload(
     *,
     reminder_id: str,
     title: str,
-    reminder_type: ReminderType,
     trigger_time: datetime,
     timezone_name: str,
     recurrence: ReminderRecurrence,
     delivery_channel: str,
-    deal_id: str | None,
 ) -> dict[str, Any]:
     lines = ["Reminder created"]
     lines.extend(
@@ -575,12 +387,10 @@ def _build_whatsapp_success_payload(
         for fact in _reminder_success_facts(
             reminder_id=reminder_id,
             title=title,
-            reminder_type=reminder_type,
             trigger_time=trigger_time,
             timezone_name=timezone_name,
             recurrence=recurrence,
             delivery_channel=delivery_channel,
-            deal_id=deal_id,
         )
     )
     text = "\n".join(lines)
@@ -597,33 +407,27 @@ def _build_ui_card_success_payload(
     *,
     reminder_id: str,
     title: str,
-    reminder_type: ReminderType,
     trigger_time: datetime,
     timezone_name: str,
     recurrence: ReminderRecurrence,
     delivery_channel: str,
-    deal_id: str | None,
 ) -> dict[str, Any]:
     card = {
         "kind": "reminder_created_confirmation",
         "reminder_id": reminder_id,
         "title": title,
-        "reminder_type": reminder_type.value,
+        "reminder_type": ReminderType.STATIC.value,
         "trigger_time": trigger_time.isoformat(),
         "trigger_time_display": _format_trigger_time(trigger_time, timezone_name),
         "recurrence": recurrence.value,
         "delivery_channel": delivery_channel,
     }
-    if deal_id:
-        card["deal_id"] = deal_id
     text_fallback = _reminder_created_text(
         reminder_id=reminder_id,
         title=title,
-        reminder_type=reminder_type,
         trigger_time=trigger_time,
         timezone_name=timezone_name,
         recurrence=recurrence,
-        deal_id=deal_id,
     )
     return {
         "type": "ui_card",
@@ -639,23 +443,19 @@ def _build_reminder_created_channel_payload(
     context: AgentContext,
     reminder_id: str,
     title: str,
-    reminder_type: ReminderType,
     trigger_time: datetime,
     timezone_name: str,
     recurrence: ReminderRecurrence,
     delivery_channel: str,
-    deal_id: str | None,
 ) -> dict[str, Any] | None:
     channel = (context.channel or "").lower()
     kwargs = {
         "reminder_id": reminder_id,
         "title": title,
-        "reminder_type": reminder_type,
         "trigger_time": trigger_time,
         "timezone_name": timezone_name,
         "recurrence": recurrence,
         "delivery_channel": delivery_channel,
-        "deal_id": deal_id,
     }
     if channel == "teams":
         return _build_teams_success_payload(**kwargs)
@@ -673,14 +473,11 @@ async def create_reminder(
     context: AgentContext,
     title: str,
     trigger_time: str,
-    reminder_type: str = "static",
     message: str | None = None,
-    agent_prompt: str | None = None,
-    deal_id: str | None = None,
     recurrence: str = "none",
     timezone_name: str | None = None,
 ) -> dict[str, Any]:
-    """Create an ACTIVE UserReminder and schedule it immediately."""
+    """Create an active static reminder owned by the user in ``context``."""
     organisation_id = context.organisation_id
     user_id = context.user_id
 
@@ -701,14 +498,6 @@ async def create_reminder(
         )
 
     try:
-        r_type = ReminderType((reminder_type or "static").lower())
-    except ValueError:
-        return {
-            "status": "error",
-            "message": f"Invalid reminder type '{reminder_type}'. Use 'static' or 'agentic'.",
-        }
-
-    try:
         r_recurrence = ReminderRecurrence((recurrence or "none").lower())
     except ValueError:
         return {
@@ -720,16 +509,10 @@ async def create_reminder(
         }
 
     clean_message = _clean_text(message)
-    clean_agent_prompt = _clean_text(agent_prompt)
-    if r_type == ReminderType.STATIC and not clean_message:
+    if not clean_message:
         return _missing_fields_error(
             "Please tell me what message to send when the reminder fires.",
             ["message"],
-        )
-    if r_type == ReminderType.AGENTIC and not clean_agent_prompt:
-        return _missing_fields_error(
-            "Please provide the full instruction the agent should run at reminder time.",
-            ["agent_prompt"],
         )
 
     effective_timezone = _resolve_effective_timezone(context, timezone_name)
@@ -756,13 +539,6 @@ async def create_reminder(
         else:
             return {"status": "error", "message": "Trigger time must be in the future."}
 
-    parsed_deal_id: UUID | None = None
-    if deal_id:
-        try:
-            parsed_deal_id = UUID(deal_id)
-        except ValueError:
-            return {"status": "error", "message": f"Invalid deal_id '{deal_id}'."}
-
     delivery_target = await _resolve_reminder_delivery_target(context)
     if not delivery_target:
         return {
@@ -774,27 +550,15 @@ async def create_reminder(
         }
     delivery_channel, delivery_context = delivery_target
 
-    access_actor = None
-    if parsed_deal_id:
-        try:
-            access_actor = await resolve_agent_access_actor(context)
-        except AgentCRMAccessError as exc:
-            return {"status": "error", "message": str(exc)}
-
     async with context.acquire_session() as session:
-        service = ReminderService(
-            session,
-            organisation_id,
-            user_id,
-            access_actor=access_actor,
-        )
+        service = ReminderService(session, organisation_id, user_id)
         try:
             detail = await service.create(
                 title=clean_title,
-                reminder_type=r_type,
-                message_content=clean_message if r_type == ReminderType.STATIC else None,
-                agent_prompt=clean_agent_prompt if r_type == ReminderType.AGENTIC else None,
-                deal_id=parsed_deal_id,
+                reminder_type=ReminderType.STATIC,
+                message_content=clean_message,
+                agent_prompt=None,
+                deal_id=None,
                 trigger_time=trigger_dt,
                 timezone=effective_timezone,
                 recurrence=r_recurrence,
@@ -823,303 +587,20 @@ async def create_reminder(
         "delivery_channel": detail.delivery_channel,
         "message": f"Created reminder **{detail.title}**. Reminder ID: {detail.reminder_id}.",
     }
-    if getattr(detail, "deal_id", None):
-        result["deal_id"] = str(detail.deal_id)
-        result["message"] += f" Deal ID: {detail.deal_id}."
     channel_payload = _build_reminder_created_channel_payload(
         context=context,
         reminder_id=str(detail.reminder_id),
         title=detail.title,
-        reminder_type=detail.reminder_type,
         trigger_time=detail.next_trigger_at,
         timezone_name=detail.timezone,
         recurrence=detail.recurrence,
         delivery_channel=detail.delivery_channel,
-        deal_id=str(detail.deal_id) if getattr(detail, "deal_id", None) else None,
     )
     if channel_payload:
         if channel_payload.get("type") == "ui_card":
             result["ui_card"] = channel_payload["content"]["card"]
         result[_BOT_CHANNEL_PAYLOAD_KEY] = channel_payload
     return result
-
-
-async def create_reminder_form(
-    *,
-    context: AgentContext,
-    title: str,
-    trigger_time: str,
-    reminder_type: str = "static",
-    message: str | None = None,
-    agent_prompt: str | None = None,
-    deal_id: str | None = None,
-    recurrence: str = "none",
-    timezone_name: str | None = None,
-) -> dict[str, Any]:
-    """Create a UserReminder in pending_confirmation status and send a preview card.
-
-    The reminder is NOT active until the user clicks Confirm on the preview card.
-    """
-    organisation_id = context.organisation_id
-    user_id = context.user_id
-
-    if not user_id:
-        return {"status": "error", "message": "Cannot create reminder: user not identified."}
-
-    # Validate reminder_type
-    try:
-        r_type = ReminderType(reminder_type.lower())
-    except ValueError:
-        return {
-            "status": "error",
-            "message": f"Invalid reminder type '{reminder_type}'. Use 'static' or 'agentic'.",
-        }
-
-    # Validate recurrence
-    try:
-        r_recurrence = ReminderRecurrence(recurrence.lower())
-    except ValueError:
-        return {
-            "status": "error",
-            "message": (
-                f"Invalid recurrence '{recurrence}'. "
-                "Use: none, daily, weekdays, weekly, biweekly, monthly."
-            ),
-        }
-
-    # Resolve trigger time server-side (hybrid: ISO 8601 → dateparser)
-    effective_timezone = _resolve_effective_timezone(context, timezone_name)
-    trigger_dt = _resolve_trigger_time(trigger_time, effective_timezone, context.metadata)
-    if not trigger_dt:
-        return {
-            "status": "error",
-            "message": (
-                f"Could not understand the time '{trigger_time}'. "
-                "Try something like 'in 10 minutes', 'at 3 PM', or '2026-02-24T15:00:00'."
-            ),
-        }
-
-    # For recurring reminders, if resolved time is in the past, advance to next occurrence.
-    # E.g. "daily at 10 AM" created at 6 PM → advance to tomorrow 10 AM.
-    if trigger_dt <= datetime.now(UTC):
-        if r_recurrence != ReminderRecurrence.NONE:
-            from src.workers.chat_worker.services.reminder_execution_service import (
-                ReminderExecutionService,
-            )
-
-            trigger_dt = ReminderExecutionService._compute_next_trigger(
-                trigger_dt, r_recurrence, effective_timezone
-            )
-        else:
-            return {"status": "error", "message": "Trigger time must be in the future."}
-
-    # Validate content based on type
-    if r_type == ReminderType.STATIC and not message:
-        return {"status": "error", "message": "Static reminders require a message."}
-    if r_type == ReminderType.AGENTIC and not agent_prompt:
-        return {"status": "error", "message": "Agentic alerts require an agent_prompt."}
-
-    channel = (context.channel or "teams").lower()
-
-    # Extract delivery context from bot metadata
-    service_url = context.metadata.get("service_url", "")
-    conversation_id = context.metadata.get("conversation_id", "")
-    team_id = context.metadata.get("team_id", "")
-    channel_id = context.metadata.get("channel_id", "")
-    if channel == "slack":
-        if not team_id or not channel_id:
-            return {
-                "status": "error",
-                "message": (
-                    "I couldn’t create the reminder because delivery context isn’t "
-                    "available in this chat right now, so the system can’t send the "
-                    "confirmation card."
-                ),
-            }
-    elif not service_url or not conversation_id:
-        return {
-            "status": "error",
-            "message": (
-                "I couldn’t create the reminder because delivery context isn’t available "
-                "in this chat right now, so the system can’t send the confirmation card."
-            ),
-        }
-
-    # Build agent_config for agentic reminders
-    agent_cfg: dict[str, Any] | None = None
-    if r_type == ReminderType.AGENTIC:
-        agent_cfg = {"prompt": agent_prompt}
-        if deal_id:
-            agent_cfg["deal_id"] = deal_id
-
-    conversation_type = context.metadata.get("conversation_type", "")
-    if channel == "slack":
-        delivery_context = {
-            "team_id": team_id,
-            "channel_id": channel_id,
-            "conversation_type": conversation_type or "personal",
-        }
-    else:
-        teams_conversation_id = context.metadata.get("teams_conversation_id") or conversation_id
-        delivery_context = {
-            "service_url": service_url,
-            "conversation_id": conversation_id,
-            "conversation_type": conversation_type,
-            "teams_conversation_id": teams_conversation_id,
-        }
-
-    # Create reminder in pending_confirmation — not active, not in ZSET
-    reminder = UserReminder(
-        organisation_id=organisation_id,
-        user_id=user_id,
-        reminder_type=r_type,
-        title=title,
-        message_content=message if r_type == ReminderType.STATIC else None,
-        agent_config=agent_cfg,
-        next_trigger_at=trigger_dt,
-        user_timezone=effective_timezone,
-        recurrence=r_recurrence,
-        delivery_channel=channel,
-        delivery_context=delivery_context,
-        status=ReminderStatus.PENDING_CONFIRMATION,
-    )
-
-    async with context.acquire_session() as session:
-        session.add(reminder)
-        await session.commit()
-        await session.refresh(reminder)
-
-    # Build and send preview card
-    card_payload = _build_preview_card(
-        reminder_id=str(reminder.reminder_id),
-        organisation_id=str(organisation_id),
-        title=title,
-        reminder_type=r_type.value,
-        trigger_dt=trigger_dt,
-        timezone_name=effective_timezone,
-        recurrence=r_recurrence.value,
-        message=message,
-        agent_prompt=agent_prompt,
-    )
-
-    if channel == "slack":
-        from zoneinfo import ZoneInfo
-
-        try:
-            local_dt = trigger_dt.astimezone(ZoneInfo(effective_timezone))
-        except Exception:
-            local_dt = trigger_dt
-
-        type_label = "Reminder" if r_type == ReminderType.STATIC else "Scheduled Alert"
-        recurrence_display = r_recurrence.value if r_recurrence.value != "none" else "One-time"
-        content_label = "Message" if r_type == ReminderType.STATIC else "AI Prompt"
-        content_value = message if r_type == ReminderType.STATIC else agent_prompt
-        action_value = json.dumps(
-            {
-                "reminder_id": str(reminder.reminder_id),
-                "organisation_id": str(organisation_id),
-            },
-            separators=(",", ":"),
-        )
-
-        slack_blocks: list[dict[str, Any]] = [
-            {
-                "type": "header",
-                "text": {"type": "plain_text", "text": f"{type_label} Preview"},
-            },
-            {
-                "type": "section",
-                "fields": [
-                    _slack_field("Title", title),
-                    _slack_field("When", local_dt.strftime("%b %d, %Y at %I:%M %p %Z")),
-                    _slack_field("Repeats", recurrence_display),
-                    _slack_field("Type", type_label),
-                ],
-            },
-        ]
-        if content_value:
-            slack_blocks.append(
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"*{content_label}*\n{_slack_quote(content_value)}",
-                    },
-                }
-            )
-        slack_blocks.extend(
-            [
-                {
-                    "type": "context",
-                    "elements": [
-                        {
-                            "type": "mrkdwn",
-                            "text": "Please confirm or cancel this reminder.",
-                        }
-                    ],
-                },
-                {
-                    "type": "actions",
-                    "elements": [
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "Confirm"},
-                            "style": "primary",
-                            "action_id": "confirm_reminder_submit",
-                            "value": action_value,
-                        },
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "Cancel"},
-                            "style": "danger",
-                            "action_id": "confirm_reminder_cancel",
-                            "value": action_value,
-                        },
-                    ],
-                },
-            ]
-        )
-
-        result = await OutboundChannelService().send_payload(
-            OutboundDeliveryTarget(
-                channel="slack",
-                mapping_id=None,
-                delivery_context={"team_id": team_id, "channel_id": channel_id},
-            ),
-            ChannelPayload(
-                type="card",
-                content={"blocks": slack_blocks},
-                text_fallback=f"Reminder preview: {title}",
-            ),
-        )
-        sent = result.success
-    else:
-        result = await OutboundChannelService().send_payload(
-            OutboundDeliveryTarget(
-                channel="teams",
-                mapping_id=None,
-                delivery_context={"service_url": service_url, "conversation_id": conversation_id},
-            ),
-            ChannelPayload(
-                type="card",
-                content=card_payload,
-                text_fallback=f"Reminder preview: {title}",
-            ),
-        )
-        sent = result.success
-
-    if not sent:
-        logger.error("Failed to send reminder preview card for reminder %s", reminder.reminder_id)
-        return {"status": "error", "message": "Failed to send the preview card. Please try again."}
-
-    return {
-        "status": "preview_sent",
-        "reminder_id": str(reminder.reminder_id),
-        "message": (
-            "I've sent a preview card for your reminder. "
-            "Please review the details and click **Confirm** to activate it."
-        ),
-    }
 
 
 def create_create_reminder(
@@ -1131,25 +612,14 @@ def create_create_reminder(
     async def create_reminder_tool(
         title: str,
         trigger_time: str,
-        reminder_type: str | None = "static",
         message: str | None = None,
-        agent_prompt: str | None = None,
-        deal_id: str | None = None,
         recurrence: str | None = None,
     ) -> dict[str, Any]:
-        """Create a reminder or scheduled alert.
+        """Create a static reminder for the current user.
 
         Use this tool when the user asks you to remind them about something at a
-        specific time, or to schedule an automated analysis/task for later.
-
-        For STATIC reminders (simple notifications):
-        - Set reminder_type="static"
-        - Provide message with the text to deliver
-
-        For AGENTIC alerts (AI tasks that run at the scheduled time):
-        - Set reminder_type="agentic"
-        - Provide agent_prompt with the instruction (e.g. "analyze deal Acme Corp")
-        - Optionally provide deal_id if the analysis is deal-specific
+        specific time. Scheduled-agent creation belongs to Agent Studio and is
+        deliberately not exposed by this reminder tool.
 
         Pass the user's time expression exactly as spoken or typed in trigger_time.
         Do not convert it to UTC or rewrite local phrases. The server resolves
@@ -1167,16 +637,12 @@ def create_create_reminder(
         Args:
             title: Meaningful short label (e.g. "Follow up with Acme Corp")
             trigger_time: Time expression — natural language or ISO 8601
-            reminder_type: "static" for a message, "agentic" for an AI task
-            message: Text to deliver (required for static)
-            agent_prompt: Instruction for the agent (required for agentic)
-            deal_id: Optional deal UUID for deal-scoped agentic alerts
+            message: Text to deliver when the reminder fires
             recurrence: "none", "daily", "weekdays", "weekly", "biweekly", "monthly"
         """
         logger.info(
-            "[TOOL CALLED] create_reminder - title='%s', type=%s, trigger=%s",
+            "[TOOL CALLED] create_reminder - title='%s', trigger=%s",
             title,
-            reminder_type,
             trigger_time,
         )
 
@@ -1188,10 +654,7 @@ def create_create_reminder(
                 "context": context,
                 "title": title,
                 "trigger_time": trigger_time,
-                "reminder_type": reminder_type or "static",
                 "message": message,
-                "agent_prompt": agent_prompt,
-                "deal_id": deal_id,
                 "recurrence": recurrence or "none",
             },
             description="Creating reminder",

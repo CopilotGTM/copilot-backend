@@ -4,21 +4,20 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock
+from inspect import signature
 from uuid import uuid4
 
 import pytest
 from src.agents.tools.reminders.create_reminder import (
     _resolve_current_reminder_delivery_target,
     _resolve_reminder_delivery_target,
+    create_create_reminder,
     create_reminder,
 )
-from src.domain.models.master_tables.user_models import UserAppRole
 from src.domain.models.organisation_tables.reminder_models import (
     ReminderStatus,
     ReminderType,
 )
-from src.service.crm.access.record_access_policy import CRMAccessActor, DealAccessPolicy
 
 
 @dataclass
@@ -51,6 +50,21 @@ class _FakeContext:
         yield self.session
 
 
+def test_create_reminder_tool_does_not_expose_scheduled_agent_fields() -> None:
+    """The reminder tool must not retain the deprecated scheduled-agent creation contract."""
+    context = _FakeContext(
+        organisation_id=uuid4(),
+        user_id=uuid4(),
+        channel="slack",
+        metadata={"team_id": "T123", "channel_id": "C123"},
+    )
+    tool = create_create_reminder(context, lambda: None)
+    scheduled_agent_fields = {"reminder_type", "agent_prompt", "deal_id"}
+
+    assert scheduled_agent_fields.isdisjoint(signature(tool).parameters)
+    assert scheduled_agent_fields.isdisjoint(signature(create_reminder).parameters)
+
+
 @pytest.mark.asyncio
 async def test_create_reminder_rejects_generic_title_without_creating_row() -> None:
     context = _FakeContext(
@@ -64,7 +78,6 @@ async def test_create_reminder_rejects_generic_title_without_creating_row() -> N
         context=context,
         title="set a reminder",
         trigger_time=_future_iso(),
-        reminder_type="static",
         message="Follow up with the customer",
         recurrence="none",
         timezone_name="UTC",
@@ -88,7 +101,6 @@ async def test_create_reminder_requires_static_message() -> None:
         context=context,
         title="Follow up with Acme",
         trigger_time=_future_iso(),
-        reminder_type="static",
         message=None,
         recurrence="none",
         timezone_name="UTC",
@@ -121,7 +133,6 @@ async def test_create_reminder_returns_setup_error_without_delivery_target(
         context=context,
         title="Follow up with Acme",
         trigger_time=_future_iso(),
-        reminder_type="static",
         message="Follow up with Acme",
         recurrence="none",
         timezone_name="UTC",
@@ -160,7 +171,6 @@ async def test_create_reminder_creates_active_slack_reminder_and_success_payload
         context=context,
         title="Follow up with Acme",
         trigger_time=_future_iso(),
-        reminder_type="static",
         message="Follow up with Acme",
         recurrence="none",
         timezone_name="UTC",
@@ -218,7 +228,6 @@ async def test_create_reminder_resolves_local_time_phrases_in_user_timezone(
         context=context,
         title="Follow up with Acme",
         trigger_time=trigger_time,
-        reminder_type="static",
         message="Follow up with Acme",
         recurrence="none",
     )
@@ -253,7 +262,6 @@ async def test_create_reminder_resolves_weekday_time_from_anchored_user_local_no
         context=context,
         title="Follow up with Acme",
         trigger_time="Saturday 10 AM",
-        reminder_type="static",
         message="Follow up with Acme",
         recurrence="none",
     )
@@ -287,7 +295,6 @@ async def test_create_reminder_direct_call_uses_context_timezone_when_timezone_n
         context=context,
         title="Follow up with Acme",
         trigger_time="May 15 2030 10 AM",
-        reminder_type="static",
         message="Follow up with Acme",
         recurrence="none",
     )
@@ -321,7 +328,6 @@ async def test_create_reminder_prefers_context_timezone_over_accidental_utc(
         context=context,
         title="Follow up with Acme",
         trigger_time="May 15 2030 10 AM",
-        reminder_type="static",
         message="Follow up with Acme",
         recurrence="none",
         timezone_name="UTC",
@@ -331,70 +337,6 @@ async def test_create_reminder_prefers_context_timezone_over_accidental_utc(
     reminder = context.session.added[0]
     assert reminder.next_trigger_at == datetime(2030, 5, 15, 4, 30, tzinfo=UTC)
     assert reminder.user_timezone == "Asia/Kolkata"
-
-
-@pytest.mark.asyncio
-async def test_create_reminder_creates_active_agentic_whatsapp_reminder(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "src.service.reminders.reminder_service.schedule_reminder",
-        lambda *_args, **_kwargs: None,
-    )
-    context = _FakeContext(
-        organisation_id=uuid4(),
-        user_id=uuid4(),
-        channel="whatsapp",
-        metadata={"phone_number_id": "phone-123", "recipient_wa_id": "15551234567"},
-    )
-
-    deal_id = uuid4()
-    actor = CRMAccessActor(context.user_id, UserAppRole.MEMBER)
-    resolve_actor = AsyncMock(return_value=actor)
-    access_checks = []
-
-    async def require_deal(policy, checked_deal_id, level):
-        access_checks.append((policy.actor, checked_deal_id, level))
-
-    monkeypatch.setattr(
-        "src.agents.tools.reminders.create_reminder.resolve_agent_access_actor",
-        resolve_actor,
-    )
-    monkeypatch.setattr(DealAccessPolicy, "require_deal", require_deal)
-    result = await create_reminder(
-        context=context,
-        title="Acme health check",
-        trigger_time=_future_iso(),
-        reminder_type="agentic",
-        agent_prompt="Review the Acme deal and identify blockers.",
-        deal_id=str(deal_id),
-        recurrence="none",
-        timezone_name="UTC",
-    )
-
-    assert result["status"] == "created"
-    assert result["deal_id"] == str(deal_id)
-    assert str(result["reminder_id"]) in result["message"]
-    assert str(deal_id) in result["message"]
-    assert result["delivery_channel"] == "whatsapp"
-    assert result["_bot_channel_payload"]["content"]["text"].startswith("Reminder created")
-    assert result["reminder_id"] in result["_bot_channel_payload"]["content"]["text"]
-    assert str(deal_id) in result["_bot_channel_payload"]["content"]["text"]
-
-    reminder = context.session.added[0]
-    assert reminder.reminder_type == ReminderType.AGENTIC
-    assert reminder.status == ReminderStatus.ACTIVE
-    assert reminder.agent_config == {
-        "agent_type": "general",
-        "prompt": "Review the Acme deal and identify blockers.",
-        "deal_id": str(deal_id),
-    }
-    assert reminder.delivery_context == {
-        "phone_number_id": "phone-123",
-        "recipient_wa_id": "15551234567",
-    }
-    resolve_actor.assert_awaited_once_with(context)
-    assert access_checks == [(actor, deal_id, "collaborate")]
 
 
 @pytest.mark.asyncio

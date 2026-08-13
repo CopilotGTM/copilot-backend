@@ -240,7 +240,9 @@ def test_create_reminder_voice_schema_is_available_for_direct_write() -> None:
     assert schema["description"].startswith("Create a reminder")
     assert schema["parameters"]["required"] == ["title", "trigger_time"]
     assert "message" in schema["parameters"]["properties"]
-    assert "agent_prompt" in schema["parameters"]["properties"]
+    assert {"reminder_type", "agent_prompt", "deal_id"}.isdisjoint(
+        schema["parameters"]["properties"]
+    )
 
 
 def test_create_reminder_voice_schema_requires_raw_local_trigger_expression() -> None:

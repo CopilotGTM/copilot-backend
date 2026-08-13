@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from inspect import signature
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
@@ -11,7 +12,7 @@ import pytest
 from src.agents.context import AgentContext
 from src.agents.tools.crm.update_deal_note import update_deal_note
 from src.agents.tools.registry import CHANNEL_ONLY_TOOLS, ToolName, ToolRegistry
-from src.agents.tools.reminders.update_reminder import update_reminder
+from src.agents.tools.reminders.update_reminder import create_update_reminder, update_reminder
 from src.agents.tools.tasks.update_task import update_task
 from src.domain.models.master_tables.user_models import UserAppRole
 from src.domain.models.organisation_tables.reminder_models import (
@@ -189,17 +190,15 @@ async def test_update_task_honours_disabled_organisation_scope() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_reminder_detects_type_and_maps_agent_prompt() -> None:
-    """Reminder updates map content only after reading the owned reminder type."""
+async def test_update_reminder_is_static_only() -> None:
+    """Reminder tools must not expose or update deprecated scheduled-agent fields."""
     context, _session = _context()
     reminder_id = uuid4()
-    deal_id = uuid4()
-    existing = SimpleNamespace(reminder_type=ReminderType.AGENTIC)
+    existing = SimpleNamespace(reminder_type=ReminderType.STATIC)
     detail = SimpleNamespace(
         reminder_id=reminder_id,
         title="Pipeline review",
-        reminder_type=ReminderType.AGENTIC,
-        deal_id=deal_id,
+        reminder_type=ReminderType.STATIC,
         next_trigger_at=datetime(2026, 7, 13, 4, 30, tzinfo=UTC),
         recurrence=ReminderRecurrence.DAILY,
     )
@@ -218,23 +217,25 @@ async def test_update_reminder_detects_type_and_maps_agent_prompt() -> None:
             context=context,
             reminder_id=str(reminder_id),
             trigger_time="tomorrow at 10 AM",
-            agent_prompt="Review every open deal",
+            message="Review every open deal",
             recurrence="daily",
         )
 
+    service.get.assert_awaited_once_with(reminder_id, reminder_type=ReminderType.STATIC)
     service.update.assert_awaited_once_with(
         reminder_id,
         {
-            "agent_prompt": "Review every open deal",
+            "message_content": "Review every open deal",
             "trigger_time": datetime(2026, 7, 13, 4, 30, tzinfo=UTC),
             "recurrence": ReminderRecurrence.DAILY,
         },
-        reminder_type=ReminderType.AGENTIC,
+        reminder_type=ReminderType.STATIC,
     )
     assert result["status"] == "updated"
-    assert result["deal_id"] == str(deal_id)
     assert str(reminder_id) in result["message"]
-    assert str(deal_id) in result["message"]
+
+    tool = create_update_reminder(context, lambda: None)
+    assert "agent_prompt" not in signature(tool).parameters
 
 
 def test_update_tools_are_registered_for_general_chat_channels() -> None:

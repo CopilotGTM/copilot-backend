@@ -70,8 +70,7 @@ def test_user_agent_definition_routes_are_versioned(monkeypatch, mocker) -> None
     assert "409" in paths["/users/v1/agents/{agent_id}"]["put"]["responses"]
     assert "409" in paths["/users/v1/agents/{agent_id}"]["delete"]["responses"]
 
-    # The reminder-backed scheduled-agent surface remains separate during migration.
-    assert "/users/agents" in paths
+    assert "/users/agents" not in paths
 
 
 def test_user_agent_trigger_routes_are_versioned(monkeypatch, mocker) -> None:
