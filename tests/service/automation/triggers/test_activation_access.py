@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -37,6 +39,9 @@ class Result:
 
     rowcount = 1
 
+    def __init__(self, *, rows: list[Any] | None = None) -> None:
+        self.rows = rows or []
+
     def scalars(self) -> ScalarRows:
         """Expose the scalars operation expected by the Result test double."""
         return ScalarRows()
@@ -46,19 +51,27 @@ class Result:
         return None
 
     def all(self) -> list[Any]:
-        return []
+        """Return row values configured for this result."""
+        return self.rows
 
 
 class RecordingSession:
     """Represent the Recording Session test double used by the surrounding regression cases."""
 
-    def __init__(self) -> None:
+    def __init__(self, result: Result | None = None) -> None:
         self.statements: list[Any] = []
+        self.result = result or Result()
 
     async def execute(self, statement: Any) -> Result:
         """Expose the execute operation expected by the Recording Session test double."""
         self.statements.append(statement)
-        return Result()
+        return self.result
+
+
+async def session_scope(session: Any) -> AsyncIterator[Any]:
+    """Yield the supplied session through the production async-session contract."""
+
+    yield session
 
 
 def sql(statement: Any) -> str:
@@ -89,13 +102,19 @@ async def test_candidate_queries_use_event_array_direct_identity_and_active_stat
 async def test_readiness_and_causation_queries_are_tenant_scoped() -> None:
     """Verify the contract that readiness and causation queries are tenant scoped."""
     session = RecordingSession()
-    access = TriggerActivationAccess(session, uuid4())  # type: ignore[arg-type]
+    master_session = RecordingSession()
+    access = TriggerActivationAccess(  # type: ignore[arg-type]
+        session,
+        uuid4(),
+        master_session_scope=lambda: session_scope(master_session),
+    )
 
     await access.list_active_agent_delivery_configs({uuid4(), uuid4()})
     await access.list_active_user_ids({uuid4()})
     await access.list_causation_trigger_ids(uuid4())
 
-    agent_sql, user_sql, causation_sql = map(sql, session.statements)
+    agent_sql, causation_sql = map(sql, session.statements)
+    [user_sql] = map(sql, master_session.statements)
     assert "user_agents.organisation_id" in agent_sql
     assert "user_agents.status" in agent_sql
     assert "user_agents.output_delivery_config" in agent_sql
@@ -110,19 +129,33 @@ async def test_readiness_and_causation_queries_are_tenant_scoped() -> None:
 
 @pytest.mark.asyncio
 async def test_crm_principal_identity_query_is_tenant_scoped_and_active_only() -> None:
+    """Keep public principals on master and CRM identities on the tenant session."""
+
     session = RecordingSession()
-    access = TriggerActivationAccess(session, uuid4())  # type: ignore[arg-type]
+    principal_id = uuid4()
+    master_session = RecordingSession(
+        Result(
+            rows=[SimpleNamespace(user_id=principal_id, email="owner@example.com")],
+        )
+    )
+    access = TriggerActivationAccess(  # type: ignore[arg-type]
+        session,
+        uuid4(),
+        master_session_scope=lambda: session_scope(master_session),
+    )
 
-    assert await access.list_crm_user_ids_by_principal({uuid4()}) == {}
+    assert await access.list_crm_user_ids_by_principal({principal_id}) == {}
 
-    statement = sql(session.statements[0])
-    assert "public.users.organisation_id" in statement
-    assert "public.users.status" in statement
-    assert "public.users.admin_status" in statement
-    assert "cast(public.users.status as varchar)" in statement
-    assert "cast(public.users.admin_status as varchar)" in statement
-    assert "crm_users.organisation_id" in statement
-    assert "crm_users.is_deleted is false" in statement
+    [master_statement] = map(sql, master_session.statements)
+    [tenant_statement] = map(sql, session.statements)
+    assert "public.users.organisation_id" in master_statement
+    assert "public.users.status" in master_statement
+    assert "public.users.admin_status" in master_statement
+    assert "cast(public.users.status as varchar)" in master_statement
+    assert "cast(public.users.admin_status as varchar)" in master_statement
+    assert "public.users" not in tenant_statement
+    assert "crm_users.organisation_id" in tenant_statement
+    assert "crm_users.is_deleted is false" in tenant_statement
 
 
 @pytest.mark.asyncio
@@ -228,7 +261,6 @@ async def test_email_subject_participants_resolve_active_tenant_users() -> None:
                 [
                     ValueResult(first=email),
                     ValueResult(first=integration),
-                    ValueResult(all_values=participant_ids),
                 ]
             )
             self.statements = []
@@ -239,12 +271,20 @@ async def test_email_subject_participants_resolve_active_tenant_users() -> None:
             return next(self.results)
 
     session = SequenceSession()
-    access = TriggerActivationAccess(session, organisation_id)  # type: ignore[arg-type]
+    master_session = SequenceSession()
+    master_session.results = iter([ValueResult(all_values=participant_ids)])
+    access = TriggerActivationAccess(  # type: ignore[arg-type]
+        session,
+        organisation_id,
+        master_session_scope=lambda: session_scope(master_session),
+    )
 
     resolved = await access.list_subject_participant_user_ids("email", email.email_id)
 
     assert resolved == set(participant_ids)
     assert all("organisation_id" in sql(statement) for statement in session.statements)
+    assert len(session.statements) == 2
+    assert "public.users" in sql(master_session.statements[0])
 
 
 @pytest.mark.asyncio

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Callable
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import String, and_, func, literal, or_, select, update
+from sqlalchemy import String, func, literal, or_, select, update
 from sqlalchemy import cast as sa_cast
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +31,7 @@ from src.domain.models.organisation_tables import (
 from src.domain.models.organisation_tables.sync.email_models import Email
 from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.meeting_intelligence import Meeting
+from src.infra.database.sessions import acquire_master_async_session
 from src.service.automation.producers.meeting import load_meeting_event_context
 from src.service.automation.triggers.options import AutomationTriggerOptionAccess
 
@@ -37,9 +39,18 @@ from src.service.automation.triggers.options import AutomationTriggerOptionAcces
 class TriggerActivationAccess:
     """Read current binding readiness and idempotently create tenant runs."""
 
-    def __init__(self, session: AsyncSession, organisation_id: UUID) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        organisation_id: UUID,
+        *,
+        master_session_scope: Callable[[], AsyncIterator[AsyncSession]] = (
+            acquire_master_async_session
+        ),
+    ) -> None:
         self.session = session
         self.organisation_id = organisation_id
+        self.master_session_scope = master_session_scope
         self.options = AutomationTriggerOptionAccess(session, organisation_id)
 
     async def list_event_candidates(self, event_key: str) -> list[AutomationTrigger]:
@@ -101,7 +112,11 @@ class TriggerActivationAccess:
             sa_cast(columns.status, String) == SupabaseUserStatus.ACTIVE.value,
             sa_cast(columns.admin_status, String) == AdminUserStatus.APPROVED.value,
         )
-        return set((await self.session.execute(statement)).scalars().all())
+        # Users are global identities in the master database. The tenant role must
+        # never gain public.users access merely to activate an organisation event.
+        async for master_session in self.master_session_scope():
+            return set((await master_session.execute(statement)).scalars().all())
+        raise RuntimeError("master session scope yielded no session")
 
     async def list_crm_user_ids_by_principal(
         self,
@@ -113,38 +128,47 @@ class TriggerActivationAccess:
             return {}
         user_columns = cast(Any, User).__table__.c
         crm_user_columns = cast(Any, CRMUser).__table__.c
-        statement = (
-            select(
-                user_columns.user_id.label("principal_id"),
-                crm_user_columns.user_id.label("crm_user_id"),
+        principal_statement = select(user_columns.user_id, user_columns.email).where(
+            user_columns.organisation_id == self.organisation_id,
+            user_columns.user_id.in_(principal_ids),
+            sa_cast(user_columns.status, String) == SupabaseUserStatus.ACTIVE.value,
+            sa_cast(user_columns.admin_status, String) == AdminUserStatus.APPROVED.value,
+        )
+        principal_rows = []
+        async for master_session in self.master_session_scope():
+            principal_rows = (await master_session.execute(principal_statement)).all()
+            break
+        else:
+            raise RuntimeError("master session scope yielded no session")
+        if not principal_rows:
+            return {}
+
+        active_principal_ids = {row.user_id for row in principal_rows}
+        principals_by_email: dict[str, set[UUID]] = {}
+        for row in principal_rows:
+            if row.email and row.email.strip():
+                principals_by_email.setdefault(row.email.strip().casefold(), set()).add(row.user_id)
+
+        identities = [crm_user_columns.user_id.in_(active_principal_ids)]
+        if principals_by_email:
+            identities.append(
+                func.lower(func.trim(crm_user_columns.email)).in_(principals_by_email)
             )
-            .select_from(User)
-            .join(
-                CRMUser,
-                and_(
-                    crm_user_columns.organisation_id == self.organisation_id,
-                    crm_user_columns.is_deleted.is_(False),
-                    or_(
-                        crm_user_columns.user_id == user_columns.user_id,
-                        and_(
-                            user_columns.email.is_not(None),
-                            crm_user_columns.email.is_not(None),
-                            func.lower(func.trim(crm_user_columns.email))
-                            == func.lower(func.trim(user_columns.email)),
-                        ),
-                    ),
-                ),
-            )
-            .where(
-                user_columns.organisation_id == self.organisation_id,
-                user_columns.user_id.in_(principal_ids),
-                sa_cast(user_columns.status, String) == SupabaseUserStatus.ACTIVE.value,
-                sa_cast(user_columns.admin_status, String) == AdminUserStatus.APPROVED.value,
-            )
+        crm_statement = select(crm_user_columns.user_id, crm_user_columns.email).where(
+            crm_user_columns.organisation_id == self.organisation_id,
+            crm_user_columns.is_deleted.is_(False),
+            or_(*identities),
         )
         mapped: dict[UUID, set[UUID]] = {}
-        for row in (await self.session.execute(statement)).all():
-            mapped.setdefault(row.principal_id, set()).add(row.crm_user_id)
+        for row in (await self.session.execute(crm_statement)).all():
+            if row.user_id in active_principal_ids:
+                mapped.setdefault(row.user_id, set()).add(row.user_id)
+            if row.email and row.email.strip():
+                for principal_id in principals_by_email.get(
+                    row.email.strip().casefold(),
+                    set(),
+                ):
+                    mapped.setdefault(principal_id, set()).add(row.user_id)
         return mapped
 
     async def validate_option_selection(self, source: str, values: set[str]) -> None:
@@ -311,7 +335,11 @@ class TriggerActivationAccess:
             sa_cast(user_columns.admin_status, String) == AdminUserStatus.APPROVED.value,
             or_(*identities),
         )
-        return set((await self.session.execute(statement)).scalars().all())
+        # Resolve public user identities with the master role after collecting
+        # tenant-owned subject facts from the organisation session above.
+        async for master_session in self.master_session_scope():
+            return set((await master_session.execute(statement)).scalars().all())
+        raise RuntimeError("master session scope yielded no session")
 
     async def pause_invalid_trigger(
         self,
