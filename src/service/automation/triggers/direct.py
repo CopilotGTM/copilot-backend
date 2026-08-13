@@ -8,7 +8,8 @@ from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, cast
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import String, func, or_, select
+from sqlalchemy import cast as sa_cast
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.master_tables import AdminUserStatus, SupabaseUserStatus, User
 from src.domain.models.organisation_tables import (
@@ -46,8 +47,8 @@ def crm_user_ids_for_principal(organisation_id: UUID, principal_id: UUID) -> Any
     principal_email = select(func.lower(func.trim(user_columns.email))).where(
         user_columns.organisation_id == organisation_id,
         user_columns.user_id == principal_id,
-        user_columns.status == SupabaseUserStatus.ACTIVE.value,
-        user_columns.admin_status == AdminUserStatus.APPROVED.value,
+        sa_cast(user_columns.status, String) == SupabaseUserStatus.ACTIVE.value,
+        sa_cast(user_columns.admin_status, String) == AdminUserStatus.APPROVED.value,
     )
     return select(crm_user_columns.user_id).where(
         crm_user_columns.organisation_id == organisation_id,
