@@ -1,4 +1,4 @@
-"""HTTP contracts for private user-owned agent definitions.
+"""Shared contracts for private user-owned agent definitions.
 
 The API accepts only fields a sales user may configure. Tenant identity, ownership,
 provenance, visibility, runtime type, and revision counters are supplied by the backend so a
@@ -12,6 +12,7 @@ from typing import Any, Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+
 from src.domain.models.organisation_tables import (
     AgentOutputMode,
     AgentSourceType,

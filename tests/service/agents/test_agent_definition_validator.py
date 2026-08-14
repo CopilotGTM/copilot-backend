@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from src.agents.tools.registry import ToolName
-from src.api.schemas.agent_models import AgentCreateRequest
+from src.contracts.agent_models import AgentCreateRequest
 from src.domain.models.organisation_tables import AgentOutputMode
 from src.service.agents.errors import AgentServiceError
 from src.service.agents.validator import AgentDefinitionValidator
@@ -47,6 +47,18 @@ def test_validator_rejects_known_but_unregistered_general_agent_tool() -> None:
     body = _valid_definition(allowed_tools=[ToolName.GET_BRIEFING.value])
 
     with pytest.raises(AgentServiceError, match="Unknown agent tools: get_briefing"):
+        AgentDefinitionValidator().validate_definition(body)
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    [ToolName.INSPECT_AGENT_BUILDER, ToolName.CHANGE_AGENT_BUILDER],
+)
+def test_validator_rejects_general_agent_control_plane_tools(tool_name: ToolName) -> None:
+    """Persisted agents cannot create more agents or automation bindings."""
+    body = _valid_definition(allowed_tools=[tool_name.value])
+
+    with pytest.raises(AgentServiceError, match=f"Unknown agent tools: {tool_name.value}"):
         AgentDefinitionValidator().validate_definition(body)
 
 

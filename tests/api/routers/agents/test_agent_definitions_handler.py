@@ -19,7 +19,7 @@ from src.api.routers.agents.definitions_handler import (
     replace_agent_definition,
     replace_agent_output_delivery,
 )
-from src.api.schemas.agent_models import (
+from src.contracts.agent_models import (
     AgentAutomationEligibility,
     AgentCapabilitiesUpdateRequest,
     AgentCreateRequest,

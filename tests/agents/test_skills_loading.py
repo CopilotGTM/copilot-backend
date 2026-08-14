@@ -884,3 +884,24 @@ def test_skills_system_prompt_snippet_mentions_email_meeting_workflow() -> None:
     skills = Skills(loaders=[LocalSkills(str(SKILLS_DIR))])
     snippet = skills.get_system_prompt_snippet()
     assert "email-meeting-workflow" in snippet
+
+
+def test_agent_builder_skill_loads_with_control_plane_workflow() -> None:
+    """GeneralAgent must load the agent-builder workflow and its trigger reference."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(item for item in skills if item.name == "agent-builder")
+
+    assert skill.description
+    assert len(skill.description) <= 1024
+    assert "inspect_agent_builder" in skill.instructions
+    assert "change_agent_builder" in skill.instructions
+    assert "Never claim a trigger fired" in skill.instructions
+    assert "trigger-building.md" in skill.references
+
+
+def test_skills_system_prompt_snippet_mentions_agent_builder() -> None:
+    """GeneralAgent should discover the builder workflow from chat requests."""
+    skills = Skills(loaders=[LocalSkills(str(SKILLS_DIR))])
+
+    assert "agent-builder" in skills.get_system_prompt_snippet()

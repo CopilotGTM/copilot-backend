@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
-from src.api.schemas.automation_trigger_models import (
+from src.contracts.automation_trigger_models import (
     AutomationTriggerCreateRequest,
     AutomationTriggerOptionResolveRequest,
     AutomationTriggerOptionSearchRequest,

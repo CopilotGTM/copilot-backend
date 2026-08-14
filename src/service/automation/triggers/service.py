@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.api.schemas.automation_trigger_models import (
+from src.contracts.automation_trigger_models import (
     AutomationManualInvocationRequest,
     AutomationManualInvocationResponse,
     AutomationManualInvocationSubjectResult,

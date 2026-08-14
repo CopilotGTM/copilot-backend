@@ -79,6 +79,7 @@ Keep references one level deep from `SKILL.md`. Avoid nested reference trees.
 | `crm-change-workflow` | Channel-neutral CRM mutation routing and pending-action behavior | Hardcoded CRM write prompt rules |
 | `crm-deal-analysis-workflow` | Read-only CRM/deal evidence gathering and synthesis | Hardcoded CRM/deal analysis prompt guidance |
 | `email-meeting-workflow` | Email writing/sending, meeting invite routing, and recipient resolution | Hardcoded email and meeting prompt rules |
+| `agent-builder` | Private agent creation, templates, and personal trigger configuration | GeneralAgent-only control-plane workflow |
 
 ## Security contract
 

@@ -12,7 +12,7 @@ from typing import NoReturn
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.api.schemas.agent_models import (
+from src.contracts.agent_models import (
     AgentCapabilitiesUpdateRequest,
     AgentCreateRequest,
     AgentDetail,

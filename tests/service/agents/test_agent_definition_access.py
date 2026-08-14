@@ -77,6 +77,32 @@ async def test_list_agents_scopes_count_and_rows_and_hides_archived_definitions(
 
 
 @pytest.mark.asyncio
+async def test_list_template_copies_is_owner_scoped_and_hides_archived_agents() -> None:
+    """Template-use hints must never reveal another user's copied agents."""
+    session = _RecordingSession()
+    access = AgentDefinitionAccess(session, uuid4(), uuid4())  # type: ignore[arg-type]
+
+    assert await access.list_template_copies({uuid4(), uuid4()}) == []
+
+    sql = _sql(session.statements[0])
+    _assert_owner_boundary(sql)
+    assert "user_agents.source_type" in sql
+    assert "user_agents.source_agent_id in" in sql
+    assert "user_agents.status !=" in sql
+    assert "order by user_agents.updated_at desc, user_agents.agent_id desc" in sql
+
+
+@pytest.mark.asyncio
+async def test_list_template_copies_skips_sql_for_empty_template_set() -> None:
+    """An empty code-owned catalog should not spend a database round trip."""
+    session = _RecordingSession()
+    access = AgentDefinitionAccess(session, uuid4(), uuid4())  # type: ignore[arg-type]
+
+    assert await access.list_template_copies(set()) == []
+    assert session.statements == []
+
+
+@pytest.mark.asyncio
 async def test_get_agent_scopes_identifier_and_excludes_archived_definitions() -> None:
     session = _RecordingSession()
     access = AgentDefinitionAccess(session, uuid4(), uuid4())  # type: ignore[arg-type]

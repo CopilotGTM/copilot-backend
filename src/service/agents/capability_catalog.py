@@ -10,13 +10,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.agents.tools.registry import GENERAL_AGENT_TOOLS, TOOL_CATEGORIES
-from src.api.schemas.agent_models import (
+from src.contracts.agent_models import (
     AgentCapabilityCatalog,
     AgentCapabilityItem,
     AgentOutputDeliveryChannelItem,
 )
 
 DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[2] / "agents" / "skills"
+GENERAL_AGENT_ONLY_SKILL_KEYS = frozenset({"agent-builder"})
 
 
 def discover_skill_keys(skills_dir: Path = DEFAULT_SKILLS_DIR) -> list[str]:
@@ -25,7 +26,11 @@ def discover_skill_keys(skills_dir: Path = DEFAULT_SKILLS_DIR) -> list[str]:
     return sorted(
         path.name
         for path in skills_dir.iterdir()
-        if path.is_dir() and (path / "SKILL.md").is_file()
+        if (
+            path.name not in GENERAL_AGENT_ONLY_SKILL_KEYS
+            and path.is_dir()
+            and (path / "SKILL.md").is_file()
+        )
     )
 
 

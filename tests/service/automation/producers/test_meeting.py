@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -15,7 +17,46 @@ from src.domain.models.organisation_tables.sync.meeting_intelligence import (
 from src.service.automation.producers.meeting import (
     MeetingEventAdapter,
     MeetingEventContext,
+    load_meeting_event_context,
 )
+
+
+class QueryResult:
+    """Provide the small SQLAlchemy result surface used by the context loader."""
+
+    def __init__(self, values: list[Any]) -> None:
+        self.values = values
+
+    def scalars(self):
+        return self
+
+    def first(self):
+        return self.values[0] if self.values else None
+
+    def all(self):
+        return self.values
+
+    def __iter__(self):
+        return iter(self.values)
+
+
+class QuerySession:
+    """Record which database receives each meeting-context query."""
+
+    def __init__(self, *results: list[Any]) -> None:
+        self.results = iter(results)
+        self.statements: list[Any] = []
+
+    async def execute(self, statement):
+        self.statements.append(statement)
+        return QueryResult(next(self.results))
+
+
+def session_scope(session: QuerySession):
+    async def scope():
+        yield session
+
+    return scope()
 
 
 def meeting(organisation_id):
@@ -111,3 +152,34 @@ def test_meeting_adapter_rejects_cross_tenant_and_non_durable_states() -> None:
             record,
             context=MeetingEventContext(),
         )
+
+
+@pytest.mark.asyncio
+async def test_meeting_context_reads_app_users_only_from_master_database() -> None:
+    """Tenant meeting resolution must not require public.users permissions."""
+
+    organisation_id = uuid4()
+    record = meeting(organisation_id)
+    user_id = uuid4()
+    event = SimpleNamespace(organiser_email="owner@example.com")
+    tenant = QuerySession(
+        [event],
+        ["owner@example.com"],
+        [],
+        [],
+    )
+    master = QuerySession(
+        [SimpleNamespace(user_id=user_id, email="owner@example.com")],
+    )
+
+    context = await load_meeting_event_context(
+        tenant,  # type: ignore[arg-type]
+        organisation_id,
+        record,
+        master_session_scope=lambda: session_scope(master),
+    )
+
+    assert context.owner_id == user_id
+    assert all("public.users" not in str(statement).lower() for statement in tenant.statements)
+    assert len(master.statements) == 1
+    assert "public.users" in str(master.statements[0]).lower()

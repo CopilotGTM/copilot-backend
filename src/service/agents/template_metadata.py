@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from src.api.schemas.agent_models import (
+from src.contracts.agent_models import (
     AgentCreateRequest,
     AgentTemplateDetail,
     AgentTemplateSummary,
@@ -21,7 +21,7 @@ DEAL_STAGE_HEALTH_REVIEW_TEMPLATE_ID = UUID("6e2f986d-3db4-4bf8-8e75-8fa596aa010
 
 _DEAL_STAGE_HEALTH_REVIEW = AgentTemplateDetail(
     template_id=DEAL_STAGE_HEALTH_REVIEW_TEMPLATE_ID,
-    version=1,
+    version=2,
     slug="deal-stage-health-review",
     name="Deal Stage Health Review",
     description=(
@@ -30,7 +30,7 @@ _DEAL_STAGE_HEALTH_REVIEW = AgentTemplateDetail(
     ),
     agent_type="general",
     model_name=None,
-    agent_model_config={"temperature": 0.1},
+    agent_model_config={},
     allowed_tools=[
         "get_deal_details",
         "get_deal_change_history",
@@ -78,58 +78,8 @@ _DEAL_STAGE_HEALTH_REVIEW = AgentTemplateDetail(
         },
         "additionalProperties": False,
     },
-    output_mode=AgentOutputMode.JSON,
-    output_schema={
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "required": [
-            "overall_health",
-            "summary",
-            "confidence",
-            "risks",
-            "recommended_actions",
-        ],
-        "properties": {
-            "overall_health": {
-                "type": "string",
-                "enum": ["Green", "Yellow", "Red"],
-            },
-            "summary": {"type": "string"},
-            "confidence": {
-                "type": "string",
-                "enum": ["High", "Medium", "Low"],
-            },
-            "risks": {
-                "type": "array",
-                "maxItems": 3,
-                "items": {
-                    "type": "object",
-                    "required": ["title", "evidence", "mitigation"],
-                    "properties": {
-                        "title": {"type": "string"},
-                        "evidence": {"type": "string"},
-                        "mitigation": {"type": "string"},
-                    },
-                    "additionalProperties": False,
-                },
-            },
-            "recommended_actions": {
-                "type": "array",
-                "maxItems": 5,
-                "items": {
-                    "type": "object",
-                    "required": ["priority", "action", "reason"],
-                    "properties": {
-                        "priority": {"type": "integer", "minimum": 1, "maximum": 5},
-                        "action": {"type": "string"},
-                        "reason": {"type": "string"},
-                    },
-                    "additionalProperties": False,
-                },
-            },
-        },
-        "additionalProperties": False,
-    },
+    output_mode=AgentOutputMode.TEXT,
+    output_schema=None,
     prompt=(
         "You are a sales deal-health reviewer running automatically after a CRM deal "
         "stage change. Use the deal identity and stage-change event supplied in the run "
@@ -138,8 +88,8 @@ _DEAL_STAGE_HEALTH_REVIEW = AgentTemplateDetail(
         "important risks, and recommend the next best actions for the deal owner. Never "
         "change CRM data, create tasks, send email, or contact anyone. Never invent "
         "missing facts; identify missing evidence explicitly and reduce confidence. "
-        "Return only JSON matching the configured output schema. Do not expose internal "
-        "UUIDs in narrative fields."
+        "Return a concise Markdown assessment. Do not expose internal UUIDs in "
+        "narrative fields."
     ),
     published_at=datetime(2026, 7, 14, tzinfo=UTC),
 )

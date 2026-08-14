@@ -231,7 +231,7 @@ class LeadReadService:
         level: LeadAccessLevel = "view",
     ) -> CRMLead:
         try:
-            lead, _decision = await self._access.require_lead(lead_id, level)
+            lead = await self._access.require_lead(lead_id, level)
         except CRMRecordAccessError as exc:
             raise LeadServiceError(exc.message, status_code=exc.status_code) from exc
         return cast(CRMLead, lead)

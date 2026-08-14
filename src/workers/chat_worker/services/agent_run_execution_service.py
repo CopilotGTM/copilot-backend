@@ -369,7 +369,11 @@ class AgentRunExecutionService:
             ).scalar_one_or_none()
             if target_id is None:
                 raise RuntimeAuthorityError("agent target is not currently executable")
-            await self._ensure_subject_authority(session, envelope)
+            await self._ensure_subject_authority(
+                session,
+                envelope,
+                principal_email=user_email,
+            )
 
         return AgentContext(
             organisation_id=envelope.organisation_id,
@@ -401,6 +405,8 @@ class AgentRunExecutionService:
     async def _ensure_subject_authority(
         session: AsyncSession,
         envelope: AgentRunRuntimeEnvelope,
+        *,
+        principal_email: str | None = None,
     ) -> None:
         """Fail closed when a supported subject is gone or no longer in personal scope."""
 
@@ -412,11 +418,14 @@ class AgentRunExecutionService:
             raise RuntimeAuthorityError("event subject identity is not a UUID") from exc
 
         principal_id = envelope.principal_user_id
-        crm_user_ids = (
-            crm_user_ids_for_principal(envelope.organisation_id, principal_id)
-            if principal_id is not None
-            else None
-        )
+        crm_user_ids = set()
+        if principal_id is not None and envelope.subject_type in {"deal", "contact", "account"}:
+            crm_user_ids = await crm_user_ids_for_principal(
+                session,
+                envelope.organisation_id,
+                principal_id,
+                principal_email=principal_email,
+            )
         if envelope.subject_type == "deal":
             conditions = [
                 col(CRMDeal.organisation_id) == envelope.organisation_id,

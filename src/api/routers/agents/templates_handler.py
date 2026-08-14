@@ -16,14 +16,14 @@ from fastapi import status as http_status
 from src.api.dependencies.organisation_dependencies import UserIDs, get_current_user
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
 from src.api.routers.agents.definitions_handler import get_agent_definition_service
-from src.api.schemas.agent_models import (
+from src.api.schemas.base_models import GenericResponse
+from src.api.utils.http_response import Response
+from src.contracts.agent_models import (
     AgentDetail,
     AgentTemplateDetail,
     AgentTemplateListResponse,
     UseAgentTemplateRequest,
 )
-from src.api.schemas.base_models import GenericResponse
-from src.api.utils.http_response import Response
 from src.infra.utils.logger import get_logger
 from src.service.agents.definition_service import AgentDefinitionService
 from src.service.agents.errors import AgentServiceError

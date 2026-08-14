@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
-from src.api.schemas.automation_trigger_models import (
+from src.contracts.automation_trigger_models import (
     AutomationTriggerCreateRequest,
     AutomationTriggerOptionResolveRequest,
     AutomationTriggerOptionSearchRequest,
