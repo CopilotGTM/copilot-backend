@@ -239,6 +239,9 @@ def test_runtime_role_is_fail_closed_and_pool_safe() -> None:
             ).scalar_one() == 0
 
         with admin.connect() as connection, connection.begin():
+            connection.execute(
+                text("SET LOCAL search_path TO tenant_data, extensions, public")
+            )
             validate_tenant_runtime_catalog(
                 connection,  # type: ignore[arg-type]
                 runtime_role="app_tenant_runtime",

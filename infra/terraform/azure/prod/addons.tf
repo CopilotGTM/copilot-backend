@@ -97,6 +97,11 @@ resource "helm_release" "keda" {
 
   set = [
     {
+      # Autoscaling must remain available when application Pods exhaust CPU.
+      name  = "priorityClassName"
+      value = "system-cluster-critical"
+    },
+    {
       name  = "resources.operator.requests.cpu"
       value = "100m"
     },

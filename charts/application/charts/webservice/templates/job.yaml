@@ -36,8 +36,12 @@ spec:
             {{- toYaml $jobConfig.command | nindent 12 }}
           args:
             {{- toYaml $jobConfig.args | nindent 12 }}
-          {{- if $.Values.workloadIdentity.clientId }}
+          {{- if or $.Values.workloadIdentity.clientId $jobConfig.env }}
           env:
+            {{- with $jobConfig.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- if $.Values.workloadIdentity.clientId }}
             - name: AZURE_CLIENT_ID
               value: {{ $.Values.workloadIdentity.clientId | quote }}
             {{- if $.Values.workloadIdentity.tenantId }}
@@ -46,6 +50,7 @@ spec:
             {{- end }}
             - name: AZURE_ADDITIONALLY_ALLOWED_TENANTS
               value: "*"
+            {{- end }}
           {{- end }}
           envFrom:
             - secretRef:
