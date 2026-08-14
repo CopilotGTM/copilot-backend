@@ -388,7 +388,7 @@ def test_chat_worker_renders_ten_async_compatible_slots() -> None:
 
 
 def test_prod_integrations_and_deal_workers_render_async_slots() -> None:
-    """I/O workers must use bounded threads while preserving measured resources."""
+    """I/O workers must use bounded threads with production-sized resources."""
     manifests = _render_all_manifests("charts/application/values-prod.yaml")
     deal_deployment = next(
         doc
@@ -425,7 +425,7 @@ def test_prod_integrations_and_deal_workers_render_async_slots() -> None:
     assert "--pool=threads" in integrations_command
     assert not any("per-child" in argument for argument in integrations_command)
     assert integrations_deployment["spec"]["template"]["spec"]["containers"][0]["resources"] == {
-        "requests": {"cpu": "500m", "memory": "1Gi"},
+        "requests": {"cpu": "250m", "memory": "1Gi"},
         "limits": {"cpu": "1000m", "memory": "2Gi"},
     }
     assert "--concurrency=4" in commands["copilot-backend-deal-worker"]
@@ -440,6 +440,20 @@ def test_prod_integrations_and_deal_workers_render_async_slots() -> None:
         "requests": {"cpu": "500m", "memory": "1Gi"},
         "limits": {"cpu": "1500m", "memory": "2Gi"},
     }
+
+
+def test_prod_api_renders_right_sized_cpu_request_with_burst_capacity() -> None:
+    manifests = _render_all_manifests("charts/application/values-prod.yaml")
+    deployment = next(
+        doc
+        for doc in manifests
+        if doc.get("kind") == "Deployment" and doc["metadata"]["name"] == "copilot-backend"
+    )
+
+    resources = deployment["spec"]["template"]["spec"]["containers"][0]["resources"]
+
+    assert resources["requests"] == {"cpu": "250m", "memory": "1Gi"}
+    assert resources["limits"] == {"cpu": "1500m", "memory": "6Gi"}
 
 
 def test_dev_deal_workers_render_measured_memory_requests() -> None:
