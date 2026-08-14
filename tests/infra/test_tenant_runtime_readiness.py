@@ -28,7 +28,7 @@ class _SyncSession:
         self.statements: list[tuple[str, object]] = []
 
     def execute(self, statement, parameters=None):  # noqa: ANN001
-        """Record both the read-only preamble and parameterized catalog query."""
+        """Record the transaction preamble and parameterized catalog query."""
 
         self.statements.append((str(statement), parameters))
         return _ScalarResult(()) if parameters is None else _ScalarResult(self.failures)
@@ -45,7 +45,8 @@ def test_catalog_gate_checks_the_complete_runtime_boundary() -> None:
     )
 
     assert session.statements[0][0] == "SET TRANSACTION READ ONLY"
-    sql, parameters = session.statements[1]
+    assert session.statements[1][0] == "SET LOCAL search_path TO pg_catalog"
+    sql, parameters = session.statements[2]
     assert parameters == {
         "schema": "tenant_data",
         "runtime_role": "app_tenant_runtime",
@@ -92,6 +93,7 @@ async def test_async_catalog_gate_has_identical_failure_behavior() -> None:
     session = AsyncMock()
     session.execute.side_effect = (
         _ScalarResult(()),
+        _ScalarResult(()),
         _ScalarResult(("context function: missing or unsafe",)),
     )
 
@@ -101,4 +103,7 @@ async def test_async_catalog_gate_has_identical_failure_behavior() -> None:
             runtime_role="app_tenant_runtime",
         )
 
-    assert session.execute.await_count == 2
+    assert session.execute.await_count == 3
+    assert str(session.execute.await_args_list[1].args[0]) == (
+        "SET LOCAL search_path TO pg_catalog"
+    )

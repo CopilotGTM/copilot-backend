@@ -5,6 +5,9 @@ PIPELINE_PATHS = [
     Path(".azure-pipelines/azure-backend-pipeline-prod.yml"),
 ]
 CHART_VALUES_PATH = Path("charts/application/values.yaml")
+WORKER_VALUES_PATH = Path("charts/application/charts/worker/values.yaml")
+WEBSERVICE_JOB_PATH = Path("charts/application/charts/webservice/templates/job.yaml")
+PROD_VALUES_PATH = Path("charts/application/values-prod.yaml")
 STARTUP_SCRIPT_PATH = Path("scripts/startup.sh")
 PROD_PIPELINE_PATH = Path(".azure-pipelines/azure-backend-pipeline-prod.yml")
 LOCAL_DEPLOY_PATH = Path("scripts/deployment/local-deploy.ps1")
@@ -81,8 +84,6 @@ def test_deploy_paths_reuse_integrations_image_for_shared_salesforce_worker() ->
         assert "wait_if_present copilot-backend-salesforce-cdc-worker" in pipeline_text, (
             pipeline_path
         )
-        assert "grep '^pod/copilot-backend-salesforce-cdc-worker-'" in pipeline_text, pipeline_path
-
     local_deploy_text = LOCAL_DEPLOY_PATH.read_text(encoding="utf-8")
     assert "salesforce-cdc-worker.image.repository=$integrationsRepo" in local_deploy_text
     assert "salesforce-cdc-worker.image.tag=$IMAGE_TAG" in local_deploy_text
@@ -99,17 +100,38 @@ def test_backend_pipelines_use_only_the_master_key_vault_url() -> None:
         assert "AZURE_MASTER_KEY_VAULT_URL" in pipeline_text, pipeline_path
 
 
-def test_backend_pipelines_capture_chat_worker_rollout_diagnostics() -> None:
+def test_backend_pipelines_capture_the_failed_deployment_diagnostics() -> None:
     for pipeline_path in PIPELINE_PATHS:
         pipeline_text = pipeline_path.read_text(encoding="utf-8")
 
         assert "copilot-backend-chat-worker) timeout_seconds=600" in pipeline_text, pipeline_path
-        assert "kubectl get pods -n copilotgtm -l app.kubernetes.io/name=worker" in (
-            pipeline_text
-        ), pipeline_path
-        assert "grep '^pod/copilot-backend-chat-worker-'" in pipeline_text, pipeline_path
+        assert "set -Eeuo pipefail" in pipeline_text, pipeline_path
+        assert "dump_deployment_diagnostics()" in pipeline_text, pipeline_path
+        assert "spec.selector.matchLabels" in pipeline_text, pipeline_path
+        assert 'kubectl get pods -n copilotgtm -l "$selector"' in pipeline_text, pipeline_path
+        assert 'dump_deployment_diagnostics "$deployment_name"' in pipeline_text, pipeline_path
         assert 'kubectl describe pod -n copilotgtm "$pod"' in pipeline_text, pipeline_path
         assert 'kubectl logs -n copilotgtm "$pod" --all-containers' in pipeline_text, pipeline_path
+        assert "--previous --timestamps" in pipeline_text, pipeline_path
+        assert "kubectl get events -n copilotgtm --sort-by=.lastTimestamp" in (pipeline_text), (
+            pipeline_path
+        )
+
+
+def test_prod_startup_job_uses_direct_postgresql_only_for_migrations() -> None:
+    template_text = WEBSERVICE_JOB_PATH.read_text(encoding="utf-8")
+    prod_values_text = PROD_VALUES_PATH.read_text(encoding="utf-8")
+
+    assert "with $jobConfig.env" in template_text
+    assert "MIGRATION_DATABASE_PORT" in prod_values_text
+    assert 'value: "5432"' in prod_values_text
+
+
+def test_queue_workers_roll_without_requesting_surge_capacity() -> None:
+    worker_values_text = WORKER_VALUES_PATH.read_text(encoding="utf-8")
+
+    assert "maxSurge: 0" in worker_values_text
+    assert "maxUnavailable: 1" in worker_values_text
 
 
 def test_startup_migration_hook_runs_before_upgrade_rollout() -> None:

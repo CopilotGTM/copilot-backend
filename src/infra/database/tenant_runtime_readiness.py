@@ -369,6 +369,9 @@ def validate_tenant_runtime_catalog(
     try:
         if set_read_only:
             session.execute(text("SET TRANSACTION READ ONLY"))
+        # pg_get_expr output follows search_path, which pooled connections may
+        # inherit from an earlier session. Keep this catalog comparison local.
+        session.execute(text("SET LOCAL search_path TO pg_catalog"))
         failures = session.execute(
             _CATALOG_FAILURES_SQL,
             {"schema": schema, "runtime_role": runtime_role},
@@ -403,6 +406,8 @@ async def validate_tenant_runtime_catalog_async(
     try:
         if set_read_only:
             await session.execute(text("SET TRANSACTION READ ONLY"))
+        # Match the synchronous gate when PgBouncer reuses backend sessions.
+        await session.execute(text("SET LOCAL search_path TO pg_catalog"))
         result = await session.execute(
             _CATALOG_FAILURES_SQL,
             {"schema": schema, "runtime_role": runtime_role},

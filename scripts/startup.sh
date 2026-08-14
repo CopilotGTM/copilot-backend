@@ -10,6 +10,13 @@ fi
 echo "[startup] Working directory: $(pwd)"
 echo "[startup] Listing scripts directory:"; ls -al scripts || true
 
+if [ -n "${MIGRATION_DATABASE_PORT:-}" ]; then
+    # Migrations keep session state across commit boundaries, so they must use
+    # PostgreSQL directly instead of a transaction-pooled PgBouncer connection.
+    export DATABASE_PORT="$MIGRATION_DATABASE_PORT"
+    unset DATABASE_URL
+fi
+
 echo "[startup] Running master database migrations..."
 python -m scripts.run_master_migrations || {
     echo "[startup][ERROR] Master migrations failed" >&2
@@ -19,6 +26,12 @@ python -m scripts.run_master_migrations || {
 echo "[startup] Running organization migrations against tenant_data..."
 python -m scripts.run_org_migrations --schema tenant_data || {
     echo "[startup][ERROR] Organization migrations failed" >&2
+    exit 1
+}
+
+echo "[startup] Validating the shared tenant runtime catalog..."
+python -c 'import os; from src.infra.database.tenant_runtime_readiness import validate_current_tenant_runtime_catalog; validate_current_tenant_runtime_catalog(runtime_role=os.environ["TENANT_DATABASE_USER"])' || {
+    echo "[startup][ERROR] Shared tenant runtime catalog validation failed" >&2
     exit 1
 }
 
