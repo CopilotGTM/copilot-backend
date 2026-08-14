@@ -4,7 +4,7 @@
 
 **Goal:** Make production releases deterministic when PgBouncer reuses sessions, prevent migration state from leaking into application connections, avoid worker rollout CPU deadlocks, and emit useful diagnostics for the exact deployment that fails.
 
-**Architecture:** Keep normal application connections on PgBouncer port 6432, but override only the Helm startup migration Job to PostgreSQL port 5432. Make the catalog validator independent of ambient session state with a transaction-local `pg_catalog` search path. Validate the live catalog immediately after migrations, roll queue workers without surge, and capture failed-deployment diagnostics directly rather than depending on a shell `ERR` trap crossing function boundaries.
+**Architecture:** Keep normal application connections on PgBouncer port 6432, but override only the Helm startup migration Job to PostgreSQL port 5432. Make the catalog validator independent of ambient session state with a transaction-local `pg_catalog` search path. Validate the live catalog immediately after migrations, roll queue workers without surge, preserve one autoscaler node of headroom, protect KEDA with cluster-critical priority, and capture failed-deployment diagnostics directly rather than depending on a shell `ERR` trap crossing function boundaries.
 
 **Tech Stack:** Python 3.12, SQLAlchemy, PostgreSQL, Alembic, pytest, Helm, Kubernetes, Azure Pipelines, Bash.
 
@@ -46,10 +46,15 @@
 **Files:**
 - Modify: `tests/scripts/test_backend_pipeline_deploy.py`
 - Modify: `charts/application/charts/worker/values.yaml`
+- Add: `tests/infra/test_prod_aks_capacity.py`
+- Modify: `infra/terraform/azure/prod/terraform.tfvars`
+- Modify: `infra/terraform/azure/prod/addons.tf`
 
 - [ ] Add a chart contract test requiring queue-worker rolling updates to use `maxSurge: 0` and `maxUnavailable: 1`.
 - [ ] Confirm the test fails against the current worker default.
 - [ ] Change the worker subchart default to replacement-first rolling updates. Celery queues remain durable and the existing graceful shutdown path drains terminating workers; API replicas retain their separate zero-unavailable strategy.
+- [ ] Raise the production node-pool autoscaler ceiling from three to four so steady workload demand can trigger one headroom node.
+- [ ] Assign KEDA's operator, metrics server, and admission webhook the existing `system-cluster-critical` priority so application workers cannot preempt the autoscaling control plane.
 - [ ] Render the production chart and verify every worker Deployment has the bounded strategy while the API remains `maxSurge: 1`, `maxUnavailable: 0`.
 
 ## Task 4: Capture diagnostics for whichever deployment fails
@@ -82,6 +87,7 @@
 
 - [ ] Before any mutation, re-read Helm status/history, workload images/readiness, pending Pods/events, and pipeline state using only `--context copilot-gtm-aks-prod`.
 - [ ] Ask for fresh approval naming the exact recovery actions: resolve the pending Helm rollback if still present, recycle any PgBouncer backend sessions only if contamination remains, and deploy the merged release.
+- [ ] Include the Terraform-backed node-pool maximum of four in the approved recovery and wait for KEDA's three control-plane Pods and external metrics APIService to become Ready before deploying the application.
 - [ ] Do not reverse migrations 087/088; they completed successfully and Helm rollback does not roll database schema backward.
 - [ ] Run the approved recovery actions one at a time and capture task/revision identifiers.
 - [ ] Verify Helm reaches a terminal deployed revision, startup Job passes, all API/worker Deployments finish on one intended image, Pods are Ready without crash loops or unschedulable events, and the live runtime catalog gate passes.
