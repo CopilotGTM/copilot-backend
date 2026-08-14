@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
-from src.api.schemas.agent_models import (
+from src.contracts.agent_models import (
     AgentCapabilitiesUpdateRequest,
     AgentCreateRequest,
     AgentOutputDeliveryUpdateRequest,

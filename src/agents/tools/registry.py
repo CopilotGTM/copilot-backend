@@ -28,6 +28,7 @@ class ToolCategory(str, Enum):
     CALENDAR = "calendar"
     COMMUNICATION = "communication"
     REMINDERS = "reminders"
+    AGENTS = "agents"
 
 
 class ToolName(str, Enum):
@@ -178,6 +179,11 @@ class ToolName(str, Enum):
     LIST_REMINDERS = "list_reminders"
     CANCEL_REMINDER = "cancel_reminder"
 
+    # GeneralAgent-only control-plane tools. These stay outside the selectable
+    # GENERAL_AGENT_TOOLS boundary so configured agents cannot recurse.
+    INSPECT_AGENT_BUILDER = "inspect_agent_builder"
+    CHANGE_AGENT_BUILDER = "change_agent_builder"
+
 
 REMINDER_MANAGEMENT_TOOLS = {
     ToolName.CREATE_REMINDER,
@@ -240,6 +246,7 @@ MUTATING_TOOLS = {
     ToolName.CREATE_REMINDER,
     ToolName.UPDATE_REMINDER,
     ToolName.CANCEL_REMINDER,
+    ToolName.CHANGE_AGENT_BUILDER,
 }
 WHATSAPP_MUTATING_TOOLS = MUTATING_TOOLS
 
@@ -278,6 +285,8 @@ CHANNEL_ONLY_TOOLS: dict[ToolName, set[str]] = {
     ToolName.SEND_EMAIL: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.SAVE_EMAIL_DRAFT: {"teams", "slack", "whatsapp", "web", "voice"},
     ToolName.SEND_EMAIL_DRAFT: {"teams", "slack", "whatsapp", "web", "voice"},
+    ToolName.INSPECT_AGENT_BUILDER: {"web"},
+    ToolName.CHANGE_AGENT_BUILDER: {"web"},
 }
 
 
@@ -373,13 +382,18 @@ GENERAL_AGENT_TOOLS: set[ToolName] = {
     ToolName.CANCEL_CALENDAR_MEETING,
 }
 
+GENERAL_AGENT_MANAGEMENT_TOOLS = {
+    ToolName.INSPECT_AGENT_BUILDER,
+    ToolName.CHANGE_AGENT_BUILDER,
+}
+
 AGENT_TOOLS: dict[str, set[ToolName]] = {
     # -------------------------------------------------------------------------
     # GeneralAgent - Chat Agent
     # Location: src/agents/workflows/general/agent.py
     # Purpose: Primary chat interface that handles user queries in the chat UI.
     # -------------------------------------------------------------------------
-    "GeneralAgent": set(GENERAL_AGENT_TOOLS),
+    "GeneralAgent": set(GENERAL_AGENT_TOOLS | GENERAL_AGENT_MANAGEMENT_TOOLS),
     # -------------------------------------------------------------------------
     # VoiceRealtimeAgent - Realtime voice workflow
     # Location: src/agents/workflows/voice_realtime/agent.py
@@ -675,6 +689,9 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.UPDATE_REMINDER: ToolCategory.REMINDERS,
     ToolName.LIST_REMINDERS: ToolCategory.REMINDERS,
     ToolName.CANCEL_REMINDER: ToolCategory.REMINDERS,
+    # Human chat control plane
+    ToolName.INSPECT_AGENT_BUILDER: ToolCategory.AGENTS,
+    ToolName.CHANGE_AGENT_BUILDER: ToolCategory.AGENTS,
 }
 
 
@@ -706,6 +723,10 @@ class ToolRegistry:
     def _register_tool_factories(self) -> None:
         """Register all available tool factories."""
         # Import here to avoid circular imports across tool modules and registry.
+        from src.agents.tools.agent_builder import (
+            create_change_agent_builder,
+            create_inspect_agent_builder,
+        )
         from src.agents.tools.calendar import (
             create_cancel_calendar_meeting,
             create_send_calendar_invite,
@@ -805,6 +826,12 @@ class ToolRegistry:
         )
         self._tool_factories[ToolName.SEARCH_INTERNET] = lambda: create_search_internet(
             self.capabilities_getter
+        )
+        self._tool_factories[ToolName.INSPECT_AGENT_BUILDER] = lambda: create_inspect_agent_builder(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.CHANGE_AGENT_BUILDER] = lambda: create_change_agent_builder(
+            self.context, self.capabilities_getter
         )
 
         # CRM/Deal tools
@@ -1189,6 +1216,7 @@ __all__ = [
     "ToolRegistry",
     "AGENT_TOOLS",
     "GENERAL_AGENT_TOOLS",
+    "GENERAL_AGENT_MANAGEMENT_TOOLS",
     "TOOL_CATEGORIES",
     "REMINDER_MANAGEMENT_TOOLS",
     "VOICE_REALTIME_WRITE_EXCLUDED_TOOLS",

@@ -5,7 +5,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
-from src.api.schemas.automation_trigger_models import (
+from src.contracts.automation_trigger_models import (
     TriggerCatalogPipelineOption,
     TriggerCatalogStageOption,
 )

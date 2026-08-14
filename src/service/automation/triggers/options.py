@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
@@ -27,6 +28,7 @@ from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.domain.models.organisation_tables.sync.meeting_intelligence import Meeting, MeetingSource
+from src.infra.database.sessions import acquire_master_async_session
 from src.service.automation.triggers.crm_schema import active_custom_field_options
 from src.service.automation.triggers.direct import (
     ManualInvocationAccess,
@@ -35,7 +37,7 @@ from src.service.automation.triggers.direct import (
 )
 
 if TYPE_CHECKING:
-    from src.api.schemas.automation_trigger_models import TriggerCatalogPipelineOption
+    from src.contracts.automation_trigger_models import TriggerCatalogPipelineOption
 
 
 _EMAIL_INTEGRATION_TYPES = (
@@ -89,14 +91,30 @@ class TriggerOptionRecord:
 class AutomationTriggerOptionAccess:
     """Read only non-deleted CRM metadata inside one organization."""
 
-    def __init__(self, session: AsyncSession, organisation_id: UUID) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        organisation_id: UUID,
+        *,
+        master_session_scope: Callable[[], AsyncIterator[AsyncSession]] = (
+            acquire_master_async_session
+        ),
+    ) -> None:
         self.session = session
         self.organisation_id = organisation_id
+        self.master_session_scope = master_session_scope
+
+    async def _execute_master(self, statement: Any) -> Any:
+        """Execute a master-table statement without granting that access to the tenant role."""
+
+        async for session in self.master_session_scope():
+            return await session.execute(statement)
+        raise RuntimeError("master session scope yielded no session")
 
     async def list_pipelines(self) -> list[TriggerCatalogPipelineOption]:
         """Return pipelines and stages for trigger-builder option rendering."""
 
-        from src.api.schemas.automation_trigger_models import (
+        from src.contracts.automation_trigger_models import (
             TriggerCatalogPipelineOption,
             TriggerCatalogStageOption,
         )
@@ -239,8 +257,8 @@ class AutomationTriggerOptionAccess:
             statement = select(columns.user_id).where(
                 columns.organisation_id == self.organisation_id,
                 columns.user_id.in_(identifiers),
-                columns.status == SupabaseUserStatus.ACTIVE.value,
-                columns.admin_status == AdminUserStatus.APPROVED.value,
+                columns.status == SupabaseUserStatus.ACTIVE,
+                columns.admin_status == AdminUserStatus.APPROVED,
             )
         elif source == "automation_triggers":
             columns = cast(Any, AutomationTrigger).__table__.c
@@ -269,7 +287,12 @@ class AutomationTriggerOptionAccess:
             )
         else:
             raise ValueError(f"Unsupported trigger option source: {source}")
-        found = set((await self.session.execute(statement)).scalars().all())
+        result = (
+            await self._execute_master(statement)
+            if source == "organisation_users"
+            else await self.session.execute(statement)
+        )
+        found = set(result.scalars().all())
         if found != identifiers:
             raise ValueError(f"Unknown {source} option")
         return
@@ -311,9 +334,11 @@ class AutomationTriggerOptionAccess:
             if not organisation_scope:
                 # Personal bindings may select only records owned by the resolved
                 # principal (or created by it for deals), not arbitrary tenant rows.
-                crm_user_ids = crm_user_ids_for_principal(
+                crm_user_ids = await crm_user_ids_for_principal(
+                    self.session,
                     self.organisation_id,
                     principal_id,
+                    master_session_scope=self.master_session_scope,
                 )
                 ownership = columns.owner_id.in_(crm_user_ids)
                 if source == "deals":
@@ -379,7 +404,7 @@ class AutomationTriggerOptionAccess:
         elif source == "meeting_languages":
             page = await self._search_meeting_languages(query, limit, offset)
         else:
-            statement, formatter = self._option_statement(
+            statement, formatter = await self._option_statement(
                 source,
                 values=None,
                 query=query,
@@ -388,11 +413,13 @@ class AutomationTriggerOptionAccess:
                 organisation_scope=organisation_scope,
                 authority_scoped=authority_scoped,
             )
-            rows = list(
-                (await self.session.execute(statement.limit(limit + 1).offset(offset)))
-                .scalars()
-                .all()
+            paged_statement = statement.limit(limit + 1).offset(offset)
+            result = (
+                await self._execute_master(paged_statement)
+                if source == "organisation_users"
+                else await self.session.execute(paged_statement)
             )
+            rows = list(result.scalars().all())
             page = [formatter(row, True) for row in rows]
         has_more = len(page) > limit
         return page[:limit], offset + limit if has_more else None
@@ -424,7 +451,7 @@ class AutomationTriggerOptionAccess:
             identifiers = {UUID(value) for value in values}
         except ValueError as exc:
             raise ValueError(f"{source} values must be UUIDs") from exc
-        statement, formatter = self._option_statement(
+        statement, formatter = await self._option_statement(
             source,
             values=identifiers,
             query="",
@@ -433,14 +460,19 @@ class AutomationTriggerOptionAccess:
             organisation_scope=organisation_scope,
             authority_scoped=authority_scoped,
         )
-        rows = list((await self.session.execute(statement)).scalars().all())
+        result = (
+            await self._execute_master(statement)
+            if source == "organisation_users"
+            else await self.session.execute(statement)
+        )
+        rows = list(result.scalars().all())
         resolved = []
         for row in rows:
             active = self._row_is_selectable(source, row)
             resolved.append(formatter(row, active))
         return {item.value: item for item in resolved}
 
-    def _option_statement(
+    async def _option_statement(
         self,
         source: str,
         *,
@@ -451,7 +483,7 @@ class AutomationTriggerOptionAccess:
         organisation_scope: bool,
         authority_scoped: bool,
     ) -> tuple[Any, Any]:
-        """Build the one tenant query for a registry-owned option source."""
+        """Build one database-specific query for a registry-owned option source."""
 
         # Every dynamic source starts with the organization predicate; authority
         # narrowing is added only after that immutable tenant boundary is present.
@@ -472,9 +504,11 @@ class AutomationTriggerOptionAccess:
             if active_only:
                 conditions.append(columns.is_deleted.is_(False))
             if authority_scoped and not organisation_scope:
-                crm_user_ids = crm_user_ids_for_principal(
+                crm_user_ids = await crm_user_ids_for_principal(
+                    self.session,
                     self.organisation_id,
                     principal_id,
+                    master_session_scope=self.master_session_scope,
                 )
                 ownership = columns.owner_id.in_(crm_user_ids)
                 if source == "deals":
@@ -529,8 +563,8 @@ class AutomationTriggerOptionAccess:
             if active_only:
                 conditions.extend(
                     [
-                        columns.status == SupabaseUserStatus.ACTIVE.value,
-                        columns.admin_status == AdminUserStatus.APPROVED.value,
+                        columns.status == SupabaseUserStatus.ACTIVE,
+                        columns.admin_status == AdminUserStatus.APPROVED,
                     ]
                 )
             formatter = self._format_organisation_user
@@ -800,7 +834,7 @@ class AutomationTriggerOptionAccess:
             return
         found = set(
             (
-                await self.session.execute(
+                await self._execute_master(
                     select(col(User.user_id)).where(
                         col(User.organisation_id) == self.organisation_id,
                         col(User.user_id).in_(user_ids),
@@ -827,6 +861,7 @@ class AutomationTriggerOptionAccess:
         records = await ManualInvocationAccess(
             self.session,
             self.organisation_id,
+            master_session_scope=self.master_session_scope,
         ).load_subject_records(
             subjects,
             principal_id=principal_id,

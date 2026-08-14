@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from typing import Literal, cast
 
-from src.api.schemas.automation_trigger_models import (
+from src.contracts.automation_trigger_models import (
     AutomationTriggerCatalog,
     AutomationTriggerCatalogLimits,
     AutomationTriggerOptionSets,

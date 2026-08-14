@@ -50,7 +50,11 @@ class TriggerActivationAccess:
         self.session = session
         self.organisation_id = organisation_id
         self.master_session_scope = master_session_scope
-        self.options = AutomationTriggerOptionAccess(session, organisation_id)
+        self.options = AutomationTriggerOptionAccess(
+            session,
+            organisation_id,
+            master_session_scope=master_session_scope,
+        )
 
     async def list_event_candidates(self, event_key: str) -> list[AutomationTrigger]:
         """Return active match bindings selected by the event-key GIN projection."""

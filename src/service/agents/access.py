@@ -12,7 +12,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.domain.models.organisation_tables import AgentStatus, UserAgent
+from src.domain.models.organisation_tables import AgentSourceType, AgentStatus, UserAgent
 
 _MUTABLE_COLUMN_NAMES = {
     "name",
@@ -77,6 +77,24 @@ class AgentDefinitionAccess:
         )
         rows = list((await self.session.execute(statement)).scalars().all())
         return rows, total_count
+
+    async def list_template_copies(self, template_ids: set[UUID]) -> list[UserAgent]:
+        """Return this owner's live agents copied from the requested system templates."""
+
+        if not template_ids:
+            return []
+        columns = cast(Any, UserAgent).__table__.c
+        statement = (
+            select(UserAgent)
+            .where(
+                *self._owned_conditions(),
+                columns.status != AgentStatus.ARCHIVED.value,
+                columns.source_type == AgentSourceType.SYSTEM.value,
+                columns.source_agent_id.in_(template_ids),
+            )
+            .order_by(columns.updated_at.desc(), columns.agent_id.desc())
+        )
+        return list((await self.session.execute(statement)).scalars().all())
 
     async def get_agent(
         self,

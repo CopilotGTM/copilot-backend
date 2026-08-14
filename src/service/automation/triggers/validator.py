@@ -9,7 +9,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from pydantic import ValidationError
-from src.api.schemas.automation_trigger_models import AutomationTriggerDefinitionBase
+from src.contracts.automation_trigger_models import AutomationTriggerDefinitionBase
 from src.domain.models.organisation_tables import (
     AutomationAudienceMode,
     AutomationPrincipalType,

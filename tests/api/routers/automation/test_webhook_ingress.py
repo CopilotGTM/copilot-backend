@@ -11,7 +11,7 @@ from src.api.routers.automation.triggers_handler import (
     receive_automation_webhook,
     rotate_agent_webhook_secret,
 )
-from src.api.schemas.automation_trigger_models import (
+from src.contracts.automation_trigger_models import (
     AutomationWebhookCredentials,
     AutomationWebhookIngressResponse,
     AutomationWebhookRotateRequest,

@@ -25,6 +25,9 @@ class ScalarResult:
     def all(self) -> list[Any]:
         return self.values
 
+    def scalar_one_or_none(self) -> Any | None:
+        return self.values[0] if self.values else None
+
 
 class RecordingSession:
     def __init__(self, results: list[list[Any]]) -> None:
@@ -34,6 +37,15 @@ class RecordingSession:
     async def execute(self, statement: Any) -> ScalarResult:
         self.statements.append(statement)
         return ScalarResult(next(self.results))
+
+
+def session_scope(session: RecordingSession):
+    """Yield one recording session through the production async-session contract."""
+
+    async def scope():
+        yield session
+
+    return scope()
 
 
 def sql(statement: Any) -> str:
@@ -59,11 +71,14 @@ async def test_crm_source_selection_uses_the_execution_authority(
     personal_fragments: tuple[str, ...],
 ) -> None:
     organisation_id, principal_id, record_id = uuid4(), uuid4(), uuid4()
-    personal_session = RecordingSession([[record_id]])
+    crm_owner_id = uuid4()
+    personal_session = RecordingSession([[crm_owner_id], [record_id]])
+    master_session = RecordingSession([["owner@example.com"]])
 
     await AutomationTriggerOptionAccess(
         personal_session,  # type: ignore[arg-type]
         organisation_id,
+        master_session_scope=lambda: session_scope(master_session),
     ).validate_source_selection(
         source,
         {str(record_id)},
@@ -71,12 +86,16 @@ async def test_crm_source_selection_uses_the_execution_authority(
         organisation_scope=False,
     )
 
-    personal_sql = sql(personal_session.statements[0])
+    master_sql = sql(master_session.statements[0])
+    crm_user_sql = sql(personal_session.statements[0])
+    personal_sql = sql(personal_session.statements[1])
+    assert "public.users" in master_sql
+    assert "public.users" not in crm_user_sql
+    assert "public.users" not in personal_sql
     assert identity_column in personal_sql
     assert "organisation_id" in personal_sql
     assert "is_deleted is false" in personal_sql
-    assert "crm_users.user_id" in personal_sql
-    assert "public.users.email" in personal_sql
+    assert "crm_users.user_id" in crm_user_sql
     assert all(fragment in personal_sql for fragment in personal_fragments)
 
     organisation_session = RecordingSession([[record_id]])
@@ -157,12 +176,14 @@ async def test_agent_source_selection_requires_active_accessible_agent() -> None
 
 @pytest.mark.asyncio
 async def test_source_selection_rejects_foreign_inactive_or_missing_values() -> None:
-    session = RecordingSession([[]])
+    session = RecordingSession([[], []])
+    master_session = RecordingSession([["owner@example.com"]])
 
     with pytest.raises(ValueError, match="Unknown or unavailable"):
         await AutomationTriggerOptionAccess(
             session,  # type: ignore[arg-type]
             uuid4(),
+            master_session_scope=lambda: session_scope(master_session),
         ).validate_source_selection(
             "deals",
             {str(uuid4())},
@@ -173,24 +194,30 @@ async def test_source_selection_rejects_foreign_inactive_or_missing_values() -> 
 
 @pytest.mark.asyncio
 async def test_manual_and_schedule_record_access_use_the_same_crm_identity_mapping() -> None:
-    session = RecordingSession([[]])
+    session = RecordingSession([[], []])
+    master_session = RecordingSession([["owner@example.com"]])
 
     await ManualInvocationAccess(
         session,  # type: ignore[arg-type]
         uuid4(),
+        master_session_scope=lambda: session_scope(master_session),
     ).load_subject_records(
         (ManualSubject("deal", uuid4()),),
         principal_id=uuid4(),
         organisation_scope=False,
     )
 
-    statement = sql(session.statements[0])
-    assert "crm_users.user_id" in statement
-    assert "public.users.email" in statement
-    assert "cast(public.users.status as varchar)" in statement
-    assert "cast(public.users.admin_status as varchar)" in statement
-    assert "crm_deals.owner_id in" in statement
-    assert "crm_deals.created_by_user_id in" in statement
+    master_statement = sql(master_session.statements[0])
+    crm_user_statement = sql(session.statements[0])
+    deal_statement = sql(session.statements[1])
+    assert "public.users" in master_statement
+    assert "cast(public.users.status as varchar)" not in master_statement
+    assert "cast(public.users.admin_status as varchar)" not in master_statement
+    assert "crm_users.user_id" in crm_user_statement
+    assert "public.users" not in crm_user_statement
+    assert "public.users" not in deal_statement
+    assert "crm_deals.owner_id in" in deal_statement
+    assert "crm_deals.created_by_user_id in" in deal_statement
 
 
 @pytest.mark.asyncio
@@ -352,8 +379,13 @@ async def test_workspace_users_and_saved_triggers_resolve_to_business_labels() -
         name="Review important changes",
         status=AutomationTriggerStatus.ACTIVE,
     )
-    session = RecordingSession([[user], [trigger]])
-    access = AutomationTriggerOptionAccess(session, organisation_id)  # type: ignore[arg-type]
+    session = RecordingSession([[trigger]])
+    master_session = RecordingSession([[user]])
+    access = AutomationTriggerOptionAccess(  # type: ignore[arg-type]
+        session,
+        organisation_id,
+        master_session_scope=lambda: session_scope(master_session),
+    )
 
     users, _ = await access.search_options(
         "organisation_users",
@@ -376,5 +408,6 @@ async def test_workspace_users_and_saved_triggers_resolve_to_business_labels() -
 
     assert users[0].label == "Alice Buyer · alice@example.com"
     assert triggers[0].label == "CRM / Deal / Updated · Review important changes"
-    assert "public.users.organisation_id" in sql(session.statements[0])
-    assert "automation_triggers.created_by_user_id" in sql(session.statements[1])
+    assert "public.users.organisation_id" in sql(master_session.statements[0])
+    assert "public.users" not in sql(session.statements[0])
+    assert "automation_triggers.created_by_user_id" in sql(session.statements[0])

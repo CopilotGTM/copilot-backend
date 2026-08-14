@@ -20,7 +20,9 @@ from src.api.dependencies.rate_limit import (
     rate_limit_user_read,
     rate_limit_user_write,
 )
-from src.api.schemas.automation_trigger_models import (
+from src.api.schemas.base_models import GenericResponse
+from src.api.utils.http_response import Response
+from src.contracts.automation_trigger_models import (
     AutomationManualInvocationRequest,
     AutomationManualInvocationResponse,
     AutomationTriggerCatalog,
@@ -37,8 +39,6 @@ from src.api.schemas.automation_trigger_models import (
     AutomationWebhookIngressResponse,
     AutomationWebhookRotateRequest,
 )
-from src.api.schemas.base_models import GenericResponse
-from src.api.utils.http_response import Response
 from src.domain.models.master_tables import UserAppRole
 from src.domain.models.organisation_tables import AutomationTriggerStatus
 from src.infra.config.configs import security_secrets_config

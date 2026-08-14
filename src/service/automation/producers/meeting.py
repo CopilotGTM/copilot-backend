@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -25,6 +26,7 @@ from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     Meeting,
     MeetingStatus,
 )
+from src.infra.database.sessions import acquire_master_async_session
 from src.service.automation.events.contracts import AutomationEventEnvelope
 
 
@@ -166,6 +168,9 @@ async def load_meeting_event_context(
     meeting: Meeting,
     *,
     deal_id: UUID | None = None,
+    master_session_scope: Callable[[], AsyncIterator[AsyncSession]] = (
+        acquire_master_async_session
+    ),
 ) -> MeetingEventContext:
     """Resolve stable app-user and CRM-team identifiers for one calendar event."""
 
@@ -207,18 +212,24 @@ async def load_meeting_event_context(
     user_columns = cast(Any, User).__table__.c
     user_rows: list[Any] = []
     if participant_emails:
-        user_rows = list(
-            (
-                await session.execute(
-                    select(user_columns.user_id, user_columns.email).where(
-                        user_columns.organisation_id == organisation_id,
-                        user_columns.status == SupabaseUserStatus.ACTIVE.value,
-                        user_columns.admin_status == AdminUserStatus.APPROVED.value,
-                        func.lower(func.trim(user_columns.email)).in_(participant_emails),
+        # App users are master-owned identities; the tenant role must only read
+        # calendar, integration, CRM, and association rows from this function.
+        async for master_session in master_session_scope():
+            user_rows = list(
+                (
+                    await master_session.execute(
+                        select(user_columns.user_id, user_columns.email).where(
+                            user_columns.organisation_id == organisation_id,
+                            user_columns.status == SupabaseUserStatus.ACTIVE,
+                            user_columns.admin_status == AdminUserStatus.APPROVED,
+                            func.lower(func.trim(user_columns.email)).in_(participant_emails),
+                        )
                     )
-                )
-            ).all()
-        )
+                ).all()
+            )
+            break
+        else:
+            raise RuntimeError("master session scope yielded no session")
     users_by_email = {
         str(row.email).strip().casefold(): row.user_id for row in user_rows if row.email
     }
@@ -247,22 +258,26 @@ async def load_meeting_event_context(
             ).scalars()
         )
         if integration_owner_ids:
-            owner_id = (
-                (
-                    await session.execute(
-                        select(user_columns.user_id)
-                        .where(
-                            user_columns.organisation_id == organisation_id,
-                            user_columns.user_id.in_(integration_owner_ids),
-                            user_columns.status == SupabaseUserStatus.ACTIVE.value,
-                            user_columns.admin_status == AdminUserStatus.APPROVED.value,
+            async for master_session in master_session_scope():
+                owner_id = (
+                    (
+                        await master_session.execute(
+                            select(user_columns.user_id)
+                            .where(
+                                user_columns.organisation_id == organisation_id,
+                                user_columns.user_id.in_(integration_owner_ids),
+                                user_columns.status == SupabaseUserStatus.ACTIVE,
+                                user_columns.admin_status == AdminUserStatus.APPROVED,
+                            )
+                            .order_by(user_columns.user_id)
                         )
-                        .order_by(user_columns.user_id)
                     )
+                    .scalars()
+                    .first()
                 )
-                .scalars()
-                .first()
-            )
+                break
+            else:
+                raise RuntimeError("master session scope yielded no session")
 
     attendee_ids = {row.user_id for row in user_rows}
     if owner_id:

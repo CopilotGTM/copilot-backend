@@ -6,6 +6,8 @@ from src.agents.context import AgentContext
 from src.agents.tools.registry import (
     AGENT_TOOLS,
     CHANNEL_ONLY_TOOLS,
+    GENERAL_AGENT_TOOLS,
+    MUTATING_TOOLS,
     REMINDER_MANAGEMENT_TOOLS,
     VOICE_REALTIME_WRITE_EXCLUDED_TOOLS,
     WHATSAPP_MUTATING_TOOLS,
@@ -14,6 +16,44 @@ from src.agents.tools.registry import (
     get_excluded_tools_for_context,
 )
 from src.service.voice_realtime.tool_manifest import build_voice_allowed_tools
+
+
+def test_agent_builder_tools_are_isolated_to_human_web_general_agent() -> None:
+    """Control-plane writes must not recurse into configured or non-web agents."""
+    management_tools = {
+        ToolName.INSPECT_AGENT_BUILDER,
+        ToolName.CHANGE_AGENT_BUILDER,
+    }
+
+    assert management_tools <= AGENT_TOOLS["GeneralAgent"]
+    assert management_tools.isdisjoint(GENERAL_AGENT_TOOLS)
+    assert management_tools.isdisjoint(AGENT_TOOLS["VoiceRealtimeAgent"])
+    assert ToolName.CHANGE_AGENT_BUILDER in MUTATING_TOOLS
+    assert ToolName.INSPECT_AGENT_BUILDER not in MUTATING_TOOLS
+    for tool_name in management_tools:
+        assert CHANNEL_ONLY_TOOLS[tool_name] == {"web"}
+
+    web_registry = ToolRegistry(
+        AgentContext(organisation_id=uuid4(), user_id=uuid4(), channel="web"),
+        lambda: None,
+    )
+    web_names = {
+        getattr(tool, "name", getattr(tool, "__name__", ""))
+        for tool in web_registry.get_tools_for_agent("GeneralAgent", channel="web")
+    }
+    assert {"inspect_agent_builder", "change_agent_builder"} <= web_names
+
+    for channel in ("teams", "slack", "whatsapp", "voice"):
+        registry = ToolRegistry(
+            AgentContext(organisation_id=uuid4(), user_id=uuid4(), channel=channel),
+            lambda: None,
+        )
+        names = {
+            getattr(tool, "name", getattr(tool, "__name__", ""))
+            for tool in registry.get_tools_for_agent("GeneralAgent", channel=channel)
+        }
+        assert "inspect_agent_builder" not in names
+        assert "change_agent_builder" not in names
 
 
 def test_direct_crm_write_tools_are_available_on_supported_chat_and_voice_channels() -> None:

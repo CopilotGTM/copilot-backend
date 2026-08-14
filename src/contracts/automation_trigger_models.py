@@ -1,4 +1,4 @@
-"""HTTP contracts for registry-backed automation trigger bindings."""
+"""Shared contracts for registry-backed automation trigger bindings."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from typing import Any, Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
 from src.domain.models.organisation_tables import (
     AutomationAudienceMode,
     AutomationPrincipalType,

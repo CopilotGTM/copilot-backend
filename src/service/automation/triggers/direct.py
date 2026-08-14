@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, cast
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from sqlalchemy import String, func, or_, select
-from sqlalchemy import cast as sa_cast
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.master_tables import AdminUserStatus, SupabaseUserStatus, User
 from src.domain.models.organisation_tables import (
@@ -23,6 +22,7 @@ from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.domain.models.organisation_tables.sync.crm.users import CRMUser
+from src.infra.database.sessions import acquire_master_async_session
 from src.service.automation.errors import AutomationServiceError
 from src.service.automation.events.access import AutomationEventDispatchAccess
 from src.service.automation.events.contracts import AutomationEventEnvelope
@@ -39,25 +39,47 @@ _MANUAL_EVENT_KEY = "system.manual.invoked"
 _SubjectType = Literal["deal", "contact", "account"]
 
 
-def crm_user_ids_for_principal(organisation_id: UUID, principal_id: UUID) -> Any:
-    """Map one workspace principal to active tenant CRM owner identities."""
+async def crm_user_ids_for_principal(
+    session: AsyncSession,
+    organisation_id: UUID,
+    principal_id: UUID,
+    *,
+    principal_email: str | None = None,
+    master_session_scope: Callable[[], AsyncIterator[AsyncSession]] | None = None,
+) -> set[UUID]:
+    """Map an active master user to tenant-owned CRM owner identities."""
 
     user_columns = cast(Any, User).__table__.c
     crm_user_columns = cast(Any, CRMUser).__table__.c
-    principal_email = select(func.lower(func.trim(user_columns.email))).where(
-        user_columns.organisation_id == organisation_id,
-        user_columns.user_id == principal_id,
-        sa_cast(user_columns.status, String) == SupabaseUserStatus.ACTIVE.value,
-        sa_cast(user_columns.admin_status, String) == AdminUserStatus.APPROVED.value,
-    )
-    return select(crm_user_columns.user_id).where(
+    if principal_email is None:
+        principal_statement = select(user_columns.email).where(
+            user_columns.organisation_id == organisation_id,
+            user_columns.user_id == principal_id,
+            user_columns.status == SupabaseUserStatus.ACTIVE,
+            user_columns.admin_status == AdminUserStatus.APPROVED,
+        )
+        # Resolve the global user with the master role before constructing any tenant SQL.
+        # Tenant roles intentionally have no permission to query public.users.
+        scope = master_session_scope or acquire_master_async_session
+        async for master_session in scope():
+            principal_email = (
+                await master_session.execute(principal_statement)
+            ).scalar_one_or_none()
+            break
+        else:
+            raise RuntimeError("master session scope yielded no session")
+    if principal_email is None:
+        return set()
+
+    statement = select(crm_user_columns.user_id).where(
         crm_user_columns.organisation_id == organisation_id,
         crm_user_columns.is_deleted.is_(False),
         or_(
             crm_user_columns.user_id == principal_id,
-            func.lower(func.trim(crm_user_columns.email)).in_(principal_email),
+            func.lower(func.trim(crm_user_columns.email)) == principal_email.strip().casefold(),
         ),
     )
+    return set((await session.execute(statement)).scalars().all())
 
 
 @dataclass(frozen=True)
@@ -116,6 +138,7 @@ class ManualInvocationAccess:
         organisation_id: UUID,
         *,
         event_access: AutomationEventDispatchAccess | None = None,
+        master_session_scope: Callable[[], AsyncIterator[AsyncSession]] | None = None,
     ) -> None:
         self.session = session
         self.organisation_id = organisation_id
@@ -123,6 +146,7 @@ class ManualInvocationAccess:
             session,
             organisation_id,
         )
+        self.master_session_scope = master_session_scope
 
     async def get_dispatch(self, idempotency_key: str) -> AutomationEventDispatch | None:
         """Resolve a prior invocation without rebuilding its time-dependent envelope."""
@@ -139,6 +163,16 @@ class ManualInvocationAccess:
         """Resolve the selection in at most one query per supported CRM resource."""
 
         records: dict[tuple[str, UUID], dict[str, Any]] = {}
+        crm_user_ids = (
+            await crm_user_ids_for_principal(
+                self.session,
+                self.organisation_id,
+                principal_id,
+                master_session_scope=self.master_session_scope,
+            )
+            if not organisation_scope
+            else set()
+        )
         grouped = {
             subject_type: {
                 item.subject_id for item in subjects if item.subject_type == subject_type
@@ -156,10 +190,6 @@ class ManualInvocationAccess:
                 columns.is_deleted.is_(False),
             ]
             if not organisation_scope:
-                crm_user_ids = crm_user_ids_for_principal(
-                    self.organisation_id,
-                    principal_id,
-                )
                 ownership = columns.owner_id.in_(crm_user_ids)
                 if subject_type == "deal":
                     ownership = or_(

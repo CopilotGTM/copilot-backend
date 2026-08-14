@@ -59,6 +59,10 @@ class QueryResult:
         """Return the configured first scalar without enforcing row uniqueness."""
         return self.scalar
 
+    def all(self):
+        """Return the configured scalar through SQLAlchemy's collection result surface."""
+        return [] if self.scalar is None else [self.scalar]
+
 
 class QuerySession:
     """Represent the Query Session test double used by the surrounding regression cases."""
@@ -371,6 +375,7 @@ async def test_default_context_loader_revalidates_live_authority(monkeypatch) ->
     )
     tenant = QuerySession(
         QueryResult(scalar=item.agent_id),
+        QueryResult(scalar=item.principal_user_id),
         QueryResult(scalar=item.deal_id),
     )
     monkeypatch.setattr(
@@ -407,7 +412,8 @@ async def test_default_context_loader_revalidates_live_authority(monkeypatch) ->
         "correlation_id": item.correlation_id,
     }
     assert len(master.statements) == 2
-    assert len(tenant.statements) == 2
+    assert len(tenant.statements) == 3
+    assert all("public.users" not in str(statement).lower() for statement in tenant.statements)
 
 
 @pytest.mark.asyncio
@@ -452,16 +458,25 @@ async def test_enabled_subjects_have_live_runtime_authority_policy(
 
 
 @pytest.mark.asyncio
-async def test_personal_deal_authority_accepts_provider_crm_owner_identity() -> None:
+async def test_personal_deal_authority_accepts_provider_crm_owner_identity(monkeypatch) -> None:
     item = envelope()
     session = QuerySession(QueryResult(scalar=UUID(item.subject_id)))
+    crm_owner_id = uuid4()
+    resolver = AsyncMock(return_value={crm_owner_id})
+    monkeypatch.setattr(execution_module, "crm_user_ids_for_principal", resolver)
 
     await AgentRunExecutionService._ensure_subject_authority(session, item)
 
+    resolver.assert_awaited_once_with(
+        session,
+        item.organisation_id,
+        item.principal_user_id,
+        principal_email=None,
+    )
     statement = str(session.statements[0]).lower()
     assert "crm_deals" in statement
-    assert "crm_users" in statement
-    assert "public.users" in statement
+    # Runtime tenant queries must never reach back into master-owned public.users.
+    assert "public.users" not in statement
 
 
 @pytest.mark.asyncio

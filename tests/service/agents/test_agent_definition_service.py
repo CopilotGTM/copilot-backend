@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from src.agents.tools.registry import ToolName
-from src.api.schemas.agent_models import (
+from src.contracts.agent_models import (
     AgentCapabilitiesUpdateRequest,
     AgentCreateRequest,
     AgentOutputDeliveryUpdateRequest,
@@ -179,7 +179,7 @@ async def test_use_template_materialises_a_private_system_sourced_agent() -> Non
 
     result = await service.use_template(
         DEAL_STAGE_HEALTH_REVIEW_TEMPLATE_ID,
-        version=1,
+        version=2,
     )
 
     assert access.created is not None
@@ -187,7 +187,7 @@ async def test_use_template_materialises_a_private_system_sourced_agent() -> Non
     assert access.created.owner_user_id == owner_user_id
     assert access.created.source_type == AgentSourceType.SYSTEM
     assert access.created.source_agent_id == DEAL_STAGE_HEALTH_REVIEW_TEMPLATE_ID
-    assert access.created.source_version == 1
+    assert access.created.source_version == 2
     assert access.created.visibility == AgentVisibility.PRIVATE
     assert access.created.status == AgentStatus.ACTIVE
     assert access.created.revision == 1
@@ -199,7 +199,7 @@ async def test_use_template_materialises_a_private_system_sourced_agent() -> Non
     assert validated_definition.allowed_tools == access.created.allowed_tools
     assert validated_definition.allowed_skills == access.created.allowed_skills
     assert result.source_agent_id == DEAL_STAGE_HEALTH_REVIEW_TEMPLATE_ID
-    assert result.source_version == 1
+    assert result.source_version == 2
 
 
 @pytest.mark.asyncio
@@ -209,7 +209,7 @@ async def test_use_template_rejects_an_unknown_version_before_creating_an_agent(
     service, access, _validator, _organisation_id, _owner_user_id = _service()
 
     with pytest.raises(AgentServiceError, match="Agent template not found") as exc:
-        await service.use_template(DEAL_STAGE_HEALTH_REVIEW_TEMPLATE_ID, version=2)
+        await service.use_template(DEAL_STAGE_HEALTH_REVIEW_TEMPLATE_ID, version=1)
 
     assert exc.value.status_code == 404
     assert access.created is None

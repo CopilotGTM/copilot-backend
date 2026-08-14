@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
-from src.api.schemas.automation_trigger_models import AutomationTriggerCreateRequest
+from src.contracts.automation_trigger_models import AutomationTriggerCreateRequest
 from src.service.automation.triggers.validator import AutomationTriggerValidator
 
 

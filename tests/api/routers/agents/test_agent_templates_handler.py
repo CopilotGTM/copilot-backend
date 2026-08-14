@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 from fastapi import Response as FastAPIResponse
 from src.api.dependencies.organisation_dependencies import UserIDs
-from src.api.schemas.agent_models import (
+from src.contracts.agent_models import (
     AgentAutomationEligibility,
     AgentDetail,
     AgentOutputDeliveryState,
@@ -106,7 +106,7 @@ async def test_template_catalog_is_read_only_code_metadata() -> None:
     assert result.status == "SUCCESS"
     assert result.data.total_count == 1
     assert result.data.items[0].template_id == DEAL_STAGE_HEALTH_REVIEW_TEMPLATE_ID
-    assert result.data.items[0].version == 1
+    assert result.data.items[0].version == 2
 
 
 @pytest.mark.asyncio

@@ -13,7 +13,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 from src.agents.tools.registry import GENERAL_AGENT_TOOLS
-from src.api.schemas.agent_models import AgentDefinitionBase
+from src.contracts.agent_models import AgentDefinitionBase
 from src.domain.models.organisation_tables import AgentOutputMode
 from src.service.agents.capability_catalog import discover_skill_keys
 from src.service.agents.errors import AgentServiceError

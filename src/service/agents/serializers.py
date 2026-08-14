@@ -6,7 +6,7 @@ module keeps that implementation detail behind the public `agent_model_config` f
 
 from __future__ import annotations
 
-from src.api.schemas.agent_models import (
+from src.contracts.agent_models import (
     AgentAutomationEligibility,
     AgentDetail,
     AgentOutputDeliveryState,

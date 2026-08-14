@@ -20,7 +20,9 @@ from src.api.dependencies.organisation_dependencies import (
     get_org_async_session,
 )
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
-from src.api.schemas.agent_models import (
+from src.api.schemas.base_models import GenericResponse
+from src.api.utils.http_response import Response
+from src.contracts.agent_models import (
     AgentCapabilitiesUpdateRequest,
     AgentCreateRequest,
     AgentDetail,
@@ -29,8 +31,6 @@ from src.api.schemas.agent_models import (
     AgentOutputDeliveryUpdateRequest,
     AgentUpdateRequest,
 )
-from src.api.schemas.base_models import GenericResponse
-from src.api.utils.http_response import Response
 from src.domain.models.master_tables import UserAppRole
 from src.domain.models.organisation_tables import AgentStatus
 from src.infra.utils.logger import get_logger

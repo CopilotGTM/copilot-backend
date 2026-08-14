@@ -3,9 +3,9 @@
 from fastapi import APIRouter, Depends
 from src.api.dependencies.organisation_dependencies import UserIDs, get_current_user
 from src.api.dependencies.rate_limit import rate_limit_user_read
-from src.api.schemas.agent_models import AgentCapabilityCatalog
 from src.api.schemas.base_models import GenericResponse
 from src.api.utils.http_response import Response
+from src.contracts.agent_models import AgentCapabilityCatalog
 from src.service.agents.capability_catalog import build_agent_capability_catalog
 
 agent_capabilities_router = APIRouter()

@@ -8,7 +8,7 @@ import pytest
 from fastapi import Response as FastAPIResponse
 from pydantic import ValidationError
 from src.api.routers.automation.triggers_handler import invoke_agent_trigger
-from src.api.schemas.automation_trigger_models import (
+from src.contracts.automation_trigger_models import (
     AutomationManualInvocationRequest,
     AutomationManualInvocationResponse,
     AutomationManualInvocationSubjectResult,

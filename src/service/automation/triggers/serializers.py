@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from typing import Any, Literal
 from uuid import UUID
 
-from src.api.schemas.automation_trigger_models import (
+from src.contracts.automation_trigger_models import (
     AutomationTriggerDetail,
     AutomationTriggerPresentation,
     AutomationTriggerSummary,
