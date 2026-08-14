@@ -127,7 +127,7 @@ chat-worker:
   resources:
     requests:
       cpu: "25m"
-      memory: "768Mi"
+      memory: "512Mi"
 
 chat-beat:
   # Actual usage: 253Mi memory (loads full chat worker with agent tools + dateparser)
@@ -149,9 +149,9 @@ integrations-worker:
   resources:
     requests:
       cpu: "100m"
-      memory: "640Mi"
+      memory: "512Mi"
     limits:
-      cpu: "2000m"
+      cpu: "500m"
       memory: "2Gi"
 
 salesforce-cdc-worker:
@@ -190,7 +190,7 @@ deal-worker:
   resources:
     requests:
       cpu: "25m"
-      memory: "700Mi"
+      memory: "512Mi"
 
 deal-insights-worker:
   config:
@@ -201,7 +201,7 @@ deal-insights-worker:
   resources:
     requests:
       cpu: "25m"
-      memory: "700Mi"
+      memory: "640Mi"
 
 dealCronJobs:
   jobs:
