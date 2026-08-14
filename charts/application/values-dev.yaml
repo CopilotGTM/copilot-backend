@@ -72,17 +72,17 @@ api:
           cpu: "100m"
           memory: "256Mi"
         limits:
-          cpu: "500m"
+          cpu: "250m"
           memory: "1Gi"
   # Dev API is CPU-scaled only. Python baseline memory stays high even when idle,
   # so memory-based HPA keeps unnecessary replicas alive and blocks 1-node scale-down.
   resources:
-    limits:
-      cpu: 500m
-      memory: 1536Mi
     requests:
-      cpu: 25m
-      memory: 768Mi
+      cpu: 50m
+      memory: 500Mi
+    limits:
+      cpu: 250m
+      memory: 1Gi
 
 global:
   priorityClasses:
