@@ -425,7 +425,7 @@ def test_prod_integrations_and_deal_workers_render_async_slots() -> None:
     assert "--pool=threads" in integrations_command
     assert not any("per-child" in argument for argument in integrations_command)
     assert integrations_deployment["spec"]["template"]["spec"]["containers"][0]["resources"] == {
-        "requests": {"cpu": "250m", "memory": "1Gi"},
+        "requests": {"cpu": "250m", "memory": "640Mi"},
         "limits": {"cpu": "1000m", "memory": "2Gi"},
     }
     assert "--concurrency=4" in commands["copilot-backend-deal-worker"]
@@ -433,12 +433,31 @@ def test_prod_integrations_and_deal_workers_render_async_slots() -> None:
     assert "--concurrency=2" in commands["copilot-backend-deal-insights-worker"]
     assert "--pool=threads" in commands["copilot-backend-deal-insights-worker"]
     assert deal_deployment["spec"]["template"]["spec"]["containers"][0]["resources"] == {
-        "requests": {"cpu": "500m", "memory": "1Gi"},
+        "requests": {"cpu": "500m", "memory": "768Mi"},
         "limits": {"cpu": "1500m", "memory": "2Gi"},
     }
     assert insights_deployment["spec"]["template"]["spec"]["containers"][0]["resources"] == {
-        "requests": {"cpu": "500m", "memory": "1Gi"},
+        "requests": {"cpu": "500m", "memory": "768Mi"},
         "limits": {"cpu": "1500m", "memory": "2Gi"},
+    }
+
+
+def test_prod_chat_and_flower_render_right_sized_memory() -> None:
+    manifests = _render_all_manifests("charts/application/values-prod.yaml")
+    resources = {
+        doc["metadata"]["name"]: doc["spec"]["template"]["spec"]["containers"][0]["resources"]
+        for doc in manifests
+        if doc.get("kind") == "Deployment"
+        and doc["metadata"]["name"] in {"copilot-backend-chat-worker", "copilot-backend-flower"}
+    }
+
+    assert resources["copilot-backend-chat-worker"]["requests"] == {
+        "cpu": "250m",
+        "memory": "640Mi",
+    }
+    assert resources["copilot-backend-flower"] == {
+        "requests": {"cpu": "50m", "memory": "256Mi"},
+        "limits": {"cpu": "250m", "memory": "512Mi"},
     }
 
 
@@ -472,11 +491,11 @@ def test_dev_deal_workers_render_measured_memory_requests() -> None:
 
     assert resources["copilot-backend-deal-worker"]["requests"] == {
         "cpu": "25m",
-        "memory": "700Mi",
+        "memory": "512Mi",
     }
     assert resources["copilot-backend-deal-insights-worker"]["requests"] == {
         "cpu": "25m",
-        "memory": "700Mi",
+        "memory": "640Mi",
     }
 
 
@@ -491,8 +510,23 @@ def test_dev_integrations_worker_renders_measured_resources() -> None:
     )
 
     assert deployment["spec"]["template"]["spec"]["containers"][0]["resources"] == {
-        "requests": {"cpu": "100m", "memory": "640Mi"},
+        "requests": {"cpu": "100m", "memory": "512Mi"},
         "limits": {"cpu": "2000m", "memory": "2Gi"},
+    }
+
+
+def test_dev_chat_worker_renders_observed_memory_request() -> None:
+    manifests = _render_all_manifests("charts/application/values-dev.yaml")
+    deployment = next(
+        doc
+        for doc in manifests
+        if doc.get("kind") == "Deployment"
+        and doc["metadata"]["name"] == "copilot-backend-chat-worker"
+    )
+
+    assert deployment["spec"]["template"]["spec"]["containers"][0]["resources"]["requests"] == {
+        "cpu": "25m",
+        "memory": "512Mi",
     }
 
 

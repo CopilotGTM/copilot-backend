@@ -131,14 +131,15 @@ chat-worker:
   config:
     concurrency: 10
   autoscaling:
-    maxReplicas: 2
+    minReplicas: 1
+    maxReplicas: 3
   resources:
     requests:
-      cpu: "250m"
-      memory: "1Gi"
+      cpu: "100m"
+      memory: "640Mi"
     limits:
-      cpu: "1500m"
-      memory: "2.5Gi"
+      cpu: "250m"
+      memory: "2Gi"
 
 chat-beat:
   resources:
@@ -146,7 +147,7 @@ chat-beat:
       cpu: "50m"
       memory: "256Mi"
     limits:
-      cpu: "150m"
+      cpu: "100m"
       memory: "512Mi"
 
 integrations-worker:
@@ -159,14 +160,14 @@ integrations-worker:
       minDeltaMb: 0
   autoscaling:
     minReplicas: 1
-    maxReplicas: 2
+    maxReplicas: 3
   resources:
     requests:
       cpu: "250m"
-      memory: "1Gi"
+      memory: "640Mi"
     limits:
-      cpu: "1000m"
-      memory: "2Gi"
+      cpu: "500m"
+      memory: "1.5Gi"
 
 salesforce-cdc-worker:
   replicaCount: 1
@@ -174,10 +175,10 @@ salesforce-cdc-worker:
     repository: "copilotgtmacrprod.azurecr.io/copilot-backend-integrations-worker"
   resources:
     requests:
-      cpu: "500m"
+      cpu: "250m"
       memory: "512Mi"
     limits:
-      cpu: "1000m"
+      cpu: "500m"
       memory: "2Gi"
 
 integrationsCronJobs:
@@ -199,15 +200,15 @@ deal-worker:
       enabled: true
       minDeltaMb: 0
   autoscaling:
-    minReplicas: 2
-    maxReplicas: 2
+    minReplicas: 1
+    maxReplicas: 3
   resources:
     requests:
-      cpu: "500m"
-      memory: "1Gi"
+      cpu: "250m"
+      memory: "768Mi"
     limits:
-      cpu: "1500m"
-      memory: "2Gi"
+      cpu: "500m"
+      memory: "1.5Gi"
 
 deal-insights-worker:
   config:
@@ -217,14 +218,14 @@ deal-insights-worker:
       minDeltaMb: 0
   autoscaling:
     minReplicas: 1
-    maxReplicas: 2
+    maxReplicas: 3
   resources:
     requests:
-      cpu: "500m"
-      memory: "1Gi"
+      cpu: "100m"
+      memory: "512Mi"
     limits:
-      cpu: "1500m"
-      memory: "2Gi"
+      cpu: "250m"
+      memory: "1Gi"
 
 knowledgeCronJobs:
   jobs:
@@ -267,3 +268,12 @@ organization-worker:
     concurrency: 1
   autoscaling:
     maxReplicas: 1
+
+flower:
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "256Mi"
+    limits:
+      cpu: "250m"
+      memory: "512Mi"
