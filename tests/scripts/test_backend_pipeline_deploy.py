@@ -8,6 +8,7 @@ CHART_VALUES_PATH = Path("charts/application/values.yaml")
 STARTUP_SCRIPT_PATH = Path("scripts/startup.sh")
 PROD_PIPELINE_PATH = Path(".azure-pipelines/azure-backend-pipeline-prod.yml")
 LOCAL_DEPLOY_PATH = Path("scripts/deployment/local-deploy.ps1")
+PYPROJECT_PATH = Path("pyproject.toml")
 
 
 def test_backend_pipelines_do_not_force_second_worker_rollout() -> None:
@@ -141,3 +142,20 @@ def test_prod_pipeline_exports_bandit_plain_text_security_report() -> None:
     assert "security-reports/bandit-report.txt" in pipeline_text
     assert "targetPath: 'security-reports'" in pipeline_text
     assert "artifact: 'security-report'" in pipeline_text
+
+
+def test_prod_pipeline_prints_pip_audit_report_before_failing() -> None:
+    pipeline_text = PROD_PIPELINE_PATH.read_text(encoding="utf-8")
+
+    assert "audit_status=0" in pipeline_text
+    assert "|| audit_status=$?" in pipeline_text
+    assert pipeline_text.index("cat sca-reports/pip-audit-report.txt") < pipeline_text.index(
+        'exit "$audit_status"'
+    )
+
+
+def test_pypdf_minimum_version_contains_current_security_fixes() -> None:
+    pyproject_text = PYPROJECT_PATH.read_text(encoding="utf-8")
+
+    assert "pypdf>=6.13.3" not in pyproject_text
+    assert pyproject_text.count("pypdf>=6.15.0,<6.16.0") == 4
