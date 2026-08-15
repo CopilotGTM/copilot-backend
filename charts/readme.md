@@ -21,7 +21,7 @@ The chart enables the Flower UI (`flower.enabled=true`) and Celery events (`glob
 | knowledge-extract     | `knowledge_extract`                          | GPU-intensive document parsing & embeddings            | 1                   |
 | knowledge-upload      | `knowledge_upload`                           | Upload pipeline orchestration                          | 4                   |
 | organization          | `organization`                               | Organisation provisioning & maintenance tasks          | 6                   |
-| chat                  | `attachments`, `chat_processing`, `chat_messages`, `voice_realtime` | Chat ingestion, processing, and messaging | 10 threads          |
+| chat                  | `attachments`, `chat_processing`, `chat_messages`, `voice_realtime`, `chat_maintenance` | Chat ingestion, processing, messaging, and bounded maintenance | 10 threads          |
 | integrations          | `integrations`, `integrations_priority`      | Third-party CRM/OAuth sync flows                       | 4                   |
 
 The non-GPU workers now run higher concurrency because their tasks are short and I/O-bound; adjust CPU/memory requests in `charts/application/values.yaml` if you need to tune them further.

@@ -325,7 +325,7 @@ chat-worker:
     pullPolicy: IfNotPresent
   config:
     queueName: "attachments"
-    additionalQueues: ["chat_processing", "chat_messages", "voice_realtime"]
+    additionalQueues: ["chat_processing", "chat_messages", "voice_realtime", "chat_maintenance"]
     # copilotgtm: Threads share one loop for I/O-heavy chat tasks. Provider timeouts
     # are mandatory because Celery cannot kill threads; isolate CPU work if it starves the loop.
     concurrency: 10
@@ -350,6 +350,8 @@ chat-worker:
     enabled: true
     minReplicas: 1
     maxReplicas: 8
+    # Maintenance is consumed by the baseline Chat worker but cannot scale pods.
+    queues: ["attachments", "chat_processing", "chat_messages", "voice_realtime"]
     queueLength: 2
     scaleDownDelay: 240
     scaleUpDelay: 5

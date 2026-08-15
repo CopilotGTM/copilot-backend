@@ -43,7 +43,12 @@ REMINDER_RUN_THRESHOLD_MIN = 30
 # Post-upload tasks have a 10-minute hard limit. Waiting two extra minutes keeps
 # legitimate long processing from being duplicated while still repairing lost work.
 ATTACHMENT_PROCESSING_REQUEUE_AFTER_MINUTES = 12
-ATTACHMENT_RECOVERY_BATCH_SIZE = 100
+
+# Scheduled sweeps normally recover 20 rows across all tenants. The hard cap
+# protects Redis and downstream workers even when a manual caller asks for more.
+DEFAULT_STALE_RECOVERY_LIMIT = 20
+MAX_STALE_RECOVERY_LIMIT = 30
+ATTACHMENT_RECOVERY_BATCH_SIZE = MAX_STALE_RECOVERY_LIMIT
 
 # Max consecutive failures before permanently failing a reminder
 MAX_CONSECUTIVE_FAILURES = 3
@@ -75,11 +80,21 @@ class ChatStaleJobCleanupService:
     def __init__(self, organisation_id: UUID):
         self.organisation_id = organisation_id
 
-    def cleanup_stale_jobs(self) -> dict:
-        """Run attachment and reminder cleanup passes."""
-        return run_async(self._run())
+    def cleanup_stale_jobs(self, *, limit: int = DEFAULT_STALE_RECOVERY_LIMIT) -> dict:
+        """Recover at most ``limit`` stale rows, clamped to the hard ceiling."""
+        return run_async(self.cleanup_stale_jobs_async(limit=limit))
 
-    async def _run(self) -> dict:
+    async def cleanup_stale_jobs_async(
+        self,
+        *,
+        limit: int = DEFAULT_STALE_RECOVERY_LIMIT,
+    ) -> dict:
+        """Provide the bounded cleanup contract to async cross-tenant coordinators."""
+        return await self._run(limit=limit)
+
+    async def _run(self, *, limit: int = DEFAULT_STALE_RECOVERY_LIMIT) -> dict:
+        """Spend one shared row budget across attachment and reminder passes."""
+        effective_limit = min(max(limit, 0), MAX_STALE_RECOVERY_LIMIT)
         now = datetime.now(UTC)
         counts: dict[str, int] = {
             "attachments_requeued": 0,
@@ -88,15 +103,22 @@ class ChatStaleJobCleanupService:
             "stale_reminder_runs": 0,
         }
 
-        attachment_counts = await self._recover_stale_attachments(now)
+        attachment_counts = await self._recover_stale_attachments(now, effective_limit)
         counts["attachments_requeued"] = attachment_counts["requeued"]
         counts["attachment_requeue_failed"] = attachment_counts["requeue_failed"]
+        processed_count = attachment_counts["requeued"] + attachment_counts["requeue_failed"]
 
-        # ── Pass 2: Stuck TRIGGERED reminders ─────────────────────────
-        counts["stuck_triggered_reminders"] = await self._cleanup_stuck_reminders(now)
+        remaining = effective_limit - processed_count
+        if remaining:
+            counts["stuck_triggered_reminders"] = await self._cleanup_stuck_reminders(
+                now, remaining
+            )
+            processed_count += counts["stuck_triggered_reminders"]
 
-        # ── Pass 3: Stale UserReminderRuns ────────────────────────────
-        counts["stale_reminder_runs"] = await self._cleanup_stale_reminder_runs(now)
+        remaining = effective_limit - processed_count
+        if remaining:
+            counts["stale_reminder_runs"] = await self._cleanup_stale_reminder_runs(now, remaining)
+            processed_count += counts["stale_reminder_runs"]
 
         logger.info(
             "Cleanup done for org=%s: attachments_requeued=%d, "
@@ -108,11 +130,19 @@ class ChatStaleJobCleanupService:
             counts["stale_reminder_runs"],
         )
 
-        return {"organisation_id": str(self.organisation_id), **counts}
+        return {
+            "organisation_id": str(self.organisation_id),
+            "processed_count": processed_count,
+            **counts,
+        }
 
-    async def _recover_stale_attachments(self, now: datetime) -> dict[str, int]:
+    async def _recover_stale_attachments(
+        self,
+        now: datetime,
+        limit: int = ATTACHMENT_RECOVERY_BATCH_SIZE,
+    ) -> dict[str, int]:
         """Lease and republish attachments whose post-upload work disappeared."""
-        attachment_ids = await self._lease_stale_attachments(now)
+        attachment_ids = await self._lease_stale_attachments(now, limit=limit)
         counts = {"requeued": 0, "requeue_failed": 0}
 
         for attachment_id in attachment_ids:
@@ -132,7 +162,12 @@ class ChatStaleJobCleanupService:
 
         return counts
 
-    async def _lease_stale_attachments(self, now: datetime) -> list[UUID]:
+    async def _lease_stale_attachments(
+        self,
+        now: datetime,
+        *,
+        limit: int = ATTACHMENT_RECOVERY_BATCH_SIZE,
+    ) -> list[UUID]:
         """Claim one bounded batch before broker I/O so cleanup workers cannot race."""
         cutoff = now - timedelta(minutes=ATTACHMENT_PROCESSING_REQUEUE_AFTER_MINUTES)
 
@@ -146,7 +181,7 @@ class ChatStaleJobCleanupService:
                     col(Attachment.updated_at) < cutoff,
                 )
                 .order_by(col(Attachment.updated_at))
-                .limit(ATTACHMENT_RECOVERY_BATCH_SIZE)
+                .limit(limit)
                 .with_for_update(skip_locked=True)
             )
             attachments = list((await session.execute(statement)).scalars().all())
@@ -163,7 +198,7 @@ class ChatStaleJobCleanupService:
 
         return []
 
-    async def _cleanup_stuck_reminders(self, now: datetime) -> int:
+    async def _cleanup_stuck_reminders(self, now: datetime, limit: int) -> int:
         """Reset stuck TRIGGERED reminders to ACTIVE or FAILED."""
         # updated_at < cutoff ≡ "stuck in TRIGGERED for longer than threshold"
         cutoff = now - timedelta(minutes=REMINDER_TRIGGERED_THRESHOLD_MIN)
@@ -183,10 +218,14 @@ class ChatStaleJobCleanupService:
                         col(UserReminder.reminder_id),
                         col(UserReminder.consecutive_failures),
                         col(UserReminder.next_trigger_at),
-                    ).where(
+                    )
+                    .where(
                         col(UserReminder.status) == ReminderStatus.TRIGGERED,
                         col(UserReminder.updated_at) < cutoff,
                     )
+                    .order_by(col(UserReminder.updated_at))
+                    .limit(limit)
+                    .with_for_update(skip_locked=True)
                 )
             ).all()
 
@@ -252,7 +291,7 @@ class ChatStaleJobCleanupService:
 
         return total
 
-    async def _cleanup_stale_reminder_runs(self, now: datetime) -> int:
+    async def _cleanup_stale_reminder_runs(self, now: datetime, limit: int) -> int:
         """Mark IN_PROGRESS reminder runs older than threshold as FAILED."""
         # started_at < cutoff ≡ "running for longer than threshold"
         cutoff = now - timedelta(minutes=REMINDER_RUN_THRESHOLD_MIN)
@@ -266,10 +305,14 @@ class ChatStaleJobCleanupService:
             run_ids = (
                 (
                     await session.execute(
-                        select(col(UserReminderRun.run_id)).where(
+                        select(col(UserReminderRun.run_id))
+                        .where(
                             col(UserReminderRun.status) == ReminderRunStatus.IN_PROGRESS,
                             col(UserReminderRun.started_at) < cutoff,
                         )
+                        .order_by(col(UserReminderRun.started_at))
+                        .limit(limit)
+                        .with_for_update(skip_locked=True)
                     )
                 )
                 .scalars()

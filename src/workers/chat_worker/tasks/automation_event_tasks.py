@@ -94,8 +94,8 @@ def recover_automation_events_all_orgs_task() -> dict[str, Any]:
             try:
                 recover_automation_events_org_task.apply_async(
                     kwargs={"organisation_id": str(organisation_id)},
-                    queue="chat_processing",
-                    routing_key="chat_processing",
+                    queue="chat_maintenance",
+                    routing_key="chat_maintenance",
                     headers=correlation_headers(),
                 )
                 dispatched += 1
@@ -206,8 +206,8 @@ def dispatch_due_automation_schedules_all_orgs_task() -> dict[str, Any]:
             try:
                 dispatch_due_automation_schedules_org_task.apply_async(
                     kwargs={"organisation_id": str(organisation_id)},
-                    queue="chat_processing",
-                    routing_key="chat_processing",
+                    queue="chat_maintenance",
+                    routing_key="chat_maintenance",
                     headers=correlation_headers(),
                 )
                 dispatched += 1

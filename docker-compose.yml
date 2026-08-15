@@ -343,7 +343,7 @@ services:
       - 8.8.4.4
     command: >
       celery -A src.workers.chat_worker.celery_app worker
-      --queues=attachments,chat_processing,chat_messages,voice_realtime
+      --queues=attachments,chat_processing,chat_messages,voice_realtime,chat_maintenance
       --concurrency=10
       --pool=threads
       --loglevel=info

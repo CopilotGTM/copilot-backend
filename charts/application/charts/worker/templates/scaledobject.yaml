@@ -16,20 +16,10 @@ spec:
   {{- if .Values.autoscaling.scaleUpDelay }}
   pollingInterval: {{ .Values.autoscaling.scaleUpDelay }}
   {{- end }}
+  {{- $defaultScaleQueues := concat (list .Values.config.queueName) (.Values.config.additionalQueues | default (list)) }}
+  {{- $scaleQueues := .Values.autoscaling.queues | default $defaultScaleQueues }}
   triggers:
-    - type: redis
-      metadata:
-        address: "{{ .Values.global.redis.host }}:{{ .Values.global.redis.port }}"
-        listName: {{ .Values.config.queueName | quote }}
-        listLength: {{ .Values.autoscaling.queueLength | quote }}
-        {{- if .Values.global.redis.enableTLS }}
-        enableTLS: "true"
-        {{- end }}
-      {{- if .Values.global.redis.usePassword }}
-      authenticationRef:
-        name: {{ include "worker.fullname" . }}-redis-auth
-      {{- end }}
-    {{- range .Values.config.additionalQueues }}
+    {{- range $scaleQueues }}
     - type: redis
       metadata:
         address: "{{ $.Values.global.redis.host }}:{{ $.Values.global.redis.port }}"

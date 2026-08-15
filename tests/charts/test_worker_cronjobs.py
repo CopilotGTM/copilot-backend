@@ -340,26 +340,39 @@ def test_threaded_workers_can_drain_their_longest_cooperative_deadline() -> None
     )
 
 
-def test_chat_worker_scaledobject_watches_all_consumed_queues() -> None:
-    """Scale chat workers on user messages, reminders, voice, and attachment work."""
-    manifests = _render_all_manifests()
-    scaled_object = next(
-        doc
-        for doc in manifests
-        if doc.get("kind") == "ScaledObject"
-        and doc["metadata"]["name"] == "copilot-backend-chat-worker-scaler"
-    )
+def test_chat_worker_consumes_maintenance_without_scaling_on_it() -> None:
+    """Maintenance uses the existing pods but only actual chat work drives KEDA."""
+    for values_file in (
+        "charts/application/values-dev.yaml",
+        "charts/application/values-prod.yaml",
+    ):
+        manifests = _render_all_manifests(values_file)
+        deployment = next(
+            doc
+            for doc in manifests
+            if doc.get("kind") == "Deployment"
+            and doc["metadata"]["name"] == "copilot-backend-chat-worker"
+        )
+        scaled_object = next(
+            doc
+            for doc in manifests
+            if doc.get("kind") == "ScaledObject"
+            and doc["metadata"]["name"] == "copilot-backend-chat-worker-scaler"
+        )
 
-    trigger_queues = {
-        trigger["metadata"]["listName"] for trigger in scaled_object["spec"]["triggers"]
-    }
+        trigger_queues = {
+            trigger["metadata"]["listName"] for trigger in scaled_object["spec"]["triggers"]
+        }
+        command = deployment["spec"]["template"]["spec"]["containers"][0]["command"]
+        consumed_queues = command[command.index("-Q") + 1].split(",")
 
-    assert trigger_queues == {
-        "attachments",
-        "chat_processing",
-        "chat_messages",
-        "voice_realtime",
-    }
+        assert "chat_maintenance" in consumed_queues, values_file
+        assert trigger_queues == {
+            "attachments",
+            "chat_processing",
+            "chat_messages",
+            "voice_realtime",
+        }, values_file
 
 
 def test_chat_worker_renders_ten_async_compatible_slots() -> None:

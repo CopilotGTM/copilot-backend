@@ -1,13 +1,8 @@
-"""Delayed-work recovery tasks hosted by the chat worker.
+"""Bounded delayed-work recovery hosted by the existing Chat worker pool.
 
-Two-tier task pattern:
-- Tier 1: cleanup_delayed_work_all_orgs_task - Coordinator, dispatches to all orgs
-- Tier 2: cleanup_delayed_work_org_task - Per-org cleanup with retry support
-
-Runs every minute via Celery Beat. Recovers delayed asynchronous work:
-- Attachment processing whose post-upload task was lost (>12min)
-- Stuck TRIGGERED reminders (>30min), reset to ACTIVE or FAILED
-- Stale UserReminderRuns (IN_PROGRESS >30min)
+Celery Beat publishes one sweep every five minutes. The sweep walks approved
+organisations under their RLS sessions and spends one global recovery budget;
+it never publishes a second task merely to discover whether an org has work.
 """
 
 from __future__ import annotations
@@ -15,7 +10,6 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from celery import Task
 from sqlalchemy import select
 from sqlmodel import col
 
@@ -24,15 +18,118 @@ from src.domain.models.master_tables.organisation_models import (
     OrganisationStatus,
 )
 from src.infra.database.sessions import acquire_master_async_session
-from src.infra.observability.context import correlation_headers
+from src.infra.messaging.redis_client import get_redis_client
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
+from src.infra.utils.task_lock import acquire_task_lock, release_task_lock
 from src.workers.chat_worker.celery_app import app
 from src.workers.chat_worker.services.stale_job_cleanup_service import (
+    DEFAULT_STALE_RECOVERY_LIMIT,
+    MAX_STALE_RECOVERY_LIMIT,
     ChatStaleJobCleanupService,
 )
 
 logger = get_logger("chat_stale_job_cleanup_tasks")
+
+_CLEANUP_LOCK_KEY = "task_lock:chat_stale_cleanup_all_orgs"
+_CLEANUP_CURSOR_KEY = "chat:stale_cleanup:last_organisation"
+_CLEANUP_LOCK_TTL_SECONDS = 300
+_CLEANUP_CURSOR_TTL_SECONDS = 7 * 24 * 60 * 60
+
+
+def load_cleanup_cursor() -> UUID | None:
+    """Return the last examined tenant so a busy early tenant cannot starve later ones."""
+    try:
+        value = get_redis_client().get(_CLEANUP_CURSOR_KEY)
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            value = value.decode()
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        logger.warning("Ignoring invalid stale-cleanup cursor", exc_info=True)
+    except Exception:
+        # Cursor loss affects fairness for one sweep, not recovery correctness.
+        logger.warning("Unable to load stale-cleanup cursor", exc_info=True)
+    return None
+
+
+def save_cleanup_cursor(organisation_id: UUID) -> None:
+    """Persist the last examined tenant; recovery remains safe if this best-effort write fails."""
+    try:
+        get_redis_client().set(
+            _CLEANUP_CURSOR_KEY,
+            str(organisation_id),
+            ex=_CLEANUP_CURSOR_TTL_SECONDS,
+        )
+    except Exception:
+        logger.warning("Unable to save stale-cleanup cursor", exc_info=True)
+
+
+def _rotate_after_cursor(organisation_ids: list[UUID], cursor: UUID | None) -> list[UUID]:
+    """Start after the previous tenant while preserving stable master-table ordering."""
+    if cursor not in organisation_ids:
+        return organisation_ids
+    start = organisation_ids.index(cursor) + 1
+    return organisation_ids[start:] + organisation_ids[:start]
+
+
+async def _approved_organisation_ids() -> list[UUID]:
+    """Load the stable tenant order from the public control-plane table."""
+    async for master_session in acquire_master_async_session():
+        statement = (
+            select(col(Organisation.organisation_id))
+            .where(col(Organisation.status) == OrganisationStatus.APPROVED)
+            .order_by(col(Organisation.organisation_id))
+        )
+        result = await master_session.execute(statement)
+        return [row[0] for row in result.all()]
+    return []
+
+
+async def _run_cleanup_sweep(limit: int) -> dict[str, Any]:
+    """Process stale rows sequentially across tenants until the global budget is spent."""
+    budget = min(max(limit, 0), MAX_STALE_RECOVERY_LIMIT)
+    organisation_ids = _rotate_after_cursor(
+        await _approved_organisation_ids(),
+        load_cleanup_cursor(),
+    )
+    processed_count = 0
+    organisations_scanned = 0
+    last_examined: UUID | None = None
+    failed_organisations = 0
+
+    for organisation_id in organisation_ids:
+        remaining = budget - processed_count
+        if remaining <= 0:
+            break
+
+        organisations_scanned += 1
+        last_examined = organisation_id
+        try:
+            # The service opens only this tenant's RLS session and applies the
+            # remaining global budget at every database query boundary.
+            result = await ChatStaleJobCleanupService(organisation_id).cleanup_stale_jobs_async(
+                limit=remaining
+            )
+            processed_count += min(int(result.get("processed_count", 0)), remaining)
+        except Exception:
+            # A broken tenant is retried on a later sweep without blocking the
+            # cursor from giving the remaining organisations a turn.
+            failed_organisations += 1
+            logger.exception("Delayed-work cleanup failed org=%s", organisation_id)
+
+    if last_examined is not None:
+        save_cleanup_cursor(last_examined)
+
+    return {
+        "status": "completed",
+        "orgs_found": len(organisation_ids),
+        "orgs_scanned": organisations_scanned,
+        "failed_organisations": failed_organisations,
+        "processed_count": processed_count,
+        "budget": budget,
+    }
 
 
 @app.task(
@@ -41,138 +138,17 @@ logger = get_logger("chat_stale_job_cleanup_tasks")
     max_retries=0,
     acks_late=True,
     ignore_result=True,
-    soft_time_limit=300,
-    time_limit=360,
+    soft_time_limit=240,
+    time_limit=270,
 )
-def cleanup_delayed_work_all_orgs_task() -> dict[str, Any]:
-    """Tier 1: Coordinator task that dispatches cleanup to all approved organizations.
-
-    Scheduled every minute for delayed workflows where recovery remains useful.
-    """
-    logger.info("Starting delayed-work cleanup coordinator for all organizations")
-
-    async def _dispatch_all_orgs() -> dict[str, Any]:
-        org_ids: list[UUID] = []
-
-        async for master_session in acquire_master_async_session():
-            stmt = select(col(Organisation.organisation_id)).where(
-                col(Organisation.status) == OrganisationStatus.APPROVED
-            )
-            result = await master_session.execute(stmt)
-            org_ids = [row[0] for row in result.all()]
-
-        if not org_ids:
-            logger.info("No approved organizations found")
-            return {
-                "status": "completed",
-                "orgs_found": 0,
-                "orgs_triggered": 0,
-                "org_tasks": [],
-            }
-
-        logger.info("Found %d approved organizations, dispatching cleanup tasks", len(org_ids))
-
-        org_tasks = []
-        for org_id in org_ids:
-            try:
-                # Keep coordinator and per-org cleanup logs under the same request/task lineage.
-                task = cleanup_delayed_work_org_task.apply_async(
-                    kwargs={"organisation_id": str(org_id)},
-                    queue="chat_processing",
-                    headers=correlation_headers(),
-                )
-                org_tasks.append(
-                    {
-                        "org_id": str(org_id),
-                        "task_id": task.id,
-                    }
-                )
-            except Exception as e:
-                logger.error(
-                    "Failed to dispatch delayed-work cleanup for org %s: %s",
-                    org_id,
-                    e,
-                )
-
-        logger.info(
-            "Delayed-work cleanup coordinator completed: dispatched %d/%d org tasks",
-            len(org_tasks),
-            len(org_ids),
-        )
-
-        return {
-            "status": "completed",
-            "orgs_found": len(org_ids),
-            "orgs_triggered": len(org_tasks),
-            "org_tasks": org_tasks,
-        }
-
-    return run_async(_dispatch_all_orgs())
-
-
-@app.task(
-    name="chat.cleanup_stale_jobs_org",
-    bind=True,
-    max_retries=2,
-    default_retry_delay=60,
-    acks_late=True,
-    ignore_result=True,
-    soft_time_limit=300,
-    time_limit=360,
-)
-def cleanup_delayed_work_org_task(
-    self: Task,
-    organisation_id: str,
+def cleanup_delayed_work_all_orgs_task(
+    limit: int = DEFAULT_STALE_RECOVERY_LIMIT,
 ) -> dict[str, Any]:
-    """Tier 2: Per-organization attachment and reminder recovery.
-
-    Args:
-        organisation_id: The organization UUID string
-    """
-    logger.info("Starting delayed-work cleanup for org=%s", organisation_id)
+    """Run one non-overlapping, globally bounded stale-work sweep."""
+    if not acquire_task_lock(_CLEANUP_LOCK_KEY, ttl=_CLEANUP_LOCK_TTL_SECONDS):
+        return {"status": "skipped", "reason": "already_running"}
 
     try:
-        org_uuid = UUID(organisation_id)
-        service = ChatStaleJobCleanupService(org_uuid)
-        result = service.cleanup_stale_jobs()
-
-        logger.info(
-            "Delayed-work cleanup completed for org=%s: "
-            "attachments_requeued=%d, attachment_requeue_failed=%d, "
-            "stuck_reminders=%d, stale_runs=%d",
-            organisation_id,
-            result.get("attachments_requeued", 0),
-            result.get("attachment_requeue_failed", 0),
-            result.get("stuck_triggered_reminders", 0),
-            result.get("stale_reminder_runs", 0),
-        )
-
-        return {
-            "status": "success",
-            **result,
-        }
-
-    except Exception as exc:
-        logger.error(
-            "Delayed-work cleanup failed for org=%s: %s",
-            organisation_id,
-            exc,
-            exc_info=True,
-        )
-
-        if self.request.retries < self.max_retries:
-            countdown = 60 * (2**self.request.retries)
-            logger.info(
-                "Retrying delayed-work cleanup for org=%s in %d seconds (attempt %d/%d)",
-                organisation_id,
-                countdown,
-                self.request.retries + 1,
-                self.max_retries,
-            )
-            raise self.retry(exc=exc, countdown=countdown) from exc
-
-        return {
-            "status": "failed",
-            "organisation_id": organisation_id,
-            "error": str(exc),
-        }
+        return run_async(_run_cleanup_sweep(limit))
+    finally:
+        release_task_lock(_CLEANUP_LOCK_KEY)

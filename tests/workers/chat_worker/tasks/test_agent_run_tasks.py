@@ -14,9 +14,9 @@ def test_agent_run_tasks_have_explicit_routes_and_recovery_schedule() -> None:
     config = ChatWorkerConfig()
 
     assert config.task_routes["chat.execute_agent_run"]["queue"] == "chat_messages"
-    assert config.task_routes["chat.recover_agent_runs"]["queue"] == "chat_processing"
+    assert config.task_routes["chat.recover_agent_runs"]["queue"] == "chat_maintenance"
     assert config.task_routes["chat.deliver_agent_run"]["queue"] == "chat_messages"
-    assert config.task_routes["chat.recover_agent_run_deliveries"]["queue"] == "chat_processing"
+    assert config.task_routes["chat.recover_agent_run_deliveries"]["queue"] == "chat_maintenance"
     assert config.beat_schedule["recover-agent-runs"]["task"] == "chat.recover_agent_runs"
     assert config.beat_schedule["recover-agent-run-deliveries"]["task"] == (
         "chat.recover_agent_run_deliveries"

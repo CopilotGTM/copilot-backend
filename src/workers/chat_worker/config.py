@@ -32,6 +32,7 @@ class ChatWorkerConfig(BaseWorkerConfig):
             Queue("chat_processing", exchange=chat_exchange, routing_key="chat_processing"),
             Queue("chat_messages", exchange=chat_exchange, routing_key="chat_messages"),
             Queue("voice_realtime", exchange=chat_exchange, routing_key="voice_realtime"),
+            Queue("chat_maintenance", exchange=chat_exchange, routing_key="chat_maintenance"),
         )
 
         self.task_routes = {
@@ -40,38 +41,38 @@ class ChatWorkerConfig(BaseWorkerConfig):
                 "routing_key": "chat_processing",
             },
             "chat.recover_automation_events_all_orgs": {
-                "queue": "chat_processing",
-                "routing_key": "chat_processing",
+                "queue": "chat_maintenance",
+                "routing_key": "chat_maintenance",
             },
             "chat.recover_automation_events_org": {
-                "queue": "chat_processing",
-                "routing_key": "chat_processing",
+                "queue": "chat_maintenance",
+                "routing_key": "chat_maintenance",
             },
             "chat.dispatch_due_automation_schedules_all_orgs": {
-                "queue": "chat_processing",
-                "routing_key": "chat_processing",
+                "queue": "chat_maintenance",
+                "routing_key": "chat_maintenance",
             },
             "chat.dispatch_due_automation_schedules_org": {
-                "queue": "chat_processing",
-                "routing_key": "chat_processing",
+                "queue": "chat_maintenance",
+                "routing_key": "chat_maintenance",
             },
             "chat.execute_agent_run": {
                 "queue": "chat_messages",
                 "routing_key": "chat_messages",
             },
             "chat.recover_agent_runs": {
-                "queue": "chat_processing",
-                "routing_key": "chat_processing",
+                "queue": "chat_maintenance",
+                "routing_key": "chat_maintenance",
             },
             # Delivery has its own queue so a slow provider cannot block model
-            # execution messages; recovery remains on the processing queue.
+            # execution messages; its periodic repair probe stays on maintenance.
             "chat.deliver_agent_run": {
                 "queue": "chat_messages",
                 "routing_key": "chat_messages",
             },
             "chat.recover_agent_run_deliveries": {
-                "queue": "chat_processing",
-                "routing_key": "chat_processing",
+                "queue": "chat_maintenance",
+                "routing_key": "chat_maintenance",
             },
             "attachments.post_upload": {
                 "queue": "attachments",
@@ -96,12 +97,12 @@ class ChatWorkerConfig(BaseWorkerConfig):
             },
             # Reminder scheduler tasks
             "chat.poll_due_reminders": {
-                "queue": "chat_processing",
-                "routing_key": "chat_processing",
+                "queue": "chat_maintenance",
+                "routing_key": "chat_maintenance",
             },
             "chat.recovery_sweep_reminders": {
-                "queue": "chat_processing",
-                "routing_key": "chat_processing",
+                "queue": "chat_maintenance",
+                "routing_key": "chat_maintenance",
             },
             "chat.execute_reminder": {
                 "queue": "chat_messages",
@@ -109,39 +110,39 @@ class ChatWorkerConfig(BaseWorkerConfig):
             },
             # Stale job cleanup tasks
             "chat.cleanup_stale_jobs_all_orgs": {
-                "queue": "chat_processing",
-                "routing_key": "chat_processing",
-            },
-            "chat.cleanup_stale_jobs_org": {
-                "queue": "chat_processing",
-                "routing_key": "chat_processing",
+                "queue": "chat_maintenance",
+                "routing_key": "chat_maintenance",
             },
         }
 
-        # Beat schedule — periodic tasks run by the scheduler
+        # Each sweep repeats from durable state, so an older queued tick is redundant.
+        # Expire it before the next tick to prevent outage recovery from replaying fan-outs.
         self.beat_schedule = {
             "recover-automation-events": {
                 "task": "chat.recover_automation_events_all_orgs",
                 "schedule": 60.0,
                 "options": {
-                    "queue": "chat_processing",
-                    "routing_key": "chat_processing",
+                    "queue": "chat_maintenance",
+                    "routing_key": "chat_maintenance",
+                    "expires": 55,
                 },
             },
             "dispatch-due-automation-schedules": {
                 "task": "chat.dispatch_due_automation_schedules_all_orgs",
                 "schedule": 60.0,
                 "options": {
-                    "queue": "chat_processing",
-                    "routing_key": "chat_processing",
+                    "queue": "chat_maintenance",
+                    "routing_key": "chat_maintenance",
+                    "expires": 55,
                 },
             },
             "recover-agent-runs": {
                 "task": "chat.recover_agent_runs",
                 "schedule": 30.0,
                 "options": {
-                    "queue": "chat_processing",
-                    "routing_key": "chat_processing",
+                    "queue": "chat_maintenance",
+                    "routing_key": "chat_maintenance",
+                    "expires": 25,
                 },
             },
             # The sweep republishes durable rows whose broker publication or
@@ -150,24 +151,27 @@ class ChatWorkerConfig(BaseWorkerConfig):
                 "task": "chat.recover_agent_run_deliveries",
                 "schedule": 30.0,
                 "options": {
-                    "queue": "chat_processing",
-                    "routing_key": "chat_processing",
+                    "queue": "chat_maintenance",
+                    "routing_key": "chat_maintenance",
+                    "expires": 25,
                 },
             },
             "poll-due-reminders": {
                 "task": "chat.poll_due_reminders",
                 "schedule": 60.0,
                 "options": {
-                    "queue": "chat_processing",
-                    "routing_key": "chat_processing",
+                    "queue": "chat_maintenance",
+                    "routing_key": "chat_maintenance",
+                    "expires": 55,
                 },
             },
             "cleanup-stale-chat-jobs": {
                 "task": "chat.cleanup_stale_jobs_all_orgs",
-                "schedule": 60.0,
+                "schedule": 300.0,
                 "options": {
-                    "queue": "chat_processing",
-                    "routing_key": "chat_processing",
+                    "queue": "chat_maintenance",
+                    "routing_key": "chat_maintenance",
+                    "expires": 295,
                 },
             },
         }

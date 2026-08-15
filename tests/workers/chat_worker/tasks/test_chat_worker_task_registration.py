@@ -23,7 +23,6 @@ EXPECTED_TASK_NAMES = {
     "attachments.post_upload",
     "chat.activate_automation_event",
     "chat.cleanup_stale_jobs_all_orgs",
-    "chat.cleanup_stale_jobs_org",
     "chat.execute_reminder",
     "chat.execute_agent_run",
     "chat.deliver_agent_run",
@@ -70,10 +69,9 @@ def test_chat_worker_includes_explicit_task_modules_and_registers_task_names():
     assert missing_tasks == set()
 
 
-def test_high_frequency_cleanup_tasks_do_not_store_redis_results():
-    """The 15-second recovery fanout must not create one backend key per task."""
+def test_bounded_cleanup_task_does_not_store_a_redis_result():
+    """The periodic sweep has no caller waiting for a Celery result."""
     celery_app_module = importlib.import_module("src.workers.chat_worker.celery_app")
     celery_app_module.app.loader.import_default_modules()
 
     assert celery_app_module.app.tasks["chat.cleanup_stale_jobs_all_orgs"].ignore_result is True
-    assert celery_app_module.app.tasks["chat.cleanup_stale_jobs_org"].ignore_result is True
