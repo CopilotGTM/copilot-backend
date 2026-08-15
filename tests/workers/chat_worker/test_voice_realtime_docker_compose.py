@@ -8,7 +8,7 @@ def test_chat_worker_subscribes_to_all_chat_queues_with_ten_slots() -> None:
     compose = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
     command = compose["services"]["chat-worker"]["command"]
 
-    expected = "--queues=attachments,chat_processing,chat_messages,voice_realtime"
+    expected = "--queues=attachments,chat_processing,chat_messages,voice_realtime,chat_maintenance"
     assert expected in command
     assert "--concurrency=10" in command
     assert "--pool=threads" in command

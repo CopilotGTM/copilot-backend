@@ -5,19 +5,28 @@ from __future__ import annotations
 from src.workers.chat_worker.config import ChatWorkerConfig
 
 
-def test_remaining_stale_job_cleanup_runs_once_per_minute() -> None:
-    """Verify the contract that remaining stale job cleanup runs once per minute."""
+def test_periodic_sweeps_expire_before_their_next_tick() -> None:
+    """Stale recovery ticks must not replay and fan out after worker downtime."""
+    config = ChatWorkerConfig()
+
+    for schedule in config.beat_schedule.values():
+        assert 0 < schedule["options"]["expires"] < schedule["schedule"]
+
+
+def test_stale_job_cleanup_runs_every_five_minutes_on_maintenance_queue() -> None:
+    """Bounded stale recovery must not compete with or scale user chat traffic."""
     config = ChatWorkerConfig()
 
     schedule = config.beat_schedule["cleanup-stale-chat-jobs"]
     assert schedule["task"] == "chat.cleanup_stale_jobs_all_orgs"
-    assert schedule["schedule"] == 60.0
+    assert schedule["schedule"] == 300.0
     assert schedule["options"] == {
-        "queue": "chat_processing",
-        "routing_key": "chat_processing",
+        "queue": "chat_maintenance",
+        "routing_key": "chat_maintenance",
+        "expires": 295,
     }
     assert "chat.cleanup_stale_jobs_all_orgs" in config.task_routes
-    assert "chat.cleanup_stale_jobs_org" in config.task_routes
+    assert "chat.cleanup_stale_jobs_org" not in config.task_routes
 
 
 def test_reminder_recovery_sweep_is_not_scheduled_by_beat() -> None:

@@ -46,6 +46,23 @@ class _LeaseSession:
         self.commits += 1
 
 
+class _EmptyRowsResult:
+    def all(self):
+        return []
+
+    def scalars(self):
+        return self
+
+
+class _QuerySession:
+    def __init__(self):
+        self.statement = None
+
+    async def execute(self, statement):
+        self.statement = statement
+        return _EmptyRowsResult()
+
+
 @pytest.mark.asyncio
 async def test_attachment_recovery_passes_dispatcher_timeout(monkeypatch) -> None:
     """Recovery must let the shared dispatcher own the publication deadline."""
@@ -132,3 +149,77 @@ async def test_stale_attachment_recovery_keeps_publish_failures_retryable(monkey
         (service.organisation_id, attachment_ids[0]),
         (service.organisation_id, attachment_ids[1]),
     ]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_shares_one_budget_across_all_recovery_passes(monkeypatch) -> None:
+    """One organisation cannot bypass the sweep budget through multiple recovery queries."""
+    service = ChatStaleJobCleanupService(uuid4())
+    attachments = AsyncMock(return_value={"requeued": 12, "requeue_failed": 3})
+    reminders = AsyncMock(return_value=5)
+    runs = AsyncMock(return_value=1)
+    monkeypatch.setattr(service, "_recover_stale_attachments", attachments)
+    monkeypatch.setattr(service, "_cleanup_stuck_reminders", reminders)
+    monkeypatch.setattr(service, "_cleanup_stale_reminder_runs", runs)
+
+    result = await service._run(limit=20)
+
+    assert result["processed_count"] == 20
+    attachments.assert_awaited_once()
+    assert attachments.await_args.args[1] == 20
+    reminders.assert_awaited_once()
+    assert reminders.await_args.args[1] == 5
+    runs.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_clamps_requested_budget_to_hard_ceiling(monkeypatch) -> None:
+    """Manual callers cannot raise one sweep above the operational ceiling of 30."""
+    service = ChatStaleJobCleanupService(uuid4())
+    attachments = AsyncMock(return_value={"requeued": 30, "requeue_failed": 0})
+    monkeypatch.setattr(service, "_recover_stale_attachments", attachments)
+    monkeypatch.setattr(service, "_cleanup_stuck_reminders", AsyncMock(return_value=0))
+    monkeypatch.setattr(service, "_cleanup_stale_reminder_runs", AsyncMock(return_value=0))
+
+    result = await service._run(limit=100)
+
+    assert result["processed_count"] == 30
+    assert attachments.await_args.args[1] == 30
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method_name", "table_name"),
+    [
+        ("_cleanup_stuck_reminders", "USER_REMINDERS"),
+        ("_cleanup_stale_reminder_runs", "USER_REMINDER_RUNS"),
+    ],
+)
+async def test_reminder_cleanup_queries_enforce_remaining_budget(
+    monkeypatch,
+    method_name: str,
+    table_name: str,
+) -> None:
+    """The SQL claim itself must prevent a reminder pass from exceeding its budget."""
+    service = ChatStaleJobCleanupService(uuid4())
+    session = _QuerySession()
+
+    async def sessions(_organisation_id):
+        yield session
+
+    monkeypatch.setattr(
+        "src.workers.chat_worker.services.stale_job_cleanup_service.acquire_org_async_session",
+        sessions,
+    )
+
+    await getattr(service, method_name)(datetime.now(UTC), 7)
+
+    sql = str(
+        session.statement.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    ).upper()
+    assert table_name in sql
+    assert "LIMIT 7" in sql
+    assert "FOR UPDATE SKIP LOCKED" in sql

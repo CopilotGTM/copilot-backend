@@ -137,6 +137,8 @@ autoscaling:
   enabled: false
   minReplicas: 1
   maxReplicas: 10
+  # Optional queue subset for KEDA. Empty preserves queueName + additionalQueues.
+  queues: []
   # Target length of the Redis list (Celery queue)
   queueLength: 5
   # Scale down delay (time to wait before scaling down in seconds)
