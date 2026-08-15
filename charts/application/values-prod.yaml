@@ -92,10 +92,10 @@ api:
   resources:
     requests:
       cpu: 100m
-      memory: 500Mi
+      memory: 768Mi
     limits:
-      cpu: 250m
-      memory: 1Gi
+      cpu: 300m
+      memory: 1.5Gi
 
 global:
   priorityClasses:
