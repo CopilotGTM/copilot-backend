@@ -105,10 +105,10 @@ knowledge-upload-worker:
     maxReplicas: 1
   resources:
     requests:
-      cpu: "250m"
-      memory: "1Gi"
+      cpu: "200m"
+      memory: "250Mi"
     limits:
-      cpu: "1500m"
+      cpu: "750m"
       memory: "1.5Gi"
 
 knowledge-extract-worker:
