@@ -81,7 +81,7 @@ api:
       cpu: 50m
       memory: 500Mi
     limits:
-      cpu: 250m
+      cpu: 200m
       memory: 1Gi
 
 global:
@@ -97,7 +97,10 @@ knowledge-upload-worker:
     maxReplicas: 1
   resources:
     requests:
-      cpu: "25m"
+      cpu: "50m"
+      memory: "250Mi"
+    limits:
+      cpu: "250m"
       memory: "1Gi"
 
 knowledge-extract-worker:
@@ -106,17 +109,6 @@ knowledge-extract-worker:
   autoscaling:
     minReplicas: 0
     maxReplicas: 1
-
-knowledge-beat:
-  enabled: false
-  # Actual usage: 1m CPU, 225Mi memory
-  resources:
-    requests:
-      cpu: "10m"
-      memory: "256Mi"
-    limits:
-      cpu: "150m"
-      memory: "512Mi"
 
 chat-worker:
   config:
@@ -136,7 +128,7 @@ chat-beat:
       cpu: "10m"
       memory: "256Mi"
     limits:
-      cpu: "150m"
+      cpu: "100m"
       memory: "512Mi"
 
 integrations-worker:
@@ -148,10 +140,10 @@ integrations-worker:
     maxReplicas: 1
   resources:
     requests:
-      cpu: "100m"
+      cpu: "50m"
       memory: "512Mi"
     limits:
-      cpu: "500m"
+      cpu: "250m"
       memory: "2Gi"
 
 salesforce-cdc-worker:
@@ -160,10 +152,10 @@ salesforce-cdc-worker:
     repository: "copilotgtmacrdev.azurecr.io/copilot-backend-integrations-worker"
   resources:
     requests:
-      cpu: "250m"
+      cpu: "50m"
       memory: "256Mi"
     limits:
-      cpu: "500m"
+      cpu: "256m"
       memory: "512Mi"
 
 integrationsCronJobs:
@@ -212,27 +204,16 @@ dealCronJobs:
     - name: sales-dashboard-snapshot
       schedule: "15 1 * * *"
 
-deal-beat:
-  enabled: false
-  # Actual usage: 0m CPU, 141Mi memory
-  resources:
-    requests:
-      cpu: "10m"
-      memory: "192Mi"
-
-integrations-beat:
-  enabled: false
-  # Actual usage: 0m CPU, 104Mi memory
-  resources:
-    requests:
-      cpu: "10m"
-
 organization-worker:
   config:
     concurrency: 1
   autoscaling:
     minReplicas: 0
     maxReplicas: 1
+  resources:
+    requests:
+      cpu: "25m"
+      memory: "512Mi"
 
 flower:
   enabled: false
