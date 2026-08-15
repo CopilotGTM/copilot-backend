@@ -73,10 +73,10 @@ api:
   autoscaling:
     minReplicas: 1
     maxReplicas: 5
-    # Scale on an absolute memory level so the 500Mi request is not treated as
-    # the intended application capacity. Keep headroom below the 1Gi limit.
+    # Scale on an absolute memory level so the request is not treated as
+    # the intended application capacity. Keep headroom below the 1.5Gi limit.
     targetMemoryUtilizationPercentage: null
-    targetMemoryAverageValue: "800Mi"
+    targetMemoryAverageValue: "900Mi"
   jobs:
     startup:
       env:
