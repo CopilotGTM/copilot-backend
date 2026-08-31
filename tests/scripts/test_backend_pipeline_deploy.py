@@ -110,12 +110,18 @@ def test_backend_pipelines_capture_the_failed_deployment_diagnostics() -> None:
         assert "spec.selector.matchLabels" in pipeline_text, pipeline_path
         assert 'kubectl get pods -n copilotgtm -l "$selector"' in pipeline_text, pipeline_path
         assert 'dump_deployment_diagnostics "$deployment_name"' in pipeline_text, pipeline_path
-        assert 'kubectl describe pod -n copilotgtm "$pod"' in pipeline_text, pipeline_path
+        assert 'kubectl describe -n copilotgtm "$pod"' in pipeline_text, pipeline_path
         assert 'kubectl logs -n copilotgtm "$pod" --all-containers' in pipeline_text, pipeline_path
         assert "--previous --timestamps" in pipeline_text, pipeline_path
         assert "kubectl get events -n copilotgtm --sort-by=.lastTimestamp" in (pipeline_text), (
             pipeline_path
         )
+
+
+def test_prod_backend_rollout_wait_allows_hpa_scaled_api_replicas() -> None:
+    pipeline_text = PROD_PIPELINE_PATH.read_text(encoding="utf-8")
+
+    assert "copilot-backend) timeout_seconds=900 ;;" in pipeline_text
 
 
 def test_prod_startup_job_uses_direct_postgresql_only_for_migrations() -> None:

@@ -778,6 +778,8 @@ stages:
                       local timeout_seconds=300
 
                       case "$deployment_name" in
+                        # copilotgtm: The API HPA can expand 2->5 during a deploy; with maxSurge=1, five slow starts can exceed five minutes. Revisit this ceiling if the HPA or startup contract changes.
+                        copilot-backend) timeout_seconds=900 ;;
                         copilot-backend-chat-worker) timeout_seconds=600 ;;
                       esac
 
@@ -802,7 +804,7 @@ stages:
                       selector="${selector%,}"
                       if [ -n "$selector" ]; then
                         for pod in $(kubectl get pods -n copilotgtm -l "$selector" -o name 2>/dev/null || true); do
-                          kubectl describe pod -n copilotgtm "$pod" || true
+                          kubectl describe -n copilotgtm "$pod" || true
                           kubectl logs -n copilotgtm "$pod" --all-containers --timestamps --prefix --tail=300 || true
                           kubectl logs -n copilotgtm "$pod" --all-containers --previous --timestamps --prefix --tail=300 || true
                         done

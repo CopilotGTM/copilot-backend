@@ -693,7 +693,7 @@ stages:
                       selector="${selector%,}"
                       if [ -n "$selector" ]; then
                         for pod in $(kubectl get pods -n copilotgtm -l "$selector" -o name 2>/dev/null || true); do
-                          kubectl describe pod -n copilotgtm "$pod" || true
+                          kubectl describe -n copilotgtm "$pod" || true
                           kubectl logs -n copilotgtm "$pod" --all-containers --timestamps --prefix --tail=300 || true
                           kubectl logs -n copilotgtm "$pod" --all-containers --previous --timestamps --prefix --tail=300 || true
                         done
