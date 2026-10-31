@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "Enterprise-grade B2B SaaS backend with FastAPI, async support, and AI integrations"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
-license = { text = "Proprietary" }
+license = { text = "MIT" }
 authors = [
     { name = "CopilotGTM Team" }
 ]

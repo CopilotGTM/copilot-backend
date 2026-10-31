@@ -1,5 +1,8 @@
 # CopilotGTM Backend
 
+**Project status:** CopilotGTM is no longer actively maintained. This code is shared
+as a reference. No ongoing support or security updates are planned.
+
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.116.1-009688.svg)](https://fastapi.tiangolo.com)
 [![UV](https://img.shields.io/badge/uv-package%20manager-blue)](https://github.com/astral-sh/uv)
@@ -355,4 +358,16 @@ Stop live tailing with `Ctrl+C`.
 
 ## License
 
-Proprietary. All rights reserved.
+This project is licensed under the [MIT License](LICENSE).
+
+## Project team
+
+CopilotGTM was built by Nikhil Singhal, Saksham Bhutani, and Mrinmoy Nath.
+The commit history records the work of its contributors.
+
+## Related repositories
+
+- [Backend](https://github.com/CopilotGTM/copilot-backend)
+- [App frontend](https://github.com/CopilotGTM/copilot-app-frontend)
+- [Admin frontend](https://github.com/CopilotGTM/copilot-admin-frontend)
+- [Mobile app](https://github.com/CopilotGTM/gtm-mobile-app)
